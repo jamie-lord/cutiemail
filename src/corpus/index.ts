@@ -17,6 +17,7 @@ import { CASES as seqCases, MUTANTS as seqMutants } from './session-sequencing.t
 import { CASES as sizeCases, MUTANTS as sizeMutants } from './size-limits.ts';
 import { CASES as errCases, MUTANTS as errMutants } from './error-handling.ts';
 import { CASES as txnCases, MUTANTS as txnMutants } from './mail-transaction.ts';
+import { CASES as extCases, MUTANTS as extMutants } from './extensions.ts';
 
 export const ALL_CASES: readonly TestCase[] = [
   ...crlfCases,
@@ -24,6 +25,7 @@ export const ALL_CASES: readonly TestCase[] = [
   ...sizeCases,
   ...errCases,
   ...txnCases,
+  ...extCases,
 ];
 
 export const ALL_MUTANTS: readonly Mutant[] = [
@@ -32,6 +34,7 @@ export const ALL_MUTANTS: readonly Mutant[] = [
   ...sizeMutants,
   ...errMutants,
   ...txnMutants,
+  ...extMutants,
 ];
 
 /** Guard invoked by the corpus test: no two cases may share an id. */
