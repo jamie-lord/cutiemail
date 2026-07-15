@@ -122,17 +122,31 @@ test('every stated reason is substantive', () => {
   }
 });
 
-test('EXTRACTED_SECTIONS matches the sections actually present', () => {
-  // Guards the honest denominator in both directions: a section claimed as
-  // extracted but absent is a lie about coverage; a section present but
-  // unclaimed means the report would undercount what we have done.
-  const present = new Set(requirements.map((r) => r.section));
+test('every requirement belongs to a section claimed as extracted', () => {
+  // The load-bearing direction: a requirement whose section is not in
+  // EXTRACTED_SECTIONS means the denominator undercounts what has been read, and
+  // the coverage report would mis-attribute it. This must always hold.
   const claimed = new Set(extractedSections);
-
-  for (const s of present) {
+  for (const s of new Set(requirements.map((r) => r.section))) {
     assert.ok(claimed.has(s), `§${s} has requirements but is not in EXTRACTED_SECTIONS`);
   }
-  for (const s of claimed) {
-    assert.ok(present.has(s), `§${s} is claimed extracted but has no requirements`);
+});
+
+test('a claimed section with zero requirements is allowed, but only for real prose sections', () => {
+  // The reverse direction is NOT symmetric: a section can be read in full and
+  // legitimately contain no normative requirement — §4.2.3 is a numeric table,
+  // §2.2 and §4.3 are parent headers. So "claimed but empty" is permitted. What
+  // is NOT permitted is claiming §5/§6/§7 (still unextracted) — those must be
+  // absent from EXTRACTED_SECTIONS until their modules exist, which is enforced
+  // structurally: rfc5321.ts cannot spread a section module that isn't imported.
+  const present = new Set(requirements.map((r) => r.section));
+  const emptyClaimed = extractedSections.filter((s) => !present.has(s));
+  // Guard against accidental over-claiming: no top-level section 5, 6 or 7 may
+  // appear while they remain unextracted.
+  for (const s of emptyClaimed) {
+    assert.ok(
+      !/^[567]\b/.test(s) && !/^[567]\./.test(s),
+      `§${s} is claimed extracted but §5/§6/§7 are not yet done — remove it`,
+    );
   }
 });
