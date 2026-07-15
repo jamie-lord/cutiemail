@@ -54,12 +54,31 @@ export interface Defects {
   readonly bareCodeReplies?: boolean;
   /** Put an 8-bit octet in reply text. */
   readonly eightBitReplyText?: boolean;
-  /** Accept MAIL FROM before EHLO/HELO. Violates the §4.1.4 ordering. */
+  /**
+   * Accept MAIL FROM before EHLO/HELO.
+   *
+   * NOTE: this is NOT a clear RFC 5321 violation — §4.1.4-k says servers SHOULD
+   * process commands without prior EHLO, and accepting MAIL without a greeting is
+   * common and conformant. The defect exists for completeness but the corpus does
+   * NOT assert it as a violation. See the §4.1.4 register notes.
+   */
   readonly acceptMailBeforeGreeting?: boolean;
-  /** Do not reset transaction state on RSET. */
+  /** Do not reset transaction state on RSET. Violates R-5321-4.1.1.5-a. */
   readonly ignoreRset?: boolean;
-  /** Accept RCPT before MAIL. Violates §4.1.4 ordering. */
+  /** Reply something other than 250 to RSET. Violates R-5321-4.1.1.5-b. */
+  readonly rsetWrongReply?: boolean;
+  /** Close the connection on RSET. Violates R-5321-4.1.1.5-e. */
+  readonly rsetClosesConnection?: boolean;
+  /** Accept RCPT before MAIL. Violates §4.1.4-o (out of order → 503). */
   readonly acceptRcptBeforeMail?: boolean;
+  /** Accept DATA before any RCPT. Violates §4.1.4-o. */
+  readonly acceptDataBeforeRcpt?: boolean;
+  /** Reply something other than 250 to NOOP. Violates R-5321-4.1.1.9-b. */
+  readonly noopWrongReply?: boolean;
+  /** Reply something other than 221 to QUIT. Violates R-5321-4.1.1.10-a. */
+  readonly quitWrongReply?: boolean;
+  /** Return an EHLO-style multiline response to HELO. Violates R-5321-3.2-b. */
+  readonly extendedResponseToHelo?: boolean;
   /** Close the connection on error without sending 421. */
   readonly closeWithout421?: boolean;
   /** Send mismatched continuation codes in a multiline reply. */
@@ -259,6 +278,12 @@ export class MutantServer {
       }
       case 'HELO':
         state.greeted = true;
+        if (d.extendedResponseToHelo) {
+          // The violation: HELO must get a single-line reply, never EHLO-style.
+          this.#write(sock, crlf`250-${this.#domain}`);
+          this.#write(sock, crlf`250 PIPELINING`);
+          return;
+        }
         return replyOK(250, this.#domain);
 
       case 'MAIL':
@@ -276,21 +301,32 @@ export class MutantServer {
         return replyOK(250, '2.1.5 Ok');
 
       case 'DATA':
-        if (state.rcptCount === 0) return replyOK(503, 'Error: need RCPT command');
+        if (state.rcptCount === 0 && !d.acceptDataBeforeRcpt) {
+          return replyOK(503, 'Error: need RCPT command');
+        }
         state.inData = true;
         return this.#write(sock, crlf`354 End data with <CR><LF>.<CR><LF>`);
 
       case 'RSET':
+        if (d.rsetClosesConnection) {
+          sock.destroy();
+          return;
+        }
         if (!d.ignoreRset) {
           state.hasMail = false;
           state.rcptCount = 0;
         }
-        return replyOK(250, '2.0.0 Ok');
+        return replyOK(d.rsetWrongReply ? 451 : 250, '2.0.0 Ok');
 
       case 'NOOP':
-        return replyOK(250, '2.0.0 Ok');
+        return replyOK(d.noopWrongReply ? 500 : 250, '2.0.0 Ok');
 
       case 'QUIT':
+        if (d.quitWrongReply) {
+          this.#write(sock, crlf`500 not bye`);
+          sock.end();
+          return;
+        }
         this.#write(sock, crlf`221 2.0.0 Bye`);
         sock.end();
         return;
