@@ -453,9 +453,6 @@ export const TEXT_CONSTRAINTS = [
     binds: ['Local-part', 'Mailbox'],
     kind: 'adds',
     text:
-      'Systems MUST NOT define mailboxes in such a way as to require the use\n' +
-      'in SMTP of non-ASCII characters (octets with the high order bit set\n' +
-      'to one) or ASCII "control characters" (decimal value 0-31 and 127).\n' +
       'These characters MUST NOT be used in MAIL or RCPT commands or other\n' +
       'commands that require mailbox names.',
     note:
