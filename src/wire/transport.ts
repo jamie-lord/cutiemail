@@ -226,7 +226,19 @@ export class Wire {
     return Buffer.from(this.#buffer);
   }
 
-  async read<T>(framer: Framer<T>, timeoutMs: number): Promise<ReadResult<T>> {
+  /**
+   * Read one framed value, or a non-framed outcome (timeout/closed/reset).
+   *
+   * `eofFramer`, when supplied, is tried once the peer has closed and the normal
+   * framer still can't frame the buffer — for a final reply whose terminator is
+   * ambiguous until EOF (a trailing bare CR). Critically the reframe happens HERE
+   * so its bytes are consumed from #buffer: a reply is surfaced exactly once, and
+   * the next read reports the true close with an empty partial. (A previous fix
+   * reframed a peek() copy in the caller, which never advanced the buffer and made
+   * every subsequent read re-deliver the same phantom reply — a regression the
+   * second pressure-test pass caught.)
+   */
+  async read<T>(framer: Framer<T>, timeoutMs: number, eofFramer?: Framer<T>): Promise<ReadResult<T>> {
     const deadline = this.#now() + timeoutMs;
 
     for (;;) {
@@ -238,9 +250,19 @@ export class Wire {
       // Order matters: try to frame what we have BEFORE reporting a close.
       // A server may send a complete reply and close in the same breath, and
       // reporting 'closed' there would discard a reply it did in fact send.
-      if (this.#reset) return { kind: 'reset', at: this.#now(), partial: this.peek() };
-      if (this.#closed || this.#peerEnded) {
-        return { kind: 'closed', at: this.#now(), partial: this.peek() };
+      if (this.#reset || this.#closed || this.#peerEnded) {
+        // At EOF, a normally-unframeable partial (e.g. a trailing bare CR) may
+        // still be a complete final reply. Reframe once, consuming the bytes.
+        if (eofFramer !== undefined && this.#buffer.length > 0) {
+          const atEof = eofFramer(this.#buffer);
+          if (atEof !== null) {
+            this.#buffer = this.#buffer.subarray(atEof.consumed);
+            return { kind: 'framed', value: atEof.value, at: this.#now() };
+          }
+        }
+        return this.#reset
+          ? { kind: 'reset', at: this.#now(), partial: this.peek() }
+          : { kind: 'closed', at: this.#now(), partial: this.peek() };
       }
 
       const remaining = deadline - this.#now();

@@ -128,6 +128,27 @@ test('read frames a reply that arrived immediately before a close', async () => 
   );
 });
 
+test('an EOF-framer surfaces a bare-CR final reply exactly once, then reports close', async () => {
+  // Regression for the second-pass finding: a server sends "221 Bye\r" (bare CR,
+  // no LF) then closes. The eofFramer must surface the 221 ONCE and consume it,
+  // so the NEXT read reports the real close — not the same phantom reply again.
+  const { frameReplyAtEof, replyFramer } = await import('./reply.ts');
+  await withServer(
+    async (s) => {
+      s.send(Buffer.from('221 Bye\r')); // bare CR, no LF
+      s.end();
+    },
+    async (port) => {
+      const wire = await Wire.connect({ host: '127.0.0.1', port });
+      await new Promise((r) => setTimeout(r, 50));
+      const first = await wire.read(replyFramer, 1000, frameReplyAtEof);
+      assert.equal(first.kind, 'framed', 'the bare-CR final reply is surfaced');
+      const second = await wire.read(replyFramer, 1000, frameReplyAtEof);
+      assert.equal(second.kind, 'closed', 'the reply is consumed; the next read sees the real close');
+    },
+  );
+});
+
 test('read reports a peer close as a value', async () => {
   await withServer(
     async (s) => {

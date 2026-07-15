@@ -45,18 +45,29 @@ export const CASES: readonly TestCase[] = [
       const bad = await greetAndEhlo(conn);
       if (bad !== null) return bad;
       // A syntactically-valid but unrecognised verb: an error the server must
-      // reply to (with 500/502) WITHOUT closing.
+      // reply to WITHOUT closing — UNLESS it is shutting down, in which case a
+      // 421 then close is permitted (§3.8 / §4.2.1). So a close with no reply is
+      // the violation; a 421-then-close is latitude.
       await conn.send(crlf`WATSUP now`);
       const r = await conn.readReply(3000);
       if (r.kind === 'closed' || r.kind === 'reset') {
-        return { kind: 'violated', detail: `server ${r.kind} the connection on an unrecognised command instead of replying` };
+        return { kind: 'violated', detail: `server ${r.kind} the connection on an unrecognised command with no reply at all` };
       }
       if (r.kind !== 'reply') return { kind: 'inconclusive', reason: `unexpected: ${r.kind}` };
-      // It replied. Prove the channel is still open: a following NOOP must answer.
+      // A 421 is the "service closing transmission channel" signal — the one
+      // reply after which an immediate close is conformant.
+      if (r.reply.code === 421) {
+        return { kind: 'satisfied', detail: '421 (service shutting down) — close after this is permitted' };
+      }
+      // An ordinary error reply (500/502): the channel must stay open. Prove it
+      // with a following NOOP.
       await conn.send(crlf`NOOP`);
       const n = await conn.readReply(3000);
+      if (n.kind === 'reply' && n.reply.code === 421) {
+        return { kind: 'satisfied', detail: '421 on the follow-up — shutdown is permitted' };
+      }
       if (n.kind === 'closed' || n.kind === 'reset') {
-        return { kind: 'violated', detail: `server closed after the error reply, before QUIT` };
+        return { kind: 'violated', detail: `server closed after an ordinary error reply (${r.reply.code}), before QUIT and without a 421` };
       }
       return n.kind === 'reply'
         ? { kind: 'satisfied', detail: 'connection survived the error' }
@@ -70,15 +81,27 @@ export const CASES: readonly TestCase[] = [
     intent: 'the server transmits well-formed three-digit reply codes',
     rationale:
       '§4.3.2: "SMTP servers MUST NOT transmit reply codes ... that are other than three ' +
-      'digits or that do not start in a digit between 2 and 5 inclusive." Checked via the ' +
-      'reply reader\'s grammar anomalies, which flag a non-3-digit or out-of-range code.',
+      'digits or that do not start in a digit between 2 and 5 inclusive." NOTE the narrow ' +
+      'scope: this forbids a non-three-digit code or a bad FIRST digit ONLY. It does NOT ' +
+      'constrain the second/third digit or the separator — those are §4.2 ABNF concerns with ' +
+      'their own anomalies (code-out-of-grammar for the 2nd digit, malformed-separator), and ' +
+      'convicting them here would over-reach. So we check only code-not-three-digits and a ' +
+      'first digit outside 2-5.',
     run: async (conn): Promise<Judgement> => {
       const offenders: string[] = [];
-      const check = (label: string, reply: { anomalies: readonly { kind: string; detail: string }[] }): void => {
+      const check = (
+        label: string,
+        reply: { lines: readonly { codeBytes: Buffer }[]; anomalies: readonly { kind: string; detail: string }[] },
+      ): void => {
         for (const a of reply.anomalies) {
-          if (a.kind === 'code-out-of-grammar' || a.kind === 'malformed-separator') {
-            offenders.push(`${label}: ${a.detail}`);
-          }
+          if (a.kind === 'code-not-three-digits') offenders.push(`${label}: ${a.detail}`);
+        }
+        // First digit outside 2-5 is the other thing §4.3.2-c forbids. Check the
+        // final line's first code byte directly (0x32-0x35 = '2'-'5').
+        const last = reply.lines[reply.lines.length - 1];
+        const first = last?.codeBytes[0];
+        if (first !== undefined && (first < 0x32 || first > 0x35)) {
+          offenders.push(`${label}: first code digit 0x${first.toString(16)} is outside 2-5`);
         }
       };
       // Sample replies across several commands so a server that malforms only

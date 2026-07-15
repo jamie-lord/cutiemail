@@ -44,10 +44,14 @@ export const CASES: readonly TestCase[] = [
       if (bad !== null) return bad;
       await conn.send(crlf`HELO conformance-suite.invalid`);
       const r = await conn.readReply(3000);
-      if (r.kind !== 'reply') return { kind: 'violated', detail: `HELO drew ${r.kind}` };
-      return severity(r.reply) === 2
-        ? { kind: 'satisfied', detail: `HELO accepted with ${r.reply.code}` }
-        : { kind: 'violated', detail: `HELO drew ${r.reply.code}, not a 2yz — server does not support HELO` };
+      if (r.kind !== 'reply') return { kind: 'inconclusive', reason: `HELO drew ${r.kind}` };
+      const sev = severity(r.reply);
+      if (sev === 2) return { kind: 'satisfied', detail: `HELO accepted with ${r.reply.code}` };
+      // Only a 5yz "command not implemented/recognised" (500/502) denies HELO
+      // support. A 4yz is a transient/shutdown condition (451 try-again, 421
+      // closing) — not evidence the server lacks HELO, so it is inconclusive.
+      if (sev === 4) return { kind: 'inconclusive', reason: `HELO drew a transient ${r.reply.code}` };
+      return { kind: 'violated', detail: `HELO drew ${r.reply.code} — server does not support HELO` };
     },
   }),
 

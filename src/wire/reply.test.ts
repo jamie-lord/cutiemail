@@ -131,6 +131,21 @@ test('a malformed separator ends the reply and is recorded', () => {
   assert.equal(r.lines.length, 1);
 });
 
+test('a four-digit code is code-not-three-digits, distinct from a bad second digit', () => {
+  // §4.3.2-c forbids non-three-digit codes; the second-digit ABNF rule is a
+  // different requirement. A digit after the 3 code bytes signals a 4+ digit
+  // code and must be a distinct anomaly so the corpus can scope §4.3.2-c narrowly.
+  const four = frame('2500 msg\r\n');
+  assert.ok(kinds(four).includes('code-not-three-digits'));
+  assert.ok(!kinds(four).includes('malformed-separator'), 'a digit is not a malformed separator');
+
+  // A bad SECOND digit (260) is code-out-of-grammar, NOT code-not-three-digits —
+  // it is a valid three-digit code that violates the ABNF, not §4.3.2-c.
+  const second = frame('260 msg\r\n');
+  assert.ok(kinds(second).includes('code-out-of-grammar'));
+  assert.ok(!kinds(second).includes('code-not-three-digits'));
+});
+
 test('an over-long reply line is recorded against the 512-octet limit', () => {
   const pad = 'x'.repeat(MAX_REPLY_LINE); // well past 512 once code+CRLF added
   const r = frame(`250 ${pad}\r\n`);

@@ -56,7 +56,10 @@ class LiveConn implements Conn {
   }
 
   async readReply(timeoutMs?: number): Promise<ReplyOutcome> {
-    const r = await this.wire.read(replyFramer, timeoutMs ?? this.#replyTimeout);
+    // Pass frameReplyAtEof so the transport can surface a bare-CR-terminated
+    // final reply on close — and consume it, so the next read reports the real
+    // close rather than re-delivering the same reply.
+    const r = await this.wire.read(replyFramer, timeoutMs ?? this.#replyTimeout, frameReplyAtEof);
     switch (r.kind) {
       case 'framed':
         this.#lastReply = r.value;
@@ -65,21 +68,9 @@ class LiveConn implements Conn {
       case 'timeout':
         return { kind: 'timeout', waitedMs: r.waitedMs, partial: r.partial };
       case 'closed':
-      case 'reset': {
-        // EOF-aware reframe: a final reply terminated by a bare CR is left
-        // pending by the normal framer (it waits for a byte that never comes).
-        // At close, re-frame the partial so that reply — and its
-        // bare-cr-terminator anomaly — is surfaced rather than dropped.
-        const framed = r.partial.length > 0 ? frameReplyAtEof(r.partial) : null;
-        if (framed !== null) {
-          this.#lastReply = framed.value;
-          for (const a of framed.value.anomalies) this.#anomalies.push(`${a.kind}@line${a.line}`);
-          return { kind: 'reply', reply: framed.value };
-        }
-        return r.kind === 'closed'
-          ? { kind: 'closed', partial: r.partial }
-          : { kind: 'reset', partial: r.partial };
-      }
+        return { kind: 'closed', partial: r.partial };
+      case 'reset':
+        return { kind: 'reset', partial: r.partial };
     }
   }
 
@@ -153,6 +144,20 @@ export async function runCase(tc: TestCase, config: RunConfig): Promise<Result> 
     if (missing.length > 0) {
       return inconclusive(tc, level, `run lacks required fixture: ${missing.join(', ')}`);
     }
+  }
+
+  // TLS gating: a case that needs TLS but whose target offers neither implicit
+  // TLS nor (once we implement it) a usable STARTTLS upgrade is inconclusive, not
+  // a failure. Only implicit TLS is checkable before connecting; STARTTLS
+  // availability is an EHLO-gated concern the case should also declare via
+  // needs.ehlo:['STARTTLS'].
+  if (needs?.tls === true && config.connect.tls !== 'implicit') {
+    return inconclusive(
+      tc,
+      level,
+      'case requires TLS but the target is not configured for implicit TLS ' +
+        '(declare needs.ehlo:["STARTTLS"] for a STARTTLS-upgrade path)',
+    );
   }
 
   const started = process.hrtime.bigint();

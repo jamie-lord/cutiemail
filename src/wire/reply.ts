@@ -59,6 +59,8 @@ export type AnomalyKind =
   | 'continuation-code-mismatch'
   /** Reply line exceeded the 512-octet limit of RFC 5321 §4.5.3.1.5. */
   | 'reply-line-too-long'
+  /** A digit follows the three code bytes: the code is longer than three digits (§4.3.2-c). */
+  | 'code-not-three-digits'
   /** Separator after the code was neither SP nor '-'. */
   | 'malformed-separator';
 
@@ -279,6 +281,18 @@ function frame(buf: Buffer, atEof: boolean): { value: Reply; consumed: number } 
           detail: 'space present but textstring empty; ABNF requires 1*(%d09 / %d32-126)',
         });
       }
+    } else if (sepByte >= 0x30 && sepByte <= 0x39) {
+      // A DIGIT immediately after the three code bytes means the code is longer
+      // than three digits (e.g. "2500"). This is the specific thing RFC 5321
+      // §4.3.2-c forbids ("reply codes ... other than three digits"), distinct
+      // from a merely malformed separator, so it gets its own anomaly.
+      separator = '';
+      text = lineBytes.subarray(3);
+      anomalies.push({
+        kind: 'code-not-three-digits',
+        line: lineNo,
+        detail: `a digit (0x${sepByte.toString(16)}) follows the three code bytes; reply code is longer than three digits (§4.3.2-c)`,
+      });
     } else {
       separator = '';
       text = lineBytes.subarray(3);

@@ -105,6 +105,12 @@ export interface Defects {
   readonly advertiseStarttlsButReject?: boolean;
   /** Close the connection on error without sending 421. */
   readonly closeWithout421?: boolean;
+  /**
+   * Answer an unknown command with 421 (service closing) then close — the
+   * CONFORMANT shutdown posture (§3.8/§4.2.1), not a defect. Exists so the
+   * connection-stays-open test can be shown to NOT flag a shutting-down server.
+   */
+  readonly shutdownWith421?: boolean;
   /** Send mismatched continuation codes in a multiline reply. */
   readonly mismatchedContinuation?: boolean;
   /** Accept a command line longer than 512 octets without 500. */
@@ -433,6 +439,12 @@ export class MutantServer {
       default:
         if (d.closeWithout421) {
           sock.destroy(); // rude: no 421, just gone
+          return;
+        }
+        if (d.shutdownWith421) {
+          // Conformant shutdown: 421 then close.
+          this.#write(sock, crlf`421 ${this.#domain} Service closing transmission channel`);
+          sock.end();
           return;
         }
         return replyOK(500, 'Error: command not recognized');
