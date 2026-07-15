@@ -138,12 +138,22 @@ function codeInGrammar(code: Buffer): boolean {
 }
 
 /** Finds the end of the next physical line, honouring CRLF, bare LF, or bare CR. */
-function findLineEnd(buf: Buffer, from: number): { end: number; term: Terminator } | null {
+function findLineEnd(
+  buf: Buffer,
+  from: number,
+  atEof = false,
+): { end: number; term: Terminator } | null {
   for (let i = from; i < buf.length; i++) {
     const b = buf[i]!;
     if (b === LF) return { end: i, term: 'lf' };
     if (b === CR) {
-      if (i + 1 >= buf.length) return null; // need one more byte to decide
+      if (i + 1 >= buf.length) {
+        // A CR at the very end is ambiguous: CRLF or bare CR? Normally we wait
+        // for the next byte. But at EOF (the peer closed), no next byte is
+        // coming — so a trailing CR is a bare-CR terminator, and framing it is
+        // how the bare-cr-terminator anomaly gets observed instead of dropped.
+        return atEof ? { end: i, term: 'cr' } : null;
+      }
       if (buf[i + 1] === LF) return { end: i, term: 'crlf' };
       return { end: i, term: 'cr' };
     }
@@ -185,17 +195,23 @@ function parseEnhanced(text: Buffer): EnhancedStatus | null {
  * Returns null when more bytes are needed. Throws ReplyTooLongError only when a
  * server floods without terminating — a fault, not a conformance observation.
  */
-export const replyFramer: Framer<Reply> = (buf) => {
+function frame(buf: Buffer, atEof: boolean): { value: Reply; consumed: number } | null {
   const lines: ReplyLine[] = [];
   const anomalies: Anomaly[] = [];
   let offset = 0;
 
   for (;;) {
-    if (offset >= MAX_REPLY_BYTES) {
-      throw new ReplyTooLongError(`no reply terminator within ${MAX_REPLY_BYTES} bytes`);
+    const found = findLineEnd(buf, offset, atEof);
+    if (found === null) {
+      // Incomplete. Bound on BUFFERED length, not consumed offset: a server
+      // flooding a single never-terminated line keeps offset at 0, so a guard on
+      // offset would never fire. This is the real backstop against unbounded
+      // buffering from a peer that never sends a terminator.
+      if (buf.length >= MAX_REPLY_BYTES) {
+        throw new ReplyTooLongError(`no reply terminator within ${MAX_REPLY_BYTES} bytes`);
+      }
+      return null; // wait for more
     }
-    const found = findLineEnd(buf, offset);
-    if (found === null) return null; // incomplete; wait for more
 
     const lineNo = lines.length;
     const lineBytes = buf.subarray(offset, found.end);
@@ -319,7 +335,23 @@ export const replyFramer: Framer<Reply> = (buf) => {
     },
     consumed: offset,
   };
-};
+}
+
+/**
+ * Frames exactly one SMTP reply. Returns null when more bytes are needed.
+ */
+export const replyFramer: Framer<Reply> = (buf) => frame(buf, false);
+
+/**
+ * EOF-aware framer: use on a partial buffer after the peer has CLOSED, so that a
+ * final reply terminated by a bare CR (which the normal framer leaves pending,
+ * waiting for a next byte that will never arrive) is framed and its
+ * bare-cr-terminator anomaly observed rather than silently dropped. See the
+ * pressure-test finding on reply.ts:145.
+ */
+export function frameReplyAtEof(buf: Buffer): { value: Reply; consumed: number } | null {
+  return frame(buf, true);
+}
 
 /** First digit of the reply code — the severity class. Null when ungrammatical. */
 export function severity(reply: Reply): 2 | 3 | 4 | 5 | null {

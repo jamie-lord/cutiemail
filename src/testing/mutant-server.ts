@@ -36,6 +36,13 @@ import { crlf, lf, CR, LF, DOT } from '../wire/bytes.ts';
 export interface Defects {
   /** Honour a bare LF as a command terminator. Violates R-5321-2.3.8-a. */
   readonly honourBareLf?: boolean;
+  /**
+   * REJECT a bare-LF-terminated command with a 500 error — the hardened,
+   * anti-smuggling behaviour (Postfix smtpd_forbid_bare_newline=reject). This is
+   * CONFORMANT, not a defect: it models the smuggling-safe server the suite must
+   * bless, and exists so the bare-LF tests can be shown to NOT flag it.
+   */
+  readonly rejectBareLf?: boolean;
   /** Honour <LF>.<LF> as end-of-data (the SMTP-smuggling primitive). */
   readonly honourBareLfEndOfData?: boolean;
   /**
@@ -77,6 +84,8 @@ export interface Defects {
   readonly noopWrongReply?: boolean;
   /** Reply something other than 221 to QUIT. Violates R-5321-4.1.1.10-a. */
   readonly quitWrongReply?: boolean;
+  /** Reply 221 to QUIT but then RST the connection instead of a clean close. */
+  readonly quitResetsAfterReply?: boolean;
   /** Return an EHLO-style multiline response to HELO. Violates R-5321-3.2-b. */
   readonly extendedResponseToHelo?: boolean;
   /** Emit a four-digit reply code. Violates R-5321-4.3.2-c (three digits only). */
@@ -87,6 +96,13 @@ export interface Defects {
    * A policy rejection (550) would be conformant; a syntax error is not.
    */
   readonly rejectSourceRouteAsSyntax?: boolean;
+  /** Reject the HELO command. Violates R-5321-4.1.1.1-h (servers MUST support HELO). */
+  readonly rejectHelo?: boolean;
+  /**
+   * Advertise STARTTLS in EHLO but return 502 to the STARTTLS command.
+   * Violates R-5321-4.2.4-c (MUST NOT advertise capabilities you will 502/500).
+   */
+  readonly advertiseStarttlsButReject?: boolean;
   /** Close the connection on error without sending 421. */
   readonly closeWithout421?: boolean;
   /** Send mismatched continuation codes in a multiline reply. */
@@ -180,6 +196,18 @@ export class MutantServer {
           if (consumed === 0) break;
           buf = buf.subarray(consumed);
           continue;
+        }
+
+        // Hardened-reject behaviour: if a bare LF appears before any CRLF, refuse
+        // it with a 500 rather than executing or ignoring it. Conformant.
+        if (d.rejectBareLf) {
+          const lfAt = buf.indexOf(LF);
+          const crlfAt = buf.indexOf(Buffer.from([CR, LF]));
+          if (lfAt !== -1 && (crlfAt === -1 || lfAt < crlfAt)) {
+            this.#write(sock, crlf`500 Error: bare <LF> received`);
+            buf = buf.subarray(lfAt + 1);
+            continue;
+          }
         }
 
         const line = this.#nextCommandLine(buf);
@@ -320,7 +348,16 @@ export class MutantServer {
         }
         return;
       }
+      case 'STARTTLS':
+        // The mutant does not implement TLS; it only models the advertise-vs-honour
+        // conformance question. A clean mutant that advertised STARTTLS would 220
+        // then expect a handshake — but since no case here completes TLS, a clean
+        // 220 is the honest "capability is real" answer. The defect 502s it.
+        if (d.advertiseStarttlsButReject) return replyOK(502, 'Error: command not implemented');
+        return replyOK(220, 'Ready to start TLS');
+
       case 'HELO':
+        if (d.rejectHelo) return replyOK(502, 'Error: HELO not supported');
         state.greeted = true;
         if (d.extendedResponseToHelo) {
           // The violation: HELO must get a single-line reply, never EHLO-style.
@@ -377,6 +414,16 @@ export class MutantServer {
           return;
         }
         this.#write(sock, crlf`221 2.0.0 Bye`);
+        if (d.quitResetsAfterReply) {
+          // 221 then an abrupt RST rather than a clean FIN. resetAndDestroy sends
+          // an actual RST segment; plain destroy() can close cleanly once the
+          // peer has drained the buffer.
+          setTimeout(() => {
+            if (typeof sock.resetAndDestroy === 'function') sock.resetAndDestroy();
+            else sock.destroy();
+          }, 10);
+          return;
+        }
         sock.end();
         return;
 

@@ -71,6 +71,43 @@ async function reachData(conn: Conn): Promise<Judgement | null> {
 }
 
 /**
+ * Classify a server's response to a bare-LF-terminated command.
+ *
+ * This is the corrected heart of the bare-LF tests (a false positive the pressure
+ * test caught). The forbidden act is EXECUTING the LF-terminated command, not
+ * replying to it. So:
+ *
+ *   - silence               -> conformant (never recognised a complete line)
+ *   - a 5yz/4yz error        -> conformant (rejected the bare LF — hardened server)
+ *   - connection closed/RST  -> conformant (refused it)
+ *   - a 2yz/3yz success      -> NON-conformant (the command was executed)
+ *
+ * The success case is the only violation, and it is precisely what the
+ * honourBareLf mutant does (it replies 250 to the bare-LF EHLO).
+ */
+async function classifyBareLfResponse(conn: Conn, command: string): Promise<Judgement> {
+  const r = await conn.readReply(1500);
+  if (r.kind === 'timeout') {
+    return { kind: 'satisfied', detail: `no action taken on the bare-LF ${command}` };
+  }
+  if (r.kind === 'closed' || r.kind === 'reset') {
+    return { kind: 'satisfied', detail: `server refused the bare-LF ${command} (${r.kind})` };
+  }
+  const sev = severity(r.reply);
+  if (sev === 2 || sev === 3) {
+    return {
+      kind: 'violated',
+      detail: `server EXECUTED a bare-LF-terminated ${command} (replied ${r.reply.code}) — it recognized <LF> as a terminator`,
+    };
+  }
+  // 4yz / 5yz: the server saw the bare LF and refused it. Conformant.
+  return {
+    kind: 'satisfied',
+    detail: `server rejected the bare-LF ${command} with ${r.reply.code} (did not accept it)`,
+  };
+}
+
+/**
  * Send a body whose fake end-of-data is `fakeEod`, then probe: a conformant
  * server keeps reading (silence), a vulnerable one replies mid-DATA. On silence
  * we close cleanly with the real EOD. `label` names the primitive for evidence.
@@ -104,39 +141,37 @@ export const CASES: readonly TestCase[] = [
     id: 'bare-lf-command-not-honoured',
     requirement: 'R-5321-2.3.8-a',
     alsoTouches: ['R-5321-4.1.1.4-i'],
-    intent: 'a command line terminated by a bare LF (no CR) is not acted upon',
+    intent: 'a command line terminated by a bare LF (no CR) is not EXECUTED',
     rationale:
       '§2.3.8: conforming implementations MUST NOT recognize any other character ' +
-      'sequence as a line terminator. Observed on the receiver side: send a command ' +
-      'ending in bare LF and see whether the server acts on it. Acting is the violation.',
+      'sequence as a line terminator. The violation is EXECUTING a bare-LF-terminated ' +
+      'command — not merely replying to it. A hardened server (e.g. Postfix with ' +
+      'smtpd_forbid_bare_newline) that REJECTS the bare LF with an error, or drops the ' +
+      'connection, has NOT recognized it as a terminator and is conformant — it is exactly ' +
+      'the smuggling-safe server this suite exists to bless.',
     run: async (conn): Promise<Judgement> => {
       const bad = await greeting(conn);
       if (bad !== null) return bad;
 
-      // Send EHLO terminated by a bare LF. A conformant server does not see a
-      // complete command line, so it stays silent (or eventually times us out).
+      // EHLO terminated by a bare LF. A conformant server either stays silent
+      // (never saw a complete line) or rejects it; only EXECUTING it (a success
+      // reply to the EHLO) is the violation.
       await conn.send(lf`EHLO conformance-suite.invalid`);
-      const quiet = await conn.expectQuiet(1500);
-      if (quiet.quiet) {
-        return { kind: 'satisfied', detail: 'server took no action on a bare-LF-terminated command' };
-      }
-      // It replied. Whether 250 or 500, it PARSED a line it should not have
-      // recognised — that is the violation, regardless of the code.
-      return {
-        kind: 'violated',
-        detail: `server responded to a bare-LF-terminated command with ${quiet.bytes.subarray(0, 3).toString('latin1')}...`,
-      };
+      return classifyBareLfResponse(conn, 'EHLO');
     },
   }),
 
   testCase({
     id: 'bare-lf-line-acceptance-rejected',
     requirement: 'R-5321-4.1.1.4-i',
-    intent: 'the server does not accept lines ending only in <LF>',
+    intent: 'the server does not ACCEPT (execute) lines ending only in <LF>',
     rationale:
       '§4.1.1.4: "SMTP server systems MUST NOT do this, even in the name of improved ' +
-      'robustness." This is the postmaster-smuggling family. Distinct from 2.3.8-a in ' +
-      'that the RFC names the concrete "accept LF-terminated lines" custom and forbids it.',
+      'robustness." The forbidden act is ACCEPTING the LF-terminated line, i.e. executing ' +
+      'it as a command. Rejecting it with a 5yz error (the Postfix smtpd_forbid_bare_newline ' +
+      'behaviour) or dropping the connection is a REFUSAL, not acceptance, and is conformant. ' +
+      'A test that failed on any reply would fail exactly the anti-smuggling servers the ' +
+      'suite is meant to certify.',
     run: async (conn): Promise<Judgement> => {
       const bad = await greeting(conn);
       if (bad !== null) return bad;
@@ -147,10 +182,7 @@ export const CASES: readonly TestCase[] = [
       if (ehlo.kind !== 'reply') return { kind: 'inconclusive', reason: `EHLO failed: ${ehlo.kind}` };
 
       await conn.send(lf`NOOP`);
-      const quiet = await conn.expectQuiet(1500);
-      return quiet.quiet
-        ? { kind: 'satisfied', detail: 'bare-LF line not treated as a command' }
-        : { kind: 'violated', detail: 'server acted on a line terminated only by <LF>' };
+      return classifyBareLfResponse(conn, 'NOOP');
     },
   }),
 

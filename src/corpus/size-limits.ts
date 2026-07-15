@@ -49,19 +49,38 @@ export const CASES: readonly TestCase[] = [
     run: async (conn): Promise<Judgement> => {
       const bad = await greetAndEhlo(conn);
       if (bad !== null) return bad;
-      // "NOOP " (5) + arg + CRLF (2) = 512  ->  arg = 505 octets.
-      const line = cat(bare`NOOP `, rep(0x78, 512 - 5 - 2), CRLF);
-      await conn.send(line);
+
+      // Baseline: a SHORT NOOP with an argument. This isolates length from
+      // argument handling — a server MAY reject NOOP-with-args (§4.1.1.9-e is a
+      // SHOULD to ignore them). If the short one is refused, this server declines
+      // that latitude, and the length test cannot distinguish length-rejection
+      // from argument-rejection, so it is inconclusive rather than a false fail.
+      await conn.send(cat(bare`NOOP `, rep(0x78, 8), CRLF));
+      const shortReply = await conn.readReply(3000);
+      if (shortReply.kind !== 'reply') {
+        return { kind: 'inconclusive', reason: `short NOOP-with-arg drew ${shortReply.kind}` };
+      }
+      if (shortReply.reply.code !== 250) {
+        return {
+          kind: 'inconclusive',
+          reason:
+            `server rejects NOOP-with-argument (short one drew ${shortReply.reply.code}); ` +
+            `cannot separate length from argument handling — needs a length-only probe`,
+        };
+      }
+
+      // The short NOOP-with-arg succeeded, so this server ignores NOOP args. Now
+      // the only difference at 512 octets is the LENGTH. "NOOP " (5) + arg + CRLF
+      // (2) = 512  ->  arg = 505 octets.
+      await conn.send(cat(bare`NOOP `, rep(0x78, 512 - 5 - 2), CRLF));
       const r = await conn.readReply(3000);
-      if (r.kind !== 'reply') return { kind: 'violated', detail: `512-octet command drew ${r.kind}` };
-      // A 500 "line too long" is the violation. NOOP normally draws 250, but any
-      // non-length rejection (e.g. 5yz on the argument) is out of scope here — we
-      // fail only on evidence the length was the problem: a 500/500-class refusal
-      // where the same NOOP unpadded would have succeeded.
+      if (r.kind !== 'reply') return { kind: 'inconclusive', reason: `512-octet command drew ${r.kind}` };
       if (r.reply.code === 250) return { kind: 'satisfied', detail: '512-octet command accepted' };
+      // The short version succeeded and the 512 version did not: the length is
+      // the only variable, so this is a length rejection = violation.
       return {
         kind: 'violated',
-        detail: `512-octet command drew ${r.reply.code} (a server MUST accept command lines to 512 octets)`,
+        detail: `512-octet command drew ${r.reply.code} where an 8-octet-arg NOOP drew 250 — rejected for length (a server MUST accept command lines to 512 octets)`,
       };
     },
   }),
@@ -103,10 +122,17 @@ export const CASES: readonly TestCase[] = [
       );
       await conn.send(body);
       const final = await conn.readReply(5000);
-      if (final.kind !== 'reply') return { kind: 'violated', detail: `1000-octet line drew ${final.kind}` };
-      return severity(final.reply) === 2
-        ? { kind: 'satisfied', detail: '1000-octet text line accepted' }
-        : { kind: 'violated', detail: `1000-octet text line drew ${final.reply.code}, not a 2yz` };
+      if (final.kind !== 'reply') return { kind: 'inconclusive', reason: `1000-octet line drew ${final.kind}` };
+      if (severity(final.reply) === 2) {
+        return { kind: 'satisfied', detail: '1000-octet text line accepted' };
+      }
+      // A 4yz temporary failure (greylisting, filter busy) is NOT evidence the
+      // line length was the problem — the server never rejected for length.
+      if (severity(final.reply) === 4) {
+        return { kind: 'inconclusive', reason: `temporary failure ${final.reply.code}, not a length rejection` };
+      }
+      // A 5yz is the length rejection = violation.
+      return { kind: 'violated', detail: `1000-octet text line drew ${final.reply.code} (5yz) — rejected within the mandated length` };
     },
   }),
 ];

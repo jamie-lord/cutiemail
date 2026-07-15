@@ -1,87 +1,44 @@
 /**
- * CRLF-discipline corpus: negative-control verification.
+ * CRLF-discipline corpus: negative-control verification, plus the regression the
+ * pressure test demanded.
  *
- * For each case: it must be CONFORMANT against the clean mutant, and
- * NON-CONFORMANT against a mutant carrying exactly the defect the case is meant
- * to catch. Both halves are required. The clean-baseline half proves the test
- * does not fire on a good server; the defect half proves it fires on a bad one.
- * A conformance test shown only to pass is not evidence of anything.
- *
- * This is the pattern every corpus module's test must follow. It is what turns
- * "we wrote a test" into "we proved the test detects the violation".
+ * Beyond the standard clean-vs-defect proofs, this module carries an extra
+ * assertion that a HARDENED server — one that rejects a bare LF with a 500, the
+ * Postfix smtpd_forbid_bare_newline behaviour — is reported CONFORMANT, not
+ * failed. That is the exact false positive the pressure test caught: the earlier
+ * tests treated any reply to a bare LF as "the server acted on it", which would
+ * have failed precisely the smuggling-safe servers the suite exists to bless.
  */
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { runCase } from '../conformance/runner.ts';
-import { baselineFixture } from '../conformance/fixture.ts';
-import type { Fixture } from '../conformance/fixture.ts';
 import { withMutant } from '../testing/mutant-server.ts';
-import type { Defects } from '../testing/mutant-server.ts';
+import { verifyNegativeControls, richFixture } from './negative-control.ts';
 import { CASES, MUTANTS } from './crlf-discipline.ts';
-import type { TestCase } from '../conformance/test-case.ts';
 
-const byId = new Map(CASES.map((c) => [c.id, c]));
+verifyNegativeControls('crlf-discipline', CASES, MUTANTS);
 
-// A fixture rich enough for the DATA-path case; harmless for the others.
-const fixture: Fixture = {
-  ...baselineFixture('conformance-suite.invalid'),
-  validRecipient: 'recipient@example.com',
-  source: 'operator-declared',
-};
+const BARE_LF_CASES = ['bare-lf-command-not-honoured', 'bare-lf-line-acceptance-rejected'];
 
-function get(id: string): TestCase {
-  const c = byId.get(id);
-  assert.ok(c !== undefined, `no case ${id}`);
-  return c;
-}
-
-/** The mutant switch names map 1:1 to Defects keys. */
-function defectFor(name: string): Defects {
-  return { [name]: true } as Defects;
-}
-
-for (const mutant of MUTANTS) {
-  test(`${mutant.catches}: conformant against a clean server`, async () => {
-    const tc = get(mutant.catches);
-    await withMutant({ validRecipients: ['recipient@example.com'] }, async (port) => {
-      const result = await runCase(tc, { connect: { host: '127.0.0.1', port }, fixture });
-      assert.notEqual(
-        result.outcome,
-        'non-conformant',
-        `clean server should not be a finding, got ${result.outcome}: ` +
-          `${result.judgement.kind === 'violated' ? result.judgement.detail : ''}`,
-      );
-      // Should be conformant or (for the fixture-gated one against a mutant that
-      // accepts all recipients) conformant. Inconclusive would mean the mutant
-      // could not exercise the path — acceptable but noted.
-      assert.ok(
-        result.outcome === 'conformant' || result.outcome === 'inconclusive',
-        `expected conformant/inconclusive, got ${result.outcome}`,
-      );
-    });
-  });
-
-  test(`${mutant.catches}: non-conformant against defect "${mutant.defect}"`, async () => {
-    const tc = get(mutant.catches);
+for (const id of BARE_LF_CASES) {
+  test(`crlf-discipline: ${id} — a hardened server that REJECTS bare LF is conformant`, async () => {
+    const tc = CASES.find((c) => c.id === id);
+    assert.ok(tc !== undefined);
+    // rejectBareLf models Postfix with smtpd_forbid_bare_newline: it answers a
+    // bare-LF command with "500 bare <LF> received". That is a REFUSAL, not
+    // acceptance, so it MUST NOT be a finding.
     await withMutant(
-      { defects: defectFor(mutant.defect), validRecipients: ['recipient@example.com'] },
+      { defects: { rejectBareLf: true }, validRecipients: ['recipient@example.com'] },
       async (port) => {
-        const result = await runCase(tc, { connect: { host: '127.0.0.1', port }, fixture });
+        const result = await runCase(tc, { connect: { host: '127.0.0.1', port }, fixture: richFixture });
         assert.equal(
           result.outcome,
-          'non-conformant',
-          `defect ${mutant.defect} should be caught by ${mutant.catches}, got ${result.outcome} ` +
-            `(${result.judgement.kind === 'inconclusive' ? result.judgement.reason : ''})`,
+          'conformant',
+          `a server rejecting bare LF must be conformant, got ${result.outcome}: ` +
+            `${result.judgement.kind === 'violated' ? result.judgement.detail : ''}`,
         );
       },
     );
   });
 }
-
-test('every case has a mutant (no half-covered wire tests in this module)', () => {
-  const caught = new Set(MUTANTS.map((m) => m.catches));
-  for (const c of CASES) {
-    assert.ok(caught.has(c.id), `case ${c.id} has no negative control — it is only half a test`);
-  }
-});

@@ -20,7 +20,7 @@
 import { testCase } from '../conformance/test-case.ts';
 import type { TestCase, Mutant, Conn } from '../conformance/test-case.ts';
 import type { Judgement } from '../conformance/outcome.ts';
-import { crlf } from '../wire/bytes.ts';
+import { crlf, cat, EOD } from '../wire/bytes.ts';
 import { severity, ehloKeywords } from '../wire/reply.ts';
 
 async function greetAndEhlo(conn: Conn): Promise<Judgement | null> {
@@ -107,11 +107,16 @@ export const CASES: readonly TestCase[] = [
       const r = await conn.readReply(3000);
       if (r.kind !== 'reply') return { kind: 'violated', detail: `QUIT drew ${r.kind}, not a reply` };
       if (r.reply.code !== 221) return { kind: 'violated', detail: `QUIT drew ${r.reply.code}, not 221` };
-      // The server should now close. Reading again should observe the close.
+      // The server should now close the channel cleanly (FIN). A bare RST is a
+      // different, worse behaviour — §4.1.1.10 speaks of "close the transmission
+      // channel", and an abrupt reset can truncate the client's view of the
+      // final reply. A clean close ('closed') is conformant; a reset is not.
       const after = await conn.readReply(3000);
-      return after.kind === 'closed' || after.kind === 'reset'
-        ? { kind: 'satisfied', detail: '221 then close' }
-        : { kind: 'violated', detail: `server did not close after 221 (got ${after.kind})` };
+      if (after.kind === 'closed') return { kind: 'satisfied', detail: '221 then clean close' };
+      if (after.kind === 'reset') {
+        return { kind: 'violated', detail: 'server RST the connection after 221 instead of closing cleanly' };
+      }
+      return { kind: 'violated', detail: `server did not close after 221 (got ${after.kind})` };
     },
   }),
 
@@ -168,10 +173,15 @@ export const CASES: readonly TestCase[] = [
   testCase({
     id: 'data-before-rcpt-rejected',
     requirement: 'R-5321-4.1.4-o',
-    intent: 'DATA with no accepted RCPT draws a 5yz (out of order, no recipients)',
+    intent: 'a message with no accepted recipient is ultimately rejected, never accepted',
     rationale:
-      '§4.1.4-o: DATA with an empty recipient buffer cannot be processed and MUST draw a ' +
-      '503 (asserted as any 5yz — the firm floor).',
+      '§3.3 makes rejecting-at-DATA a MAY, not a MUST — a server "may return a 503 or 554 ' +
+      'reply in response to the DATA command", OR issue 354, read the body, and reject after ' +
+      '<CRLF>.<CRLF> (deferred recipient verification is explicitly permitted). So a 354 here ' +
+      'is NOT a violation. The real, unconditional requirement is that a message with zero ' +
+      'recipients is never ACCEPTED (2yz). We test that: reject-at-DATA (5yz) and ' +
+      'accept-354-then-reject-after-body are both conformant; a 2yz acceptance is the ' +
+      'violation.',
     run: async (conn): Promise<Judgement> => {
       const bad = await greetAndEhlo(conn);
       if (bad !== null) return bad;
@@ -182,13 +192,25 @@ export const CASES: readonly TestCase[] = [
       }
       await conn.send(crlf`DATA`);
       const r = await conn.readReply(3000);
-      if (r.kind !== 'reply') return { kind: 'violated', detail: `DATA-before-RCPT drew ${r.kind}` };
-      if (r.reply.code === 354) {
-        return { kind: 'violated', detail: 'server entered DATA mode with no accepted recipient' };
+      if (r.kind !== 'reply') return { kind: 'inconclusive', reason: `DATA drew ${r.kind}` };
+
+      // Reject-at-DATA (any 5yz): conformant — the server refused up front.
+      if (severity(r.reply) === 5) {
+        return { kind: 'satisfied', detail: `DATA rejected up front with ${r.reply.code}` };
       }
-      return severity(r.reply) === 5
-        ? { kind: 'satisfied', detail: `DATA-before-RCPT rejected with ${r.reply.code}` }
-        : { kind: 'violated', detail: `DATA-before-RCPT drew ${r.reply.code}, not a 5yz` };
+      // 354: the deferred-verification path §3.3 permits. Send the body and see
+      // whether the transaction is ultimately rejected. Acceptance is the violation.
+      if (r.reply.code === 354) {
+        await conn.send(cat(crlf`Subject: no-recipient probe`, crlf``, crlf`body`, EOD));
+        const final = await conn.readReply(5000);
+        if (final.kind !== 'reply') return { kind: 'inconclusive', reason: `no reply after body: ${final.kind}` };
+        if (severity(final.reply) === 2) {
+          return { kind: 'violated', detail: `server ACCEPTED (${final.reply.code}) a message with no recipients` };
+        }
+        return { kind: 'satisfied', detail: `deferred rejection after body: ${final.reply.code}` };
+      }
+      // Any other reply (e.g. 4yz temp defer) — not evidence of a violation.
+      return { kind: 'inconclusive', reason: `DATA drew ${r.reply.code}` };
     },
   }),
 ];
@@ -198,6 +220,7 @@ export const MUTANTS: readonly Mutant[] = [
   { catches: 'rset-does-not-close-connection', defect: 'rsetClosesConnection', why: 'closing on RSET violates R-5321-4.1.1.5-e' },
   { catches: 'noop-returns-250', defect: 'noopWrongReply', why: 'a non-250 reply to NOOP violates R-5321-4.1.1.9-b' },
   { catches: 'quit-returns-221-and-closes', defect: 'quitWrongReply', why: 'a non-221 reply to QUIT violates R-5321-4.1.1.10-a' },
+  { catches: 'quit-returns-221-and-closes', defect: 'quitResetsAfterReply', why: 'an RST after 221 instead of a clean close violates R-5321-4.1.1.10-a' },
   { catches: 'helo-not-given-extended-response', defect: 'extendedResponseToHelo', why: 'an EHLO-style reply to HELO violates R-5321-3.2-b' },
   { catches: 'rcpt-before-mail-rejected', defect: 'acceptRcptBeforeMail', why: 'accepting RCPT before MAIL violates R-5321-4.1.4-o' },
   { catches: 'data-before-rcpt-rejected', defect: 'acceptDataBeforeRcpt', why: 'entering DATA with no recipient violates R-5321-4.1.4-o' },

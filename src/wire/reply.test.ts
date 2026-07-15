@@ -9,7 +9,7 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { replyFramer, severity, ehloKeywords, MAX_REPLY_LINE } from './reply.ts';
+import { replyFramer, frameReplyAtEof, severity, ehloKeywords, MAX_REPLY_LINE, MAX_REPLY_BYTES, ReplyTooLongError } from './reply.ts';
 import type { Reply, AnomalyKind } from './reply.ts';
 
 const frame = (s: string | Buffer): Reply => {
@@ -181,6 +181,35 @@ test('raw holds exactly the bytes consumed', () => {
   const input = '250-a\r\n250 b\r\n';
   const r = frame(input);
   assert.deepEqual(r.raw, Buffer.from(input, 'latin1'));
+});
+
+test('the flood guard bounds an unterminated single line (buffered length, not offset)', () => {
+  // Regression for the pressure-test finding: the guard tested consumed offset,
+  // which stays 0 for a single never-terminated line, so it never fired. A
+  // buffer over MAX_REPLY_BYTES with no terminator must throw.
+  const flood = Buffer.alloc(MAX_REPLY_BYTES + 10, 0x78); // all 'x', no CRLF
+  assert.throws(() => replyFramer(flood), ReplyTooLongError);
+  // Just under the cap and unterminated: still incomplete, returns null.
+  assert.equal(replyFramer(Buffer.alloc(100, 0x78)), null);
+});
+
+test('frameReplyAtEof surfaces a bare-CR-terminated final reply that normal framing leaves pending', () => {
+  // Regression for the pressure-test finding: "250 OK\r" then FIN. The normal
+  // framer waits for the next byte (CRLF or bare CR?) and returns null; at EOF
+  // that byte never comes, so the reply — and its anomaly — would be dropped.
+  const partial = Buffer.from('250 OK\r', 'latin1');
+  assert.equal(replyFramer(partial), null, 'normal framer waits for more');
+  const atEof = frameReplyAtEof(partial);
+  assert.ok(atEof !== null, 'EOF framer produces the reply');
+  assert.equal(atEof.value.code, 250);
+  assert.ok(
+    atEof.value.anomalies.some((a) => a.kind === 'bare-cr-terminator'),
+    'the bare-cr-terminator anomaly is observed, not dropped',
+  );
+});
+
+test('frameReplyAtEof still returns null on genuinely empty input', () => {
+  assert.equal(frameReplyAtEof(Buffer.alloc(0)), null);
 });
 
 test('a multiline reply mixing CRLF and bare LF flags only the offending line', () => {

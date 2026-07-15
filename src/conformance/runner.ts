@@ -15,7 +15,7 @@
 
 import { Wire } from '../wire/transport.ts';
 import type { WireOptions } from '../wire/transport.ts';
-import { replyFramer } from '../wire/reply.ts';
+import { replyFramer, frameReplyAtEof } from '../wire/reply.ts';
 import type { Reply } from '../wire/reply.ts';
 import { judge } from './outcome.ts';
 import type { Result, Judgement, Evidence } from './outcome.ts';
@@ -65,9 +65,21 @@ class LiveConn implements Conn {
       case 'timeout':
         return { kind: 'timeout', waitedMs: r.waitedMs, partial: r.partial };
       case 'closed':
-        return { kind: 'closed', partial: r.partial };
-      case 'reset':
-        return { kind: 'reset', partial: r.partial };
+      case 'reset': {
+        // EOF-aware reframe: a final reply terminated by a bare CR is left
+        // pending by the normal framer (it waits for a byte that never comes).
+        // At close, re-frame the partial so that reply — and its
+        // bare-cr-terminator anomaly — is surfaced rather than dropped.
+        const framed = r.partial.length > 0 ? frameReplyAtEof(r.partial) : null;
+        if (framed !== null) {
+          this.#lastReply = framed.value;
+          for (const a of framed.value.anomalies) this.#anomalies.push(`${a.kind}@line${a.line}`);
+          return { kind: 'reply', reply: framed.value };
+        }
+        return r.kind === 'closed'
+          ? { kind: 'closed', partial: r.partial }
+          : { kind: 'reset', partial: r.partial };
+      }
     }
   }
 
