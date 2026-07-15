@@ -9,7 +9,12 @@
   },
   "scripts": {
     "test": "node --test 'src/**/*.test.ts'",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "conformance": "node src/cli.ts",
+    "coverage": "node src/cli.ts coverage"
+  },
+  "bin": {
+    "smtp-conformance": "src/cli.ts"
   },
   "devDependencies": {
     "@types/node": "^22.20.1",
