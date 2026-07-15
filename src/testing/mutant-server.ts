@@ -98,6 +98,22 @@ export interface Defects {
   readonly fourDigitCode?: boolean;
   /** Emit a two-digit reply code. Violates R-5321-4.3.2-c (three digits only). */
   readonly twoDigitCode?: boolean;
+  /** Terminate replyOK-path replies with a bare LF instead of CRLF. Violates R-5321-4.2-d. */
+  readonly bareLfReplyTerminator?: boolean;
+  /** Use '=' instead of SP as the reply code separator. Violates R-5321-4.2-i. */
+  readonly malformedReplySeparator?: boolean;
+  /** VRFY clears transaction state. Violates R-5321-4.1.1.6-b (no effect on buffers). */
+  readonly vrfyResetsState?: boolean;
+  /** EXPN (recognised) clears transaction state. Violates R-5321-4.1.1.7-c. */
+  readonly expnResetsState?: boolean;
+  /** HELP clears transaction state. Violates R-5321-4.1.1.8-c. */
+  readonly helpResetsState?: boolean;
+  /** NOOP clears session/transaction state. Violates R-5321-4.1.1.9-a/c. */
+  readonly noopResetsState?: boolean;
+  /** Require command verbs in upper case (500 to lowercase). Violates R-5321-2.4-a. */
+  readonly requireUppercaseVerbs?: boolean;
+  /** Accept commands containing C0/DEL control characters. Violates R-5321-4.1.2-j/-n. */
+  readonly acceptControlCharsInCommand?: boolean;
   /**
    * Reject a source-route RCPT with a 501 syntax error — i.e. fail to PARSE it.
    * Violates R-5321-4.1.1.3-b (receivers MUST recognize source route syntax).
@@ -376,8 +392,32 @@ export class MutantServer {
       if (d.twoDigitCode) return this.#write(sock, crlf`25 ${msg}`);
       if (d.bareCodeReplies) return this.#write(sock, Buffer.concat([Buffer.from(String(code)), Buffer.from([CR, LF])]));
       if (d.eightBitReplyText) return this.#write(sock, Buffer.concat([Buffer.from(`${code} `), Buffer.from([0xe9]), Buffer.from([CR, LF])]));
+      if (d.bareLfReplyTerminator) return this.#write(sock, Buffer.concat([Buffer.from(`${code} ${msg}`, 'latin1'), Buffer.from([LF])]));
+      if (d.malformedReplySeparator) return this.#write(sock, crlf`${String(code)}=${msg}`);
       this.#write(sock, crlf`${String(code)} ${msg}`);
     };
+
+    // Clean-baseline character validation (§4.1.2-n): a command line containing a
+    // C0 control octet (other than TAB) or DEL is rejected with 501, UNLESS the
+    // acceptControlCharsInCommand defect is on — in which case the forbidden octet
+    // is "used" and the command dispatches normally (the violation).
+    if (!d.acceptControlCharsInCommand) {
+      for (const byte of commandBytes) {
+        if ((byte <= 0x08 || (byte >= 0x0b && byte <= 0x1f) || byte === 0x7f)) {
+          return replyOK(501, 'Error: invalid character');
+        }
+      }
+    }
+
+    // Case-sensitivity defect (§2.4-a): the clean baseline folds case (verb is
+    // uppercased above), so lowercase/mixed verbs dispatch normally. Under this
+    // defect, a verb that is not already all-uppercase draws 500.
+    if (d.requireUppercaseVerbs) {
+      const rawVerb = text.split(/\s+/)[0] ?? '';
+      if (rawVerb !== rawVerb.toUpperCase()) {
+        return replyOK(500, 'Error: command not recognized');
+      }
+    }
 
     switch (verb) {
       case 'EHLO': {
@@ -470,11 +510,32 @@ export class MutantServer {
           this.#write(sock, crlf`250 2.0.0 Ok again`);
           return;
         }
+        if (d.noopResetsState) {
+          // NOOP MUST NOT affect state (§4.1.1.9-a/c). Clear everything to trip
+          // both the transaction-buffer and the previous-command tests.
+          state.greeted = false;
+          state.hasMail = false;
+          state.rcptCount = 0;
+        }
         return replyOK(d.noopWrongReply ? 500 : 250, '2.0.0 Ok');
 
       case 'HELP':
         if (d.rejectHelp) return replyOK(500, 'Error: command not recognized');
+        if (d.helpResetsState) {
+          state.hasMail = false;
+          state.rcptCount = 0;
+        }
         return replyOK(214, 'https://example.com/smtp-help');
+
+      case 'EXPN':
+        // Clean baseline has no EXPN (falls through to 500). The defect makes it a
+        // recognised success that wrongly clears state (§4.1.1.7-c).
+        if (d.expnResetsState) {
+          state.hasMail = false;
+          state.rcptCount = 0;
+          return replyOK(250, 'Expansion complete');
+        }
+        return replyOK(500, 'Error: command not recognized');
 
       case 'QUIT':
         if (d.quitWrongReply) {
@@ -497,6 +558,10 @@ export class MutantServer {
         return;
 
       case 'VRFY':
+        if (d.vrfyResetsState) {
+          state.hasMail = false;
+          state.rcptCount = 0;
+        }
         return replyOK(252, 'Cannot VRFY user');
 
       default:

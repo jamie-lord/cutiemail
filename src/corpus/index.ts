@@ -20,6 +20,10 @@ import { CASES as txnCases, MUTANTS as txnMutants } from './mail-transaction.ts'
 import { CASES as extCases, MUTANTS as extMutants } from './extensions.ts';
 import { CASES as connCases, MUTANTS as connMutants } from './connection.ts';
 import { CASES as minCases, MUTANTS as minMutants } from './minimum-implementation.ts';
+import { CASES as replyCases, MUTANTS as replyMutants } from './reply-structure.ts';
+import { CASES as bufCases, MUTANTS as bufMutants } from './command-buffer-effects.ts';
+import { CASES as termCases, MUTANTS as termMutants } from './termination.ts';
+import { CASES as syntaxCases, MUTANTS as syntaxMutants } from './syntax-case.ts';
 
 export const ALL_CASES: readonly TestCase[] = [
   ...connCases,
@@ -30,6 +34,10 @@ export const ALL_CASES: readonly TestCase[] = [
   ...errCases,
   ...txnCases,
   ...extCases,
+  ...replyCases,
+  ...bufCases,
+  ...termCases,
+  ...syntaxCases,
 ];
 
 export const ALL_MUTANTS: readonly Mutant[] = [
@@ -41,6 +49,10 @@ export const ALL_MUTANTS: readonly Mutant[] = [
   ...errMutants,
   ...txnMutants,
   ...extMutants,
+  ...replyMutants,
+  ...bufMutants,
+  ...termMutants,
+  ...syntaxMutants,
 ];
 
 /** Guard invoked by the corpus test: no two cases may share an id. */
