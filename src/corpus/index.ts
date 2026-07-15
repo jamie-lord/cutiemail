@@ -16,12 +16,14 @@ import { CASES as crlfCases, MUTANTS as crlfMutants } from './crlf-discipline.ts
 import { CASES as seqCases, MUTANTS as seqMutants } from './session-sequencing.ts';
 import { CASES as sizeCases, MUTANTS as sizeMutants } from './size-limits.ts';
 import { CASES as errCases, MUTANTS as errMutants } from './error-handling.ts';
+import { CASES as txnCases, MUTANTS as txnMutants } from './mail-transaction.ts';
 
 export const ALL_CASES: readonly TestCase[] = [
   ...crlfCases,
   ...seqCases,
   ...sizeCases,
   ...errCases,
+  ...txnCases,
 ];
 
 export const ALL_MUTANTS: readonly Mutant[] = [
@@ -29,6 +31,7 @@ export const ALL_MUTANTS: readonly Mutant[] = [
   ...seqMutants,
   ...sizeMutants,
   ...errMutants,
+  ...txnMutants,
 ];
 
 /** Guard invoked by the corpus test: no two cases may share an id. */

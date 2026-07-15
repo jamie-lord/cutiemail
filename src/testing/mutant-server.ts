@@ -81,6 +81,12 @@ export interface Defects {
   readonly extendedResponseToHelo?: boolean;
   /** Emit a four-digit reply code. Violates R-5321-4.3.2-c (three digits only). */
   readonly fourDigitCode?: boolean;
+  /**
+   * Reject a source-route RCPT with a 501 syntax error — i.e. fail to PARSE it.
+   * Violates R-5321-4.1.1.3-b (receivers MUST recognize source route syntax).
+   * A policy rejection (550) would be conformant; a syntax error is not.
+   */
+  readonly rejectSourceRouteAsSyntax?: boolean;
   /** Close the connection on error without sending 421. */
   readonly closeWithout421?: boolean;
   /** Send mismatched continuation codes in a multiline reply. */
@@ -334,6 +340,11 @@ export class MutantServer {
       case 'RCPT':
         if (!state.hasMail && !d.acceptRcptBeforeMail) {
           return replyOK(503, 'Error: need MAIL command');
+        }
+        // Defect: treat a source-route path (a "@host," before the mailbox) as a
+        // syntax error rather than recognising it. text is the whole command line.
+        if (d.rejectSourceRouteAsSyntax && /RCPT\s+TO:\s*<@/i.test(text)) {
+          return replyOK(501, 'Error: syntax');
         }
         state.rcptCount++;
         return replyOK(250, '2.1.5 Ok');
