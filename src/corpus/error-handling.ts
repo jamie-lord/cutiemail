@@ -1,0 +1,122 @@
+/**
+ * Error handling and robustness (RFC 5321 §4.1.1.10, §4.3.2).
+ *
+ * The obligations a server has when things go wrong: it must keep the connection
+ * open through errors until QUIT, and it must speak well-formed reply codes even
+ * when refusing. These are where a server's error paths — the least-exercised
+ * code in most implementations — get tested.
+ *
+ * Note on SHOULD requirements in this area (§4.2.4-b "500 SHOULD be returned",
+ * §4.3.2-g "SHOULD return 501 for args"): a declined SHOULD is permitted-latitude,
+ * never a finding, so those cannot have a "catches a violation" negative control.
+ * They belong in a latitude-observing module, not here; this module is MUST/MUST
+ * NOT only, where a mutant can genuinely fail.
+ */
+
+import { testCase } from '../conformance/test-case.ts';
+import type { TestCase, Mutant, Conn } from '../conformance/test-case.ts';
+import type { Judgement } from '../conformance/outcome.ts';
+import { crlf } from '../wire/bytes.ts';
+import { severity } from '../wire/reply.ts';
+
+async function greetAndEhlo(conn: Conn): Promise<Judgement | null> {
+  const g = await conn.readReply(5000);
+  if (g.kind !== 'reply' || severity(g.reply) !== 2) {
+    return { kind: 'inconclusive', reason: `greeting: ${g.kind === 'reply' ? g.reply.code : g.kind}` };
+  }
+  await conn.send(crlf`EHLO conformance-suite.invalid`);
+  const e = await conn.readReply(3000);
+  if (e.kind !== 'reply' || e.reply.code !== 250) {
+    return { kind: 'inconclusive', reason: `EHLO: ${e.kind === 'reply' ? e.reply.code : e.kind}` };
+  }
+  return null;
+}
+
+export const CASES: readonly TestCase[] = [
+  testCase({
+    id: 'connection-stays-open-after-error',
+    requirement: 'R-5321-4.1.1.10-b',
+    intent: 'the server does not close the connection in response to an error, only to QUIT',
+    rationale:
+      '§4.1.1.10: "The receiver MUST NOT intentionally close the transmission channel until ' +
+      'it receives and replies to a QUIT command (even if there was an error)." An ' +
+      'unrecognised command is an error the server must answer and survive, not hang up on.',
+    run: async (conn): Promise<Judgement> => {
+      const bad = await greetAndEhlo(conn);
+      if (bad !== null) return bad;
+      // A syntactically-valid but unrecognised verb: an error the server must
+      // reply to (with 500/502) WITHOUT closing.
+      await conn.send(crlf`WATSUP now`);
+      const r = await conn.readReply(3000);
+      if (r.kind === 'closed' || r.kind === 'reset') {
+        return { kind: 'violated', detail: `server ${r.kind} the connection on an unrecognised command instead of replying` };
+      }
+      if (r.kind !== 'reply') return { kind: 'inconclusive', reason: `unexpected: ${r.kind}` };
+      // It replied. Prove the channel is still open: a following NOOP must answer.
+      await conn.send(crlf`NOOP`);
+      const n = await conn.readReply(3000);
+      if (n.kind === 'closed' || n.kind === 'reset') {
+        return { kind: 'violated', detail: `server closed after the error reply, before QUIT` };
+      }
+      return n.kind === 'reply'
+        ? { kind: 'satisfied', detail: 'connection survived the error' }
+        : { kind: 'inconclusive', reason: `NOOP after error: ${n.kind}` };
+    },
+  }),
+
+  testCase({
+    id: 'reply-codes-are-three-digits',
+    requirement: 'R-5321-4.3.2-c',
+    intent: 'the server transmits well-formed three-digit reply codes',
+    rationale:
+      '§4.3.2: "SMTP servers MUST NOT transmit reply codes ... that are other than three ' +
+      'digits or that do not start in a digit between 2 and 5 inclusive." Checked via the ' +
+      'reply reader\'s grammar anomalies, which flag a non-3-digit or out-of-range code.',
+    run: async (conn): Promise<Judgement> => {
+      const offenders: string[] = [];
+      const check = (label: string, reply: { anomalies: readonly { kind: string; detail: string }[] }): void => {
+        for (const a of reply.anomalies) {
+          if (a.kind === 'code-out-of-grammar' || a.kind === 'malformed-separator') {
+            offenders.push(`${label}: ${a.detail}`);
+          }
+        }
+      };
+      // Sample replies across several commands so a server that malforms only
+      // some replies is still caught. The greeting, EHLO, and — importantly — a
+      // MAIL reply, since different reply paths can differ.
+      const g = await conn.readReply(5000);
+      if (g.kind !== 'reply') return { kind: 'inconclusive', reason: `greeting: ${g.kind}` };
+      check('greeting', g.reply);
+
+      await conn.send(crlf`EHLO conformance-suite.invalid`);
+      const e = await conn.readReply(3000);
+      if (e.kind !== 'reply') return { kind: 'inconclusive', reason: `EHLO: ${e.kind}` };
+      check('EHLO', e.reply);
+
+      await conn.send(crlf`MAIL FROM:<probe@conformance-suite.invalid>`);
+      const m = await conn.readReply(3000);
+      if (m.kind === 'reply') check('MAIL', m.reply);
+
+      await conn.send(crlf`RSET`);
+      const rs = await conn.readReply(3000);
+      if (rs.kind === 'reply') check('RSET', rs.reply);
+
+      return offenders.length > 0
+        ? { kind: 'violated', detail: offenders.join('; ') }
+        : { kind: 'satisfied', detail: 'reply codes are well-formed three-digit codes' };
+    },
+  }),
+];
+
+export const MUTANTS: readonly Mutant[] = [
+  {
+    catches: 'connection-stays-open-after-error',
+    defect: 'closeWithout421',
+    why: 'closing the connection on an error before QUIT violates R-5321-4.1.1.10-b',
+  },
+  {
+    catches: 'reply-codes-are-three-digits',
+    defect: 'fourDigitCode',
+    why: 'a four-digit reply code violates R-5321-4.3.2-c',
+  },
+];

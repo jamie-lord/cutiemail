@@ -15,17 +15,20 @@ import type { TestCase, Mutant } from '../conformance/test-case.ts';
 import { CASES as crlfCases, MUTANTS as crlfMutants } from './crlf-discipline.ts';
 import { CASES as seqCases, MUTANTS as seqMutants } from './session-sequencing.ts';
 import { CASES as sizeCases, MUTANTS as sizeMutants } from './size-limits.ts';
+import { CASES as errCases, MUTANTS as errMutants } from './error-handling.ts';
 
 export const ALL_CASES: readonly TestCase[] = [
   ...crlfCases,
   ...seqCases,
   ...sizeCases,
+  ...errCases,
 ];
 
 export const ALL_MUTANTS: readonly Mutant[] = [
   ...crlfMutants,
   ...seqMutants,
   ...sizeMutants,
+  ...errMutants,
 ];
 
 /** Guard invoked by the corpus test: no two cases may share an id. */

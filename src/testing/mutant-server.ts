@@ -79,6 +79,8 @@ export interface Defects {
   readonly quitWrongReply?: boolean;
   /** Return an EHLO-style multiline response to HELO. Violates R-5321-3.2-b. */
   readonly extendedResponseToHelo?: boolean;
+  /** Emit a four-digit reply code. Violates R-5321-4.3.2-c (three digits only). */
+  readonly fourDigitCode?: boolean;
   /** Close the connection on error without sending 421. */
   readonly closeWithout421?: boolean;
   /** Send mismatched continuation codes in a multiline reply. */
@@ -287,6 +289,7 @@ export class MutantServer {
     // Malformed-reply defects apply to the first substantive reply.
     const replyOK = (code: number, msg: string): void => {
       if (d.outOfGrammarCode) return this.#write(sock, crlf`260 ${msg}`);
+      if (d.fourDigitCode) return this.#write(sock, crlf`2500 ${msg}`);
       if (d.bareCodeReplies) return this.#write(sock, Buffer.concat([Buffer.from(String(code)), Buffer.from([CR, LF])]));
       if (d.eightBitReplyText) return this.#write(sock, Buffer.concat([Buffer.from(`${code} `), Buffer.from([0xe9]), Buffer.from([CR, LF])]));
       this.#write(sock, crlf`${String(code)} ${msg}`);
