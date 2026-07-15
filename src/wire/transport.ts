@@ -295,12 +295,24 @@ export class Wire {
    * "The receiver will take no action until this sequence is received" being the
    * headline case. A server that replies to an unterminated command line is
    * acting on it, which is the same family of defect as honouring a bare LF.
+   *
+   * "Quiet" means the peer has said NOTHING we have not already consumed. Bytes
+   * ALREADY sitting in the buffer at entry are not silence — they are data the
+   * peer sent that the caller has not framed yet (e.g. a second reply that
+   * coalesced with the first into one TCP segment). Baselining on the current
+   * buffer length would treat that already-buffered second reply as silence — a
+   * bug the new-module pressure test caught: it let a double-reply
+   * (desynchronised/smuggling) server pass the §4.2-a "exactly one reply" check
+   * ~33% of the time. So we report non-quiet immediately if anything is buffered
+   * at entry, and otherwise wait for new bytes. Safe for every caller, since an
+   * unconsumed buffered byte always means the peer already spoke.
    */
   async expectQuiet(ms: number): Promise<QuietResult> {
-    const before = this.#buffer.length;
+    if (this.#buffer.length > 0) {
+      return { quiet: false, bytes: this.peek(), closed: this.#closed || this.#peerEnded };
+    }
     await this.#sleep(ms);
-    const after = this.peek();
-    const arrived = after.subarray(before);
+    const arrived = this.peek();
     return { quiet: arrived.length === 0, bytes: arrived, closed: this.#closed || this.#peerEnded };
   }
 

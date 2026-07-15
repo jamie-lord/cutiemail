@@ -179,6 +179,32 @@ test('an RST is reported distinctly from an orderly close', async () => {
   );
 });
 
+test('expectQuiet treats already-buffered bytes as non-quiet (coalesced second reply)', async () => {
+  // Regression for the new-module pressure-test finding: two replies coalesced
+  // into one TCP segment. After framing the first, the second sits unconsumed in
+  // the buffer. expectQuiet must report NON-quiet immediately — it is data the
+  // peer sent, not silence — or a double-reply/desync server passes the
+  // "exactly one reply" check. This was intermittent (~33%) before the fix.
+  await withServer(
+    async (s) => {
+      // One write, two replies — coalesced on the wire.
+      s.send(Buffer.from('250 first\r\n250 second\r\n'));
+    },
+    async (port) => {
+      const wire = await Wire.connect({ host: '127.0.0.1', port });
+      await new Promise((r) => setTimeout(r, 50)); // ensure both are buffered
+      const first = await wire.read(crlfLine, 1000);
+      assert.equal(first.kind, 'framed');
+      assert.deepEqual((first as { value: Buffer }).value, Buffer.from('250 first'));
+      // The second reply is unconsumed in the buffer — NOT silence.
+      const q = await wire.expectQuiet(200);
+      assert.equal(q.quiet, false, 'a buffered second reply must be reported as non-quiet');
+      assert.ok(q.bytes.includes(Buffer.from('250 second')));
+      await wire.close();
+    },
+  );
+});
+
 test('expectQuiet detects silence, and detects a server that speaks', async () => {
   await withServer(
     async (s) => {
