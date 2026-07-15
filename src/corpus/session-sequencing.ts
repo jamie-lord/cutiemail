@@ -67,15 +67,24 @@ export const CASES: readonly TestCase[] = [
       if (bad !== null) return bad;
       await conn.send(crlf`RSET`);
       const r = await conn.readReply(3000);
+      // The requirement targets CLOSING — only closed/reset convict. A timeout
+      // means the server is slow but still connected (it did not close), so it is
+      // inconclusive, consistent with the sibling tests.
       if (r.kind === 'closed' || r.kind === 'reset') {
         return { kind: 'violated', detail: `connection ${r.kind} after RSET` };
+      }
+      if (r.kind === 'timeout') {
+        return { kind: 'inconclusive', reason: 'RSET drew no reply within the timeout (server slow but still connected, §4.5.3.2)' };
       }
       // Prove it is still usable: a following NOOP should also answer.
       await conn.send(crlf`NOOP`);
       const n = await conn.readReply(3000);
+      if (n.kind === 'closed' || n.kind === 'reset') {
+        return { kind: 'violated', detail: `connection ${n.kind} after RSET — RSET must not close the connection` };
+      }
       return n.kind === 'reply'
         ? { kind: 'satisfied' }
-        : { kind: 'violated', detail: `connection unusable after RSET (NOOP got ${n.kind})` };
+        : { kind: 'inconclusive', reason: 'NOOP after RSET drew no reply within the timeout (server slow but still connected)' };
     },
   }),
 

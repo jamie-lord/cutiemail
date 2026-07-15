@@ -397,10 +397,19 @@ export function severity(reply: Reply): 2 | 3 | 4 | 5 | null {
  * well-known keywords keeps false positives out.
  */
 export const KNOWN_ESMTP_KEYWORDS: ReadonlySet<string> = new Set([
-  'PIPELINING', 'SIZE', 'STARTTLS', '8BITMIME', 'AUTH', 'DSN', 'ENHANCEDSTATUSCODES',
-  'CHUNKING', 'BINARYMIME', 'SMTPUTF8', 'VRFY', 'ETRN', 'HELP', 'EXPN', 'DELIVERBY',
-  'ATRN', 'BURL', 'FUTURERELEASE', 'MT-PRIORITY', 'REQUIRETLS', 'NO-SOLICITING',
-  'RRVS', 'CONNEG', 'CONPERM', 'MTRK', 'BODY',
+  // Deliberately curated to UNAMBIGUOUS extension tokens — words that do not
+  // occur as the first word of an ordinary English greeting line. Common
+  // English words and command names that ARE real extensions but also appear in
+  // prose banners (SIZE "SIZE limits apply", HELP, BODY, VRFY, EXPN) are
+  // EXCLUDED, because a conformance suite must bias against false positives: a
+  // HELO prose banner beginning with one of those words must not be convicted as
+  // an EHLO-style response. The cost is a rare false negative (a HELO reply that
+  // advertises ONLY SIZE), which is acceptable; a genuine EHLO-style violation
+  // almost always advertises PIPELINING/STARTTLS/8BITMIME etc. as well.
+  'PIPELINING', 'STARTTLS', '8BITMIME', 'SMTPUTF8', 'ENHANCEDSTATUSCODES',
+  'CHUNKING', 'BINARYMIME', 'DELIVERBY', 'FUTURERELEASE', 'MT-PRIORITY',
+  'REQUIRETLS', 'NO-SOLICITING', 'RRVS', 'CONNEG', 'CONPERM', 'MTRK',
+  'ATRN', 'BURL', 'DSN', 'ETRN', 'AUTH',
 ]);
 
 /** The recognised ESMTP keywords a reply actually advertises (subset of ehloKeywords). */

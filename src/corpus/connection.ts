@@ -24,25 +24,28 @@ export const CASES: readonly TestCase[] = [
     intent: 'the server sends an opening greeting when a client connects',
     rationale:
       '§3.1: "An SMTP session is initiated when a client opens a connection to a server and ' +
-      'the server responds with an opening message." A server that stays silent on connect ' +
-      'has not initiated a session. §3.1-e permits a 554 instead of 220, so any 2yz or 5yz ' +
-      'greeting satisfies — only silence (or a non-reply) is the violation.',
+      'the server responds with an opening message." §3.1-e permits a 554 instead of 220, so ' +
+      'any greeting satisfies. The violation we can OBSERVE is the server accepting the TCP ' +
+      'connection then closing with no opening message. A timeout is NOT a violation: ' +
+      '§4.5.3.2.1 anticipates a slow 220 ("servers accept a TCP connection but delay delivery ' +
+      'of the 220 ... until their system load permits") and tells clients to wait 5 minutes — ' +
+      'silent-forever is indistinguishable from slow within any practical budget, so a timeout ' +
+      'is inconclusive.',
     run: async (conn: Conn): Promise<Judgement> => {
       const g = await conn.readReply(5000);
       if (g.kind === 'reply') {
-        const sev = severity(g.reply);
-        if (sev === 2 || sev === 5) {
-          return { kind: 'satisfied', detail: `greeting ${g.reply.code} received` };
-        }
-        // A 4yz greeting is unusual but not clearly a §3.1-a violation (a message
-        // WAS sent); record it as latitude-ish via satisfied-with-note rather
-        // than a false conviction.
-        return { kind: 'satisfied', detail: `greeting ${g.reply.code} received (unusual class)` };
+        // Any greeting — 220, a 554 session-reject (§3.1-e), even an unusual 4yz —
+        // means the server responded with an opening message. §3.1-a is satisfied.
+        return { kind: 'satisfied', detail: `greeting ${g.reply.code} received` };
       }
-      if (g.kind === 'timeout') {
-        return { kind: 'violated', detail: `no greeting within 5s of connecting (${g.kind})` };
+      if (g.kind === 'closed' || g.kind === 'reset') {
+        return { kind: 'violated', detail: `server accepted the connection then ${g.kind} with no opening message` };
       }
-      return { kind: 'violated', detail: `connection ${g.kind} with no greeting` };
+      // timeout: the server may simply be slow (§4.5.3.2.1 permits a 5-minute wait).
+      return {
+        kind: 'inconclusive',
+        reason: 'no greeting within the read budget; §4.5.3.2.1 permits a slow 220 (client waits up to 5 min)',
+      };
     },
   }),
 
@@ -79,8 +82,8 @@ export const CASES: readonly TestCase[] = [
 export const MUTANTS: readonly Mutant[] = [
   {
     catches: 'greeting-is-sent-on-connect',
-    defect: 'silentOnConnect',
-    why: 'sending no greeting on connect violates R-5321-3.1-a',
+    defect: 'closeOnConnect',
+    why: 'accepting the connection then closing with no opening message violates R-5321-3.1-a',
   },
   {
     catches: 'greeting-identifies-the-server',

@@ -104,8 +104,19 @@ export interface Defects {
    * A policy rejection (550) would be conformant; a syntax error is not.
    */
   readonly rejectSourceRouteAsSyntax?: boolean;
-  /** Send NO greeting on connect (stay silent). Violates R-5321-3.1-a. */
+  /**
+   * Stay silent on connect (send no greeting, keep the socket open). Models a
+   * server indistinguishable from a merely slow one — used to prove the greeting
+   * test yields INCONCLUSIVE (not a finding) on a timeout, not to catch a
+   * violation.
+   */
   readonly silentOnConnect?: boolean;
+  /**
+   * Accept the TCP connection then immediately close with NO opening message.
+   * This IS the observable §3.1-a violation (distinct from staying silent), so
+   * it is the provable negative control for the greeting test.
+   */
+  readonly closeOnConnect?: boolean;
   /** Send a greeting with no domain identification ("220" alone). Violates R-5321-4.1.1.1-d. */
   readonly greetingWithoutDomain?: boolean;
   /** Reject the HELO command. Violates R-5321-4.1.1.1-h (servers MUST support HELO). */
@@ -203,8 +214,13 @@ export class MutantServer {
     let buf = Buffer.alloc(0);
 
     sock.on('error', () => {});
+    if (d.closeOnConnect) {
+      // Accept then immediately hang up with no greeting — the observable violation.
+      sock.end();
+      return;
+    }
     if (d.silentOnConnect) {
-      // No greeting at all — the client is left waiting.
+      // No greeting at all, but the socket stays open — indistinguishable from slow.
     } else if (d.greetingWithoutDomain) {
       // A bare 220 with no domain identification.
       this.#write(sock, crlf`220`);
