@@ -87,6 +87,16 @@ export interface Defects {
   readonly acceptOverlongCommand?: boolean;
   /** After STARTTLS, do NOT discard state (advertise pre-TLS EHLO keywords). */
   readonly keepStateAcrossStartTls?: boolean;
+  /**
+   * Reject command lines longer than 300 octets — below the 512-octet floor
+   * §4.5.3.1.4 requires a server to accept. Simulates a too-small command buffer.
+   */
+  readonly rejectCommandLineAt300?: boolean;
+  /**
+   * Reject text lines (in DATA) longer than 500 octets — below the 1000-octet
+   * floor §4.5.3.1.6 requires. Simulates a too-small text buffer.
+   */
+  readonly rejectTextLineAt500?: boolean;
 }
 
 export interface MutantOptions {
@@ -173,6 +183,13 @@ export class MutantServer {
           }
           break;
         }
+        // Defect: reject a command line the RFC requires the server to accept.
+        // command.length excludes CRLF; +2 approximates the §4.5.3.1.4 total.
+        if (d.rejectCommandLineAt300 && line.command.length + 2 > 300) {
+          this.#write(sock, crlf`500 Error: line too long`);
+          buf = buf.subarray(line.consumed);
+          continue;
+        }
         this.#dispatch(sock, line.command, state);
         buf = buf.subarray(line.consumed);
       }
@@ -204,8 +221,26 @@ export class MutantServer {
     state.inData = false;
     state.hasMail = false;
     state.rcptCount = 0;
+    // Defect: reject a message containing a text line longer than 500 octets,
+    // below the 1000-octet floor §4.5.3.1.6 requires a server to accept.
+    if (this.#defects.rejectTextLineAt500 && this.#hasOverlongTextLine(buf.subarray(0, eod), 500)) {
+      this.#write(sock, crlf`500 Error: text line too long`);
+      return eod;
+    }
     this.#write(sock, crlf`250 2.0.0 message accepted`);
     return eod;
+  }
+
+  #hasOverlongTextLine(data: Buffer, limit: number): boolean {
+    let lineStart = 0;
+    for (let i = 0; i + 1 < data.length; i++) {
+      if (data[i] === CR && data[i + 1] === LF) {
+        if (i + 2 - lineStart > limit) return true;
+        lineStart = i + 2;
+        i++;
+      }
+    }
+    return false;
   }
 
   #findEndOfData(buf: Buffer): number | null {
