@@ -166,7 +166,7 @@ export const CASES: readonly TestCase[] = [
   testCase({
     id: 'control-char-in-mail-not-executed',
     requirement: 'R-5321-4.1.2-j',
-    alsoTouches: ['R-5321-2.4-a'],
+    alsoTouches: ['R-5321-4.1.2-n'],
     intent: 'a MAIL command carrying an ASCII control octet (NUL) is not accepted/executed',
     rationale:
       '§4.1.2: control characters ("decimal value 0-31 and 127") "MUST NOT be used in MAIL or ' +
@@ -259,5 +259,13 @@ export const MUTANTS: readonly Mutant[] = [
     catches: 'invalid-char-command-rejected-501',
     defect: 'acceptControlCharsInCommand',
     why: 'accepting a command with an invalid character code instead of the required 501 violates §4.1.2 (R-5321-4.1.2-n)',
+  },
+  {
+    // Second control for the same case, so the EXACT-501 branch is exercised
+    // (not just the acceptance branch): a server that rejects with 500 instead of
+    // 501 satisfies §4.1.2-j but violates §4.1.2-n's exact-code duty.
+    catches: 'invalid-char-command-rejected-501',
+    defect: 'rejectControlCharsWith500',
+    why: 'rejecting an invalid-character command with 500 rather than the required 501 violates R-5321-4.1.2-n',
   },
 ];

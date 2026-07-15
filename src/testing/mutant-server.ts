@@ -115,6 +115,12 @@ export interface Defects {
   /** Accept commands containing C0/DEL control characters. Violates R-5321-4.1.2-j/-n. */
   readonly acceptControlCharsInCommand?: boolean;
   /**
+   * Reject a control-char command with a NON-501 5yz (500). The command IS
+   * rejected (so §4.1.2-j is satisfied — not executed), but §4.1.2-n's EXACT-501
+   * duty is violated. Exercises the exact-code branch of the -n test.
+   */
+  readonly rejectControlCharsWith500?: boolean;
+  /**
    * Reject a source-route RCPT with a 501 syntax error — i.e. fail to PARSE it.
    * Violates R-5321-4.1.1.3-b (receivers MUST recognize source route syntax).
    * A policy rejection (550) would be conformant; a syntax error is not.
@@ -404,7 +410,10 @@ export class MutantServer {
     if (!d.acceptControlCharsInCommand) {
       for (const byte of commandBytes) {
         if ((byte <= 0x08 || (byte >= 0x0b && byte <= 0x1f) || byte === 0x7f)) {
-          return replyOK(501, 'Error: invalid character');
+          // Clean baseline rejects with the exact 501; the rejectControlCharsWith500
+          // defect rejects (so §4.1.2-j holds) but with the wrong code (so §4.1.2-n's
+          // exact-501 duty is violated).
+          return replyOK(d.rejectControlCharsWith500 ? 500 : 501, 'Error: invalid character');
         }
       }
     }
