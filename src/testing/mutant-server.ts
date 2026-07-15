@@ -121,6 +121,12 @@ export interface Defects {
   readonly greetingWithoutDomain?: boolean;
   /** Reject the HELO command. Violates R-5321-4.1.1.1-h (servers MUST support HELO). */
   readonly rejectHelo?: boolean;
+  /** Answer NOOP with a 500 "command not recognized". Violates R-5321-4.5.1-b. */
+  readonly unrecognizedNoop?: boolean;
+  /** Send TWO replies to a single NOOP. Violates R-5321-4.2-a (exactly one reply). */
+  readonly doubleReplyToNoop?: boolean;
+  /** Answer HELP with a 500. Violates R-5321-4.1.1.8-a (HELP sends helpful info). */
+  readonly rejectHelp?: boolean;
   /**
    * Advertise STARTTLS in EHLO but return 502 to the STARTTLS command.
    * Violates R-5321-4.2.4-c (MUST NOT advertise capabilities you will 502/500).
@@ -453,7 +459,18 @@ export class MutantServer {
         return replyOK(d.rsetWrongReply ? 451 : 250, '2.0.0 Ok');
 
       case 'NOOP':
+        if (d.unrecognizedNoop) return replyOK(500, 'Error: command not recognized');
+        if (d.doubleReplyToNoop) {
+          // Two replies to one command — the §4.2-a "exactly one reply" violation.
+          this.#write(sock, crlf`250 2.0.0 Ok`);
+          this.#write(sock, crlf`250 2.0.0 Ok again`);
+          return;
+        }
         return replyOK(d.noopWrongReply ? 500 : 250, '2.0.0 Ok');
+
+      case 'HELP':
+        if (d.rejectHelp) return replyOK(500, 'Error: command not recognized');
+        return replyOK(214, 'https://example.com/smtp-help');
 
       case 'QUIT':
         if (d.quitWrongReply) {
