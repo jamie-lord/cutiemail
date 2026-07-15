@@ -132,21 +132,27 @@ test('every requirement belongs to a section claimed as extracted', () => {
   }
 });
 
-test('a claimed section with zero requirements is allowed, but only for real prose sections', () => {
+test('a claimed section with zero requirements is backed by a sibling that has some', () => {
   // The reverse direction is NOT symmetric: a section can be read in full and
-  // legitimately contain no normative requirement — §4.2.3 is a numeric table,
-  // §2.2 and §4.3 are parent headers. So "claimed but empty" is permitted. What
-  // is NOT permitted is claiming §5/§6/§7 (still unextracted) — those must be
-  // absent from EXTRACTED_SECTIONS until their modules exist, which is enforced
-  // structurally: rfc5321.ts cannot spread a section module that isn't imported.
+  // legitimately hold no normative requirement — §4.2.3 is a numeric table,
+  // §2.2 and §4.3 are parent headers, §5.2 is short prose. So "claimed but
+  // empty" is permitted. What must NOT happen is claiming a whole top-level
+  // section (e.g. §7) as extracted while none of it has been processed.
+  //
+  // Self-maintaining guard: a zero-requirement claimed section is only allowed
+  // if its top-level section (§N) has at least one requirement SOMEWHERE. That
+  // proves §N was genuinely worked, not merely listed. A bare §7 claim with no
+  // §7.x requirements anywhere fails this without any hardcoded section number.
   const present = new Set(requirements.map((r) => r.section));
-  const emptyClaimed = extractedSections.filter((s) => !present.has(s));
-  // Guard against accidental over-claiming: no top-level section 5, 6 or 7 may
-  // appear while they remain unextracted.
-  for (const s of emptyClaimed) {
+  const topLevelsWithReqs = new Set([...present].map((s) => s.split('.')[0]));
+
+  for (const s of extractedSections) {
+    if (present.has(s)) continue; // has its own requirements — fine
+    const top = s.split('.')[0]!;
     assert.ok(
-      !/^[567]\b/.test(s) && !/^[567]\./.test(s),
-      `§${s} is claimed extracted but §5/§6/§7 are not yet done — remove it`,
+      topLevelsWithReqs.has(top),
+      `§${s} is claimed extracted but nothing in §${top} has any requirement — ` +
+        `the whole section looks unprocessed`,
     );
   }
 });

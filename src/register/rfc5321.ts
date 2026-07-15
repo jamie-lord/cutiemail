@@ -39,6 +39,8 @@ import { S4_5_1 } from './sections/s4-5-1.ts';
 import { S4_5_3_1 } from './sections/s4-5-3-1.ts';
 import { S4_5_3_2 } from './sections/s4-5-3-2.ts';
 import { S4_5_4 } from './sections/s4-5-4.ts';
+import { S5 } from './sections/s5.ts';
+import { S6 } from './sections/s6.ts';
 
 /**
  * Sections walked end-to-end, with every normative statement extracted.
@@ -49,8 +51,8 @@ import { S4_5_4 } from './sections/s4-5-4.ts';
  * reads this rather than assuming the register is whole, and the register test
  * enforces that it matches the entries in both directions.
  *
- * Still unextracted as of this writing: §5 (Address Resolution), §6 (Problem
- * Detection), §7 (Security Considerations). Tracked in the backlog.
+ * Still unextracted as of this writing: §7 (Security Considerations). Tracked
+ * in the backlog.
  */
 export const EXTRACTED_SECTIONS: readonly string[] = [
   '1.1', '1.2', '1.3',
@@ -80,6 +82,8 @@ export const EXTRACTED_SECTIONS: readonly string[] = [
   '4.5.3.2', '4.5.3.2.1', '4.5.3.2.2', '4.5.3.2.3', '4.5.3.2.4', '4.5.3.2.5',
   '4.5.3.2.6', '4.5.3.2.7',
   '4.5.4', '4.5.4.1', '4.5.4.2', '4.5.5',
+  '5.1', '5.2',
+  '6.1', '6.2', '6.3', '6.4',
 ];
 
 export const REQUIREMENTS = [
@@ -108,6 +112,8 @@ export const REQUIREMENTS = [
   ...S4_5_3_1,
   ...S4_5_3_2,
   ...S4_5_4,
+  ...S5,
+  ...S6,
 ] as const satisfies readonly RequirementDef[];
 
 /**
