@@ -38,6 +38,14 @@ export interface Defects {
   readonly honourBareLf?: boolean;
   /** Honour <LF>.<LF> as end-of-data (the SMTP-smuggling primitive). */
   readonly honourBareLfEndOfData?: boolean;
+  /**
+   * Honour <LF>.<CR><LF> as end-of-data — the variant Postfix, Sendmail and
+   * Exim all mishandled (CVE-2023-51764/65/66). The highest-value smuggling
+   * primitive. See docs/research/smtp-divergence.md §1.
+   */
+  readonly honourLfDotCrlfEndOfData?: boolean;
+  /** Honour <CR>.<CR> as end-of-data — the Cisco Secure Email Gateway variant. */
+  readonly honourCrDotCrEndOfData?: boolean;
   /** Reply to a command line before its CRLF arrives. Violates R-5321-2.4-f. */
   readonly actOnUnterminatedLine?: boolean;
   /** Emit a reply with an out-of-grammar code (260). */
@@ -194,6 +202,20 @@ export class MutantServer {
       if (
         this.#defects.honourBareLfEndOfData &&
         buf[i] === LF && buf[i + 1] === DOT && buf[i + 2] === LF
+      ) {
+        return i + 3;
+      }
+      // Smuggling defect: honour LF "." CRLF — the Postfix/Sendmail/Exim variant.
+      if (
+        this.#defects.honourLfDotCrlfEndOfData &&
+        buf[i] === LF && buf[i + 1] === DOT && buf[i + 2] === CR && buf[i + 3] === LF
+      ) {
+        return i + 4;
+      }
+      // Smuggling defect: honour CR "." CR — the Cisco variant.
+      if (
+        this.#defects.honourCrDotCrEndOfData &&
+        buf[i] === CR && buf[i + 1] === DOT && buf[i + 2] === CR
       ) {
         return i + 3;
       }

@@ -39,6 +39,66 @@ async function greeting(conn: Conn): Promise<Judgement | null> {
   return null;
 }
 
+/**
+ * Drive EHLO/MAIL/RCPT/DATA to reach the 354 prompt. Returns an inconclusive
+ * Judgement if any step failed (we cannot test end-of-data handling if we never
+ * got into DATA), or null on success.
+ */
+async function reachData(conn: Conn): Promise<Judgement | null> {
+  const bad = await greeting(conn);
+  if (bad !== null) return bad;
+
+  await conn.send(crlf`EHLO conformance-suite.invalid`);
+  if ((await conn.readReply(3000)).kind !== 'reply') {
+    return { kind: 'inconclusive', reason: 'no EHLO reply' };
+  }
+  await conn.send(crlf`MAIL FROM:<probe@conformance-suite.invalid>`);
+  const mail = await conn.readReply(3000);
+  if (mail.kind !== 'reply' || severity(mail.reply) !== 2) {
+    return { kind: 'inconclusive', reason: `MAIL not accepted: ${mail.kind === 'reply' ? mail.reply.code : mail.kind}` };
+  }
+  await conn.send(crlf`RCPT TO:<${conn.fixture.validRecipient!}>`);
+  const rcpt = await conn.readReply(3000);
+  if (rcpt.kind !== 'reply' || severity(rcpt.reply) !== 2) {
+    return { kind: 'inconclusive', reason: `RCPT not accepted: ${rcpt.kind === 'reply' ? rcpt.reply.code : rcpt.kind}` };
+  }
+  await conn.send(crlf`DATA`);
+  const data = await conn.readReply(3000);
+  if (data.kind !== 'reply' || data.reply.code !== 354) {
+    return { kind: 'inconclusive', reason: `DATA not accepted: ${data.kind === 'reply' ? data.reply.code : data.kind}` };
+  }
+  return null;
+}
+
+/**
+ * Send a body whose fake end-of-data is `fakeEod`, then probe: a conformant
+ * server keeps reading (silence), a vulnerable one replies mid-DATA. On silence
+ * we close cleanly with the real EOD. `label` names the primitive for evidence.
+ */
+async function smuggleProbe(conn: Conn, fakeEod: Buffer, label: string): Promise<Judgement> {
+  const payload = cat(
+    crlf`Subject: smuggling probe`,
+    crlf``,
+    crlf`legitimate body line`,
+    fakeEod,
+    crlf`injected line after fake end-of-data`,
+  );
+  await conn.send(payload);
+
+  const reacted = await conn.expectQuiet(1500);
+  if (!reacted.quiet) {
+    return {
+      kind: 'violated',
+      detail: `server treated ${label} as end-of-data (replied ${reacted.bytes.subarray(0, 3).toString('latin1')} inside DATA)`,
+    };
+  }
+  await conn.send(EOD);
+  const final = await conn.readReply(5000);
+  return final.kind === 'reply'
+    ? { kind: 'satisfied', detail: `${label} ignored; real end-of-data got ${final.reply.code}` }
+    : { kind: 'inconclusive', reason: `no reply after real end-of-data: ${final.kind}` };
+}
+
 export const CASES: readonly TestCase[] = [
   testCase({
     id: 'bare-lf-command-not-honoured',
@@ -106,56 +166,47 @@ export const CASES: readonly TestCase[] = [
       'to reach DATA.',
     needs: { fixture: ['validRecipient'] },
     run: async (conn): Promise<Judgement> => {
-      const bad = await greeting(conn);
-      if (bad !== null) return bad;
+      const notReady = await reachData(conn);
+      if (notReady !== null) return notReady;
+      return smuggleProbe(conn, b(0x0a, 0x2e, 0x0a), '<LF>.<LF>');
+    },
+  }),
 
-      await conn.send(crlf`EHLO conformance-suite.invalid`);
-      if ((await conn.readReply(3000)).kind !== 'reply') {
-        return { kind: 'inconclusive', reason: 'no EHLO reply' };
-      }
-      await conn.send(crlf`MAIL FROM:<probe@conformance-suite.invalid>`);
-      const mail = await conn.readReply(3000);
-      if (mail.kind !== 'reply' || severity(mail.reply) !== 2) {
-        return { kind: 'inconclusive', reason: `MAIL not accepted: ${mail.kind === 'reply' ? mail.reply.code : mail.kind}` };
-      }
-      await conn.send(crlf`RCPT TO:<${conn.fixture.validRecipient!}>`);
-      const rcpt = await conn.readReply(3000);
-      if (rcpt.kind !== 'reply' || severity(rcpt.reply) !== 2) {
-        return { kind: 'inconclusive', reason: `RCPT not accepted: ${rcpt.kind === 'reply' ? rcpt.reply.code : rcpt.kind}` };
-      }
-      await conn.send(crlf`DATA`);
-      const data = await conn.readReply(3000);
-      if (data.kind !== 'reply' || data.reply.code !== 354) {
-        return { kind: 'inconclusive', reason: `DATA not accepted: ${data.kind === 'reply' ? data.reply.code : data.kind}` };
-      }
+  testCase({
+    id: 'lf-dot-crlf-not-end-of-data',
+    requirement: 'R-5321-4.1.1.4-i',
+    alsoTouches: ['R-5321-2.3.8-a'],
+    intent: 'the "<LF>.<CR><LF>" sequence does not terminate mail data',
+    rationale:
+      'The highest-value smuggling primitive: Postfix (CVE-2023-51764), Sendmail ' +
+      '(CVE-2023-51765) and Exim (CVE-2023-51766) all accepted <LF>.<CR><LF> as ' +
+      'end-of-data in default configs, while GMX and Exchange Online passed it ' +
+      'unfiltered outbound. The RFC only names <LF>.<LF> explicitly, but §4.1.1.4-i\'s ' +
+      'general prohibition on LF-terminated lines covers this. See ' +
+      'docs/research/smtp-divergence.md §1.',
+    needs: { fixture: ['validRecipient'] },
+    run: async (conn): Promise<Judgement> => {
+      const notReady = await reachData(conn);
+      if (notReady !== null) return notReady;
+      return smuggleProbe(conn, b(0x0a, 0x2e, 0x0d, 0x0a), '<LF>.<CR><LF>');
+    },
+  }),
 
-      // The attack payload: a body whose only "terminator" is <LF>.<LF>. A
-      // conformant server does NOT treat this as end-of-data, so it keeps reading
-      // and stays silent. We then send the real CRLF.CRLF to close cleanly.
-      const smuggled = cat(
-        crlf`Subject: smuggling probe`,
-        crlf``,
-        crlf`legitimate body line`,
-        b(0x0a, 0x2e, 0x0a), // <LF>.<LF> — the primitive
-        crlf`injected line after fake end-of-data`,
-      );
-      await conn.send(smuggled);
-
-      const reacted = await conn.expectQuiet(1500);
-      if (!reacted.quiet) {
-        // The server replied mid-DATA: it accepted <LF>.<LF> as end-of-data.
-        // Drain, then report the violation.
-        return {
-          kind: 'violated',
-          detail: `server treated <LF>.<LF> as end-of-data (replied ${reacted.bytes.subarray(0, 3).toString('latin1')} inside DATA)`,
-        };
-      }
-      // Conformant: it kept reading. Close properly.
-      await conn.send(EOD);
-      const final = await conn.readReply(5000);
-      return final.kind === 'reply'
-        ? { kind: 'satisfied', detail: `<LF>.<LF> ignored; real end-of-data got ${final.reply.code}` }
-        : { kind: 'inconclusive', reason: `no reply after real end-of-data: ${final.kind}` };
+  testCase({
+    id: 'cr-dot-cr-not-end-of-data',
+    requirement: 'R-5321-4.1.1.4-i',
+    alsoTouches: ['R-5321-2.3.8-a'],
+    intent: 'the "<CR>.<CR>" sequence does not terminate mail data',
+    rationale:
+      'The Cisco Secure Email Gateway smuggling variant: its default "Clean" setting ' +
+      'converts bare CR/LF to CRLF, turning <CR>.<CR> into <CRLF>.<CRLF> and ending ' +
+      'DATA early (~40,000 domains vulnerable). Covered by §4.1.1.4-i. See ' +
+      'docs/research/smtp-divergence.md §1.',
+    needs: { fixture: ['validRecipient'] },
+    run: async (conn): Promise<Judgement> => {
+      const notReady = await reachData(conn);
+      if (notReady !== null) return notReady;
+      return smuggleProbe(conn, b(0x0d, 0x2e, 0x0d), '<CR>.<CR>');
     },
   }),
 
@@ -196,6 +247,16 @@ export const MUTANTS: readonly Mutant[] = [
     catches: 'lf-dot-lf-not-end-of-data',
     defect: 'honourBareLfEndOfData',
     why: 'treating <LF>.<LF> as end-of-data is the SMTP-smuggling primitive (R-5321-4.1.1.4-j)',
+  },
+  {
+    catches: 'lf-dot-crlf-not-end-of-data',
+    defect: 'honourLfDotCrlfEndOfData',
+    why: 'treating <LF>.<CR><LF> as end-of-data is CVE-2023-51764/65/66 (R-5321-4.1.1.4-i)',
+  },
+  {
+    catches: 'cr-dot-cr-not-end-of-data',
+    defect: 'honourCrDotCrEndOfData',
+    why: 'treating <CR>.<CR> as end-of-data is the Cisco smuggling variant (R-5321-4.1.1.4-i)',
   },
   {
     catches: 'unterminated-command-no-action',
