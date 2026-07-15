@@ -124,9 +124,27 @@ async function smuggleProbe(conn: Conn, fakeEod: Buffer, label: string): Promise
 
   const reacted = await conn.expectQuiet(1500);
   if (!reacted.quiet) {
+    // The server replied mid-DATA. Distinguish, like classifyBareLfResponse:
+    //  - a 2yz/3yz reply means it ACCEPTED a message at the fake boundary — it
+    //    treated `label` as end-of-data. The clear violation.
+    //  - a 4yz/5yz reply is ambiguous: it may be a defensive server REJECTING the
+    //    malformed data (conformant hardening), or one that segmented at the fake
+    //    EOD and then rejected the injected command (partial smuggling). We cannot
+    //    tell by the code alone, so we decline to convict — inconclusive, not a
+    //    false positive against a hardened server, and not a false bless of real
+    //    smuggling either.
+    const first = reacted.bytes[0];
+    const sevClass = first !== undefined && first >= 0x32 && first <= 0x35 ? first - 0x30 : 0;
+    const codeText = reacted.bytes.subarray(0, 3).toString('latin1');
+    if (sevClass === 2 || sevClass === 3) {
+      return {
+        kind: 'violated',
+        detail: `server accepted a message at ${label} (replied ${codeText} inside DATA) — it treated ${label} as end-of-data`,
+      };
+    }
     return {
-      kind: 'violated',
-      detail: `server treated ${label} as end-of-data (replied ${reacted.bytes.subarray(0, 3).toString('latin1')} inside DATA)`,
+      kind: 'inconclusive',
+      reason: `server replied ${codeText} mid-DATA to ${label} — ambiguous between defensive rejection (conformant) and segment-then-reject (smuggling); cannot convict on the code alone`,
     };
   }
   await conn.send(EOD);

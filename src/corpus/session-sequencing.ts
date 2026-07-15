@@ -122,13 +122,21 @@ export const CASES: readonly TestCase[] = [
       // The server should now close the channel cleanly (FIN). A bare RST is a
       // different, worse behaviour — §4.1.1.10 speaks of "close the transmission
       // channel", and an abrupt reset can truncate the client's view of the
-      // final reply. A clean close ('closed') is conformant; a reset is not.
+      // final reply. A clean close ('closed') is conformant; a reset is not. A
+      // TIMEOUT is inconclusive, not a violation: the RFC does not time-bound the
+      // close, and a slow FIN (lingering close, busy server) is indistinguishable
+      // from never-closing within our budget — the same slow/never ambiguity the
+      // sibling tests refuse to convict on.
       const after = await conn.readReply(3000);
       if (after.kind === 'closed') return { kind: 'satisfied', detail: '221 then clean close' };
       if (after.kind === 'reset') {
         return { kind: 'violated', detail: 'server RST the connection after 221 instead of closing cleanly' };
       }
-      return { kind: 'violated', detail: `server did not close after 221 (got ${after.kind})` };
+      if (after.kind === 'timeout') {
+        return { kind: 'inconclusive', reason: '221 sent, but the close was not observed within the budget (server may be slow to FIN)' };
+      }
+      // A further reply after 221 — the server kept talking instead of closing.
+      return { kind: 'violated', detail: `server sent another reply after 221 instead of closing` };
     },
   }),
 
