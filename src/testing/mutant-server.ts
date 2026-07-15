@@ -119,6 +119,8 @@ export interface Defects {
   readonly closeOnConnect?: boolean;
   /** Send a greeting with no domain identification ("220" alone). Violates R-5321-4.1.1.1-d. */
   readonly greetingWithoutDomain?: boolean;
+  /** EHLO reply's first line carries no server domain. Violates R-5321-4.1.1.1-d. */
+  readonly ehloResponseNoDomain?: boolean;
   /** Reject the HELO command. Violates R-5321-4.1.1.1-h (servers MUST support HELO). */
   readonly rejectHelo?: boolean;
   /** Answer NOOP with a 500 "command not recognized". Violates R-5321-4.5.1-b. */
@@ -388,7 +390,9 @@ export class MutantServer {
           this.#write(sock, crlf`251-PIPELINING`); // wrong continuation code
           this.#write(sock, crlf`250 8BITMIME`);
         } else {
-          const lines = [crlf`250-${this.#domain}`];
+          // Defect: first line carries no domain identity ("250-" then a space).
+          const firstLine = d.ehloResponseNoDomain ? crlf`250- ` : crlf`250-${this.#domain}`;
+          const lines = [firstLine];
           for (let i = 0; i < keywords.length; i++) {
             lines.push(i === keywords.length - 1 ? crlf`250 ${keywords[i]!}` : crlf`250-${keywords[i]!}`);
           }

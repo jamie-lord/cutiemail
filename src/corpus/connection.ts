@@ -77,6 +77,36 @@ export const CASES: readonly TestCase[] = [
         : { kind: 'violated', detail: 'greeting text present but carries no identifying token' };
     },
   }),
+
+  testCase({
+    id: 'ehlo-response-identifies-the-server',
+    requirement: 'R-5321-4.1.1.1-d',
+    alsoTouches: ['R-5321-4.1.1.1-l'],
+    intent: 'the EHLO response identifies the server on its first line',
+    rationale:
+      '§4.1.1.1: the server "identifies itself to the SMTP client in the connection greeting ' +
+      'reply AND in the response to this command [EHLO]." The ehlo-ok-rsp grammar makes the ' +
+      'Domain mandatory on the first line of the EHLO reply — distinct from the greeting, ' +
+      'which is tested separately.',
+    run: async (conn: Conn): Promise<Judgement> => {
+      const g = await conn.readReply(5000);
+      if (g.kind !== 'reply' || severity(g.reply) !== 2) {
+        return { kind: 'inconclusive', reason: `greeting: ${g.kind === 'reply' ? g.reply.code : g.kind}` };
+      }
+      await conn.send(Buffer.from('EHLO conformance-suite.invalid\r\n', 'latin1'));
+      const e = await conn.readReply(3000);
+      if (e.kind === 'timeout') return { kind: 'inconclusive', reason: 'EHLO drew no reply within the timeout (server may be slow)' };
+      if (e.kind !== 'reply') return { kind: 'inconclusive', reason: `EHLO: ${e.kind}` };
+      if (e.reply.code !== 250) return { kind: 'inconclusive', reason: `EHLO refused with ${e.reply.code}` };
+      // The first line of the EHLO 250 reply must carry the server's domain.
+      const first = e.reply.lines[0];
+      const text = first?.text.toString('latin1').trim() ?? '';
+      const identity = text.replace(/^\d+\.\d+\.\d+\s+/, '').split(/\s+/)[0] ?? '';
+      return identity.length > 0
+        ? { kind: 'satisfied', detail: `EHLO response identifies: "${identity}"` }
+        : { kind: 'violated', detail: 'EHLO 250 reply first line carries no server identity' };
+    },
+  }),
 ];
 
 export const MUTANTS: readonly Mutant[] = [
@@ -89,5 +119,10 @@ export const MUTANTS: readonly Mutant[] = [
     catches: 'greeting-identifies-the-server',
     defect: 'greetingWithoutDomain',
     why: 'a greeting with no domain identification violates R-5321-4.1.1.1-d',
+  },
+  {
+    catches: 'ehlo-response-identifies-the-server',
+    defect: 'ehloResponseNoDomain',
+    why: 'an EHLO reply whose first line carries no domain violates R-5321-4.1.1.1-d',
   },
 ];
