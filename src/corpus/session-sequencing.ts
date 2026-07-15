@@ -21,7 +21,7 @@ import { testCase } from '../conformance/test-case.ts';
 import type { TestCase, Mutant, Conn } from '../conformance/test-case.ts';
 import type { Judgement } from '../conformance/outcome.ts';
 import { crlf, cat, EOD } from '../wire/bytes.ts';
-import { severity, ehloKeywords } from '../wire/reply.ts';
+import { severity, advertisedExtensions } from '../wire/reply.ts';
 
 async function greetAndEhlo(conn: Conn): Promise<Judgement | null> {
   const g = await conn.readReply(5000);
@@ -47,7 +47,8 @@ export const CASES: readonly TestCase[] = [
       if (bad !== null) return bad;
       await conn.send(crlf`RSET`);
       const r = await conn.readReply(3000);
-      if (r.kind !== 'reply') return { kind: 'violated', detail: `RSET drew ${r.kind}, not a reply` };
+      if (r.kind === 'timeout') return { kind: 'inconclusive', reason: 'RSET drew no reply within the timeout (server may be slow, §4.5.3.2)' };
+      if (r.kind !== 'reply') return { kind: 'violated', detail: `RSET: server ${r.kind} instead of replying` };
       return r.reply.code === 250
         ? { kind: 'satisfied' }
         : { kind: 'violated', detail: `RSET drew ${r.reply.code}, not 250` };
@@ -88,7 +89,8 @@ export const CASES: readonly TestCase[] = [
       if (bad !== null) return bad;
       await conn.send(crlf`NOOP`);
       const r = await conn.readReply(3000);
-      if (r.kind !== 'reply') return { kind: 'violated', detail: `NOOP drew ${r.kind}` };
+      if (r.kind === 'timeout') return { kind: 'inconclusive', reason: 'NOOP drew no reply within the timeout (server may be slow, §4.5.3.2)' };
+      if (r.kind !== 'reply') return { kind: 'violated', detail: `NOOP: server ${r.kind} instead of replying` };
       return r.reply.code === 250
         ? { kind: 'satisfied' }
         : { kind: 'violated', detail: `NOOP drew ${r.reply.code}, not 250` };
@@ -105,7 +107,8 @@ export const CASES: readonly TestCase[] = [
       if (g.kind !== 'reply') return { kind: 'inconclusive', reason: `greeting: ${g.kind}` };
       await conn.send(crlf`QUIT`);
       const r = await conn.readReply(3000);
-      if (r.kind !== 'reply') return { kind: 'violated', detail: `QUIT drew ${r.kind}, not a reply` };
+      if (r.kind === 'timeout') return { kind: 'inconclusive', reason: 'QUIT drew no reply within the timeout (server may be slow, §4.5.3.2)' };
+      if (r.kind !== 'reply') return { kind: 'violated', detail: `QUIT: server ${r.kind} instead of replying 221` };
       if (r.reply.code !== 221) return { kind: 'violated', detail: `QUIT drew ${r.reply.code}, not 221` };
       // The server should now close the channel cleanly (FIN). A bare RST is a
       // different, worse behaviour — §4.1.1.10 speaks of "close the transmission
@@ -136,14 +139,18 @@ export const CASES: readonly TestCase[] = [
       if (r.reply.code !== 250) {
         return { kind: 'inconclusive', reason: `HELO refused with ${r.reply.code} (server may not support HELO)` };
       }
-      // The violation: a multiline reply advertising extensions, EHLO-style.
-      if (r.reply.multiline && ehloKeywords(r.reply).size > 0) {
+      // The violation: a reply advertising RECOGNISED ESMTP extensions, EHLO-style.
+      // A multiline PROSE banner ("250-mail\r\n250 Have a nice day") is NOT
+      // EHLO-style and MUST NOT be convicted — the register note for R-5321-3.2-b
+      // warns against exactly that. Only genuine extension keywords count.
+      const extensions = advertisedExtensions(r.reply);
+      if (extensions.size > 0) {
         return {
           kind: 'violated',
-          detail: `HELO drew an EHLO-style multiline reply advertising ${[...ehloKeywords(r.reply)].join(', ')}`,
+          detail: `HELO drew an EHLO-style reply advertising ${[...extensions].join(', ')}`,
         };
       }
-      return { kind: 'satisfied', detail: 'HELO drew a single-line 250' };
+      return { kind: 'satisfied', detail: `HELO reply advertises no extensions (${r.reply.multiline ? 'multiline prose' : 'single line'})` };
     },
   }),
 
@@ -160,7 +167,8 @@ export const CASES: readonly TestCase[] = [
       if (bad !== null) return bad;
       await conn.send(crlf`RCPT TO:<someone@example.com>`);
       const r = await conn.readReply(3000);
-      if (r.kind !== 'reply') return { kind: 'violated', detail: `RCPT-before-MAIL drew ${r.kind}` };
+      if (r.kind === 'timeout') return { kind: 'inconclusive', reason: 'RCPT-before-MAIL drew no reply within the timeout (server may be slow, §4.5.3.2)' };
+      if (r.kind !== 'reply') return { kind: 'violated', detail: `RCPT-before-MAIL: server ${r.kind} instead of replying` };
       // The RFC says 503 specifically, but assert the class as the firm floor:
       // any 5yz rejection satisfies "cannot be processed"; a 2yz acceptance is
       // the violation. (503 exact is checked as a detail, not the pass/fail.)

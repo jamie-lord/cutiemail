@@ -144,6 +144,11 @@ test('a four-digit code is code-not-three-digits, distinct from a bad second dig
   const second = frame('260 msg\r\n');
   assert.ok(kinds(second).includes('code-out-of-grammar'));
   assert.ok(!kinds(second).includes('code-not-three-digits'));
+
+  // A SHORT (two-digit) code is also "other than three digits" — §4.3.2-c — and
+  // must be code-not-three-digits, not (only) code-out-of-grammar.
+  const two = frame('25 msg\r\n');
+  assert.ok(kinds(two).includes('code-not-three-digits'), 'a two-digit code is code-not-three-digits');
 });
 
 test('an over-long reply line is recorded against the 512-octet limit', () => {

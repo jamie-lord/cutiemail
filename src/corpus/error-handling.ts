@@ -96,12 +96,15 @@ export const CASES: readonly TestCase[] = [
         for (const a of reply.anomalies) {
           if (a.kind === 'code-not-three-digits') offenders.push(`${label}: ${a.detail}`);
         }
-        // First digit outside 2-5 is the other thing §4.3.2-c forbids. Check the
-        // final line's first code byte directly (0x32-0x35 = '2'-'5').
-        const last = reply.lines[reply.lines.length - 1];
-        const first = last?.codeBytes[0];
-        if (first !== undefined && (first < 0x32 || first > 0x35)) {
-          offenders.push(`${label}: first code digit 0x${first.toString(16)} is outside 2-5`);
+        // First digit outside 2-5 is the other §4.3.2-c prong. A multiline reply
+        // repeats the code on EVERY line, so a bad first digit on any line — not
+        // just the last — is a violation. The register note for §4.3.2-c says so
+        // explicitly. Check every line's first code byte (0x32-0x35 = '2'-'5').
+        for (const line of reply.lines) {
+          const first = line.codeBytes[0];
+          if (first !== undefined && (first < 0x32 || first > 0x35)) {
+            offenders.push(`${label}: first code digit 0x${first.toString(16)} is outside 2-5`);
+          }
         }
       };
       // Sample replies across several commands so a server that malforms only
@@ -141,5 +144,10 @@ export const MUTANTS: readonly Mutant[] = [
     catches: 'reply-codes-are-three-digits',
     defect: 'fourDigitCode',
     why: 'a four-digit reply code violates R-5321-4.3.2-c',
+  },
+  {
+    catches: 'reply-codes-are-three-digits',
+    defect: 'twoDigitCode',
+    why: 'a two-digit reply code violates R-5321-4.3.2-c',
   },
 ];

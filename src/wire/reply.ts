@@ -244,7 +244,22 @@ function frame(buf: Buffer, atEof: boolean): { value: Reply; consumed: number } 
     }
 
     const codeBytes = lineBytes.subarray(0, 3);
-    if (!codeInGrammar(codeBytes)) {
+    // Count leading digit bytes to tell a SHORT code (fewer than 3 digits, e.g.
+    // "25 Ok") from a three-digit code whose values are out of range (e.g. 260).
+    // These are different requirements: too-few/too-many digits is §4.3.2-c
+    // ("other than three digits"); a bad digit VALUE is the §4.2 ABNF.
+    let leadingDigits = 0;
+    while (leadingDigits < lineBytes.length && lineBytes[leadingDigits]! >= 0x30 && lineBytes[leadingDigits]! <= 0x39) {
+      leadingDigits++;
+    }
+    if (leadingDigits < 3) {
+      anomalies.push({
+        kind: 'code-not-three-digits',
+        line: lineNo,
+        detail: `only ${leadingDigits} leading digit(s) before the separator; reply code has fewer than three digits (§4.3.2-c)`,
+      });
+    } else if (!codeInGrammar(codeBytes)) {
+      // Exactly three (or more) leading digits, but a value is out of ABNF range.
       anomalies.push({
         kind: 'code-out-of-grammar',
         line: lineNo,
@@ -371,6 +386,30 @@ export function frameReplyAtEof(buf: Buffer): { value: Reply; consumed: number }
 export function severity(reply: Reply): 2 | 3 | 4 | 5 | null {
   const d = Math.floor(reply.code / 100);
   return d === 2 || d === 3 || d === 4 || d === 5 ? (d as 2 | 3 | 4 | 5) : null;
+}
+
+/**
+ * ESMTP EHLO keywords defined by an RFC or the IANA registry that a HELO reply
+ * would never legitimately carry. Used to tell an "EHLO-style" response
+ * (advertising extensions) apart from a plain multiline prose banner — a HELO
+ * server MAY send a multiline greeting, and "250 Have a nice day" must not be
+ * mistaken for advertising a "HAVE" extension. Not exhaustive; erring toward
+ * well-known keywords keeps false positives out.
+ */
+export const KNOWN_ESMTP_KEYWORDS: ReadonlySet<string> = new Set([
+  'PIPELINING', 'SIZE', 'STARTTLS', '8BITMIME', 'AUTH', 'DSN', 'ENHANCEDSTATUSCODES',
+  'CHUNKING', 'BINARYMIME', 'SMTPUTF8', 'VRFY', 'ETRN', 'HELP', 'EXPN', 'DELIVERBY',
+  'ATRN', 'BURL', 'FUTURERELEASE', 'MT-PRIORITY', 'REQUIRETLS', 'NO-SOLICITING',
+  'RRVS', 'CONNEG', 'CONPERM', 'MTRK', 'BODY',
+]);
+
+/** The recognised ESMTP keywords a reply actually advertises (subset of ehloKeywords). */
+export function advertisedExtensions(reply: Reply): ReadonlySet<string> {
+  const out = new Set<string>();
+  for (const kw of ehloKeywords(reply)) {
+    if (KNOWN_ESMTP_KEYWORDS.has(kw)) out.add(kw);
+  }
+  return out;
 }
 
 /** EHLO keywords from a multiline 250, uppercased. Empty when not an EHLO reply. */

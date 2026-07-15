@@ -88,8 +88,16 @@ export interface Defects {
   readonly quitResetsAfterReply?: boolean;
   /** Return an EHLO-style multiline response to HELO. Violates R-5321-3.2-b. */
   readonly extendedResponseToHelo?: boolean;
+  /**
+   * Return a CONFORMANT multiline PROSE banner to HELO (no extension keywords).
+   * Not a defect — §3.2 forbids an EHLO-STYLE response, not any multiline reply.
+   * Exists so the HELO test can be shown to NOT flag a prose banner.
+   */
+  readonly multilineProseHelo?: boolean;
   /** Emit a four-digit reply code. Violates R-5321-4.3.2-c (three digits only). */
   readonly fourDigitCode?: boolean;
+  /** Emit a two-digit reply code. Violates R-5321-4.3.2-c (three digits only). */
+  readonly twoDigitCode?: boolean;
   /**
    * Reject a source-route RCPT with a 501 syntax error — i.e. fail to PARSE it.
    * Violates R-5321-4.1.1.3-b (receivers MUST recognize source route syntax).
@@ -341,6 +349,7 @@ export class MutantServer {
     const replyOK = (code: number, msg: string): void => {
       if (d.outOfGrammarCode) return this.#write(sock, crlf`260 ${msg}`);
       if (d.fourDigitCode) return this.#write(sock, crlf`2500 ${msg}`);
+      if (d.twoDigitCode) return this.#write(sock, crlf`25 ${msg}`);
       if (d.bareCodeReplies) return this.#write(sock, Buffer.concat([Buffer.from(String(code)), Buffer.from([CR, LF])]));
       if (d.eightBitReplyText) return this.#write(sock, Buffer.concat([Buffer.from(`${code} `), Buffer.from([0xe9]), Buffer.from([CR, LF])]));
       this.#write(sock, crlf`${String(code)} ${msg}`);
@@ -376,6 +385,12 @@ export class MutantServer {
       case 'HELO':
         if (d.rejectHelo) return replyOK(502, 'Error: HELO not supported');
         state.greeted = true;
+        if (d.multilineProseHelo) {
+          // Conformant: multiline, but pure prose — no extension keywords.
+          this.#write(sock, crlf`250-${this.#domain} at your service`);
+          this.#write(sock, crlf`250 Have a nice day`);
+          return;
+        }
         if (d.extendedResponseToHelo) {
           // The violation: HELO must get a single-line reply, never EHLO-style.
           this.#write(sock, crlf`250-${this.#domain}`);
