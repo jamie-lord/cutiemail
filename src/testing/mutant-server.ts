@@ -96,6 +96,10 @@ export interface Defects {
    * A policy rejection (550) would be conformant; a syntax error is not.
    */
   readonly rejectSourceRouteAsSyntax?: boolean;
+  /** Send NO greeting on connect (stay silent). Violates R-5321-3.1-a. */
+  readonly silentOnConnect?: boolean;
+  /** Send a greeting with no domain identification ("220" alone). Violates R-5321-4.1.1.1-d. */
+  readonly greetingWithoutDomain?: boolean;
   /** Reject the HELO command. Violates R-5321-4.1.1.1-h (servers MUST support HELO). */
   readonly rejectHelo?: boolean;
   /**
@@ -191,7 +195,14 @@ export class MutantServer {
     let buf = Buffer.alloc(0);
 
     sock.on('error', () => {});
-    this.#write(sock, crlf`220 ${this.#domain} ESMTP mutant`);
+    if (d.silentOnConnect) {
+      // No greeting at all — the client is left waiting.
+    } else if (d.greetingWithoutDomain) {
+      // A bare 220 with no domain identification.
+      this.#write(sock, crlf`220`);
+    } else {
+      this.#write(sock, crlf`220 ${this.#domain} ESMTP mutant`);
+    }
 
     sock.on('data', (chunk: Buffer) => {
       buf = Buffer.concat([buf, Buffer.from(chunk)]);

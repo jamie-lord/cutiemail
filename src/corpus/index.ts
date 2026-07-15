@@ -18,8 +18,10 @@ import { CASES as sizeCases, MUTANTS as sizeMutants } from './size-limits.ts';
 import { CASES as errCases, MUTANTS as errMutants } from './error-handling.ts';
 import { CASES as txnCases, MUTANTS as txnMutants } from './mail-transaction.ts';
 import { CASES as extCases, MUTANTS as extMutants } from './extensions.ts';
+import { CASES as connCases, MUTANTS as connMutants } from './connection.ts';
 
 export const ALL_CASES: readonly TestCase[] = [
+  ...connCases,
   ...crlfCases,
   ...seqCases,
   ...sizeCases,
@@ -29,6 +31,7 @@ export const ALL_CASES: readonly TestCase[] = [
 ];
 
 export const ALL_MUTANTS: readonly Mutant[] = [
+  ...connMutants,
   ...crlfMutants,
   ...seqMutants,
   ...sizeMutants,
