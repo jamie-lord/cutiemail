@@ -1,0 +1,7 @@
+node_modules/
+*.log
+.DS_Store
+
+# Run artifacts — conformance results are generated, dated, and never
+# hand-edited. See docs/decisions/0001-spec-baseline.md on staleness.
+/results/

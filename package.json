@@ -1,0 +1,18 @@
+{
+  "name": "smtp-conformance",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "A conformance test suite for SMTP receivers, asserting against RFC 5321.",
+  "engines": {
+    "node": ">=22.18.0"
+  },
+  "scripts": {
+    "test": "node --test 'src/**/*.test.ts'",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@types/node": "^22.20.1",
+    "typescript": "^5.9.2"
+  }
+}
