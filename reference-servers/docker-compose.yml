@@ -1,0 +1,45 @@
+# Reference SMTP servers for calibrating the conformance suite.
+#
+# These are GROUND TRUTH, not servers under test. Postfix and Exim are the most
+# spec-scrutinised MTAs alive, so when the suite reports a violation against one
+# of them, the prior is that WE are wrong. Every such disagreement is triaged
+# (see reference-servers/README.md) to: our bug / our misreading of the RFC / a
+# genuine divergence. Only after that triage passes is the suite trustworthy
+# enough to point at anything else.
+#
+# Usage:
+#   cd reference-servers && docker compose up -d
+#   node ../src/cli.ts run --config postfix.json
+#   node ../src/cli.ts run --config exim.json
+#   docker compose down
+#
+# Both are pinned to explicit versions so results are reproducible and the matrix
+# report's version field is meaningful. Bump deliberately, and re-triage.
+
+services:
+  # Postfix — the reference for the mainstream interpretation of RFC 5321.
+  # Version chosen to POST-DATE the SMTP-smuggling fix (>= 3.9 defaults
+  # smtpd_forbid_bare_newline to 'normalize'), so the smuggling corpus sees the
+  # mitigated behaviour. To test the UNmitigated path, set
+  # smtpd_forbid_bare_newline=no in the override and expect the corpus to flag it.
+  postfix:
+    image: boky/postfix:v4.3.0  # Postfix 3.8.x — pin exactly; see README on version drift
+    hostname: postfix.example.com
+    environment:
+      ALLOWED_SENDER_DOMAINS: example.com
+      # A valid recipient the fixture declares. boky/postfix accepts configured
+      # virtual users; see postfix.json fixture.
+      RELAY_HOST: ''
+    ports:
+      - '2526:25'
+    restart: unless-stopped
+
+  # Exim — a second independent interpretation. Where Postfix and Exim disagree
+  # on a requirement, that IS a divergence worth a register note, even before we
+  # point the suite at Stalwart/Mox/Maddy.
+  exim:
+    image: exim/exim4:4.98  # pin; 4.97.1+ has the smuggling fix (CVE-2023-51766)
+    hostname: exim.example.com
+    ports:
+      - '2527:25'
+    restart: unless-stopped

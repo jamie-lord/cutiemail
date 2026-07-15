@@ -1,0 +1,14 @@
+{
+  "name": "postfix-3.8-reference",
+  "serverDomain": "postfix.example.com",
+  "host": "127.0.0.1",
+  "port": 2526,
+  "tls": "none",
+  "version": "postfix-3.8.x-boky-v4.3.0",
+  "fixture": {
+    "clientDomain": "conformance-suite.invalid",
+    "validRecipient": "postmaster@example.com",
+    "postmaster": "postmaster@example.com",
+    "nonRelayDomain": "not-served.example.org"
+  }
+}

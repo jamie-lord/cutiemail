@@ -1,0 +1,13 @@
+{
+  "name": "exim-4.98-reference",
+  "serverDomain": "exim.example.com",
+  "host": "127.0.0.1",
+  "port": 2527,
+  "tls": "none",
+  "version": "exim-4.98",
+  "fixture": {
+    "clientDomain": "conformance-suite.invalid",
+    "postmaster": "postmaster@example.com",
+    "nonRelayDomain": "not-served.example.org"
+  }
+}
