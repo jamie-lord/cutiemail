@@ -121,3 +121,20 @@ test('R-9051-2.3.1.2-b: EXPUNGE decrements subsequent sequence numbers (staleSeq
   defect.expunge(f);
   assert.equal(defect.sequenceNumber(s), 2, 'staleSeqNumsAfterExpunge must be detectable');
 });
+
+test('R-9051-2.3.1.1-c: invalidation must raise UIDVALIDITY (allowNonIncreasingValidity caught)', () => {
+  cites('R-9051-2.3.1.1-c');
+  const mb = new Mailbox(100);
+  mb.append(b('m'));
+  assert.ok(mb.invalidate(101), 'a higher UIDVALIDITY is accepted');
+  assert.equal(mb.uidValidity, 101);
+  assert.equal(mb.messages.length, 0, 'invalidation clears the mailbox');
+  // A non-increasing UIDVALIDITY is refused and changes nothing.
+  assert.ok(!mb.invalidate(101), 'the same UIDVALIDITY is refused');
+  assert.ok(!mb.invalidate(50), 'a lower UIDVALIDITY is refused');
+  assert.equal(mb.uidValidity, 101, 'UIDVALIDITY is unchanged after a refused invalidation');
+
+  // Negative control: permitting a non-increasing value.
+  const defect = new Mailbox(100, { allowNonIncreasingValidity: true });
+  assert.ok(defect.invalidate(100), 'allowNonIncreasingValidity must be detectable');
+});

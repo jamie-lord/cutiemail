@@ -109,4 +109,21 @@ export const IMAP_MAILBOX_STATE = [
       'staleSeqNumsAfterExpunge defect (keep the expunged message counted) is the ' +
       'negative control.',
   },
+  {
+    id: 'R-9051-2.3.1.1-c',
+    rfc: 'rfc9051',
+    section: '2.3.1.1',
+    page: 14,
+    level: 'MUST',
+    party: 'both',
+    normativeSource: 'keyword',
+    text: 'If unique identifiers from an earlier session fail to persist in this session, the unique identifier validity value MUST be greater than the one used in the earlier session.',
+    testability: { kind: 'parse' },
+    note:
+      'UIDVALIDITY is the escape hatch: when UIDs are reassigned (mailbox recreated, ' +
+      'store rebuilt), UIDVALIDITY MUST increase so a client detects its cached UIDs ' +
+      'are stale and resynchronizes. Our mailbox refuses an invalidation that does not ' +
+      'raise UIDVALIDITY; the allowNonIncreasingValidity defect is the negative ' +
+      'control — a non-increasing value would silently corrupt a client\'s cache.',
+  },
 ] as const satisfies readonly RequirementDef[];

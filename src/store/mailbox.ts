@@ -37,10 +37,12 @@ export interface MailboxDefects {
   readonly seqNumsDescending?: boolean;
   /** Keep an expunged message counted in sequence numbers (stale). Violates R-9051-2.3.1.2-b. */
   readonly staleSeqNumsAfterExpunge?: boolean;
+  /** Allow an invalidation that does not raise UIDVALIDITY. Violates R-9051-2.3.1.1-c. */
+  readonly allowNonIncreasingValidity?: boolean;
 }
 
 export class Mailbox {
-  readonly uidValidity: number;
+  #uidValidity: number;
   #uidNext = 1;
   #messages: StoredMessage[] = [];
   /** UIDs expunged but still counted for sequence numbers (staleSeqNumsAfterExpunge only). */
@@ -48,8 +50,29 @@ export class Mailbox {
   readonly #defects: MailboxDefects;
 
   constructor(uidValidity = 1, defects: MailboxDefects = {}) {
-    this.uidValidity = uidValidity;
+    this.#uidValidity = uidValidity;
     this.#defects = defects;
+  }
+
+  /** The UIDVALIDITY value a client uses to detect its cached UIDs have been invalidated. */
+  get uidValidity(): number {
+    return this.#uidValidity;
+  }
+
+  /**
+   * Reassign UIDs (mailbox recreated / store rebuilt), which requires UIDVALIDITY to
+   * INCREASE (R-9051-2.3.1.1-c). Returns false (and changes nothing) if `newValidity`
+   * does not raise it — a client would otherwise not notice its cache is stale.
+   */
+  invalidate(newValidity: number): boolean {
+    if (newValidity <= this.#uidValidity && this.#defects.allowNonIncreasingValidity !== true) {
+      return false;
+    }
+    this.#uidValidity = newValidity;
+    this.#messages = [];
+    this.#uidNext = 1;
+    this.#staleUids = [];
+    return true;
   }
 
   /** The predicted UID of the next appended message. Never decreases (conformant). */
