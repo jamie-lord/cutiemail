@@ -60,6 +60,30 @@ test('R-5322-2.1-a: a NUL and an 8-bit octet are flagged (and the defect is caug
   assert.ok(!hasAnomaly(parseMessage(with8bit, defect), 'eight-bit'), 'silently accepting 8-bit must be detectable');
 });
 
+test('R-5322-2.2-a: a field name with an invalid octet is flagged (and the defect is caught)', () => {
+  cites('R-5322-2.2-a');
+  // A space (0x20 < 33) in the field name — the classic disguise for a smuggled header.
+  const badName = b(`From: a@example.com${CRLF}Bad Name: x${CRLF}${CRLF}body`);
+  assert.ok(hasAnomaly(parseMessage(badName), 'field-name-invalid-char'), 'clean parser flags an invalid field-name octet');
+  // A clean field name must NOT be flagged.
+  assert.ok(!hasAnomaly(parseMessage(b(`From: a@example.com${CRLF}X-Ok-Name: x${CRLF}${CRLF}body`)), 'field-name-invalid-char'));
+
+  const defect = { acceptInvalidFieldNameChars: true } as const;
+  assert.ok(!hasAnomaly(parseMessage(badName, defect), 'field-name-invalid-char'), 'acceptInvalidFieldNameChars must be detectable');
+});
+
+test('R-5322-2.2-b: a bare CR embedded in a field body is flagged (and the defect is caught)', () => {
+  cites('R-5322-2.2-b');
+  // An embedded CR (not a CRLF terminator) inside a Subject body — header injection.
+  const injected = Buffer.concat([b('Subject: a'), Buffer.from([0x0d]), b(`b${CRLF}${CRLF}body`)]);
+  assert.ok(hasAnomaly(parseMessage(injected), 'bare-cr'), 'clean parser flags a bare CR in a field body');
+  // A normally-folded header (CRLF + WSP) must NOT be flagged as a bare CR.
+  assert.ok(!hasAnomaly(parseMessage(b(`Subject: a${CRLF} continued${CRLF}${CRLF}body`)), 'bare-cr'), 'legitimate folding is not a bare CR');
+
+  const defect = { acceptEmbeddedCr: true } as const;
+  assert.ok(!hasAnomaly(parseMessage(injected, defect), 'bare-cr'), 'acceptEmbeddedCr must be detectable');
+});
+
 test('R-5322-2.1-b: the header/body split is the CRLF empty line, not a bare-LF one (defect caught)', () => {
   cites('R-5322-2.1-b');
   // A bare-LF blank line sits BEFORE the real CRLF/CRLF boundary. A conformant

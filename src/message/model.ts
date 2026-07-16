@@ -39,6 +39,7 @@ export interface Anomaly {
     | 'nul-octet' // a NUL (0x00) — unconditionally invalid, even under MIME/EAI
     | 'eight-bit' // an octet >= 0x80 (valid only where 8BITMIME/SMTPUTF8 negotiated)
     | 'header-no-colon' // a header-section line with no colon
+    | 'field-name-invalid-char' // R-5322-2.2-a: a field name octet outside 33-126
     | 'no-empty-line'; // message never had a header/body separator (all headers)
   /** 1-based line number where it occurred (0 for whole-message anomalies). */
   readonly line: number;

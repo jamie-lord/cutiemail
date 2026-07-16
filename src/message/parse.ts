@@ -39,6 +39,14 @@ export interface ParserDefects {
    * after a bare-LF blank line escapes into the body (or vice versa).
    */
   readonly splitHeaderBodyOnBareLf?: boolean;
+  /** Do not record a bare CR embedded in a line. Violates detection of R-5322-2.2-b. */
+  readonly acceptEmbeddedCr?: boolean;
+  /**
+   * Do not flag a field name containing an octet outside printable US-ASCII
+   * (33-126). Violates R-5322-2.2-a — the header-injection defence (a control or
+   * space in a field name is how a smuggled header is disguised).
+   */
+  readonly acceptInvalidFieldNameChars?: boolean;
 }
 
 interface PhysLine {
@@ -96,9 +104,13 @@ export function parseMessage(input: Buffer, defects: ParserDefects = {}): Messag
           anomalies.push({ kind: 'eight-bit', line: l.lineNo });
           flagged8 = true;
         }
-        // A CR inside the content (not consumed as a CRLF terminator) is a bare CR.
-        if (b === CR) anomalies.push({ kind: 'bare-cr', line: l.lineNo });
       }
+    }
+    // A CR inside the content (not consumed as a CRLF terminator) is a bare CR —
+    // in a field body, an injection vector (R-5322-2.2-b: no CR/LF except folding).
+    // Structural, not a charset issue, so gated by its own defect.
+    if (!defects.acceptEmbeddedCr && l.content.includes(CR)) {
+      anomalies.push({ kind: 'bare-cr', line: l.lineNo });
     }
   }
 
@@ -138,6 +150,12 @@ export function parseMessage(input: Buffer, defects: ParserDefects = {}): Messag
       continue;
     }
     const name = l.content.subarray(0, colon);
+    // R-5322-2.2-a: a field name is printable US-ASCII 33-126, except colon (which
+    // ends it). Anything else — a space, a control octet, an 8-bit byte — is a
+    // malformed/spoofed field name and the disguise a smuggled header hides behind.
+    if (!defects.acceptInvalidFieldNameChars && name.some((b) => b < 33 || b > 126)) {
+      anomalies.push({ kind: 'field-name-invalid-char', line: l.lineNo });
+    }
     const value = l.content.subarray(colon + 1);
     cur = { name, valueParts: [value], lineNo: l.lineNo };
   }
