@@ -120,6 +120,35 @@ test('RSET clears a pending transaction', async () => {
   }
 });
 
+test('VRFY/EXPN/HELP are recognised (not 500) and do not disturb the transaction', async () => {
+  const delivered: DeliveredMessage[] = [];
+  const rec = await SmtpReceiver.start((m) => delivered.push(m), { domain: 'mx.example.test' });
+  try {
+    const c = await connect(rec);
+    let at = c.length;
+    c.send('EHLO client\r\n');
+    at = (await c.code(at)).at;
+    // Start a transaction, then issue VRFY/EXPN/HELP — none may reset it (§4.1.1.6-8).
+    c.send('MAIL FROM:<a@b.test>\r\n');
+    at = (await c.code(at)).at;
+    c.send('VRFY someone\r\n');
+    assert.equal((await c.code(at)).code, 252, 'VRFY is recognised (252, never 500)');
+    at = c.length;
+    c.send('EXPN list\r\n');
+    assert.equal((await c.code(at)).code, 502, 'EXPN answered 502, not 500');
+    at = c.length;
+    c.send('HELP\r\n');
+    assert.equal((await c.code(at)).code, 214, 'HELP answered 214');
+    at = c.length;
+    // The transaction survived: RCPT still works (buffers were not disturbed).
+    c.send('RCPT TO:<c@mx.example.test>\r\n');
+    assert.equal((await c.code(at)).code, 250, 'the reverse-path buffer survived VRFY/EXPN/HELP');
+    c.sock.destroy();
+  } finally {
+    await rec.close();
+  }
+});
+
 test('a command carrying a control octet is rejected 501 and not executed', async () => {
   const delivered: DeliveredMessage[] = [];
   const rec = await SmtpReceiver.start((m) => delivered.push(m), { domain: 'mx.example.test' });

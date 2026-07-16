@@ -289,6 +289,18 @@ class Connection {
         this.#inTransaction = false;
         this.#write('250 2.0.0 Ok');
         break;
+      // VRFY MUST be recognised (§4.5.1) — never answer 500. We don't verify
+      // addresses, so 252 "cannot VRFY but will attempt delivery" (§3.5.3, §7.3).
+      // None of these touch the transaction buffers (§4.1.1.6/.7/.8).
+      case 'VRFY':
+        this.#write('252 2.1.5 Cannot VRFY user, but will accept message and attempt delivery');
+        break;
+      case 'EXPN':
+        this.#write('502 5.5.1 EXPN not supported');
+        break;
+      case 'HELP':
+        this.#write('214 2.0.0 This is a minimal RFC 5321 SMTP service');
+        break;
       case 'NOOP':
         this.#write('250 2.0.0 Ok');
         break;
