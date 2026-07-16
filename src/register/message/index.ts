@@ -19,14 +19,16 @@
 import type { RequirementDef, IdsOf } from '../types.ts';
 import { M_S2_1 } from './sections/s2-1.ts';
 import { M_S2_2 } from './sections/s2-2.ts';
+import { M_S3_4_1 } from './sections/s3-4-1.ts';
 import { M_S3_6 } from './sections/s3-6.ts';
 
 /** Sections of RFC 5322 / MIME extracted into the register so far. */
-export const EXTRACTED_SECTIONS: readonly string[] = ['2.1', '2.1.1', '2.2', '3.6'];
+export const EXTRACTED_SECTIONS: readonly string[] = ['2.1', '2.1.1', '2.2', '3.4.1', '3.6'];
 
 export const MESSAGE_REQUIREMENTS = [
   ...M_S2_1,
   ...M_S2_2,
+  ...M_S3_4_1,
   ...M_S3_6,
 ] as const satisfies readonly RequirementDef[];
 
