@@ -87,9 +87,11 @@ ways against the mutant server. Highlights:
 - **CRLF discipline and SMTP smuggling** — the flagship. Detects the `<LF>.<LF>`,
   `<LF>.<CR><LF>` (CVE-2023-51764/65/66) and `<CR>.<CR>` (Cisco) end-of-data variants, plus
   bare-LF terminators and unterminated commands.
-- **STARTTLS command injection (RFC 3207)** — the CVE-2011-0411 "NO STARTTLS" class: a command
-  pipelined in the same TCP segment as STARTTLS must be discarded, not processed. Tested on the
-  plaintext channel without needing a live TLS handshake.
+- **STARTTLS session security (RFC 3207)** — all three variants of the CVE-2011-0411 "NO
+  STARTTLS" class: pre-handshake plaintext injection (tested without a handshake), smuggle-into-
+  TLS (a command replayed inside the encrypted session), and the §4.2 post-handshake session
+  reset (a fresh EHLO is required after TLS). The mutant server can terminate a real TLS
+  handshake to prove the last two.
 - **Session sequencing and command-buffer effects** — RSET/NOOP/QUIT semantics, EHLO-as-RSET
   transaction clearing, RSET-before-EHLO, out-of-order commands, per-command buffer effects.
 - **Minimum implementation** — the mandatory command set, the bare-`postmaster` recipient, one
