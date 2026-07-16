@@ -773,6 +773,11 @@ export const S3_5 = [
       'report it as a defect. A strong candidate for `deliberatelyUncovered` if ' +
       'we decide the noise outweighs the signal — but that decision is not this ' +
       'task\'s to make.',
+    deliberatelyUncovered: {
+      reason:
+        'a 502/500 to VRFY is near-universal (anti-address-harvesting is standard practice), so a test convicting it would fail the overwhelming majority of conformant deployments; the RFC itself only calls it "not in full compliance", not a hard MUST violation to enforce.',
+      date: '2026-07-16',
+    },
   },
   {
     id: 'R-5321-3.5.3-f',

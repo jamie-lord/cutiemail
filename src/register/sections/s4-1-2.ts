@@ -337,6 +337,11 @@ export const S4_1_2 = [
       'Second trap: the leading clause of this sentence ("To promote ' +
       'interoperability and consistent with long-standing guidance...") is ' +
       'rationale, not requirement, and is deliberately not quoted.',
+    deliberatelyUncovered: {
+      reason:
+        'underscores and other non-alphanumeric characters in domain labels are endemic in real hostnames and a great many servers accept them deliberately; a MUST-NOT test asserting rejection would fail a large fraction of conformant-in-practice servers. The register note records the violation for a report, but the suite does not convict it.',
+      date: '2026-07-16',
+    },
   },
   {
     id: 'R-5321-4.1.2-m',
@@ -356,6 +361,11 @@ export const S4_1_2 = [
       'need to name — and because a distinct ID lets the report say "underscore in ' +
       'domain label" instead of "some invalid character", which is what a reader ' +
       'of the results will want to know.',
+    deliberatelyUncovered: {
+      reason:
+        'the underscore-specific case of R-5321-4.1.2-l; same reason — endemic in practice, a test would false-positive on many real servers.',
+      date: '2026-07-16',
+    },
   },
   {
     id: 'R-5321-4.1.2-n',

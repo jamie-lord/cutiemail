@@ -274,6 +274,11 @@ export const S2_2 = [
       'Recommendation: report unregistered keywords as an observation, not a ' +
       'failure, until the snapshot problem has an owner. See R-5321-2.2.2-e ' +
       'for the same rule stated as an explicit server obligation.',
+    deliberatelyUncovered: {
+      reason:
+        'deciding whether an advertised non-X keyword is "described in a registered extension" requires the full live IANA SMTP extension registry; without it the suite cannot tell a legitimate new extension from a bogus one and would false-positive on servers advertising recently-registered keywords.',
+      date: '2026-07-16',
+    },
   },
   {
     id: 'R-5321-2.2.2-e',
@@ -297,6 +302,11 @@ export const S2_2 = [
       'while failing -d). If a test is written for only one of these, write it ' +
       'for -e: it names the party and the verdict. All three traps in -d apply ' +
       'unchanged.',
+    deliberatelyUncovered: {
+      reason:
+        'same as R-5321-2.2.2-d — cannot enumerate the registered-extension set reliably, so the prohibition is not safely testable without false positives.',
+      date: '2026-07-16',
+    },
   },
   {
     id: 'R-5321-2.2.2-f',

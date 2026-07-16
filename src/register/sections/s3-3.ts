@@ -494,6 +494,11 @@ export const S3_3 = [
       'address (e.g. treats " <u@example.com>" as a different mailbox) or ' +
       'wedges. Sending the space is worthwhile as a probe precisely because ' +
       'the divergence is real and interesting.',
+    deliberatelyUncovered: {
+      reason:
+        'lenient parsing of whitespace around the FROM:/TO: colon is common and widely tolerated in practice; a MUST-NOT test would risk false positives on servers that accept a space the RFC forbids. Deferred pending evidence that strict servers are the norm.',
+      date: '2026-07-16',
+    },
   },
   {
     id: 'R-5321-3.3-r',
