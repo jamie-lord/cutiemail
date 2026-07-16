@@ -41,12 +41,17 @@ function canonField(field: Buffer, canon: HeaderCanon): Buffer {
  * CRLF-terminated, then the DKIM-Signature field with "b=" emptied, canonicalized,
  * and without the trailing CRLF.
  */
-export function buildSigningInput(signedFields: readonly SignedField[], dkimSigValue: string, canon: HeaderCanon): Buffer {
+export function buildSigningInput(
+  signedFields: readonly SignedField[],
+  dkimSigValue: string,
+  canon: HeaderCanon,
+  signatureHeaderName = 'DKIM-Signature',
+): Buffer {
   const parts: Buffer[] = [];
   for (const f of signedFields) {
     parts.push(canonField(Buffer.from(`${f.name}: ${f.value}\r\n`, 'latin1'), canon));
   }
-  let sigField = canonField(Buffer.from(`DKIM-Signature: ${emptyBTag(dkimSigValue)}\r\n`, 'latin1'), canon);
+  let sigField = canonField(Buffer.from(`${signatureHeaderName}: ${emptyBTag(dkimSigValue)}\r\n`, 'latin1'), canon);
   // Remove the trailing CRLF from the DKIM-Signature field only.
   if (sigField.length >= 2 && sigField[sigField.length - 2] === CR && sigField[sigField.length - 1] === LF) {
     sigField = sigField.subarray(0, sigField.length - 2);

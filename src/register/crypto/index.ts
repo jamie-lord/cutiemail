@@ -16,9 +16,10 @@ import { DKIM_BODYHASH } from './sections/dkim-bodyhash.ts';
 import { DKIM_SIGN } from './sections/dkim-sign.ts';
 import { DKIM_ED25519 } from './sections/dkim-ed25519.ts';
 import { DKIM_KEYRECORD } from './sections/dkim-keyrecord.ts';
+import { ARC_AMS } from './sections/arc-ams.ts';
 
 /** Sections of the mail-crypto RFCs extracted into the register so far. */
-export const EXTRACTED_SECTIONS: readonly string[] = ['3', '3.4.1', '3.4.2', '3.4.3', '3.4.4', '3.5', '3.6.1', '3.7', '5'];
+export const EXTRACTED_SECTIONS: readonly string[] = ['3', '3.4.1', '3.4.2', '3.4.3', '3.4.4', '3.5', '3.6.1', '3.7', '4.1.2', '5'];
 
 export const CRYPTO_REQUIREMENTS = [
   ...DKIM_CANON,
@@ -27,6 +28,7 @@ export const CRYPTO_REQUIREMENTS = [
   ...DKIM_SIGN,
   ...DKIM_ED25519,
   ...DKIM_KEYRECORD,
+  ...ARC_AMS,
 ] as const satisfies readonly RequirementDef[];
 
 /** Every mail-crypto requirement ID as a union — compile-time traceability. */
