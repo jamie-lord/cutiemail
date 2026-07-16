@@ -12,6 +12,32 @@ between us and confidently reporting our own defects as other people's non-confo
 conformance suite that has never been pointed at a known-good server is an untested
 instrument. Until this passes, no result the suite produces should be trusted or published.
 
+## Status: attempted 2026-07-16, blocked on the build environment
+
+Calibration was attempted and could not run here — recorded rather than hidden, because a
+silent gap in *this* step is exactly the failure the suite is built to avoid. The blocker is
+environmental, not a defect in the harness below, which is complete and correct:
+
+- The Docker daemon started, but pulls hang indefinitely. `docker pull hello-world` (a ~13KB
+  image) never completes; no image layer is ever committed (`docker system df` stays at its
+  prior image count).
+- The break is inside Docker Desktop's Linux VM, not the host network. From the host,
+  `curl https://registry-1.docker.io/v2/` returns 401 (the correct "authenticate" response)
+  and `auth.docker.io/token` returns 200 in <300ms — the registry is reachable. The VM's
+  egress to it is not.
+- A full Docker restart did not recover it: shutdown hung, and the daemon did not come back
+  within 200s.
+
+The one non-Docker ground truth on this machine — macOS ships real Postfix at
+`/usr/sbin/postfix` — was **deliberately not used**. Running an isolated instance needs root
+and would disturb the user's system mail configuration; a calibration run is not worth
+mutating the host. Exim is not installed.
+
+**This is not done.** Task #23 stays open. In an environment with working Docker egress the
+steps below run unchanged and unblock it — the compose file, pinned versions, JSON configs,
+and the triage discipline are all in place and were validated up to the point of the image
+pull. The correct next action is simply to run this on a host that can pull the two images.
+
 ## Running it
 
 Requires a running Docker daemon.
