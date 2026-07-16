@@ -24,6 +24,7 @@ import type { DeliveredMessage } from './server/smtp-receiver.ts';
 import { ImapServer } from './server/imap-server.ts';
 import { relayOutbound, routeRecipients, type OutboundOptions } from './server/outbound.ts';
 import { ensureSubmissionHeaders } from './server/submission-fixup.ts';
+import { dkimSign, makeSigner } from './server/dkim-signer.ts';
 // Bundled self-signed certificate — local development default only.
 import { TEST_CERT as DEV_CERT, TEST_KEY as DEV_KEY } from './testing/tls-test-cert.ts';
 
@@ -43,6 +44,11 @@ export interface MailServerConfig {
   readonly outbound?: {
     readonly resolveHosts?: (domain: string) => Promise<readonly string[]>;
     readonly port?: number;
+  };
+  /** DKIM signing for outbound mail. Unset = no signing (SPF-only deliverability). */
+  readonly dkim?: {
+    readonly selector: string;
+    readonly privateKeyPem: string;
   };
   /** Where to report runtime events (relay outcomes). Unset = silent. */
   readonly onEvent?: (line: string) => void;
@@ -87,6 +93,9 @@ export async function startServer(cfg: MailServerConfig): Promise<RunningServer>
     ...(cfg.outbound?.resolveHosts ? { resolveHosts: cfg.outbound.resolveHosts } : {}),
     ...(cfg.outbound?.port !== undefined ? { port: cfg.outbound.port } : {}),
   };
+  // DKIM signer, if a key is configured. Signing moves outbound from spam to inbox.
+  const signer = cfg.dkim !== undefined ? makeSigner(cfg.domain, cfg.dkim.selector, cfg.dkim.privateKeyPem) : undefined;
+
   const submissionHandler = (m: DeliveredMessage): void => {
     const { local, remote } = routeRecipients(m.recipients, cfg.domain);
     // RFC 6409 fix-up (submission only, never on the inbound port): add Date /
@@ -94,7 +103,9 @@ export async function startServer(cfg: MailServerConfig): Promise<RunningServer>
     const data = ensureSubmissionHeaders(m.data, cfg.domain);
     if (local.length > 0) storeLocal(data);
     if (remote.length > 0) {
-      void relayOutbound({ ...m, data, recipients: remote }, outboundOpts)
+      // Sign the outbound copy (after fix-up, so Date/Message-ID are covered).
+      const outData = signer !== undefined ? dkimSign(data, signer) : data;
+      void relayOutbound({ ...m, data: outData, recipients: remote }, outboundOpts)
         .then((results) => {
           for (const r of results) log(`relay ${r.recipient}: ${r.ok ? 'sent' : 'FAILED'} — ${r.detail}`);
         })
@@ -132,6 +143,10 @@ function configFromEnv(): MailServerConfig & { usingDevCert: boolean } {
   const usingDevCert = certPath === undefined || keyPath === undefined;
   // The bundled dev certificate is imported lazily only when no real cert is given.
   const dev = usingDevCert ? loadDevCert() : { cert: readFileSync(certPath!, 'utf8'), key: readFileSync(keyPath!, 'utf8') };
+  // DKIM signing is enabled only when both a key file and a selector are given.
+  const dkimKeyPath = process.env.MAIL_DKIM_KEY;
+  const dkimSelector = process.env.MAIL_DKIM_SELECTOR;
+  const dkim = dkimKeyPath !== undefined && dkimSelector !== undefined ? { selector: dkimSelector, privateKeyPem: readFileSync(dkimKeyPath, 'utf8') } : undefined;
   return {
     dbPath: process.env.MAIL_DB ?? 'mail.db',
     host: process.env.MAIL_HOST ?? '127.0.0.1',
@@ -141,6 +156,7 @@ function configFromEnv(): MailServerConfig & { usingDevCert: boolean } {
     domain: process.env.MAIL_DOMAIN ?? 'mail.example.com',
     accounts: [{ user: process.env.MAIL_USER ?? 'demo', pass: process.env.MAIL_PASS ?? 'demo' }],
     tls: dev,
+    ...(dkim !== undefined ? { dkim } : {}),
     usingDevCert,
   };
 }
