@@ -117,7 +117,14 @@ test('the Thunderbird account-setup sequence completes against the server', asyn
     assert.ok(body.includes('the body'), 'full body via UID FETCH');
     assert.match(body, /UID 1/, 'UID FETCH response always carries the UID');
 
-    assert.match(await s.run('t14', 'LOGOUT'), /^\* BYE/m);
+    // The EXACT list-building fetch real Thunderbird 140 sends (captured from the
+    // live box) — it uses the legacy RFC822.HEADER item, not BODY.PEEK[HEADER].
+    const tbList = await s.run('t14', 'UID FETCH 1:3 (UID RFC822.SIZE RFC822.HEADER FLAGS)');
+    assert.match(tbList, /^\* 1 FETCH \(UID 1 .*RFC822\.SIZE \d+ .*RFC822\.HEADER \{\d+\}/m, 'RFC822.HEADER is served, keyed as RFC822.HEADER');
+    assert.ok(tbList.includes('Subject: compat\r\n'), 'the header block carries the real headers');
+    assert.ok(!tbList.includes('the body'), 'RFC822.HEADER is headers only');
+
+    assert.match(await s.run('t15', 'LOGOUT'), /^\* BYE/m);
   } finally {
     sock.destroy();
     await server.close();

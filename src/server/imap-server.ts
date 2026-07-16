@@ -90,12 +90,25 @@ interface FetchAtts {
   flags: boolean;
   size: boolean;
   envelope: boolean;
+  /** RFC822 / RFC822.HEADER / RFC822.TEXT — the legacy fetch items real clients still use. */
+  rfc822: boolean;
+  rfc822Header: boolean;
+  rfc822Text: boolean;
   bodySections: string[];
 }
 
 /** Parse the text after the sequence-set of a FETCH into the requested atts. */
 function parseFetchAtts(spec: string): FetchAtts {
-  const atts: FetchAtts = { uid: false, flags: false, size: false, envelope: false, bodySections: [] };
+  const atts: FetchAtts = {
+    uid: false,
+    flags: false,
+    size: false,
+    envelope: false,
+    rfc822: false,
+    rfc822Header: false,
+    rfc822Text: false,
+    bodySections: [],
+  };
   // Pull out BODY[..] / BODY.PEEK[..] first — their brackets may contain spaces.
   const rest = spec.replace(/BODY(?:\.PEEK)?\[([^\]]*)\]/gi, (_m, section: string) => {
     atts.bodySections.push(section.trim());
@@ -107,9 +120,23 @@ function parseFetchAtts(spec: string): FetchAtts {
     else if (t === 'FLAGS') atts.flags = true;
     else if (t === 'RFC822.SIZE') atts.size = true;
     else if (t === 'ENVELOPE') atts.envelope = true;
-    else if (t === 'RFC822') atts.bodySections.push('');
+    else if (t === 'RFC822.HEADER') atts.rfc822Header = true;
+    else if (t === 'RFC822.TEXT') atts.rfc822Text = true;
+    else if (t === 'RFC822') atts.rfc822 = true;
   }
   return atts;
+}
+
+/** The header block of a message (up to and including the blank separator line). */
+function headerBlock(raw: Buffer): Buffer {
+  const end = raw.indexOf(Buffer.from('\r\n\r\n', 'latin1'));
+  return end === -1 ? raw : raw.subarray(0, end + 4);
+}
+
+/** The body of a message (after the header separator). */
+function bodyBlock(raw: Buffer): Buffer {
+  const end = raw.indexOf(Buffer.from('\r\n\r\n', 'latin1'));
+  return end === -1 ? Buffer.alloc(0) : raw.subarray(end + 4);
 }
 
 /** Extract the named header fields of a message as bytes, per HEADER.FIELDS. */
@@ -208,9 +235,12 @@ export class ImapServer {
     if (atts.flags) text(`FLAGS (${[...msg.flags].join(' ')})`);
     if (atts.size) text(`RFC822.SIZE ${msg.raw.length}`);
     if (atts.envelope) text(`ENVELOPE ${serializeEnvelope(buildEnvelope(parseMessage(msg.raw).headers))}`);
+    // The legacy RFC822.* items — real Thunderbird fetches RFC822.HEADER for the list.
+    if (atts.rfc822Header) literal('RFC822.HEADER', headerBlock(msg.raw));
+    if (atts.rfc822Text) literal('RFC822.TEXT', bodyBlock(msg.raw));
+    if (atts.rfc822) literal('RFC822', msg.raw);
     for (const section of atts.bodySections) {
       const up = section.toUpperCase();
-      const headerEnd = msg.raw.indexOf(Buffer.from('\r\n\r\n', 'latin1'));
       if (up === '') {
         literal('BODY[]', msg.raw);
       } else if (up.startsWith('HEADER.FIELDS')) {
@@ -218,9 +248,9 @@ export class ImapServer {
         const names = fields.split(/\s+/).filter((f) => f.length > 0);
         literal(`BODY[HEADER.FIELDS (${names.map((n) => n.toUpperCase()).join(' ')})]`, headerFields(msg.raw, names));
       } else if (up === 'HEADER') {
-        literal('BODY[HEADER]', headerEnd === -1 ? msg.raw : msg.raw.subarray(0, headerEnd + 4));
+        literal('BODY[HEADER]', headerBlock(msg.raw));
       } else if (up === 'TEXT') {
-        literal('BODY[TEXT]', headerEnd === -1 ? Buffer.alloc(0) : msg.raw.subarray(headerEnd + 4));
+        literal('BODY[TEXT]', bodyBlock(msg.raw));
       } else {
         // Unrecognised section (part numbers etc.) — serve the whole body
         // rather than lie with an empty literal.
