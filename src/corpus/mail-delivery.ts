@@ -63,14 +63,20 @@ export const CASES: readonly TestCase[] = [
   }),
 
   testCase({
-    id: 'undeliverable-recipient-rejected',
+    id: 'undeliverable-recipient-not-fully-accepted',
     requirement: 'R-5321-3.3-i',
-    intent: 'a RCPT for an undeliverable recipient draws a 5yz',
+    intent: 'a message to a declared-undeliverable recipient is rejected — at RCPT or, at latest, after DATA',
     rationale:
       '§3.3: "If the recipient is known not to be a deliverable address, the SMTP server ' +
-      'returns a 550 reply." Asserted as the 5yz class (551/553 also satisfy — the RFC fixes ' +
-      'the severity, not the exact 550). A 2yz ACCEPTANCE of an undeliverable recipient is the ' +
-      'violation.',
+      'returns a 550 reply ... (other circumstances and reply codes are possible)." Two traps ' +
+      'the register note flags: (1) assert the 5yz CLASS, never the exact 550 (551/553/554 all ' +
+      'occur); (2) the MUST is conditioned on the server KNOWING — a server that does no RCPT-' +
+      'time verification and 250s every recipient (anti-harvesting) is NOT violating it, and ' +
+      'may reject after DATA or bounce asynchronously. So "the honest scoring is reject-or-' +
+      'defer": a 5yz at RCPT OR a rejection after end-of-data is conformant. Only FULL synchronous ' +
+      'acceptance of the declared-undeliverable recipient\'s message is the violation — and even ' +
+      'that a server could still bounce async, which this suite cannot see. The rejectedRecipient ' +
+      'fixture carries the operator\'s assertion that the server is configured to reject it.',
     needs: { fixture: ['rejectedRecipient'] },
     run: async (conn): Promise<Judgement> => {
       const bad = await greetEhloMail(conn);
@@ -79,11 +85,24 @@ export const CASES: readonly TestCase[] = [
       const r = await conn.readReply(3000);
       if (r.kind === 'timeout') return { kind: 'inconclusive', reason: 'RCPT drew no reply within the timeout' };
       if (r.kind !== 'reply') return { kind: 'inconclusive', reason: `RCPT: ${r.kind}` };
-      // A 4yz temporary rejection is not evidence of the "known undeliverable"
-      // MUST either way — inconclusive. Only a 2yz accept is the violation.
-      if (severity(r.reply) === 5) return { kind: 'satisfied', detail: `undeliverable recipient rejected (${r.reply.code})` };
-      if (severity(r.reply) === 2) return { kind: 'violated', detail: `server ACCEPTED (${r.reply.code}) a known-undeliverable recipient` };
-      return { kind: 'inconclusive', reason: `RCPT drew ${r.reply.code} (not a clear accept or 5yz reject)` };
+      // Rejected up front (any 5yz): conformant.
+      if (severity(r.reply) === 5) return { kind: 'satisfied', detail: `rejected at RCPT (${r.reply.code})` };
+      // Not a 2yz acceptance either (e.g. 4yz greylist): not evidence of a violation.
+      if (severity(r.reply) !== 2) return { kind: 'inconclusive', reason: `RCPT drew ${r.reply.code}` };
+      // Accepted at RCPT — the deferred-rejection path §3.3 permits. Send the body
+      // and see whether the transaction is ultimately rejected.
+      await conn.send(crlf`DATA`);
+      const data = await conn.readReply(3000);
+      if (data.kind !== 'reply') return { kind: 'inconclusive', reason: `DATA: ${data.kind}` };
+      if (severity(data.reply) === 5) return { kind: 'satisfied', detail: `deferred rejection at DATA (${data.reply.code})` };
+      if (data.reply.code !== 354) return { kind: 'inconclusive', reason: `DATA drew ${data.reply.code}` };
+      await conn.send(cat(crlf`Subject: probe`, crlf``, crlf`body`, EOD));
+      const final = await conn.readReply(5000);
+      if (final.kind !== 'reply') return { kind: 'inconclusive', reason: `end-of-data: ${final.kind}` };
+      if (severity(final.reply) === 2) {
+        return { kind: 'violated', detail: `server FULLY ACCEPTED (${final.reply.code}) a message for a declared-undeliverable recipient` };
+      }
+      return { kind: 'satisfied', detail: `deferred rejection after body (${final.reply.code})` };
     },
   }),
 
@@ -126,6 +145,6 @@ export const CASES: readonly TestCase[] = [
 
 export const MUTANTS: readonly Mutant[] = [
   { catches: 'valid-recipient-accepted', defect: 'rejectValidRecipient', why: 'rejecting a valid recipient with 550 violates R-5321-3.3-h' },
-  { catches: 'undeliverable-recipient-rejected', defect: 'acceptRejectedRecipient', why: 'accepting a known-undeliverable recipient violates R-5321-3.3-i' },
+  { catches: 'undeliverable-recipient-not-fully-accepted', defect: 'acceptRejectedRecipient', why: 'fully accepting a message for a known-undeliverable recipient violates R-5321-3.3-i' },
   { catches: 'accepted-transaction-stored', defect: 'rejectAcceptedMessage', why: 'rejecting a complete valid transaction at end-of-data violates R-5321-3.3-t' },
 ];
