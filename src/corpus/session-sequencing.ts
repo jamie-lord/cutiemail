@@ -109,7 +109,7 @@ export const CASES: readonly TestCase[] = [
   testCase({
     id: 'quit-returns-221-and-closes',
     requirement: 'R-5321-4.1.1.10-a',
-    alsoTouches: ['R-5321-3.8-a'],
+    alsoTouches: ['R-5321-3.8-a', 'R-5321-4.3.1-e'],
     intent: 'QUIT draws a 221 reply and the server then closes the channel',
     rationale: '§4.1.1.10: QUIT "specifies that the receiver MUST send a \\"221 OK\\" reply, and then close the transmission channel."',
     run: async (conn): Promise<Judgement> => {
@@ -298,6 +298,10 @@ export const MUTANTS: readonly Mutant[] = [
       {
         requirement: 'R-5321-3.8-a',
         why: '§3.8: on QUIT "the server responds with a positive reply code" — a non-221 (non-positive) reply is exactly that violation',
+      },
+      {
+        requirement: 'R-5321-4.3.1-e',
+        why: '§4.3.1: "the meanings and actions implied by the code numbers and by the specific command reply sequence MUST be preserved" — answering QUIT with a 500 instead of the mandated 221 fails to preserve the QUIT->221 sequence semantics (the concrete instance the register note names)',
       },
     ],
   },

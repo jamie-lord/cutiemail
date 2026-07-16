@@ -474,5 +474,10 @@ export const S2_3_A = [
       'The reply-code registry structure (RFC 3463, RFC 5248) referenced at the ' +
       'end of §2.3.7 is enhanced status codes, an extension surface (task #19); ' +
       'nothing in §2.3.7 requires a server to emit them.',
+    deliberatelyUncovered: {
+      reason:
+        'the only convictable content is "a reply begins with a numeric completion code" — and that is structurally guaranteed by the reply reader itself: a response that does not begin with three digits does not FRAME as a reply at all, so there is no wire behaviour a server could exhibit that the reply-code/framing tests (R-5321-4.2-b/-d) do not already catch. The "usually followed by a text string" half is explicitly NON-normative (the note: "usually" and "general form" are hedges; a bare 250 CRLF is conforming), so a text-requiring test would false-positive a conformant server. No dedicated negative control adds signal, so this is deliberately not separately covered.',
+      date: '2026-07-16',
+    },
   },
 ] as const satisfies readonly RequirementDef[];
