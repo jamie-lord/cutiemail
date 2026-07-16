@@ -161,6 +161,18 @@ export interface Defects {
    * case reports permitted-latitude rather than a finding.
    */
   readonly no8bitmime?: boolean;
+  /**
+   * Return 501 to RSET when it carries an argument (RSET foo). CONFORMANT —
+   * §4.3.2-g is a SHOULD; this models a server that FOLLOWS it (the clean server
+   * ignores the argument and returns 250, which is the permitted decline).
+   */
+  readonly rset501OnArgs?: boolean;
+  /**
+   * Refuse VRFY with 503 "bad sequence" before an EHLO/HELO. CONFORMANT-adjacent:
+   * §4.1.4-b is a SHOULD to accept non-mail commands without initialisation, so
+   * this models a server DECLINING that SHOULD (the clean server accepts it).
+   */
+  readonly vrfy503BeforeGreeting?: boolean;
   /** Answer NOOP with a 500 "command not recognized". Violates R-5321-4.5.1-b. */
   readonly unrecognizedNoop?: boolean;
   /** Send TWO replies to a single NOOP. Violates R-5321-4.2-a (exactly one reply). */
@@ -574,6 +586,9 @@ export class MutantServer {
         return this.#write(sock, crlf`354 End data with <CR><LF>.<CR><LF>`);
 
       case 'RSET':
+        if (d.rset501OnArgs && /^RSET\s+\S/i.test(text)) {
+          return replyOK(501, 'Error: RSET takes no arguments');
+        }
         if (d.rsetClosesConnection) {
           sock.destroy();
           return;
@@ -640,6 +655,9 @@ export class MutantServer {
         return;
 
       case 'VRFY':
+        if (d.vrfy503BeforeGreeting && !state.greeted) {
+          return replyOK(503, 'Error: send HELO/EHLO first');
+        }
         if (d.vrfyResetsState) {
           state.hasMail = false;
           state.rcptCount = 0;
