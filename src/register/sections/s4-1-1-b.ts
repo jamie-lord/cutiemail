@@ -368,6 +368,11 @@ export const S4_1_1_B = [
       'permits. Treat 502 as `permitted-latitude`. ' +
       'Watch for servers that answer 214 with an empty or single-word text — ' +
       'unhelpful, conforming, and not our business to fail.',
+    deliberatelyUncovered: {
+      reason:
+        'the "helpful information" content has no machine-checkable definition (the RFC gives none), and the only observable — a 211/214 to HELP — is entirely conditional on HELP being supported, which §4.1.1.8-e makes only a SHOULD. A 500/502 to HELP is permitted-latitude (many hardened MTAs disable HELP), so there is no MUST violation a server can commit here that is distinguishable from a permitted decline. The support-vs-decline branch is profiled instead by the §4.1.1.8-e latitude case (help-supported), which never produces a finding. (A former MUST test wrongly convicted a 500 to HELP; this replaces it.)',
+      date: '2026-07-16',
+    },
   },
   {
     id: 'R-5321-4.1.1.8-b',

@@ -64,17 +64,20 @@ test('the matrix surfaces a divergence where a broken server differs from a clea
 });
 
 test('two servers broken in DIFFERENT ways diverge at different requirements', async () => {
+  // NB: uses unrecognizedNoop (a genuine §4.5.1-b MUST violation), NOT rejectHelp —
+  // HELP support is a SHOULD, so a HELP refusal is permitted-latitude, never a
+  // divergence (see help-supported in latitude.ts).
   const [a, b] = await Promise.all([
-    runAgainst('no-help', { rejectHelp: true }),
+    runAgainst('no-noop', { unrecognizedNoop: true }),
     runAgainst('bad-codes', { fourDigitCode: true }),
   ]);
   const matrix = buildMatrix([a, b]);
   const divergentReqs = new Set(matrix.divergences.map((r) => r.requirementId));
-  // no-help violates the HELP requirement; bad-codes violates the reply-code one.
-  assert.ok(divergentReqs.has('R-5321-4.1.1.8-a'), 'HELP divergence expected from the no-help server');
+  // no-noop violates the mandatory-command requirement; bad-codes the reply-code one.
+  assert.ok(divergentReqs.has('R-5321-4.5.1-b'), 'NOOP divergence expected from the no-noop server');
   assert.ok(divergentReqs.has('R-5321-4.3.2-c'), 'reply-code divergence expected from the bad-codes server');
   // And each server is the non-conformant one at its OWN defect, not the other's.
-  const help = matrix.divergences.find((r) => r.requirementId === 'R-5321-4.1.1.8-a');
-  assert.equal(help?.cells.get('no-help')?.outcome, 'non-conformant');
-  assert.equal(help?.cells.get('bad-codes')?.outcome, 'conformant');
+  const noop = matrix.divergences.find((r) => r.requirementId === 'R-5321-4.5.1-b');
+  assert.equal(noop?.cells.get('no-noop')?.outcome, 'non-conformant');
+  assert.equal(noop?.cells.get('bad-codes')?.outcome, 'conformant');
 });

@@ -164,6 +164,36 @@ export const CASES: readonly TestCase[] = [
         : { kind: 'violated', detail: `unknown command drew ${r.reply.code}, not 500 (permitted — §3.8-d is a SHOULD; still tolerant)` };
     },
   }),
+
+  testCase({
+    id: 'help-supported',
+    requirement: 'R-5321-4.1.1.8-e',
+    intent: 'bare HELP draws a 211/214 (a SHOULD — declining it, e.g. 502/500, is conformant latitude)',
+    rationale:
+      '§4.1.1.8: "SMTP servers SHOULD support HELP without arguments." A SHOULD, and the register ' +
+      'note is emphatic that a 502 (or 500) is permitted-latitude, not a failure — "a fair number ' +
+      'of hardened MTAs disable HELP. Do not let the ease of the test tempt anyone into scoring ' +
+      '502 as a defect." So a 211/214 follows the SHOULD; a 500/502 is the permitted decline. We ' +
+      'record which. (This replaces a former MUST test that wrongly convicted a 500 to HELP.)',
+    run: async (conn: Conn): Promise<Judgement> => {
+      const g = await conn.readReply(5000);
+      if (g.kind !== 'reply' || severity(g.reply) !== 2) {
+        return { kind: 'inconclusive', reason: `greeting: ${g.kind === 'reply' ? g.reply.code : g.kind}` };
+      }
+      await conn.send(crlf`EHLO conformance-suite.invalid`);
+      if ((await conn.readReply(3000)).kind !== 'reply') return { kind: 'inconclusive', reason: 'no EHLO reply' };
+      await conn.send(crlf`HELP`);
+      const r = await conn.readReply(3000);
+      if (r.kind === 'timeout') return { kind: 'inconclusive', reason: 'HELP drew no reply within the timeout' };
+      if (r.kind !== 'reply') return { kind: 'inconclusive', reason: `HELP: ${r.kind}` };
+      // A 2yz (211 status / 214 help) supports HELP; anything else (500/502) is the
+      // permitted decline. The outcome model maps a violated SHOULD to
+      // permitted-latitude, so a decline never becomes a finding.
+      return severity(r.reply) === 2
+        ? { kind: 'satisfied', detail: `HELP supported (${r.reply.code})` }
+        : { kind: 'violated', detail: `HELP not supported (${r.reply.code}) — permitted, §4.1.1.8-e is a SHOULD (many hardened MTAs disable HELP)` };
+    },
+  }),
 ];
 
 export const CONTROLS: readonly LatitudeControl[] = [
@@ -191,5 +221,10 @@ export const CONTROLS: readonly LatitudeControl[] = [
     case: 'unknown-command-answered-500',
     follows: {}, // clean mutant answers an unknown command with 500
     declines: { unknownCommand502: true }, // declines: tolerant but 502, not 500
+  },
+  {
+    case: 'help-supported',
+    follows: {}, // clean mutant answers HELP with 214
+    declines: { rejectHelp: true }, // declines: 500 (HELP disabled) — permitted, a SHOULD
   },
 ];

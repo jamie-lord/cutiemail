@@ -114,31 +114,11 @@ export const CASES: readonly TestCase[] = [
     },
   }),
 
-  testCase({
-    id: 'help-is-answered',
-    requirement: 'R-5321-4.1.1.8-a',
-    intent: 'HELP draws helpful information (a 2yz reply), not a 500',
-    rationale:
-      '§4.1.1.8: HELP "causes the server to send helpful information to the client", and ' +
-      '§4.1.1.8-e says servers SHOULD support HELP without arguments. Together: HELP should ' +
-      'draw a 211/214-class reply. A 500 "command not recognized" is the violation.',
-    run: async (conn): Promise<Judgement> => {
-      const bad = await greetAndEhlo(conn);
-      if (bad !== null) return bad;
-      await conn.send(crlf`HELP`);
-      const r = await conn.readReply(3000);
-      if (r.kind === 'timeout') return { kind: 'inconclusive', reason: 'HELP drew no reply within the timeout (server may be slow)' };
-      if (r.kind !== 'reply') return { kind: 'violated', detail: `HELP: server ${r.kind} instead of replying` };
-      if (r.reply.code === 500) {
-        return { kind: 'violated', detail: 'HELP drew 500 "command not recognized" — the server does not answer HELP' };
-      }
-      // 211, 214 (help), or even a 5yz-that-is-not-500 (e.g. 502 not implemented) —
-      // only a flat 500 unrecognised is the clear violation of "causes ... helpful
-      // information". A 502 is borderline; treat non-500 as satisfied here and let
-      // the SHOULD nuance (§4.1.1.8-e) live in a separate latitude test if needed.
-      return { kind: 'satisfied', detail: `HELP answered with ${r.reply.code}` };
-    },
-  }),
+  // NOTE: HELP support is a SHOULD (§4.1.1.8-e), not a MUST — the register notes
+  // for both §4.1.1.8-a and -e say a 500/502 to HELP is permitted-latitude (many
+  // hardened MTAs disable HELP). What was a MUST test here wrongly convicted a
+  // conformant HELP-disabled server on a 500; it now lives as a latitude profile
+  // (`help-supported`) in latitude.ts, and §4.1.1.8-a is deliberately-uncovered.
 
   testCase({
     id: 'bare-postmaster-accepted',
@@ -202,6 +182,5 @@ export const MUTANTS: readonly Mutant[] = [
     ],
   },
   { catches: 'exactly-one-reply-per-command', defect: 'doubleReplyToNoop', why: 'two replies to one command violates R-5321-4.2-a' },
-  { catches: 'help-is-answered', defect: 'rejectHelp', why: 'a 500 to HELP violates R-5321-4.1.1.8-a' },
   { catches: 'bare-postmaster-accepted', defect: 'rejectBarePostmaster', why: 'rejecting the bare reserved mailbox <postmaster> violates R-5321-2.3.5-g' },
 ];
