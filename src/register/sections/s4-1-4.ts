@@ -121,6 +121,11 @@ export const S4_1_4 = [
       'EHLO in-band is awkward: a syntactically malformed domain argument is the ' +
       'usual lever, but a permissive server may accept it, in which case this ' +
       'requirement simply is not exercised.',
+    deliberatelyUncovered: {
+      reason:
+        'eliciting an "unacceptable EHLO" reliably against an arbitrary server is contrived — servers accept a wide range of EHLO arguments, so a probe designed to be rejected is server-specific and would usually yield inconclusive rather than a clean pass/fail.',
+      date: '2026-07-16',
+    },
   },
   {
     id: 'R-5321-4.1.4-f',
@@ -143,6 +148,11 @@ export const S4_1_4 = [
       'the prior state survives — the opposite of R-5321-4.1.4-d\'s reset on an ' +
       'ACCEPTED EHLO. "State" is not directly observable; infer it from how the ' +
       'next command is handled.',
+    deliberatelyUncovered: {
+      reason:
+        'depends on first eliciting a rejected EHLO (see R-5321-4.1.4-e) and then proving state was preserved; the setup is server-specific and contrived, so deferred rather than risk an inconclusive-heavy or false-positive test.',
+      date: '2026-07-16',
+    },
   },
   {
     id: 'R-5321-4.1.4-g',
@@ -319,6 +329,11 @@ export const S4_1_4 = [
       'R-5321-4.1.4-e, which lists a set). (2) State must be unchanged after the ' +
       '501 — infer from subsequent command handling. Some servers reply 553/501 ' +
       'variants for bad addresses; watch that latitude when scoring.',
+    deliberatelyUncovered: {
+      reason:
+        'requires an "unacceptable transaction-beginning argument" that a given server actually rejects with 501; which MAIL FROM arguments a server rejects is server-specific, making a portable test contrived.',
+      date: '2026-07-16',
+    },
   },
   {
     id: 'R-5321-4.1.4-o',

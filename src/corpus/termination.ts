@@ -72,7 +72,7 @@ export const CASES: readonly TestCase[] = [
   testCase({
     id: 'unknown-command-does-not-close-connection',
     requirement: 'R-5321-3.8-c',
-    alsoTouches: ['R-5321-3.8-d'],
+    alsoTouches: ['R-5321-3.8-b', 'R-5321-3.8-d'],
     intent: 'a syntactically-shaped but unrecognised command draws a reply and does not sever the channel',
     rationale:
       '§3.8: "In particular, a server that closes connections in response to commands that ' +

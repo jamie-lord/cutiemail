@@ -394,6 +394,11 @@ export const S4_5_4 = [
       '4yz-busy reply differently from silently accepting only one; (2) do ' +
       'not require unbounded concurrency — -b explicitly permits a limit, so ' +
       'the assertion is strictly ">1", not "many".',
+    deliberatelyUncovered: {
+      reason:
+        'concerns servers that cannot handle more than one transaction at a time — a property not observable from a single client connection without provoking concurrency the suite does not model.',
+      date: '2026-07-16',
+    },
   },
 
   // --- §4.5.5 Messages with a Null Reverse-Path --------------------------

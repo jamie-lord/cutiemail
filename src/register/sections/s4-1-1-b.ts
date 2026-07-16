@@ -807,6 +807,11 @@ export const S4_1_1_B = [
       'syntactically well-formed parameter that is unrecognised, so the probe ' +
       'must be valid esmtp-param syntax per §4.1.2 or a 501 is the server being ' +
       'right and us being sloppy.',
+    deliberatelyUncovered: {
+      reason:
+        'testing the response to an unimplemented MAIL/RCPT parameter requires knowing a parameter the server does NOT implement; that is server-specific, so a portable negative control cannot be built without a per-target fixture.',
+      date: '2026-07-16',
+    },
   },
   {
     id: 'R-5321-4.1.1.11-b',

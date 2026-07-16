@@ -45,6 +45,7 @@ export const CASES: readonly TestCase[] = [
   testCase({
     id: 'source-route-syntax-recognized',
     requirement: 'R-5321-4.1.1.3-b',
+    alsoTouches: ['R-5321-3.3-k'],
     intent: 'a source-routed recipient path is parsed, not rejected as a syntax error',
     rationale:
       '§4.1.1.3: "Receiving systems MUST recognize source route syntax." The assertion is ' +
