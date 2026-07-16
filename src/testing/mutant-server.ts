@@ -147,6 +147,12 @@ export interface Defects {
    */
   readonly rejectSourceRouteAsSyntax?: boolean;
   /**
+   * Drop (destroy) the connection when a source-routed forward-path is seen —
+   * the "unprepared" behaviour R-5321-3.3-k forbids (as opposed to any well-formed
+   * reply, which is conformant).
+   */
+  readonly dropOnSourceRoute?: boolean;
+  /**
    * Stay silent on connect (send no greeting, keep the socket open). Models a
    * server indistinguishable from a merely slow one — used to prove the greeting
    * test yields INCONCLUSIVE (not a finding) on a timeout, not to catch a
@@ -216,6 +222,12 @@ export interface Defects {
    * connection-stays-open test can be shown to NOT flag a shutting-down server.
    */
   readonly shutdownWith421?: boolean;
+  /**
+   * Answer an unknown command with 502 rather than the §3.8-d SHOULD's 500 — still
+   * tolerant (no close), so a CONFORMANT decline of that SHOULD, used as the
+   * `declines` arm of the 3.8-d latitude control.
+   */
+  readonly unknownCommand502?: boolean;
   /** Send mismatched continuation codes in a multiline reply. */
   readonly mismatchedContinuation?: boolean;
   /** Accept a command line longer than 512 octets without 500. */
@@ -587,6 +599,11 @@ export class MutantServer {
         if (d.rejectSourceRouteAsSyntax && /RCPT\s+TO:\s*<@/i.test(text)) {
           return replyOK(501, 'Error: syntax');
         }
+        // Defect: be UNPREPARED — drop the connection on a source route (§3.3-k).
+        if (d.dropOnSourceRoute && /RCPT\s+TO:\s*<@/i.test(text)) {
+          sock.destroy();
+          return;
+        }
         {
           // Extract the address for the fixture verdict. RCPT TO:<addr> (last @-path).
           const m = /RCPT\s+TO:\s*<([^>]*)>/i.exec(text);
@@ -712,6 +729,10 @@ export class MutantServer {
           sock.end();
           return;
         }
+        // Latitude decline for §3.8-d: tolerant of the unknown command (no close)
+        // but answers 502 rather than the SHOULD's 500 — conformant, just declining
+        // the specific code the SHOULD names.
+        if (d.unknownCommand502) return replyOK(502, 'Error: command not implemented');
         return replyOK(500, 'Error: command not recognized');
     }
   }

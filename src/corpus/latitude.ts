@@ -132,6 +132,38 @@ export const CASES: readonly TestCase[] = [
         : { kind: 'satisfied', detail: `VRFY supported (${r.reply.code})` };
     },
   }),
+
+  testCase({
+    id: 'unknown-command-answered-500',
+    requirement: 'R-5321-3.8-d',
+    intent: 'an unrecognized command draws the SHOULD\'s 500 (vs another tolerant reply like 502)',
+    rationale:
+      '§3.8: "Servers are expected to be tolerant of unknown commands, issuing a 500 reply and ' +
+      'awaiting further instructions." A SHOULD: the tolerance itself (not closing) is the §3.8-b/c ' +
+      'MUST, tested elsewhere; what THIS records is the softer detail — whether the tolerant reply ' +
+      'is specifically 500, or another non-close code like 502 "not implemented", which is a ' +
+      'permitted decline. A server that CLOSES is a §3.8-c finding, out of scope here, so a ' +
+      'close/timeout is inconclusive and left to that MUST test.',
+    run: async (conn: Conn): Promise<Judgement> => {
+      const g = await conn.readReply(5000);
+      if (g.kind !== 'reply' || severity(g.reply) !== 2) {
+        return { kind: 'inconclusive', reason: `greeting: ${g.kind === 'reply' ? g.reply.code : g.kind}` };
+      }
+      await conn.send(crlf`EHLO conformance-suite.invalid`);
+      if ((await conn.readReply(3000)).kind !== 'reply') return { kind: 'inconclusive', reason: 'no EHLO reply' };
+      await conn.send(crlf`WXYZ some argument`);
+      const r = await conn.readReply(3000);
+      if (r.kind === 'timeout') return { kind: 'inconclusive', reason: 'unknown command drew no reply within the timeout' };
+      // A close is the §3.8-c MUST violation, judged by unknown-command-does-not-
+      // close-connection — not this latitude case's business.
+      if (r.kind !== 'reply') return { kind: 'inconclusive', reason: `unknown command: ${r.kind} (a close is a §3.8-c matter, not §3.8-d latitude)` };
+      // 500 follows the SHOULD; any other non-close reply (502, 501…) is the
+      // permitted decline of the specific code.
+      return r.reply.code === 500
+        ? { kind: 'satisfied', detail: 'unknown command drew the SHOULD\'s 500' }
+        : { kind: 'violated', detail: `unknown command drew ${r.reply.code}, not 500 (permitted — §3.8-d is a SHOULD; still tolerant)` };
+    },
+  }),
 ];
 
 export const CONTROLS: readonly LatitudeControl[] = [
@@ -154,5 +186,10 @@ export const CONTROLS: readonly LatitudeControl[] = [
     case: 'vrfy-supported',
     follows: {}, // clean mutant answers VRFY 252 (supported)
     declines: { vrfyNotSupported: true }, // declines: 502 not implemented (anti-harvesting)
+  },
+  {
+    case: 'unknown-command-answered-500',
+    follows: {}, // clean mutant answers an unknown command with 500
+    declines: { unknownCommand502: true }, // declines: tolerant but 502, not 500
   },
 ];

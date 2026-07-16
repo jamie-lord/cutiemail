@@ -74,6 +74,48 @@ export const CASES: readonly TestCase[] = [
       };
     },
   }),
+
+  testCase({
+    id: 'source-route-does-not-break-session',
+    requirement: 'R-5321-3.3-k',
+    intent: 'a source-routed forward-path leaves the server prepared: a well-formed reply of any class, and the session still usable',
+    rationale:
+      '§3.3: "Servers MUST be prepared to encounter a list of source routes in the forward-path." ' +
+      'Per the register note, "be prepared" is NOT "must accept": 250, 550, 551 — and even a 501 ' +
+      'policy/syntax refusal — are all conformant, and a 501 specifically is scored permitted-latitude ' +
+      '(indistinguishable from a deliberate refusal). What the MUST forbids is being UNPREPARED: ' +
+      'dropping the connection, resetting, or crashing on the construct. So this case does NOT judge ' +
+      'the reply code at all — it judges that SOME well-formed reply came back AND a following RSET ' +
+      'still works. A drop/reset convicts; a timeout is inconclusive (a slow server is not a broken ' +
+      'one, §4.5.3.2). This is the §3.3-k half that source-route-syntax-recognized (§4.1.1.3-b) cannot ' +
+      'reach, since that case judges the code and this one judges liveness.',
+    run: async (conn): Promise<Judgement> => {
+      const bad = await greetEhloMail(conn);
+      if (bad !== null) return bad;
+      await conn.send(crlf`RCPT TO:<@relay.example.org,@relay2.example.org:user@example.com>`);
+      const r = await conn.readReply(3000);
+      if (r.kind === 'timeout') {
+        return { kind: 'inconclusive', reason: 'no reply to the source-routed RCPT within the timeout — slow, not provably unprepared (§4.5.3.2)' };
+      }
+      if (r.kind === 'closed' || r.kind === 'reset') {
+        return { kind: 'violated', detail: `the server ${r.kind} the connection on a source-routed forward-path — the "unprepared" failure §3.3 forbids` };
+      }
+      // A well-formed reply of any class came back. Confirm the session survived it:
+      // an unprepared server can also reply then wedge, so probe with RSET.
+      await conn.send(crlf`RSET`);
+      const rs = await conn.readReply(3000);
+      if (rs.kind === 'timeout') {
+        return { kind: 'inconclusive', reason: `source route drew ${r.reply.code}, but the following RSET timed out — cannot distinguish a wedged session from a slow one` };
+      }
+      if (rs.kind === 'closed' || rs.kind === 'reset') {
+        return { kind: 'violated', detail: `the server replied ${r.reply.code} to the source route but then ${rs.kind} the session on RSET — not left usable` };
+      }
+      if (severity(rs.reply) !== 2) {
+        return { kind: 'inconclusive', reason: `source route drew ${r.reply.code}; the following RSET drew ${rs.reply.code} (not 2yz) — session state unclear, not convicting` };
+      }
+      return { kind: 'satisfied', detail: `source route drew a well-formed ${r.reply.code} and the session stayed usable (RSET -> ${rs.reply.code})` };
+    },
+  }),
 ];
 
 export const MUTANTS: readonly Mutant[] = [
@@ -86,5 +128,10 @@ export const MUTANTS: readonly Mutant[] = [
     catches: 'source-route-syntax-recognized',
     defect: 'rejectSourceRouteAsSyntax',
     why: 'returning a 501 syntax error for a source-route path violates R-5321-4.1.1.3-b',
+  },
+  {
+    catches: 'source-route-does-not-break-session',
+    defect: 'dropOnSourceRoute',
+    why: 'dropping the connection on a source-routed forward-path is the "unprepared" behaviour R-5321-3.3-k forbids',
   },
 ];

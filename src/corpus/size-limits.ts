@@ -90,6 +90,21 @@ export const CASES: readonly TestCase[] = [
         };
       }
 
+      // A line comfortably SHORTER than 512 (400 octets) must not be rejected as
+      // "command too long" — that is R-5321-4.3.2-f, which forbids a too-long
+      // rejection BELOW 512 (distinct from the at-floor 512 probe below, which is
+      // 4.5.3.1.4-a). Probing here makes the exchange genuinely exercise the
+      // sub-512 case, so the rejectCommandLineAt300 control legitimately proves it.
+      await conn.send(cat(bare`NOOP `, rep(0x78, 400 - 5 - 2), CRLF));
+      const mid = await conn.readReply(3000);
+      if (mid.kind !== 'reply') return { kind: 'inconclusive', reason: `400-octet command drew ${mid.kind}` };
+      if (mid.reply.code !== 250) {
+        return {
+          kind: 'violated',
+          detail: `a 400-octet command line drew ${mid.reply.code} where an 8-octet-arg NOOP drew 250 — rejected as too long below the 512 floor (§4.3.2-f)`,
+        };
+      }
+
       // The short NOOP-with-arg succeeded, so this server ignores NOOP args. Now
       // the only difference at 512 octets is the LENGTH. "NOOP " (5) + arg + CRLF
       // (2) = 512  ->  arg = 505 octets.
@@ -152,14 +167,15 @@ export const CASES: readonly TestCase[] = [
 
 export const MUTANTS: readonly Mutant[] = [
   {
-    // No alsoProves for R-5321-4.3.2-f: that requirement is about rejecting a line
-    // SHORTER than 512, but the exchange this test drives probes at EXACTLY 512 (the
-    // 4.5.3.1.4 floor). The defect would violate 4.3.2-f on a sub-512 line, but the
-    // caught exchange never sends one, so it does not demonstrate 4.3.2-f. Claiming
-    // it would credit coverage the exchange doesn't exercise (test-case.ts contract).
     catches: 'command-line-512-accepted',
     defect: 'rejectCommandLineAt300',
     why: 'rejecting a command line within the 512-octet floor violates R-5321-4.5.3.1.4-a',
+    alsoProves: [
+      {
+        requirement: 'R-5321-4.3.2-f',
+        why: '§4.3.2: "producing a \'command too long\' message for a command line shorter than 512 characters would violate ... 4.5.3.1.4" — the defect rejects the test\'s 400-octet probe (a sub-512 line), the exact forbidden act',
+      },
+    ],
   },
   {
     catches: 'text-line-1000-accepted',
