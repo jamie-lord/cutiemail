@@ -288,6 +288,13 @@ export interface Defects {
    * Observable at the sink as a case-folded recipient.
    */
   readonly lowercaseLocalPartOnRelay?: boolean;
+  /**
+   * When relaying, do NOT prepend a Received: trace header to the message.
+   * Violates R-5321-4.4-a (a server MUST insert trace information at the beginning
+   * of the message content). Observable at the sink: the delivered body does not
+   * begin with a Received: line.
+   */
+  readonly dontPrependReceived?: boolean;
   /** Close the connection on error without sending 421. */
   readonly closeWithout421?: boolean;
   /**
@@ -557,6 +564,12 @@ export class MutantServer {
       if (port === undefined) return resolve();
       const sock = net.connect(port, '127.0.0.1');
       const queue = [`EHLO ${this.#domain}`, `MAIL FROM:<${from}>`, ...recipients.map((r) => `RCPT TO:<${r}>`), 'DATA'];
+      // §4.4-a: a conformant relay prepends a Received: trace line to the message
+      // content. The defect omits it. (No timestamp — the test checks the line's
+      // presence and position, not its date.)
+      const outbound = this.#defects.dontPrependReceived
+        ? storedBody
+        : Buffer.concat([Buffer.from(`Received: from ${from || 'unknown'} by ${this.#domain} with ESMTP\r\n`, 'latin1'), storedBody]);
       let bodySent = false;
       const finish = (): void => {
         sock.destroy();
@@ -572,7 +585,7 @@ export class MutantServer {
         }
         if (!bodySent) {
           bodySent = true;
-          sock.write(Buffer.concat([dotStuff(storedBody), Buffer.from('\r\n.\r\n', 'latin1')]));
+          sock.write(Buffer.concat([dotStuff(outbound), Buffer.from('\r\n.\r\n', 'latin1')]));
           return;
         }
         sock.write(Buffer.from('QUIT\r\n', 'latin1'));

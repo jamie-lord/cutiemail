@@ -67,12 +67,16 @@ async function relayThrough(defects: Defects, from: string, recipient: string, b
   return sink; // caller reads sink.last then closes
 }
 
+// The clean relay prepends a Received: trace line (§4.4), so we assert on the
+// un-stuffed line's PRESENCE among the delivered lines, not whole-body equality.
 test('§4.5.2 dot-un-stuffing: a clean relay delivers the un-stuffed body faithfully', async () => {
   const body = Buffer.from('.leading dot line\r\nplain line', 'latin1');
   const sink = await relayThrough({}, 'sender@example.com', 'rcpt@example.com', body);
   try {
     assert.equal(sink.received.length, 1, 'the sink should have received the relayed message');
-    assert.equal(sink.last!.data.toString('latin1'), '.leading dot line\r\nplain line');
+    const lines = sink.last!.data.toString('latin1').split('\r\n');
+    assert.ok(lines.includes('.leading dot line'), 'the leading transport dot should be removed');
+    assert.ok(!lines.includes('..leading dot line'), 'no doubled dot should survive');
   } finally {
     await sink.close();
   }
@@ -84,8 +88,9 @@ test('§4.5.2 dot-un-stuffing: dontUnstuffOnRelay is DETECTED as an extra leadin
   try {
     assert.equal(sink.received.length, 1);
     // The server never removed the transport dot, so the sink sees TWO dots.
-    assert.equal(sink.last!.data.toString('latin1'), '..leading dot line\r\nplain line');
-    assert.notEqual(sink.last!.data.toString('latin1'), '.leading dot line\r\nplain line');
+    const lines = sink.last!.data.toString('latin1').split('\r\n');
+    assert.ok(lines.includes('..leading dot line'), 'the doubled transport dot should survive a non-un-stuffing relay');
+    assert.ok(!lines.includes('.leading dot line'), 'the single-dot form should NOT appear');
   } finally {
     await sink.close();
   }

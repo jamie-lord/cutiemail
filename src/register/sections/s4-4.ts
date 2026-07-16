@@ -34,17 +34,23 @@ export const S4_4 = [
       'information at the beginning of the message content, as discussed in ' +
       'Section 4.1.1.4.',
     testability: {
-      kind: 'not-testable',
-      reason:
-        'The inserted trace/Received line lives in the message the server ' +
-        'forwards or delivers, not in any reply on the SMTP connection. We are ' +
-        'a client and never see the delivered content. Would need a receiving ' +
-        'sink and an end-to-end path. Revisit if task #12 grows an outbound sink.',
+      kind: 'wire-with-fixture',
+      fixture:
+        'A receiving sink the server relays to, so the delivered content can be ' +
+        'read back. The prepended trace line is invisible from the client socket ' +
+        'but observable at the next hop: the delivered content begins with a ' +
+        'Received: line. The mutant relay harness (verifySinkControls, defect ' +
+        'dontPrependReceived) provides this; a real server needs to be configured ' +
+        'to relay to our sink. Assert only the presence/leading position of a ' +
+        'Received: line (b-f detail internals we do not fail on).',
     },
     note:
       'The keystone obligation of the section; every following structural rule ' +
       '(b through f) elaborates what this inserted line must look like, and all ' +
-      'inherit the same downstream-observability problem.',
+      'inherit the same downstream-observability problem. NOW TESTABLE for the ' +
+      'presence/position via the receiving sink (decision 0005); corpus case ' +
+      'received-trace-inserted-on-relay asserts it. The b-f internal-format rules ' +
+      'remain not-testable (we deliberately do not fail on Received-line details).',
   },
   {
     id: 'R-5321-4.4-b',

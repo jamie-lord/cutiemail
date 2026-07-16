@@ -87,6 +87,27 @@ export const CASES: readonly TestCase[] = [
   }),
 
   testCase({
+    id: 'received-trace-inserted-on-relay',
+    requirement: 'R-5321-4.4-a',
+    intent: 'a relayed message is delivered with a Received: trace line prepended',
+    rationale:
+      '§4.4: "When an SMTP server receives a message for delivery or further processing, it MUST ' +
+      'insert trace (\\"time stamp\\" or \\"Received\\") information at the beginning of the message ' +
+      'content." Invisible from the client side, but observable at the sink: the delivered content ' +
+      'begins with a Received: header. We assert only the PRESENCE and leading POSITION of a ' +
+      'Received: line, not its exact format (§4.4-b..f detail the internals; a server may vary them).',
+    needs: { sink: true, fixture: ['validRecipient'] },
+    run: async (conn): Promise<Judgement> => {
+      const got = await deliverAndCapture(conn, conn.fixture.validRecipient!, Buffer.from('a message body', 'latin1'));
+      if ('kind' in got) return got;
+      const firstLine = got.data.toString('latin1').split('\r\n')[0] ?? '';
+      return /^Received:/i.test(firstLine)
+        ? { kind: 'satisfied', detail: 'delivered content begins with a Received: trace line' }
+        : { kind: 'violated', detail: `delivered content does not begin with a Received: line (first line: ${JSON.stringify(firstLine.slice(0, 80))}) — no trace inserted` };
+    },
+  }),
+
+  testCase({
     id: 'local-part-case-preserved-on-delivery',
     requirement: 'R-5321-2.4-d',
     intent: 'the case of the recipient local-part is preserved through to delivery',
@@ -115,6 +136,11 @@ export const MUTANTS: readonly Mutant[] = [
     catches: 'data-transparency-dot-unstuffed',
     defect: 'dontUnstuffOnRelay',
     why: 'forwarding a body with the transport dot still doubled violates R-5321-4.5.2-c (the receiver deletes the leading period)',
+  },
+  {
+    catches: 'received-trace-inserted-on-relay',
+    defect: 'dontPrependReceived',
+    why: 'relaying a message without prepending a Received: trace line violates R-5321-4.4-a (MUST insert trace information at the beginning)',
   },
   {
     catches: 'local-part-case-preserved-on-delivery',
