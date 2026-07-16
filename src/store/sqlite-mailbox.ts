@@ -86,37 +86,69 @@ export class SqliteMailbox {
     }));
   }
 
-  append(raw: Buffer, flags: readonly string[] = [], internalDate = 0): number {
-    const uid = this.uidNext;
-    this.#db.prepare('UPDATE mailbox SET uid_next = ? WHERE id = ?').run(uid + 1, this.#id);
-    this.#db.prepare('INSERT INTO message (mailbox_id, uid, internal_date, raw) VALUES (?, ?, ?, ?)').run(this.#id, uid, internalDate, raw);
-    const ins = this.#db.prepare('INSERT OR IGNORE INTO flag (mailbox_id, uid, flag) VALUES (?, ?, ?)');
-    for (const f of flags) ins.run(this.#id, uid, f);
-    return uid;
+  /**
+   * Run `fn` in a single transaction: a multi-statement mutation commits all-or-
+   * nothing (a crash mid-way can't leave half a message stored) and costs one
+   * fsync instead of one per statement. Not nested — our callers never nest.
+   */
+  #tx<T>(fn: () => T): T {
+    this.#db.exec('BEGIN IMMEDIATE');
+    try {
+      const result = fn();
+      this.#db.exec('COMMIT');
+      return result;
+    } catch (e) {
+      try {
+        this.#db.exec('ROLLBACK');
+      } catch {
+        /* already rolled back / no active tx */
+      }
+      throw e;
+    }
   }
 
-  expunge(uid: number): void {
+  /** Delete a message and its flags (no transaction — callers wrap). */
+  #expungeRow(uid: number): void {
     this.#db.prepare('DELETE FROM message WHERE mailbox_id = ? AND uid = ?').run(this.#id, uid);
     this.#db.prepare('DELETE FROM flag WHERE mailbox_id = ? AND uid = ?').run(this.#id, uid);
   }
 
+  append(raw: Buffer, flags: readonly string[] = [], internalDate = 0): number {
+    return this.#tx(() => {
+      const uid = this.uidNext;
+      this.#db.prepare('UPDATE mailbox SET uid_next = ? WHERE id = ?').run(uid + 1, this.#id);
+      this.#db.prepare('INSERT INTO message (mailbox_id, uid, internal_date, raw) VALUES (?, ?, ?, ?)').run(this.#id, uid, internalDate, raw);
+      const ins = this.#db.prepare('INSERT OR IGNORE INTO flag (mailbox_id, uid, flag) VALUES (?, ?, ?)');
+      for (const f of flags) ins.run(this.#id, uid, f);
+      return uid;
+    });
+  }
+
+  expunge(uid: number): void {
+    this.#tx(() => this.#expungeRow(uid));
+  }
+
   storeFlags(uid: number, mode: StoreMode, flags: readonly string[]): void {
     if (this.#db.prepare('SELECT 1 FROM message WHERE mailbox_id = ? AND uid = ?').get(this.#id, uid) === undefined) return;
-    if (mode === 'replace') this.#db.prepare('DELETE FROM flag WHERE mailbox_id = ? AND uid = ?').run(this.#id, uid);
-    if (mode === 'remove') {
-      const del = this.#db.prepare('DELETE FROM flag WHERE mailbox_id = ? AND uid = ? AND flag = ?');
-      for (const f of flags) del.run(this.#id, uid, f);
-      return;
-    }
-    const ins = this.#db.prepare('INSERT OR IGNORE INTO flag (mailbox_id, uid, flag) VALUES (?, ?, ?)');
-    for (const f of flags) ins.run(this.#id, uid, f);
+    this.#tx(() => {
+      if (mode === 'replace') this.#db.prepare('DELETE FROM flag WHERE mailbox_id = ? AND uid = ?').run(this.#id, uid);
+      if (mode === 'remove') {
+        const del = this.#db.prepare('DELETE FROM flag WHERE mailbox_id = ? AND uid = ? AND flag = ?');
+        for (const f of flags) del.run(this.#id, uid, f);
+        return;
+      }
+      const ins = this.#db.prepare('INSERT OR IGNORE INTO flag (mailbox_id, uid, flag) VALUES (?, ?, ?)');
+      for (const f of flags) ins.run(this.#id, uid, f);
+    });
   }
 
   expungeDeleted(): readonly number[] {
-    const rows = this.#db.prepare('SELECT uid FROM flag WHERE mailbox_id = ? AND flag = ? ORDER BY uid').all(this.#id, DELETED) as Array<{ uid: number }>;
-    const uids = rows.map((r) => Number(r.uid));
-    for (const uid of uids) this.expunge(uid);
-    return uids;
+    return this.#tx(() => {
+      const rows = this.#db.prepare('SELECT uid FROM flag WHERE mailbox_id = ? AND flag = ? ORDER BY uid').all(this.#id, DELETED) as Array<{ uid: number }>;
+      const uids = rows.map((r) => Number(r.uid));
+      for (const uid of uids) this.#expungeRow(uid);
+      return uids;
+    });
   }
 
   /** 1-based position ordered by ascending UID (null if the UID is not present). */
@@ -128,9 +160,11 @@ export class SqliteMailbox {
 
   invalidate(newValidity: number): boolean {
     if (newValidity <= this.uidValidity) return false;
-    this.#db.prepare('DELETE FROM message WHERE mailbox_id = ?').run(this.#id);
-    this.#db.prepare('DELETE FROM flag WHERE mailbox_id = ?').run(this.#id);
-    this.#db.prepare('UPDATE mailbox SET uid_validity = ?, uid_next = 1 WHERE id = ?').run(newValidity, this.#id);
+    this.#tx(() => {
+      this.#db.prepare('DELETE FROM message WHERE mailbox_id = ?').run(this.#id);
+      this.#db.prepare('DELETE FROM flag WHERE mailbox_id = ?').run(this.#id);
+      this.#db.prepare('UPDATE mailbox SET uid_validity = ?, uid_next = 1 WHERE id = ?').run(newValidity, this.#id);
+    });
     return true;
   }
 }

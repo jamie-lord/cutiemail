@@ -88,6 +88,33 @@ test('a pre-multi-mailbox database migrates in place, keeping its stored mail', 
   }
 });
 
+test('WAL journaling can be enabled on a file db and transactional writes persist', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'wal-'));
+  const path = join(dir, 'mail.db');
+  try {
+    const db = new DatabaseSync(path);
+    // Same enablement the daemon does.
+    db.exec('PRAGMA journal_mode=WAL');
+    const mode = (db.prepare('PRAGMA journal_mode').get() as { journal_mode: string }).journal_mode;
+    assert.equal(mode.toLowerCase(), 'wal', 'WAL mode is active on a file-backed db');
+
+    const cat = SqliteCatalog.open(db);
+    const inbox = cat.get('INBOX')!;
+    const uid = inbox.append(Buffer.from('Subject: durable\r\n\r\nx\r\n', 'latin1'), ['\\Seen']);
+    inbox.storeFlags(uid, 'add', ['\\Flagged']);
+    db.close();
+
+    // Reopen: the transactional append + flag write survived, atomically.
+    const db2 = new DatabaseSync(path);
+    const inbox2 = SqliteCatalog.open(db2).get('INBOX')!;
+    assert.equal(inbox2.messages.length, 1);
+    assert.deepEqual([...inbox2.messages[0]!.flags].sort(), ['\\Flagged', '\\Seen']);
+    db2.close();
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test('bare SqliteMailbox.open still works against a catalog database (compat surface)', () => {
   const db = new DatabaseSync(':memory:');
   SqliteCatalog.open(db);

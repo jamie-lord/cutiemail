@@ -77,6 +77,13 @@ export interface RunningServer {
 /** Assemble and start the server from a full config. Returns the running handles. */
 export async function startServer(cfg: MailServerConfig): Promise<RunningServer> {
   const db = new DatabaseSync(cfg.dbPath);
+  // WAL journaling: cleaner crash recovery and a reader never blocks the writer —
+  // the right mode for a server. (A no-op for an in-memory db, used by tests.)
+  try {
+    db.exec('PRAGMA journal_mode=WAL');
+  } catch {
+    /* :memory: and some builds don't support WAL — harmless */
+  }
   // The catalog of named mailboxes: INBOX plus whatever the client creates
   // (real Thunderbird's first act is CREATE "Trash"). Inbound mail lands in INBOX.
   const catalog = SqliteCatalog.open(db, 1);
