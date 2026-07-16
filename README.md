@@ -34,9 +34,13 @@ over TLS), and IMAPS. Configuration is by environment variable:
 
 The daemon (`src/main.ts`) is thin glue over pieces built and validated separately: the SMTP
 receiver, the IMAP server, the `node:sqlite` mailbox, the SCRAM account store, the DKIM/SCRAM
-crypto. Nine `*.integration.test.ts` files drive the assembled server over real sockets —
+crypto. Thirteen `*.integration.test.ts` files drive the assembled server over real sockets —
 including a full deliver → store → read round-trip, STARTTLS with the command-injection defence,
 submission AUTH, DKIM sign-verify, durability across restart, and the daemon itself.
+
+How the whole thing fits together — the layers, and how the runnable server and the conformance
+test bed share one spine — is written up in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md). Start
+there to understand the codebase.
 
 Two self-audit reports keep the test bed honest: `npm run registry` (the cross-domain
 requirement inventory) and `npm run library-coverage` (fails on any parse-testable requirement
