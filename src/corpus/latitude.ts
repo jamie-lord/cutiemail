@@ -18,7 +18,7 @@
 import { testCase } from '../conformance/test-case.ts';
 import type { TestCase, Conn } from '../conformance/test-case.ts';
 import type { Judgement } from '../conformance/outcome.ts';
-import { crlf } from '../wire/bytes.ts';
+import { crlf, cat, bare, CRLF } from '../wire/bytes.ts';
 import { severity, advertisedExtensions } from '../wire/reply.ts';
 import type { LatitudeControl } from './latitude-control.ts';
 
@@ -194,6 +194,61 @@ export const CASES: readonly TestCase[] = [
         : { kind: 'violated', detail: `HELP not supported (${r.reply.code}) — permitted, §4.1.1.8-e is a SHOULD (many hardened MTAs disable HELP)` };
     },
   }),
+
+  testCase({
+    id: 'noop-ignores-parameter',
+    requirement: 'R-5321-4.1.1.9-e',
+    intent: 'NOOP with a parameter is ignored and still draws 250 (a SHOULD — a 501 for the arg is conformant latitude)',
+    rationale:
+      '§4.1.1.9: "If a parameter string is specified, servers SHOULD ignore it." A SHOULD, so a ' +
+      'server that instead rejects NOOP-with-argument (501 "takes no arguments") is exercising ' +
+      'permitted latitude, not violating anything — exactly parallel to RSET-with-args (§4.3.2-g). ' +
+      'We record which way it goes.',
+    run: async (conn: Conn): Promise<Judgement> => {
+      const g = await conn.readReply(5000);
+      if (g.kind !== 'reply' || severity(g.reply) !== 2) {
+        return { kind: 'inconclusive', reason: `greeting: ${g.kind === 'reply' ? g.reply.code : g.kind}` };
+      }
+      await conn.send(crlf`EHLO conformance-suite.invalid`);
+      if ((await conn.readReply(3000)).kind !== 'reply') return { kind: 'inconclusive', reason: 'no EHLO reply' };
+      await conn.send(crlf`NOOP some-parameter`);
+      const r = await conn.readReply(3000);
+      if (r.kind === 'timeout') return { kind: 'inconclusive', reason: 'NOOP-with-arg drew no reply within the timeout' };
+      if (r.kind !== 'reply') return { kind: 'inconclusive', reason: `NOOP-with-arg: ${r.kind}` };
+      // 250 follows the SHOULD (parameter ignored); a 501/500 is the permitted decline.
+      return severity(r.reply) === 2
+        ? { kind: 'satisfied', detail: `NOOP-with-parameter ignored, drew ${r.reply.code}` }
+        : { kind: 'violated', detail: `NOOP-with-parameter drew ${r.reply.code}, not 250 (permitted — §4.1.1.9-e is a SHOULD to ignore it)` };
+    },
+  }),
+
+  testCase({
+    id: 'trailing-whitespace-tolerated',
+    requirement: 'R-5321-4.1.1-a',
+    intent: 'a command with trailing whitespace before the CRLF is tolerated (a SHOULD — rejecting it is conformant latitude)',
+    rationale:
+      '§4.1.1: "In the interest of improved interoperability, SMTP receivers SHOULD tolerate ' +
+      'trailing whitespace before the terminating <CRLF>." A SHOULD, so a server that instead ' +
+      'rejects "NOOP <SP><CRLF>" is exercising permitted latitude. We send a NOOP with one ' +
+      'trailing space and record whether it is tolerated (2yz) or refused.',
+    run: async (conn: Conn): Promise<Judgement> => {
+      const g = await conn.readReply(5000);
+      if (g.kind !== 'reply' || severity(g.reply) !== 2) {
+        return { kind: 'inconclusive', reason: `greeting: ${g.kind === 'reply' ? g.reply.code : g.kind}` };
+      }
+      await conn.send(crlf`EHLO conformance-suite.invalid`);
+      if ((await conn.readReply(3000)).kind !== 'reply') return { kind: 'inconclusive', reason: 'no EHLO reply' };
+      // "NOOP " + CRLF — a bare command with one trailing space before the terminator.
+      await conn.send(cat(bare`NOOP `, CRLF));
+      const r = await conn.readReply(3000);
+      if (r.kind === 'timeout') return { kind: 'inconclusive', reason: 'trailing-whitespace NOOP drew no reply within the timeout' };
+      if (r.kind !== 'reply') return { kind: 'inconclusive', reason: `trailing-whitespace NOOP: ${r.kind}` };
+      // 2yz tolerates the trailing whitespace; anything else is the permitted decline.
+      return severity(r.reply) === 2
+        ? { kind: 'satisfied', detail: `trailing whitespace tolerated, drew ${r.reply.code}` }
+        : { kind: 'violated', detail: `trailing whitespace refused with ${r.reply.code} (permitted — §4.1.1-a is a SHOULD to tolerate it)` };
+    },
+  }),
 ];
 
 export const CONTROLS: readonly LatitudeControl[] = [
@@ -226,5 +281,15 @@ export const CONTROLS: readonly LatitudeControl[] = [
     case: 'help-supported',
     follows: {}, // clean mutant answers HELP with 214
     declines: { rejectHelp: true }, // declines: 500 (HELP disabled) — permitted, a SHOULD
+  },
+  {
+    case: 'noop-ignores-parameter',
+    follows: {}, // clean mutant ignores the NOOP parameter and returns 250
+    declines: { noop501OnArgs: true }, // declines: 501 for NOOP-with-argument
+  },
+  {
+    case: 'trailing-whitespace-tolerated',
+    follows: {}, // clean mutant's verb parser ignores trailing whitespace -> 250
+    declines: { rejectTrailingWhitespace: true }, // declines: 500 on trailing whitespace
   },
 ];

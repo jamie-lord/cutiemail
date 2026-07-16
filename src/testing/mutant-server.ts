@@ -191,6 +191,19 @@ export interface Defects {
    */
   readonly rset501OnArgs?: boolean;
   /**
+   * Return 501 to NOOP when it carries a parameter (NOOP foo). CONFORMANT —
+   * §4.1.1.9-e is a SHOULD to IGNORE the parameter; this models a server that
+   * DECLINES that SHOULD (the clean server ignores it and returns 250).
+   */
+  readonly noop501OnArgs?: boolean;
+  /**
+   * Reject a command line carrying trailing whitespace (a space/tab before the
+   * CRLF) with 500. CONFORMANT-adjacent: §4.1.1-a is a SHOULD to TOLERATE trailing
+   * whitespace, so this models a server DECLINING that SHOULD (the clean server
+   * tolerates it — its verb parser ignores trailing whitespace).
+   */
+  readonly rejectTrailingWhitespace?: boolean;
+  /**
    * Refuse VRFY with 503 "bad sequence" before an EHLO/HELO. CONFORMANT-adjacent:
    * §4.1.4-b is a SHOULD to accept non-mail commands without initialisation, so
    * this models a server DECLINING that SHOULD (the clean server accepts it).
@@ -552,6 +565,14 @@ export class MutantServer {
       }
     }
 
+    // Trailing-whitespace decline (§4.1.1-a is a SHOULD to TOLERATE trailing
+    // whitespace): the clean baseline's verb parser ignores it, so a command with
+    // a trailing space/tab dispatches normally. Under this defect it draws 500.
+    if (d.rejectTrailingWhitespace) {
+      const last = commandBytes[commandBytes.length - 1];
+      if (last === 0x20 || last === 0x09) return replyOK(500, 'Error: trailing whitespace not accepted');
+    }
+
     // Case-sensitivity defect (§2.4-a): the clean baseline folds case (verb is
     // uppercased above), so lowercase/mixed verbs dispatch normally. Under this
     // defect, a verb that is not already all-uppercase draws 500.
@@ -698,6 +719,7 @@ export class MutantServer {
 
       case 'NOOP':
         if (d.unrecognizedNoop) return replyOK(500, 'Error: command not recognized');
+        if (d.noop501OnArgs && /^NOOP\s+\S/i.test(text)) return replyOK(501, 'Error: NOOP takes no arguments');
         if (d.doubleReplyToNoop) {
           // Two replies to one command — the §4.2-a "exactly one reply" violation.
           this.#write(sock, crlf`250 2.0.0 Ok`);
