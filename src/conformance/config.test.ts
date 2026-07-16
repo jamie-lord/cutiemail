@@ -43,6 +43,14 @@ test('an invalid tls mode is rejected', () => {
   assert.throws(() => parseTargetConfig({ ...minimal, tls: 'starttls' }), /tls must be/);
 });
 
+test('a non-positive or non-integer timeout is rejected, not silently disabling every case', () => {
+  assert.throws(() => parseTargetConfig({ ...minimal, caseTimeoutMs: 0 }), /caseTimeoutMs must be a positive integer/);
+  assert.throws(() => parseTargetConfig({ ...minimal, replyTimeoutMs: -5 }), /replyTimeoutMs must be a positive integer/);
+  assert.throws(() => parseTargetConfig({ ...minimal, caseTimeoutMs: 1.5 }), /caseTimeoutMs must be a positive integer/);
+  // a valid one passes through
+  assert.equal(parseTargetConfig({ ...minimal, caseTimeoutMs: 5000 }).caseTimeoutMs, 5000);
+});
+
 test('a contradictory fixture is rejected at parse time', () => {
   assert.throws(
     () => parseTargetConfig({ ...minimal, fixture: { validRecipient: 'a@b', rejectedRecipient: 'a@b' } }),

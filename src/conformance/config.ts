@@ -109,8 +109,18 @@ export function parseTargetConfig(raw: unknown): TargetConfig {
   const setT = <K extends keyof TargetConfig>(key: K, value: TargetConfig[K] | undefined): void => {
     if (value !== undefined) target[key] = value;
   };
-  setT('replyTimeoutMs', opt<number>(o, 'replyTimeoutMs', 'number'));
-  setT('caseTimeoutMs', opt<number>(o, 'caseTimeoutMs', 'number'));
+  // Timeouts must be positive finite integers if present. A 0, negative, or NaN
+  // value passes the typeof check but would silently make every case time out to
+  // inconclusive — the "quietly meaningless run" this parser exists to prevent.
+  const posInt = (key: 'replyTimeoutMs' | 'caseTimeoutMs'): number | undefined => {
+    const v = opt<number>(o, key, 'number');
+    if (v !== undefined && (!Number.isInteger(v) || v < 1)) {
+      throw new ConfigError(`${key} must be a positive integer (ms), got ${v}`);
+    }
+    return v;
+  };
+  setT('replyTimeoutMs', posInt('replyTimeoutMs'));
+  setT('caseTimeoutMs', posInt('caseTimeoutMs'));
   setT('version', opt<string>(o, 'version', 'string'));
 
   return target as TargetConfig;
