@@ -92,3 +92,22 @@ conformant, zero false positives.** The transcripts confirm each finding at the 
 bare-LF EHLO drawing a full `250` extension list, `250 OK` to a NUL-bearing MAIL). This is the
 project's "assume we are wrong until proven" rule applied to its own calibration record: the
 claim above is confirmed by a second independent run, not taken on faith.
+
+## Broadened run — and a real bug it surfaced in the config parser (2026-07-16)
+
+Extending the run was itself worth it: adding `longLocalPartRecipient` and
+`longDomainRecipient` to `aiosmtpd.json` (aiosmtpd accepts any recipient, so it can exercise
+the §4.5.3.1 size floors) **surfaced a genuine defect in `config.ts`** — the parser never read
+those two fields, so an operator who declared them got them silently dropped and the floor
+tests stayed inconclusive with no error. Fixed (both fields now parsed; the round-trip test
+made exhaustive so a future unwired `Fixture` field fails the build). This is exactly the class
+of instrument bug a real calibration catches and the mutant (my own code) cannot.
+
+After the fix, the broadened run over the **69** current cases (the new
+`mail-resets-prior-recipient-state`, R-5321-3.3-b, is included) gives **57 conformant, 4
+non-conformant (unchanged), 8 inconclusive, still zero false positives.** The two size floors
+now grade: aiosmtpd **accepts** a 64-octet local-part and a 245-octet domain (conformant with
+§4.5.3.1.1-a / §4.5.3.1.2-a). R-5321-3.3-b is inconclusive here — aiosmtpd refuses the nested
+MAIL with 503, the conformant §4.1.4-o path, which the test correctly reports as "reset not
+exercised" rather than a false finding: independent confirmation that its isolate-the-variable
+gate works against real software.

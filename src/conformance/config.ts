@@ -90,6 +90,8 @@ export function parseTargetConfig(raw: unknown): TargetConfig {
   set('relayDomain', opt<string>(fx, 'relayDomain', 'string'));
   set('overQuotaRecipient', opt<string>(fx, 'overQuotaRecipient', 'string'));
   set('postmaster', opt<string>(fx, 'postmaster', 'string'));
+  set('longLocalPartRecipient', opt<string>(fx, 'longLocalPartRecipient', 'string'));
+  set('longDomainRecipient', opt<string>(fx, 'longDomainRecipient', 'string'));
   set('declaredSizeLimit', opt<number>(fx, 'declaredSizeLimit', 'number'));
 
   const fixtureValue = fixture as Fixture;

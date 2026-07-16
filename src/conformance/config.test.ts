@@ -11,20 +11,29 @@ test('a minimal config parses with sensible defaults', () => {
   assert.equal(c.fixture.source, 'operator-declared');
 });
 
-test('a full fixture round-trips', () => {
-  const c = parseTargetConfig({
-    ...minimal,
-    version: 'postfix-3.8.1',
-    fixture: {
-      clientDomain: 'c.example',
-      validRecipient: 'ok@mail.example',
-      rejectedRecipient: 'no@mail.example',
-      declaredSizeLimit: 10485760,
-    },
-  });
+test('a full fixture round-trips — EVERY declarable field, or the parser silently drops it', () => {
+  // This must name every optional Fixture field: a field on the interface but not
+  // in config.ts's parser is silently dropped, so an operator who declares it gets
+  // it ignored and the gated tests stay inconclusive with no error. That is exactly
+  // how longLocalPartRecipient/longDomainRecipient were lost until a real
+  // calibration surfaced it. If you add a Fixture field, add it here and in config.ts.
+  const declared = {
+    clientDomain: 'c.example',
+    validRecipient: 'ok@mail.example',
+    rejectedRecipient: 'no@mail.example',
+    nonRelayDomain: 'not-served.example.org',
+    relayDomain: 'relayed.example',
+    overQuotaRecipient: 'full@mail.example',
+    postmaster: 'postmaster@mail.example',
+    longLocalPartRecipient: `${'a'.repeat(64)}@mail.example`,
+    longDomainRecipient: 'user@a.long.example',
+    declaredSizeLimit: 10485760,
+  };
+  const c = parseTargetConfig({ ...minimal, version: 'postfix-3.8.1', fixture: declared });
   assert.equal(c.version, 'postfix-3.8.1');
-  assert.equal(c.fixture.validRecipient, 'ok@mail.example');
-  assert.equal(c.fixture.declaredSizeLimit, 10485760);
+  for (const [k, v] of Object.entries(declared)) {
+    assert.equal((c.fixture as unknown as Record<string, unknown>)[k], v, `fixture.${k} was dropped by the parser`);
+  }
 });
 
 test('missing required fields are named', () => {

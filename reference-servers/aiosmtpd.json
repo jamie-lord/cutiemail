@@ -10,6 +10,8 @@
     "validRecipient": "recipient@example.com",
     "rejectedRecipient": "nobody@example.com",
     "postmaster": "postmaster@example.com",
-    "nonRelayDomain": "not-served.example.org"
+    "nonRelayDomain": "not-served.example.org",
+    "longLocalPartRecipient": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa@example.com",
+    "longDomainRecipient": "user@aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.example"
   }
 }
