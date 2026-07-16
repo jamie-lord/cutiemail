@@ -100,6 +100,7 @@ class Connection {
   #from = '';
   #recipients: string[] = [];
   #inData = false;
+  #inTransaction = false; // a reverse-path buffer exists (MAIL accepted, not yet reset)
   #tls = false;
   #authed = false;
   #helo = '';
@@ -173,15 +174,23 @@ class Connection {
         this.#from = '';
         this.#recipients = [];
         this.#inData = false;
+        this.#inTransaction = false;
         this.#buf = this.#buf.subarray(eod);
         this.#write(stored ? '250 2.0.0 message stored' : '451 4.3.0 error storing message');
         continue;
       }
       const nl = this.#buf.indexOf(Buffer.from([CR, LF]));
       if (nl === -1) break;
-      const line = this.#buf.subarray(0, nl).toString('latin1');
+      const lineBytes = this.#buf.subarray(0, nl);
+      const line = lineBytes.toString('latin1');
       this.#buf = this.#buf.subarray(nl + 2);
       if (DEBUG) process.stderr.write(`[smtp<] ${line.replace(/^(AUTH\s+\S+\s+).*/i, '$1***')}\n`);
+      // RFC 5321 §4.1.2: a command carrying an ASCII control octet (the CRLF
+      // terminator is already stripped) is invalid — reject 501, never execute it.
+      if (lineBytes.some((b) => b < 0x20)) {
+        this.#write('501 5.5.2 control character in command');
+        continue;
+      }
       const verb = line.split(/\s+/)[0]?.toUpperCase() ?? '';
       if (verb === 'STARTTLS' && this.#opts.tls !== undefined) {
         this.#startTls();
@@ -200,6 +209,10 @@ class Connection {
     switch (verb) {
       case 'EHLO': {
         this.#helo = line.split(/\s+/)[1] ?? '';
+        // §4.1.1.1: EHLO/HELO clears any pending transaction (like RSET).
+        this.#from = '';
+        this.#recipients = [];
+        this.#inTransaction = false;
         const ext: string[] = [];
         if (this.#opts.maxMessageSize !== undefined) ext.push(`SIZE ${this.#opts.maxMessageSize}`);
         if (this.#opts.tls !== undefined && !this.#tls) ext.push('STARTTLS');
@@ -217,6 +230,9 @@ class Connection {
         break;
       case 'HELO':
         this.#helo = line.split(/\s+/)[1] ?? '';
+        this.#from = '';
+        this.#recipients = [];
+        this.#inTransaction = false;
         this.#write(`250 ${this.#domain}`);
         break;
       case 'MAIL': {
@@ -234,10 +250,16 @@ class Connection {
         }
         this.#from = addrOf(line);
         this.#recipients = [];
+        this.#inTransaction = true;
         this.#write('250 2.1.0 Ok');
         break;
       }
       case 'RCPT':
+        // §4.1.4: RCPT with no reverse-path buffer is out of order — reject 503.
+        if (!this.#inTransaction) {
+          this.#write('503 5.5.1 need MAIL before RCPT');
+          break;
+        }
         this.#recipients.push(addrOf(line));
         this.#write('250 2.1.5 Ok');
         break;
@@ -252,6 +274,7 @@ class Connection {
       case 'RSET':
         this.#from = '';
         this.#recipients = [];
+        this.#inTransaction = false;
         this.#write('250 2.0.0 Ok');
         break;
       case 'NOOP':
