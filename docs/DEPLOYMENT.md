@@ -31,6 +31,51 @@ One box runs the daemon. Your existing inbox is the far end. A mail client
 (Thunderbird on a laptop, or your phone's mail app) talks to the daemon on 587 to
 send and 993 to read — the daemon is *your* server; it does the talking to Gmail.
 
+## Quick start: a throwaway Hetzner box (receiving)
+
+Hetzner Cloud is the cheapest way to spin this up and throw it away — an ARM
+`cax11` is about **€0.006/hour**, billed by the hour, gone the moment you delete
+it. `deploy/hetzner-up.sh` and `deploy/hetzner-down.sh` automate the whole thing.
+
+This path gets **receiving** working — mail *to* `you@mail.example.com` lands in
+the mailbox and you read it over IMAP. Sending outward is deliberately not part of
+it: Hetzner blocks outbound port 25 on new accounts, so relay-to-the-world waits
+(see [Known limitations](#known-limitations)).
+
+```mermaid
+flowchart TB
+    up["deploy/hetzner-up.sh"] --> create["hcloud creates the box<br/>(cloud-init installs Node 22 + firewall)"]
+    create --> rdns["set reverse DNS → mail.example.com"]
+    rdns --> rsync["rsync src/ to the box<br/>(no npm install — Node runs the .ts)"]
+    rsync --> unit["write systemd unit with your domain/account"]
+    unit --> start["systemctl enable --now mailserver"]
+    start --> dns["you set A + MX records, then email yourself"]
+```
+
+Once (per machine): install the [`hcloud` CLI](https://github.com/hetznercloud/cli),
+authenticate it (`export HCLOUD_TOKEN=...`), and upload an SSH key
+(`hcloud ssh-key create --name mykey --public-key-from-file ~/.ssh/id_ed25519.pub`).
+
+Then:
+
+```sh
+MAIL_DOMAIN=mail.example.com \
+MAIL_PASS='a-real-passphrase' \
+SSH_KEY_NAME=mykey \
+  ./deploy/hetzner-up.sh
+```
+
+It prints the two DNS records to set (an `A` and an `MX`, both pointing at the
+box); reverse DNS is set for you. Watch mail arrive with
+`ssh root@<ip> journalctl -fu mailserver`. When you're done:
+
+```sh
+./deploy/hetzner-down.sh          # deletes the box, billing stops
+```
+
+The rest of this document is the manual reference behind those scripts — read on
+if you want to do it by hand or on another provider.
+
 ## What you need
 
 - A small Linux server with a **public, static IP** and **port 25 reachable both

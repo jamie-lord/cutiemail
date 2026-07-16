@@ -1,0 +1,30 @@
+#cloud-config
+# Hetzner user-data: prepare a bare Ubuntu box to run the mail server.
+# Installs Node 22 (the only runtime requirement — no npm install, the server is
+# just the src/ tree), creates the service account and data dir, and opens the
+# firewall for SSH + the three mail ports. hetzner-up.sh then rsyncs the code,
+# writes the unit with your real config, and starts it.
+package_update: true
+packages:
+  - curl
+  - rsync
+  - ufw
+
+users:
+  - name: mail
+    system: true
+    home: /opt/mailserver
+    shell: /usr/sbin/nologin
+
+runcmd:
+  # Node 22 (>= 22.18 runs the TypeScript directly, and node:sqlite is built in).
+  - curl -fsSL https://deb.nodesource.com/setup_22.x | bash -
+  - apt-get install -y nodejs
+  - mkdir -p /opt/mailserver /var/lib/mailserver
+  - chown -R mail:mail /opt/mailserver /var/lib/mailserver
+  # Only the ports we serve. Inbound 25 = receiving; 587/993 = your own client.
+  - ufw allow 22/tcp
+  - ufw allow 25/tcp
+  - ufw allow 587/tcp
+  - ufw allow 993/tcp
+  - ufw --force enable
