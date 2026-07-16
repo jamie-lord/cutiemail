@@ -55,7 +55,7 @@ test('STARTTLS: the connection upgrades and delivers over TLS', async () => {
     await new Promise<void>((r) => secure.once('secureConnect', () => r()));
     const sr = new Reader(secure);
     secure.write('EHLO client\r\n');
-    await sr.until('250 mail.example.com\r\n');
+    await sr.until('250 8BITMIME\r\n'); // post-TLS EHLO: STARTTLS gone, 8BITMIME is the final line
     secure.write('MAIL FROM:<a@example.com>\r\n');
     await sr.until('2.1.0 Ok\r\n');
     secure.write('RCPT TO:<b@example.net>\r\n');

@@ -215,6 +215,10 @@ class Connection {
         this.#inTransaction = false;
         const ext: string[] = [];
         if (this.#opts.maxMessageSize !== undefined) ext.push(`SIZE ${this.#opts.maxMessageSize}`);
+        // We accept 8-bit content byte-exact (bytes, never strings), so advertise
+        // 8BITMIME truthfully (RFC 6152). A BODY=8BITMIME on MAIL FROM is accepted
+        // (the parser reads the address and ignores trailing params).
+        ext.push('8BITMIME');
         if (this.#opts.tls !== undefined && !this.#tls) ext.push('STARTTLS');
         if (this.#opts.authenticate !== undefined && this.#tls) ext.push('AUTH PLAIN');
         if (ext.length === 0) {

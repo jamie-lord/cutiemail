@@ -30,14 +30,29 @@ class Conn {
   send(bytes: string | Buffer): void {
     this.sock.write(typeof bytes === 'string' ? Buffer.from(bytes, 'latin1') : bytes);
   }
-  /** Read the next reply line beginning at `from`; returns the 3-digit code. */
+  /**
+   * Read one full reply beginning at `from` — consuming any `NNN-` continuation
+   * lines (a multiline EHLO) and returning the FINAL line's code and the offset
+   * after it.
+   */
   async code(from: number): Promise<{ code: number; at: number }> {
     for (let i = 0; i < 400; i++) {
-      const nl = this.#acc.indexOf(Buffer.from('\r\n', 'latin1'), from);
-      if (nl !== -1) {
-        const line = this.#acc.subarray(from, nl).toString('latin1');
-        return { code: Number(line.slice(0, 3)), at: nl + 2 };
+      let off = from;
+      let done = false;
+      let result = { code: 0, at: from };
+      for (;;) {
+        const nl = this.#acc.indexOf(Buffer.from('\r\n', 'latin1'), off);
+        if (nl === -1) break; // need more bytes
+        const line = this.#acc.subarray(off, nl).toString('latin1');
+        off = nl + 2;
+        if (line.length < 4 || line[3] === ' ') {
+          result = { code: Number(line.slice(0, 3)), at: off };
+          done = true;
+          break;
+        }
+        // else `NNN-` continuation — keep reading
       }
+      if (done) return result;
       await delay(5);
     }
     throw new Error(`timed out reading a reply from offset ${from}`);

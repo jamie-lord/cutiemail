@@ -68,6 +68,29 @@ test('an oversized DATA body is rejected mid-stream, not buffered', async () => 
   }
 });
 
+test('EHLO advertises 8BITMIME and an 8-bit body is stored byte-exact', async () => {
+  const delivered: DeliveredMessage[] = [];
+  const rec = await SmtpReceiver.start((m) => delivered.push(m), { domain: 'mx.example.test' });
+  try {
+    const r = new Reader(net.connect(rec.port, '127.0.0.1'));
+    await r.line('ESMTP');
+    r.send('EHLO client\r\n');
+    assert.match(await r.line('250'), /8BITMIME/, '8BITMIME is advertised');
+    // A body with real 8-bit octets (UTF-8 "café" = 0xc3 0xa9), declared BODY=8BITMIME.
+    // No trailing CRLF: the <CRLF> before the terminating dot is the EOD marker, not content.
+    const body = Buffer.from('Subject: 8bit\r\n\r\ncafé — naïve', 'utf8');
+    r.send('MAIL FROM:<a@b.test> BODY=8BITMIME\r\nRCPT TO:<c@mx.example.test>\r\nDATA\r\n');
+    await r.line('354');
+    r.sock.write(Buffer.concat([body, Buffer.from('\r\n.\r\n', 'latin1')]));
+    await r.line('message stored');
+    assert.equal(delivered.length, 1);
+    assert.deepEqual(delivered[0]!.data, body, 'the 8-bit content was preserved byte-exact');
+    r.sock.destroy();
+  } finally {
+    await rec.close();
+  }
+});
+
 test('a message within the limit still delivers', async () => {
   const delivered: DeliveredMessage[] = [];
   const rec = await SmtpReceiver.start((m) => delivered.push(m), { domain: 'mx.example.test', maxMessageSize: 100_000 });
