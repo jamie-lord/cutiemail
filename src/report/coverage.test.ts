@@ -70,6 +70,54 @@ test('a mutant catching a different test does not upgrade coverage', () => {
   assert.equal(report.requirements.find((r) => r.id === wireReq.id)!.state, 'test-only');
 });
 
+test('an alsoProves credit is anchored: a phantom or non-touching catch cannot over-credit', () => {
+  const tc = testCase({
+    id: 'anchored-primary',
+    requirement: wireReq.id as TestCase['requirement'],
+    intent: 'x',
+    rationale: 'y',
+    run: noop,
+  });
+
+  // (1) A mutant that alsoProves wireReq but whose caught case does not exist.
+  // The unanchored credit would flip wireReq to fully-covered on this alone.
+  const phantom: Mutant = {
+    catches: 'no-such-case',
+    defect: 'd',
+    why: 'w',
+    alsoProves: [{ requirement: wireReq.id as TestCase['requirement'], why: 'bogus credit' }],
+  };
+  assert.equal(
+    computeCoverage([tc], [phantom]).requirements.find((r) => r.id === wireReq.id)!.state,
+    'test-only',
+    'an alsoProves whose caught case does not exist must not credit the requirement',
+  );
+
+  // (2) A mutant that alsoProves wireReq and catches a REAL case — but one that
+  // does not touch wireReq (different primary, no alsoTouches). Still no credit.
+  const otherReq = reqs.find(
+    (r) => r.id !== wireReq.id && r.testability.kind === 'wire' && r.deliberatelyUncovered === undefined,
+  )!;
+  const otherTc = testCase({
+    id: 'other-case',
+    requirement: otherReq.id as TestCase['requirement'],
+    intent: 'x',
+    rationale: 'y',
+    run: noop,
+  });
+  const nonTouching: Mutant = {
+    catches: 'other-case',
+    defect: 'd',
+    why: 'w',
+    alsoProves: [{ requirement: wireReq.id as TestCase['requirement'], why: 'bogus credit' }],
+  };
+  assert.equal(
+    computeCoverage([tc, otherTc], [nonTouching]).requirements.find((r) => r.id === wireReq.id)!.state,
+    'test-only',
+    'an alsoProves whose caught case does not touch the requirement must not credit it',
+  );
+});
+
 test('a not-testable requirement is reported as such, with its reason', () => {
   const report = computeCoverage([], []);
   const cov = report.requirements.find((r) => r.id === notTestableReq.id)!;
