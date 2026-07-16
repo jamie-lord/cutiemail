@@ -654,10 +654,10 @@ export class MutantServer {
         return;
       }
       case 'STARTTLS':
-        // The mutant does not implement TLS; it only models the advertise-vs-honour
-        // conformance question. A clean mutant that advertised STARTTLS would 220
-        // then expect a handshake — but since no case here completes TLS, a clean
-        // 220 is the honest "capability is real" answer. The defect 502s it.
+        // Only the advertiseStarttlsButReject (502) path is live here: the HONOURED
+        // STARTTLS is intercepted earlier in the #handle data loop (which controls
+        // the pre-handshake buffer for the injection test), so it never reaches this
+        // case. The 220 below is a dead-but-honest fallback for the honoured path.
         if (d.advertiseStarttlsButReject) return replyOK(502, 'Error: command not implemented');
         return replyOK(220, 'Ready to start TLS');
 

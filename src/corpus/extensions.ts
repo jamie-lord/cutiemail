@@ -130,10 +130,19 @@ export const CASES: readonly TestCase[] = [
       if (severity(r.reply) !== 2) return { kind: 'inconclusive', reason: `STARTTLS refused with ${r.reply.code} — cannot test the discard` };
       // The decisive check: after the 220 the server MUST be silent (it discarded
       // the buffered NOOP and is waiting for the TLS ClientHello). ANY further
-      // reply means it processed the injected plaintext command.
+      // reply means it processed the injected plaintext command. NB: a post-220
+      // *error* reply about the pipelined bytes would also read as non-quiet here;
+      // no mainstream MTA does that (a hardened server rejects at the STARTTLS
+      // command with a 5xx, handled above as inconclusive), so it is not a
+      // real-world false positive.
       const quiet = await conn.expectQuiet(1000);
       if (quiet.quiet) {
-        return { kind: 'satisfied', detail: 'buffered plaintext discarded after STARTTLS (no injection): server silent, awaiting the handshake' };
+        // Silence proves only that the command was not processed IN PLAINTEXT. A
+        // server that buffers it to replay INSIDE the TLS session is also silent
+        // here — that variant needs a completed handshake and is out of scope
+        // (docs/decisions/0006). So this satisfied is scoped to the pre-handshake
+        // plaintext variant, not a clean bill against the whole CVE-2011-0411 class.
+        return { kind: 'satisfied', detail: 'no plaintext reply to the pipelined command — pre-handshake injection not observed (replay-into-TLS variant out of scope)' };
       }
       return {
         kind: 'violated',
