@@ -133,6 +133,16 @@ export const CASES: readonly TestCase[] = [
       const data = await conn.readReply(3000);
       if (data.kind === 'timeout') return { kind: 'inconclusive', reason: 'DATA drew no reply within the timeout' };
       if (data.kind !== 'reply') return { kind: 'violated', detail: `DATA: server ${data.kind} instead of 354` };
+      // §3.3-t's 250 obligation is conditioned on "successfully received and stored".
+      // A 4yz (451/452 queue-write/storage pressure) or a 421 shutdown at DATA means
+      // the server has NOT committed to storing the message and owes no 354/250 — it
+      // is a transient state, not a violation. Only a 5yz permanent rejection of a
+      // fixture-declared-deliverable transaction convicts. (Matches every sibling
+      // delivery/DATA case; the register note for §3.3-t says a post-354 5yz is "not
+      // a failure of this — the server simply did not store it".)
+      if (severity(data.reply) === 4) {
+        return { kind: 'inconclusive', reason: `DATA drew a transient ${data.reply.code} (temp deferral/shutdown) — the server has not committed to storing; no 354 owed` };
+      }
       if (data.reply.code !== 354) {
         return { kind: 'violated', detail: `DATA drew ${data.reply.code}, not the 354 intermediate reply` };
       }
@@ -140,9 +150,14 @@ export const CASES: readonly TestCase[] = [
       const final = await conn.readReply(5000);
       if (final.kind === 'timeout') return { kind: 'inconclusive', reason: 'end-of-data drew no reply within the timeout' };
       if (final.kind !== 'reply') return { kind: 'violated', detail: `end-of-data: server ${final.kind} instead of replying` };
-      return severity(final.reply) === 2
-        ? { kind: 'satisfied', detail: `message accepted at end-of-data (${final.reply.code})` }
-        : { kind: 'violated', detail: `server rejected a complete valid transaction with ${final.reply.code}` };
+      if (severity(final.reply) === 2) return { kind: 'satisfied', detail: `message accepted at end-of-data (${final.reply.code})` };
+      // A 4yz/421 at end-of-data is a temporary deferral (greylist-at-DATA, disk
+      // pressure, service shutdown) — the message was not stored, so §3.3-t's 250 is
+      // not owed. Inconclusive, not a finding. Only a 5yz convicts.
+      if (severity(final.reply) === 4) {
+        return { kind: 'inconclusive', reason: `end-of-data drew a transient ${final.reply.code} — the message was not stored (temp deferral/shutdown), so no 250 is owed` };
+      }
+      return { kind: 'violated', detail: `server rejected a complete valid transaction with a permanent ${final.reply.code}` };
     },
   }),
 
