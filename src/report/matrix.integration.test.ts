@@ -43,6 +43,16 @@ test('a clean server produces zero non-conformant results across the whole corpu
     0,
     `clean server should produce no findings, got: ${findings.map((f) => `${f.requirementId}(${f.testId})`).join(', ')}`,
   );
+  // Guard against a VACUOUS pass: zero findings is trivially true if a harness
+  // regression turned every case inconclusive. The clean run must actually GRADE
+  // most of the corpus as conformant. The real count is ~63/69; a floor well below
+  // that catches a mass-inconclusive degradation without being brittle to a case
+  // or two shifting to inconclusive.
+  const conformant = run.results.filter((r) => r.outcome === 'conformant').length;
+  assert.ok(
+    conformant >= 50,
+    `clean run graded only ${conformant} cases conformant (of ${run.results.length}); expected >= 50 — a mass-inconclusive regression would make the zero-findings check pass vacuously`,
+  );
 });
 
 // A server answering 4yz under transient conditions (greylisting, load, disk
