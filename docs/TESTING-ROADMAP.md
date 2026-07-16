@@ -127,8 +127,12 @@ test bed both specifies the server and provides the starting implementation of e
 - **Transport** — MTA-STS, SMTPUTF8, SIZE.
 - **Storage / queue** — reference mailbox + account store + outbound retry queue.
 
-**What genuinely remains is the runnable server**, not more test-bed: assemble the reference
-pieces behind SQLite persistence and live socket servers (SMTP 25/587, IMAP 993, STARTTLS/TLS
-negotiation), then the end-to-end Thunderbird round-trip. Plus the unified pass/fail coverage
-report (a corpora-as-data refactor) and narrow crypto depth (ARC AMS/AS signature verify). The
-reference models are the specification the runnable server must satisfy.
+**The runnable server has begun.** First live slice assembled and e2e-tested end to end:
+`src/store/sqlite-mailbox.ts` (real `node:sqlite` storage, differentially validated against the
+reference + persistent across reopen) and `src/server/smtp-receiver.ts` (a live SMTP receiver on
+a socket). The integration test (`smtp-receiver.integration.test.ts`) drives the **reference
+delivery client → the live SMTP server → SQLite storage** and asserts the message lands
+byte-exact, dot-stuffing round-trip included. Still to assemble: the submission server (587 +
+AUTH + SIZE, wiring the pieces already built), the IMAP server (993, wiring the mailbox model +
+ENVELOPE/SEARCH/sequence-set), STARTTLS/TLS over real sockets, and the full Thunderbird
+round-trip. Plus the unified pass/fail coverage report and ARC AMS/AS signature verify.
