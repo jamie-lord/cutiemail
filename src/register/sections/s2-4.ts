@@ -88,12 +88,16 @@ export const S2_4 = [
       'Therefore, SMTP implementations MUST take care to preserve the case of ' +
       'mailbox local-parts.',
     testability: {
-      kind: 'not-testable',
-      reason:
-        'Preservation is observable only downstream of delivery — in the ' +
-        'stored message or the next hop\'s envelope — not in the receiver\'s ' +
-        'reply codes. Would need a receiving sink and an end-to-end path, ' +
-        'which is a different tool. Revisit if task #12 grows an outbound sink.',
+      kind: 'wire-with-fixture',
+      fixture:
+        'A receiving sink the server relays to, so the delivered recipient can be ' +
+        'read back. Preservation is invisible from the client socket but observable ' +
+        'at the next hop: relay to a mixed-case local-part and confirm the delivered ' +
+        'recipient keeps that case. The mutant relay harness (verifySinkControls, ' +
+        'defect lowercaseLocalPartOnRelay) provides this; a real server needs to be ' +
+        'configured to relay to our sink. NOW TESTABLE — the sink (decision 0005\'s ' +
+        'revisit trigger) is built, and corpus case local-part-case-preserved-on-' +
+        'delivery asserts it. Distinct from R-5321-2.4-c (treat-as-case-sensitive).',
     },
   },
   {

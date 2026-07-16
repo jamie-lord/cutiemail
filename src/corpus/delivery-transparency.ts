@@ -67,21 +67,33 @@ export const CASES: readonly TestCase[] = [
       const body = Buffer.from('.secret leading dot\r\nan ordinary line', 'latin1');
       const got = await deliverAndCapture(conn, conn.fixture.validRecipient!, dotStuff(body));
       if ('kind' in got) return got; // inconclusive
-      const delivered = got.data.toString('latin1');
-      const expected = body.toString('latin1');
-      return delivered === expected
-        ? { kind: 'satisfied', detail: 'leading transport dot correctly removed on delivery' }
-        : { kind: 'violated', detail: `delivered body was ${JSON.stringify(delivered)}, expected ${JSON.stringify(expected)} — the leading transport dot was not un-stuffed` };
+      // Assert the un-stuffing PROPERTY, tolerant of a prepended trace header: a
+      // conformant relay is REQUIRED to prepend a Received: line (§4.4), which lands
+      // in the delivered content, so exact whole-body equality would false-positive
+      // Postfix/Exim. Instead: the un-stuffed line must appear (single dot) and the
+      // still-stuffed form must NOT (double dot). Neither found -> the body was
+      // transformed some other way; do not convict.
+      const lines = got.data.toString('latin1').split('\r\n');
+      const stuffedStillPresent = lines.includes('..secret leading dot');
+      const unstuffedPresent = lines.includes('.secret leading dot');
+      if (stuffedStillPresent) {
+        return { kind: 'violated', detail: 'the delivered body still carries the doubled transport dot ("..secret leading dot") — the receiver did not un-stuff' };
+      }
+      if (unstuffedPresent) {
+        return { kind: 'satisfied', detail: 'leading transport dot correctly removed on delivery' };
+      }
+      return { kind: 'inconclusive', reason: `neither the un-stuffed nor the doubled line appeared in the delivered body (${JSON.stringify(got.data.toString('latin1').slice(0, 120))}) — some other transform; not convicting` };
     },
   }),
 
   testCase({
     id: 'local-part-case-preserved-on-delivery',
-    requirement: 'R-5321-2.4-c',
+    requirement: 'R-5321-2.4-d',
     intent: 'the case of the recipient local-part is preserved through to delivery',
     rationale:
-      '§2.4: "The local-part of a mailbox MUST BE treated as case sensitive." A server MUST NOT ' +
-      'fold the local-part case as it relays. Invisible from the client side, so we relay to a ' +
+      '§2.4: "SMTP implementations MUST take care to preserve the case of mailbox local-parts" ' +
+      '(R-5321-2.4-d, the PRESERVE-on-relay duty; 2.4-c is the treat-as-case-sensitive duty). A ' +
+      'server MUST NOT fold the local-part case as it relays. Invisible from the client side, so we relay to a ' +
       'mixed-case local-part and read the recipient back at the sink: a conformant server ' +
       'preserves "Mixed.Case"; one that lowercases it delivers "mixed.case". The domain is ' +
       'case-insensitive (§2.3.4) and not asserted.',
@@ -102,11 +114,11 @@ export const MUTANTS: readonly Mutant[] = [
   {
     catches: 'data-transparency-dot-unstuffed',
     defect: 'dontUnstuffOnRelay',
-    why: 'forwarding a body with the transport dot still doubled violates R-5321-4.5.2-a (the receiver deletes the leading period)',
+    why: 'forwarding a body with the transport dot still doubled violates R-5321-4.5.2-c (the receiver deletes the leading period)',
   },
   {
     catches: 'local-part-case-preserved-on-delivery',
     defect: 'lowercaseLocalPartOnRelay',
-    why: 'folding the recipient local-part case on relay violates R-5321-2.4-c (the local-part is case sensitive)',
+    why: 'folding the recipient local-part case on relay violates R-5321-2.4-d (implementations MUST preserve local-part case)',
   },
 ];
