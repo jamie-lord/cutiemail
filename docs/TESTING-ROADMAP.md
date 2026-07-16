@@ -135,15 +135,30 @@ test bed both specifies the server and provides the starting implementation of e
 - **Transport** — MTA-STS, SMTPUTF8, SIZE.
 - **Storage / queue** — reference mailbox + account store + outbound retry queue.
 
-**The runnable server has begun.** First live slice assembled and e2e-tested end to end:
-`src/store/sqlite-mailbox.ts` (real `node:sqlite` storage, differentially validated against the
-reference + persistent across reopen) and `src/server/smtp-receiver.ts` (a live SMTP receiver on
-a socket). **The full round-trip works.** `src/server/smtp-receiver.ts` (live SMTP), `src/server/imap-server.ts`
-(live IMAP: LOGIN/SELECT/FETCH BODY[]/LOGOUT), and `src/store/sqlite-mailbox.ts` (real SQLite)
-compose into the core vision: `roundtrip.integration.test.ts` **delivers a message via SMTP,
-stores it in SQLite, and reads it back byte-exact via IMAP** — send-and-receive proven end to end
-against real socket servers (dotted line preserved through the dot-stuffing round-trip). Still to
-assemble/harden: AUTH+SIZE+STARTTLS on the submission port (the decision logic is already built
-and tested — wire it in), the fuller IMAP command surface (STORE/SEARCH/EXPUNGE over the wire),
-TLS over real sockets, and a real Thunderbird client. Plus the unified pass/fail coverage report
-and ARC AMS/AS signature verify.
+## Status (2026-07-17): the real-world server is complete and deployed
+
+The server the test bed specified now **runs, sends and receives real internet mail, and works
+with real clients** — deployed on a public box, verified against Gmail and a real Thunderbird.
+What the assembled daemon (`npm start`) does, all live-verified:
+
+- **Receive** — live SMTP on 25: STARTTLS with the injection defence, SIZE (25 MiB, buffer-capped),
+  8BITMIME, mail-loop detection (Received count), command-sequencing + control-octet validation
+  (RFC 5321-conformant — the corpus run against the live server reports 61 conformant / **0
+  MUST-violations**, having found and fixed 5), and a `Received:` trace stamp.
+- **Serve** — live IMAPS on 993 with the surface a real client uses (captured from Thunderbird):
+  multi-folder catalog (CREATE/APPEND/COPY/MOVE/STATUS, special-use), FETCH incl. RFC822.HEADER
+  and partial `<o.n>`, UID variants, STORE, SEARCH, EXPUNGE, **IDLE** (instant new mail), **UIDPLUS**.
+- **Send** — submission on 587 (SASL PLAIN over TLS): RFC 6409 fix-up → `Received:` → **DKIM** sign
+  → persistent SQLite **retry queue** → relay to the MX over opportunistic STARTTLS, IPv4-pinned.
+  Full **SPF + DKIM + DMARC** trifecta published and aligned; Gmail accepts on the primary MX.
+- **Store** — `SqliteCatalog`/`SqliteMailbox` on `node:sqlite`, transactional writes, WAL journaling,
+  differentially validated against the reference model, persistent across restart.
+- **Robustness** — the internet-facing parsers are fuzzed (deterministic harness, ~30k adversarial
+  inputs) and the command dispatch is crash-guarded; three memory-exhaustion DoS vectors
+  (sequence-set range, APPEND literal, unterminated command line) found and closed.
+- **Federation** — two daemons exchange a signed, dual-`Received`-traced message end to end.
+
+Still genuinely open (deliberately): the conformance test-bed roadmap's later items — fuzzing
+*corpora* (isemail/MIME torture), Postfix/Exim calibration of the receiver suite, an IMAP-side
+conformance runner — plus opinionated cuts kept naive on purpose (accept-all recipients, single
+account). The server itself is feature-complete for the stated vision.
