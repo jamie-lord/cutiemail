@@ -51,6 +51,29 @@ test('clean mutant: a full transaction succeeds with well-formed replies', async
   });
 });
 
+test('findEndOfData detects a 3-byte smuggle marker at the very end of the buffer (regression)', async () => {
+  // Regression for the #findEndOfData off-by-one: the loop bound stopped at
+  // buf.length-4 and never visited i=buf.length-3, so a 3-byte marker (LF.LF)
+  // sitting in the final three bytes — sent as the LAST bytes with nothing after —
+  // was missed, silently blessing a vulnerable server. Here the marker IS the tail.
+  await withMutant({ defects: { honourBareLfEndOfData: true } }, async (port) => {
+    const wire = await connect(port);
+    assert.equal((await readReply(wire)).code, 220);
+    await wire.send(crlf`EHLO client.test`);
+    assert.equal((await readReply(wire)).code, 250);
+    await wire.send(crlf`MAIL FROM:<a@client.test>`);
+    assert.equal((await readReply(wire)).code, 250);
+    await wire.send(crlf`RCPT TO:<b@mutant.test>`);
+    assert.equal((await readReply(wire)).code, 250);
+    await wire.send(crlf`DATA`);
+    assert.equal((await readReply(wire)).code, 354);
+    // "\n.\n" as the final three bytes of the buffer, nothing after it.
+    await wire.send(Buffer.from('body\n.\n', 'latin1'));
+    assert.equal((await readReply(wire)).code, 250, 'the bare-LF end-of-data marker at buffer-end must be honoured by the defect');
+    await wire.close();
+  });
+});
+
 test('clean mutant: MAIL before greeting is refused (correct ordering)', async () => {
   await withMutant({}, async (port) => {
     const wire = await connect(port);

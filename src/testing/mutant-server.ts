@@ -764,8 +764,14 @@ export class MutantServer {
   }
 
   #findEndOfData(buf: Buffer): number | null {
-    // Canonical: CRLF "." CRLF
-    for (let i = 0; i + 4 < buf.length + 1; i++) {
+    // Scan the WHOLE buffer. The end-of-data markers vary in length (5-byte
+    // canonical CRLF.CRLF, 4-byte LF.CRLF, 3-byte LF.LF / CR.CR), and a 3-byte
+    // smuggle marker can sit in the final three bytes — so the bound must reach
+    // i = buf.length - 3, not stop at buf.length - 4. Out-of-range buf[i+k] reads
+    // return undefined and fail the byte comparisons, so scanning to the end never
+    // false-matches a longer marker. (The old `i + 4 < buf.length + 1` bound stopped
+    // one position short and silently missed a 3-byte marker at end-of-buffer.)
+    for (let i = 0; i < buf.length; i++) {
       if (
         buf[i] === CR && buf[i + 1] === LF && buf[i + 2] === DOT &&
         buf[i + 3] === CR && buf[i + 4] === LF
