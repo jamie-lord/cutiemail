@@ -16,6 +16,7 @@ import net from 'node:net';
 import tls from 'node:tls';
 import type { Duplex } from 'node:stream';
 import { CR, LF, DOT } from '../wire/bytes.ts';
+import { countReceived } from './received.ts';
 
 /** MAIL_DEBUG=1 logs each received command line (AUTH redacted) to stderr. */
 const DEBUG = process.env.MAIL_DEBUG === '1';
@@ -51,6 +52,9 @@ export interface ReceiverOptions {
    *  enforced during DATA so an over-large message can't exhaust memory.
    *  Undefined = no limit (tests). */
   readonly maxMessageSize?: number;
+  /** Reject a message carrying at least this many Received: headers as a mail
+   *  loop (RFC 5321 §6.3; SHOULD be large, ≥100). Undefined = no loop check. */
+  readonly maxReceivedHops?: number;
   /** Submission mode: require a successful AUTH before MAIL (rejects unauthenticated mail 530). */
   readonly requireAuth?: boolean;
   /** Verify a SASL PLAIN (username, password); wired to the account store by the caller. */
@@ -141,10 +145,21 @@ class Connection {
         const eod = findEndOfData(this.#buf);
         if (eod === -1) break;
         const payload = eod >= 5 ? this.#buf.subarray(0, eod - 5) : Buffer.alloc(0);
+        const unstuffed = unstuff(payload);
+        // RFC 5321 §6.3: a message carrying too many Received hops is looping.
+        const hops = this.#opts.maxReceivedHops;
+        if (hops !== undefined && countReceived(unstuffed) >= hops) {
+          this.#write('554 5.4.6 too many Received hops — mail loop detected');
+          this.#from = '';
+          this.#recipients = [];
+          this.#inData = false;
+          this.#buf = this.#buf.subarray(eod);
+          continue;
+        }
         this.#handler({
           from: this.#from,
           recipients: [...this.#recipients],
-          data: unstuff(payload),
+          data: unstuffed,
           overTls: this.#tls,
           helo: this.#helo,
           remoteAddress: this.#remoteAddress,

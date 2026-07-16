@@ -7,7 +7,7 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { receivedHeader, prependReceived, protocolFor } from './received.ts';
+import { receivedHeader, prependReceived, protocolFor, countReceived } from './received.ts';
 
 const AT = new Date(Date.UTC(2026, 6, 16, 20, 15, 0));
 
@@ -37,6 +37,22 @@ test('the for-clause is omitted when no single recipient is given', () => {
   const h = receivedHeader({ helo: 'c', remoteAddress: '', by: 'us', protocol: 'ESMTPSA', id: 'x', date: AT });
   assert.ok(!h.includes(' for <'), 'no for-clause');
   assert.ok(h.includes('from c by us with ESMTPSA'), 'no IP clause when the address is unknown');
+});
+
+test('countReceived counts field starts only, skipping folded continuation lines', () => {
+  const msg = Buffer.from(
+    'Received: from a\r\n' +
+      'Received: from b\r\n' +
+      '\tby c with ESMTP\r\n' + // folded continuation of the 2nd Received — not a new one
+      'Subject: x\r\n\r\n' +
+      'Received: not-a-header-its-body\r\n', // in the body — not counted
+    'latin1',
+  );
+  assert.equal(countReceived(msg), 2);
+});
+
+test('countReceived is zero for a message with no Received headers', () => {
+  assert.equal(countReceived(Buffer.from('Subject: x\r\n\r\nbody\r\n', 'latin1')), 0);
 });
 
 test('prependReceived puts the trace line above the existing headers, byte-exact below', () => {

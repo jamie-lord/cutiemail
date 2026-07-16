@@ -60,6 +60,8 @@ export interface MailServerConfig {
   readonly relayIntervalMs?: number;
   /** Max accepted message size in octets (RFC 1870 SIZE). Undefined = no limit. */
   readonly maxMessageSize?: number;
+  /** Reject a message with at least this many Received hops as a loop (default 100). */
+  readonly maxReceivedHops?: number;
 }
 
 export interface RunningServer {
@@ -111,6 +113,7 @@ export async function startServer(cfg: MailServerConfig): Promise<RunningServer>
     host: cfg.host,
     port: cfg.smtpPort,
     ...(cfg.maxMessageSize !== undefined ? { maxMessageSize: cfg.maxMessageSize } : {}),
+    maxReceivedHops: cfg.maxReceivedHops ?? 100,
   });
 
   // Submission (port 587, authenticated): our user sending out. Local recipients
@@ -161,6 +164,7 @@ export async function startServer(cfg: MailServerConfig): Promise<RunningServer>
     host: cfg.host,
     port: cfg.submissionPort,
     ...(cfg.maxMessageSize !== undefined ? { maxMessageSize: cfg.maxMessageSize } : {}),
+    maxReceivedHops: cfg.maxReceivedHops ?? 100,
   });
   const imap = await ImapServer.start(catalog, { tls: cfg.tls, host: cfg.host, port: cfg.imapPort, authenticate: verify, notifier });
 

@@ -48,3 +48,18 @@ export function receivedHeader(info: ReceivedInfo): string {
 export function prependReceived(data: Buffer, info: ReceivedInfo): Buffer {
   return Buffer.concat([Buffer.from(`${receivedHeader(info)}\r\n`, 'latin1'), data]);
 }
+
+/**
+ * Count the Received: header fields in a message (RFC 5321 §6.3 loop detection).
+ * Only field starts count — continuation (folded) lines begin with whitespace and
+ * are skipped. Counting the trace hops is how a mail loop is caught and broken.
+ */
+export function countReceived(data: Buffer): number {
+  const sep = data.indexOf(Buffer.from('\r\n\r\n', 'latin1'));
+  const headerBlock = (sep === -1 ? data : data.subarray(0, sep)).toString('latin1');
+  let count = 0;
+  for (const line of headerBlock.split('\r\n')) {
+    if (/^received:/i.test(line)) count += 1;
+  }
+  return count;
+}
