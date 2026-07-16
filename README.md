@@ -1,6 +1,7 @@
 # smtp-conformance
 
-A conformance test suite for **SMTP receivers**, asserting behaviour against RFC 5321.
+A conformance test suite for **SMTP receivers**, asserting behaviour against RFC 5321 and the
+STARTTLS security surface of RFC 3207.
 
 Point it at a mail server; it drives real SMTP exchanges over a socket and reports, for each
 requirement it checks, whether the server is conformant, non-conformant, exercising permitted
@@ -27,10 +28,13 @@ design commitments guard against that:
    MUST/MUST NOT is a finding.
 
 Everything traces to the [requirement register](src/register/) — all 570 normative statements
-in RFC 5321 §§1–7, each quoted verbatim (enforced by a test that checks every quote against the
-vendored RFC), with its level, the party it binds, and whether it is observable from a receiver
-socket at all. Of the 570, **218 are wire-testable**; the rest bind the client or are
-unobservable, and the register says so rather than hiding behind a flattering percentage.
+in RFC 5321 §§1–7, plus the STARTTLS command-injection requirement from RFC 3207 §4.2, each
+quoted verbatim (enforced by a test that checks every quote against the vendored RFC — 5321 or
+3207 — it claims), with its level, the party it binds, and whether it is observable from a
+receiver socket at all. Of the 571, **219 are wire-testable**; the rest bind the client or are
+unobservable, and the register says so rather than hiding behind a flattering percentage. Every
+wire-testable MUST is now either covered by a proven negative control or carries a recorded
+"deliberately uncovered" decision — there are no silent gaps.
 
 ## Usage
 
@@ -76,21 +80,32 @@ build the state in-band. See [fixture.ts](src/conformance/fixture.ts).
 
 ## What it currently checks
 
-The machinery is complete; corpus coverage is growing. Current modules (each with proven
-negative controls):
+Every wire-testable MUST is covered. The corpus spans sixteen modules, each case verified both
+ways against the mutant server. Highlights:
 
 - **CRLF discipline and SMTP smuggling** — the flagship. Detects the `<LF>.<LF>`,
   `<LF>.<CR><LF>` (CVE-2023-51764/65/66) and `<CR>.<CR>` (Cisco) end-of-data variants, plus
   bare-LF terminators and unterminated commands.
-- **Session sequencing** — RSET/NOOP/QUIT semantics, HELO-vs-EHLO response shape, out-of-order
-  commands.
-- **Size limits** — the §4.5.3.1 floors a server must accept.
-- **Error handling** — connection stays open through errors until QUIT; reply codes are
-  well-formed.
-- **Mail transaction** — source-route syntax recognition.
+- **STARTTLS command injection (RFC 3207)** — the CVE-2011-0411 "NO STARTTLS" class: a command
+  pipelined in the same TCP segment as STARTTLS must be discarded, not processed. Tested on the
+  plaintext channel without needing a live TLS handshake.
+- **Session sequencing and command-buffer effects** — RSET/NOOP/QUIT semantics, EHLO-as-RSET
+  transaction clearing, RSET-before-EHLO, out-of-order commands, per-command buffer effects.
+- **Minimum implementation** — the mandatory command set, the bare-`postmaster` recipient, one
+  reply per command.
+- **Reply structure** — three-digit codes, the first-digit and second-digit grammar, multiline
+  format, `<CRLF>` framing, the 512-octet reply-line limit.
+- **Extensions** — STARTTLS advertise-vs-honour, and the honour-but-don't-advertise
+  falsification (AUTH/STARTTLS/EXPN).
+- **Size limits, error handling, mail transaction, connection, termination, syntax/case,
+  mail delivery** — the §4.5.3.1 floors, connection survival through errors, source-route
+  preparedness, greeting/EHLO identity, and the delivery path.
+- **Latitude observations** — SHOULD/MAY branches (8BITMIME, VRFY/EXPN/HELP support,
+  NOOP-parameter and trailing-whitespace tolerance, …) recorded for the per-server matrix but
+  never scored as findings.
 
-The wire-level attack detail behind the smuggling corpus is distilled, with sources, in
-[docs/research/smtp-divergence.md](docs/research/smtp-divergence.md).
+The wire-level attack detail behind the smuggling and STARTTLS corpus is distilled, with
+sources, in [docs/research/smtp-divergence.md](docs/research/smtp-divergence.md).
 
 ## Calibration before trust
 
