@@ -31,4 +31,23 @@ export const DKIM_BODYHASH = [
       '(accept a mismatch) is the negative control — skipping it would let any body ' +
       'ride under a valid-looking signature.',
   },
+  {
+    id: 'R-6376-3.7-b',
+    rfc: 'rfc6376',
+    section: '3.7',
+    page: 30,
+    level: 'MUST',
+    party: 'both',
+    normativeSource: 'prose',
+    text: 'the value of the "b=" tag (including all surrounding whitespace) deleted (i.e., treated as the empty string), canonicalized using the header canonicalization algorithm specified in the "c=" tag, and without a trailing CRLF.',
+    testability: { kind: 'parse' },
+    note:
+      'The header-hash input (hash step 2): the signed headers per "h=" each ' +
+      'canonicalized and CRLF-terminated, then the DKIM-Signature header itself with ' +
+      'its own "b=" value emptied, canonicalized, and with NO trailing CRLF. The ' +
+      'emptied-b= and no-trailing-CRLF subtleties are where implementations diverge. ' +
+      'Our verifier builds this input and checks the RSA signature with node:crypto ' +
+      '(a real keypair generated in-test); tampering a signed header changes the ' +
+      'input and fails. The skipSignatureCheck defect is the negative control.',
+  },
 ] as const satisfies readonly RequirementDef[];
