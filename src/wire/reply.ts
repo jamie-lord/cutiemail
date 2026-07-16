@@ -382,7 +382,17 @@ export function frameReplyAtEof(buf: Buffer): { value: Reply; consumed: number }
   return frame(buf, true);
 }
 
-/** First digit of the reply code — the severity class. Null when ungrammatical. */
+/**
+ * First digit of the reply code — the severity class (2/3/4/5).
+ *
+ * Null ONLY when that first digit is outside 2-5 (a 6xx/1xx, or the -1 sentinel
+ * for an unparseable code) — NOT when the 2nd/3rd digits are out of grammar. A
+ * `260` still has severity class 2, because for accept/reject gating that is what
+ * it is. Its ungrammaticality is caught separately as a `code-out-of-grammar`
+ * anomaly, so a caller gating on `severity() === 2` correctly treats `260` as a
+ * success-class reply and leaves the grammar finding to the reply-structure
+ * corpus. Do not read this as "null when ungrammatical".
+ */
 export function severity(reply: Reply): 2 | 3 | 4 | 5 | null {
   const d = Math.floor(reply.code / 100);
   return d === 2 || d === 3 || d === 4 || d === 5 ? (d as 2 | 3 | 4 | 5) : null;
