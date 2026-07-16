@@ -80,6 +80,25 @@ for (const [profile, defects] of [
   });
 }
 
+// A server that REQUIRES STARTTLS before mail (RFC 3207) answers 530 to every
+// command except the exempt set until TLS — a CONFORMANT posture for a
+// submission/non-public server. It must draw zero findings, exactly like the
+// clean and deferring servers. This is the systemic guard for the policy-530
+// false-positive class: a test that convicts a 530 "understood but refused on
+// policy" reply (the rset-returns-250 over-narrow was one such regression) would
+// light up here against the whole corpus, not just its own negative control.
+test('a TLS-required server answering 530 to non-exempt commands produces zero non-conformant results', async () => {
+  const run = await runAgainst('tls-required', { tlsRequired530: true });
+  const findings = run.results.filter((r) => r.outcome === 'non-conformant');
+  assert.equal(
+    findings.length,
+    0,
+    `a conformant TLS-required (530) server must produce no findings — a 530 is a policy refusal, never a MUST violation. Got: ${findings
+      .map((f) => `${f.requirementId}(${f.testId})`)
+      .join(', ')}`,
+  );
+});
+
 test('the matrix surfaces a divergence where a broken server differs from a clean one', async () => {
   // honourBareLf makes the server EXECUTE a bare-LF command — a smuggling
   // violation the clean server does not have.

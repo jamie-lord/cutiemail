@@ -288,6 +288,17 @@ export interface Defects {
    */
   readonly injectAfterStartTls?: boolean;
   /**
+   * NOT A DEFECT — a CONFORMANT policy posture. A server that REQUIRES STARTTLS
+   * before mail (RFC 3207) answers 530 "Must issue a STARTTLS command first" to
+   * every command except the exempt set {EHLO, HELO, NOOP, STARTTLS, QUIT} until
+   * TLS is negotiated. This is legitimate for a submission/non-public server. It
+   * exists so a differential run can assert the WHOLE corpus draws ZERO findings
+   * against a TLS-required server — a systemic guard for the class of false
+   * positive where a test convicts a policy 530 (the rset-returns-250 over-narrow
+   * was one instance). Like rejectBareLf, it is a switchable conformant behaviour.
+   */
+  readonly tlsRequired530?: boolean;
+  /**
    * The smuggle-INTO-TLS variant (needs terminateTls): after a real handshake,
    * process the plaintext that was pipelined before it AS IF it arrived inside the
    * TLS session — the injected command runs in the authenticated context. Violates
@@ -821,6 +832,15 @@ export class MutantServer {
       if (d.overlongReplyLine) return this.#write(sock, crlf`${String(code)} ${'x'.repeat(600)}`);
       this.#write(sock, crlf`${String(code)} ${msg}`);
     };
+
+    // Conformant TLS-required posture (RFC 3207): 530 every command except the
+    // exempt set until STARTTLS. Placed before all other handling because the policy
+    // refusal pre-empts command processing. No test may convict this — it is the
+    // differential-invariant guard for the policy-530 false-positive class.
+    if (this.#defects.tlsRequired530) {
+      const exempt = verb === 'EHLO' || verb === 'HELO' || verb === 'NOOP' || verb === 'STARTTLS' || verb === 'QUIT';
+      if (!exempt) return replyOK(530, '5.7.0 Must issue a STARTTLS command first');
+    }
 
     // Clean-baseline character validation (§4.1.2-n): a command line containing a
     // C0 control octet (other than TAB) or DEL is rejected with 501, UNLESS the
