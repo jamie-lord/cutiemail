@@ -81,5 +81,11 @@ export const MUTANTS: readonly Mutant[] = [
     catches: 'source-route-syntax-recognized',
     defect: 'rejectSourceRouteAsSyntax',
     why: 'returning a 501 syntax error for a source-route path violates R-5321-4.1.1.3-b',
+    alsoProves: [
+      {
+        requirement: 'R-5321-3.3-k',
+        why: '§3.3: "Servers MUST be prepared to encounter a list of source routes in the forward-path" — rejecting the source route as a syntax error is a failure to be so prepared',
+      },
+    ],
   },
 ];

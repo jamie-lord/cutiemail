@@ -81,7 +81,10 @@ export const CASES: readonly TestCase[] = [
   testCase({
     id: 'ehlo-response-identifies-the-server',
     requirement: 'R-5321-4.1.1.1-d',
-    alsoTouches: ['R-5321-4.1.1.1-l'],
+    // NOTE: this case checks ONLY the mandatory first-line Domain. It does not
+    // (and cannot without knowing the server's full command set) check §4.1.1.1-l's
+    // keyword-completeness duty, so that requirement is NOT listed here — see its
+    // deliberatelyUncovered note in the register.
     intent: 'the EHLO response identifies the server on its first line',
     rationale:
       '§4.1.1.1: the server "identifies itself to the SMTP client in the connection greeting ' +

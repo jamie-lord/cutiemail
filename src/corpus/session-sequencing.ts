@@ -254,9 +254,39 @@ export const MUTANTS: readonly Mutant[] = [
   { catches: 'rset-returns-250', defect: 'rsetWrongReply', why: 'a non-250 reply to RSET violates R-5321-4.1.1.5-b' },
   { catches: 'rset-does-not-close-connection', defect: 'rsetClosesConnection', why: 'closing on RSET violates R-5321-4.1.1.5-e' },
   { catches: 'noop-returns-250', defect: 'noopWrongReply', why: 'a non-250 reply to NOOP violates R-5321-4.1.1.9-b' },
-  { catches: 'quit-returns-221-and-closes', defect: 'quitWrongReply', why: 'a non-221 reply to QUIT violates R-5321-4.1.1.10-a' },
-  { catches: 'quit-returns-221-and-closes', defect: 'quitResetsAfterReply', why: 'an RST after 221 instead of a clean close violates R-5321-4.1.1.10-a' },
+  {
+    catches: 'quit-returns-221-and-closes',
+    defect: 'quitWrongReply',
+    why: 'a non-221 reply to QUIT violates R-5321-4.1.1.10-a',
+    alsoProves: [
+      {
+        requirement: 'R-5321-3.8-a',
+        why: '§3.8: on QUIT "the server responds with a positive reply code" — a non-221 (non-positive) reply is exactly that violation',
+      },
+    ],
+  },
+  {
+    catches: 'quit-returns-221-and-closes',
+    defect: 'quitResetsAfterReply',
+    why: 'an RST after 221 instead of a clean close violates R-5321-4.1.1.10-a',
+    alsoProves: [
+      {
+        requirement: 'R-5321-3.8-a',
+        why: '§3.8: after the positive reply the server "closes the connection" — an RST is not the orderly close the section describes',
+      },
+    ],
+  },
   { catches: 'helo-not-given-extended-response', defect: 'extendedResponseToHelo', why: 'an EHLO-style reply to HELO violates R-5321-3.2-b' },
-  { catches: 'rcpt-before-mail-rejected', defect: 'acceptRcptBeforeMail', why: 'accepting RCPT before MAIL violates R-5321-4.1.4-o' },
+  {
+    catches: 'rcpt-before-mail-rejected',
+    defect: 'acceptRcptBeforeMail',
+    why: 'accepting RCPT before MAIL violates R-5321-4.1.4-o',
+    alsoProves: [
+      {
+        requirement: 'R-5321-3.3-p',
+        why: '§3.3: "If a RCPT command appears without a previous MAIL command, the server MUST return a 503" — accepting it instead is precisely this violation',
+      },
+    ],
+  },
   { catches: 'data-before-rcpt-rejected', defect: 'acceptDataBeforeRcpt', why: 'entering DATA with no recipient violates R-5321-4.1.4-o' },
 ];

@@ -98,10 +98,15 @@ function stateOf(
   // fully-covered through a real negative-control mutant.
   const isStrict = req.level === 'MUST' || req.level === 'MUST NOT' || req.level === 'REQUIRED';
   if (!isStrict && [...primaryIds].some((id) => latitudeControlled.has(id))) return 'fully-covered';
-  // Otherwise covered only if a mutant proves a PRIMARY test detects the
-  // violation — an alsoTouches-only test caught by another requirement's mutant
-  // proves nothing about this one.
-  const hasProvenMutant = mutants.some((m) => primaryIds.has(m.catches));
+  // Otherwise covered only if a mutant proves this requirement's detection —
+  // either because it catches a PRIMARY test of this requirement, or because a
+  // mutant DELIBERATELY declares this requirement in its `alsoProves` (a reviewed
+  // per-claim credit, NOT the automatic alsoTouches credit finding #6 forbade).
+  // An alsoTouches-only test merely caught by another requirement's mutant, with
+  // no explicit alsoProves, still proves nothing about this one.
+  const hasProvenMutant =
+    mutants.some((m) => primaryIds.has(m.catches)) ||
+    mutants.some((m) => (m.alsoProves ?? []).some((ap) => ap.requirement === req.id));
   return hasProvenMutant ? 'fully-covered' : 'test-only';
 }
 
@@ -155,7 +160,9 @@ export function computeCoverage(
     const state = stateOf(req, reqTests, primaryTests, mutants, latitudeControlled);
     const testIds = reqTests.map((t) => t.id); // all touching, for display
     const primaryTestIds = primaryTests.map((t) => t.id);
-    const hasMutant = mutants.some((m) => primaryTestIds.includes(m.catches));
+    const hasMutant =
+      mutants.some((m) => primaryTestIds.includes(m.catches)) ||
+      mutants.some((m) => (m.alsoProves ?? []).some((ap) => ap.requirement === req.id));
     const reason =
       req.testability.kind === 'not-testable'
         ? req.testability.reason

@@ -145,10 +145,36 @@ export const MUTANTS: readonly Mutant[] = [
     catches: 'reply-codes-are-three-digits',
     defect: 'fourDigitCode',
     why: 'a four-digit reply code violates R-5321-4.3.2-c',
+    alsoProves: [
+      {
+        requirement: 'R-5321-4.2-b',
+        why: 'a four-digit code is not "a three digit number", the exact §4.2 requirement — the same anomaly the test flags',
+      },
+    ],
   },
   {
     catches: 'reply-codes-are-three-digits',
     defect: 'twoDigitCode',
     why: 'a two-digit reply code violates R-5321-4.3.2-c',
+    alsoProves: [
+      {
+        requirement: 'R-5321-4.2-b',
+        why: 'a two-digit code is not "a three digit number" per §4.2',
+      },
+    ],
+  },
+  {
+    // The other §4.3.2-c prong, and the whole of §4.2-s: a code that IS three
+    // digits but whose first digit is outside 2-5. Without this the test's
+    // first-digit check has no negative control and 4.2-s is only test-only.
+    catches: 'reply-codes-are-three-digits',
+    defect: 'firstDigitOutOfRange',
+    why: 'a first digit outside 2-5 violates R-5321-4.3.2-c (second prong)',
+    alsoProves: [
+      {
+        requirement: 'R-5321-4.2-s',
+        why: '§4.2-s: "MUST NOT send reply codes whose first digits are other than 2, 3, 4, or 5" — this defect emits exactly such a code and the test catches it',
+      },
+    ],
   },
 ];

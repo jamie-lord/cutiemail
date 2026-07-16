@@ -20,7 +20,7 @@ import { testCase } from '../conformance/test-case.ts';
 import type { TestCase, Mutant, Conn } from '../conformance/test-case.ts';
 import type { Judgement } from '../conformance/outcome.ts';
 import { crlf } from '../wire/bytes.ts';
-import { severity } from '../wire/reply.ts';
+import { severity, advertisedExtensions } from '../wire/reply.ts';
 
 async function greeting(conn: Conn): Promise<Judgement | null> {
   const g = await conn.readReply(5000);
@@ -86,6 +86,65 @@ export const CASES: readonly TestCase[] = [
       return { kind: 'satisfied', detail: `advertised STARTTLS honoured (${r.reply.code})` };
     },
   }),
+
+  testCase({
+    id: 'unadvertised-registered-command-not-honoured',
+    requirement: 'R-5321-4.1.1.1-l',
+    intent: 'a registered extension command the server honours must have been advertised in EHLO',
+    rationale:
+      '§4.1.1.1: "The EHLO response MUST contain keywords ... for all commands not listed as ' +
+      '\\"required\\" in Section 4.5.1 excepting only private-use commands." This is the ' +
+      'honour-but-not-advertise falsification, the inverse of advertise-but-refuse (§4.2.4). ' +
+      'The requirement can only be falsified, never confirmed (nothing on the wire enumerates ' +
+      'what a server supports), so we probe a SMALL list of commands with REGISTERED, ' +
+      'standardised names — AUTH (RFC 4954), STARTTLS (RFC 3207) — where the §4.1.5 private-use ' +
+      'escape hatch cannot apply. A command that is honoured (2yz/3yz) yet absent from the EHLO ' +
+      'keywords is the violation; a rejection (5yz) is conformant; probing a command the server ' +
+      'DID advertise proves nothing and is skipped.',
+    run: async (conn): Promise<Judgement> => {
+      const bad = await greeting(conn);
+      if (bad !== null) return bad;
+      await conn.send(crlf`EHLO conformance-suite.invalid`);
+      const ehlo = await conn.readReply(3000);
+      if (ehlo.kind !== 'reply' || severity(ehlo.reply) !== 2) {
+        return { kind: 'inconclusive', reason: `EHLO: ${ehlo.kind === 'reply' ? ehlo.reply.code : ehlo.kind}` };
+      }
+      const advertised = advertisedExtensions(ehlo.reply);
+
+      // Registered-name probes, each with the exact command line and the reply
+      // that would mean "honoured". Only probe the ones NOT advertised.
+      const probes = [
+        { keyword: 'AUTH', line: crlf`AUTH LOGIN` },
+        { keyword: 'STARTTLS', line: crlf`STARTTLS` },
+      ];
+      let probed = 0;
+      for (const p of probes) {
+        if (advertised.has(p.keyword)) continue; // advertised -> honouring it is fine
+        probed++;
+        await conn.send(p.line);
+        const r = await conn.readReply(3000);
+        if (r.kind !== 'reply') return { kind: 'inconclusive', reason: `${p.keyword} probe drew ${r.kind}` };
+        const sev = severity(r.reply);
+        // 2yz/3yz = the server acted on / entered the command it never advertised.
+        if (sev === 2 || sev === 3) {
+          return {
+            kind: 'violated',
+            detail: `${p.keyword} was honoured with ${r.reply.code} but never appeared in the EHLO keywords — a supported non-required command MUST be advertised`,
+          };
+        }
+        // 4yz = transient; can't tell support from a temporary refusal. Reset the
+        // transaction footing before the next probe so a lingering state can't skew it.
+        if (sev === 4) {
+          await conn.send(crlf`RSET`);
+          await conn.readReply(3000);
+        }
+      }
+      if (probed === 0) {
+        return { kind: 'inconclusive', reason: 'server advertised every registered probe command — nothing unadvertised to falsify against' };
+      }
+      return { kind: 'satisfied', detail: `${probed} unadvertised registered command(s) correctly refused` };
+    },
+  }),
 ];
 
 export const MUTANTS: readonly Mutant[] = [
@@ -98,5 +157,10 @@ export const MUTANTS: readonly Mutant[] = [
     catches: 'advertised-starttls-is-honoured',
     defect: 'advertiseStarttlsButReject',
     why: 'advertising STARTTLS then 502-ing it violates R-5321-4.2.4-c',
+  },
+  {
+    catches: 'unadvertised-registered-command-not-honoured',
+    defect: 'honorUnadvertisedAuth',
+    why: 'honouring AUTH (a 334 challenge) while never advertising it in EHLO violates R-5321-4.1.1.1-l',
   },
 ];

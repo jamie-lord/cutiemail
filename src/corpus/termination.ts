@@ -141,5 +141,15 @@ export const MUTANTS: readonly Mutant[] = [
     why:
       'dropping the connection on a command it does not understand, with no reply and no 421, ' +
       'is the exact behaviour §3.8 declares "in violation of this specification" (R-5321-3.8-c)',
+    alsoProves: [
+      {
+        requirement: 'R-5321-3.8-b',
+        why: '§3.8: a server "MUST NOT intentionally close the connection" except after QUIT/421/timeout — closing on an unknown command is an intentional close outside all three exceptions',
+      },
+      {
+        requirement: 'R-5321-3.8-d',
+        why: '§3.8: servers are "expected to be tolerant of unknown commands, issuing a 500 reply" — closing instead is the intolerant behaviour this SHOULD warns against',
+      },
+    ],
   },
 ];

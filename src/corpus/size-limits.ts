@@ -155,6 +155,12 @@ export const MUTANTS: readonly Mutant[] = [
     catches: 'command-line-512-accepted',
     defect: 'rejectCommandLineAt300',
     why: 'rejecting a command line within the 512-octet floor violates R-5321-4.5.3.1.4-a',
+    alsoProves: [
+      {
+        requirement: 'R-5321-4.3.2-f',
+        why: '§4.3.2: "producing a \'command too long\' message for a command line shorter than 512 characters would violate ... 4.5.3.1.4" — this defect rejects a <512-octet line for length, the exact act forbidden',
+      },
+    ],
   },
   {
     catches: 'text-line-1000-accepted',

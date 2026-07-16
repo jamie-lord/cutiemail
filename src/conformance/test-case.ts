@@ -113,6 +113,21 @@ export interface Mutant {
   readonly defect: string;
   /** Why this defect violates the requirement — the link back to the spec. */
   readonly why: string;
+  /**
+   * Further requirements this SAME defect demonstrably proves detection of — a
+   * DELIBERATE, per-claim declaration, not automatic credit.
+   *
+   * Coverage never credits a requirement merely because a test `alsoTouches` it
+   * and some OTHER requirement's mutant fires (that was the finding-#6 hole). But
+   * a single defect genuinely is the violation of several requirements at once
+   * when they state the same wire behaviour in different sections — e.g. a mutant
+   * that makes NOOP answer "500 command not recognized" proves both "NOOP is in
+   * the minimum implementation" AND "producing not-recognized for the required
+   * subset is a violation". This field is the reviewed escape hatch: each entry
+   * carries its own `why`, so the claim is auditable exactly like `catches` is.
+   * The requirement must be one the caught test's exchange actually exercises.
+   */
+  readonly alsoProves?: readonly { readonly requirement: RequirementId; readonly why: string }[];
 }
 
 /** Author a test case with compile-time requirement checking. Identity helper. */

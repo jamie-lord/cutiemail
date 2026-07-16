@@ -98,6 +98,12 @@ export interface Defects {
   readonly fourDigitCode?: boolean;
   /** Emit a two-digit reply code. Violates R-5321-4.3.2-c (three digits only). */
   readonly twoDigitCode?: boolean;
+  /**
+   * Emit a well-formed THREE-digit code whose first digit is outside 2-5 (e.g.
+   * 250 -> 650). Distinct from four/two-digit: the length is legal but the class
+   * digit is not. Violates R-5321-4.2-s / R-5321-4.3.2-c's second prong.
+   */
+  readonly firstDigitOutOfRange?: boolean;
   /** Terminate replyOK-path replies with a bare LF instead of CRLF. Violates R-5321-4.2-d. */
   readonly bareLfReplyTerminator?: boolean;
   /** Use '=' instead of SP as the reply code separator. Violates R-5321-4.2-i. */
@@ -184,6 +190,13 @@ export interface Defects {
   readonly doubleReplyToNoop?: boolean;
   /** Answer HELP with a 500. Violates R-5321-4.1.1.8-a (HELP sends helpful info). */
   readonly rejectHelp?: boolean;
+  /**
+   * Honour AUTH with a 334 challenge while NEVER advertising it in EHLO. The
+   * clean server has no AUTH (falls through to 500), so this is the inverse of
+   * advertiseStarttlsButReject: a supported non-required command left off the
+   * EHLO keyword list. Violates R-5321-4.1.1.1-l.
+   */
+  readonly honorUnadvertisedAuth?: boolean;
   /**
    * Advertise STARTTLS in EHLO but return 502 to the STARTTLS command.
    * Violates R-5321-4.2.4-c (MUST NOT advertise capabilities you will 502/500).
@@ -467,6 +480,7 @@ export class MutantServer {
       if (d.outOfGrammarCode) return this.#write(sock, crlf`260 ${msg}`);
       if (d.fourDigitCode) return this.#write(sock, crlf`2500 ${msg}`);
       if (d.twoDigitCode) return this.#write(sock, crlf`25 ${msg}`);
+      if (d.firstDigitOutOfRange) return this.#write(sock, crlf`6${String(code).slice(1)} ${msg}`);
       if (d.bareCodeReplies) return this.#write(sock, Buffer.concat([Buffer.from(String(code)), Buffer.from([CR, LF])]));
       if (d.eightBitReplyText) return this.#write(sock, Buffer.concat([Buffer.from(`${code} `), Buffer.from([0xe9]), Buffer.from([CR, LF])]));
       if (d.bareLfReplyTerminator) return this.#write(sock, Buffer.concat([Buffer.from(`${code} ${msg}`, 'latin1'), Buffer.from([LF])]));
@@ -658,6 +672,13 @@ export class MutantServer {
         }
         sock.end();
         return;
+
+      case 'AUTH':
+        // Clean baseline does not implement AUTH and never advertises it, so it
+        // falls through to the 500 below. The defect honours it (a 334 challenge)
+        // while EHLO still omits the AUTH keyword — the §4.1.1.1-l violation.
+        if (d.honorUnadvertisedAuth) return replyOK(334, 'VXNlcm5hbWU6');
+        return replyOK(500, 'Error: command not recognized');
 
       case 'VRFY':
         if (d.vrfy503BeforeGreeting && !state.greeted) {

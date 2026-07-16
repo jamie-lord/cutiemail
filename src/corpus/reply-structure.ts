@@ -226,10 +226,22 @@ export const MUTANTS: readonly Mutant[] = [
     catches: 'reply-separator-well-formed',
     defect: 'malformedReplySeparator',
     why: 'a byte other than <SP> or "-" after the code is outside the Reply-line grammar of §4.2 (R-5321-4.2-i)',
+    alsoProves: [
+      {
+        requirement: 'R-5321-4.2.1-f',
+        why: '§4.2.1 requires the code be followed immediately by "-" (non-final) or <SP> (final); a "=" separator is neither, the exact malformation this test catches',
+      },
+    ],
   },
   {
     catches: 'multiline-reply-code-consistent',
     defect: 'mismatchedContinuation',
     why: 'a continuation line whose code differs from the final line violates §4.2.1 (R-5321-4.2.1-i)',
+    alsoProves: [
+      {
+        requirement: 'R-5321-4.2.1-f',
+        why: '§4.2.1 requires every line — final and non-final — to begin with the reply code; a continuation whose code differs breaks that per-line code rule',
+      },
+    ],
   },
 ];

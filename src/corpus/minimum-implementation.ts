@@ -134,7 +134,21 @@ export const CASES: readonly TestCase[] = [
 
 export const MUTANTS: readonly Mutant[] = [
   { catches: 'ehlo-is-supported', defect: 'rejectEhlo', why: 'a 500 to EHLO violates R-5321-2.2.1-b (servers MUST support EHLO)' },
-  { catches: 'noop-is-recognised', defect: 'unrecognizedNoop', why: 'a 500 to NOOP means the mandatory command set is incomplete (R-5321-4.5.1-b)' },
+  {
+    catches: 'noop-is-recognised',
+    defect: 'unrecognizedNoop',
+    why: 'a 500 to NOOP means the mandatory command set is incomplete (R-5321-4.5.1-b)',
+    alsoProves: [
+      {
+        requirement: 'R-5321-4.3.2-e',
+        why: '§4.3.2: "producing a \'command not recognized\' error in response to the required subset of these commands is a violation" — NOOP is in that subset and this defect answers it with exactly that error',
+      },
+      {
+        requirement: 'R-5321-4.5.1-a',
+        why: 'a receiver that fails to recognise NOOP has not provided the "minimum implementation" §4.5.1 requires of all receivers',
+      },
+    ],
+  },
   { catches: 'exactly-one-reply-per-command', defect: 'doubleReplyToNoop', why: 'two replies to one command violates R-5321-4.2-a' },
   { catches: 'help-is-answered', defect: 'rejectHelp', why: 'a 500 to HELP violates R-5321-4.1.1.8-a' },
 ];
