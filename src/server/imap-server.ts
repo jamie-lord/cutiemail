@@ -63,6 +63,9 @@ function inboxOnly(mailbox: ServableMailbox): ServableCatalog {
 
 const CAPABILITIES = 'IMAP4rev2 IDLE UIDPLUS';
 
+/** Cap on an APPEND literal's declared size (octets) — bounds server memory. */
+const MAX_APPEND_LITERAL = 26_214_400; // 25 MiB, matching the SMTP SIZE default
+
 /** Special-use attributes by conventional folder name (RFC 6154 / 9051 §7.3.1). */
 const SPECIAL_USE: Record<string, string> = {
   Trash: '\\Trash',
@@ -476,7 +479,20 @@ export class ImapServer {
               break;
             }
             const flags = (m[2] ?? '').split(/\s+/).filter((f) => f.length > 0);
-            pendingAppend = { tag, mailboxName: unquote(m[1]!), flags, size: Number(m[3]) };
+            const size = Number(m[3]);
+            // Cap the literal so an APPEND can't make the server buffer an
+            // unbounded blob (a one-command OOM). A synchronizing literal waits
+            // for our "+", so refusing it means the client never sends the data;
+            // a non-synchronizing literal is already streaming, so drop the link.
+            if (size > MAX_APPEND_LITERAL) {
+              write(sock, `${tag} NO [LIMIT] APPEND literal exceeds the ${MAX_APPEND_LITERAL}-octet limit`);
+              if (m[4] !== undefined) {
+                sock.end();
+                return;
+              }
+              break;
+            }
+            pendingAppend = { tag, mailboxName: unquote(m[1]!), flags, size };
             // A synchronizing literal ({n}) waits for the go-ahead; {n+} does not.
             if (m[4] === undefined) write(sock, '+ Ready for literal data');
             break;

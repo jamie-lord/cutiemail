@@ -87,6 +87,29 @@ test('IDLE without a notifier is refused, not hung', async () => {
   }
 });
 
+test('an oversized APPEND literal is refused, not buffered, and the connection survives', async () => {
+  const catalog = new MemoryCatalog();
+  const server = await ImapServer.start(catalog, { authenticate: () => true });
+  const sock = net.connect(server.port, '127.0.0.1');
+  const s = new Session(sock);
+  try {
+    await s.waitFor('* OK');
+    s.send('a1 LOGIN u p\r\na2 SELECT INBOX\r\n');
+    await s.waitFor('a2 OK');
+    // A synchronizing literal declaring ~1 GiB.
+    s.send('a3 APPEND "INBOX" {1073741824}\r\n');
+    const resp = await s.waitFor('a3 ');
+    assert.match(resp, /a3 NO \[LIMIT\]/, 'the huge literal is refused before any data is buffered');
+    assert.doesNotMatch(resp, /\+ Ready/, 'no continuation is sent, so the client never streams the blob');
+    // The connection is still usable.
+    s.send('a4 NOOP\r\n');
+    await s.waitFor('a4 OK');
+  } finally {
+    sock.destroy();
+    await server.close();
+  }
+});
+
 test('a notification with no net change does not push a spurious EXISTS', async () => {
   const catalog = new MemoryCatalog();
   const notifier = new MailboxNotifier();
