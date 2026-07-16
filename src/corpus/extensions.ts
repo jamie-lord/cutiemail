@@ -129,13 +129,19 @@ export const CASES: readonly TestCase[] = [
       // honour concern, tested separately) — nothing to say about injection here.
       if (severity(r.reply) !== 2) return { kind: 'inconclusive', reason: `STARTTLS refused with ${r.reply.code} — cannot test the discard` };
       // The decisive check: after the 220 the server MUST be silent (it discarded
-      // the buffered NOOP and is waiting for the TLS ClientHello). ANY further
-      // reply means it processed the injected plaintext command. NB: a post-220
-      // *error* reply about the pipelined bytes would also read as non-quiet here;
-      // no mainstream MTA does that (a hardened server rejects at the STARTTLS
-      // command with a 5xx, handled above as inconclusive), so it is not a
-      // real-world false positive.
+      // the buffered NOOP and is waiting for the TLS ClientHello). An SMTP REPLY to
+      // the injected command means it processed the plaintext injection. NB: two
+      // non-quiet shapes are NOT injection: a hardened server rejects at the
+      // STARTTLS command with a 5xx (handled above as inconclusive), and a server
+      // that feeds the buffered bytes to its TLS engine emits a TLS alert record
+      // (binary, not a 3-digit SMTP reply) — that is not "processing the command as
+      // SMTP", so we convict ONLY when the extra bytes are SMTP-reply-shaped.
       const quiet = await conn.expectQuiet(1000);
+      const firstByte = quiet.bytes[0];
+      const looksLikeSmtpReply = firstByte !== undefined && firstByte >= 0x30 && firstByte <= 0x39;
+      if (!quiet.quiet && !looksLikeSmtpReply) {
+        return { kind: 'inconclusive', reason: `after 220 the server sent non-SMTP bytes (0x${(firstByte ?? 0).toString(16)}…) — likely a TLS alert on the pipelined bytes, not a processed plaintext command` };
+      }
       if (quiet.quiet) {
         // Silence proves only that the command was not processed IN PLAINTEXT. A
         // server that buffers it to replay INSIDE the TLS session is also silent
