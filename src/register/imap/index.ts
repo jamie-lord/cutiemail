@@ -10,11 +10,12 @@
 
 import type { RequirementDef, IdsOf } from '../types.ts';
 import { IMAP_RESPONSES } from './sections/responses.ts';
+import { IMAP_COMMANDS } from './sections/commands.ts';
 
 /** Sections of RFC 9051 extracted into the register so far. */
-export const EXTRACTED_SECTIONS: readonly string[] = ['2.2.2', '7.1'];
+export const EXTRACTED_SECTIONS: readonly string[] = ['2.2.1', '2.2.2', '7.1'];
 
-export const IMAP_REQUIREMENTS = [...IMAP_RESPONSES] as const satisfies readonly RequirementDef[];
+export const IMAP_REQUIREMENTS = [...IMAP_RESPONSES, ...IMAP_COMMANDS] as const satisfies readonly RequirementDef[];
 
 /** Every IMAP requirement ID as a union — compile-time traceability. */
 export type ImapRequirementId = IdsOf<typeof IMAP_REQUIREMENTS>;
