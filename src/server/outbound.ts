@@ -151,6 +151,9 @@ export async function relayOutbound(msg: RelayableMessage, opts: OutboundOptions
         const r = await deliver(
           { host, port, tls: 'none', family: 4 },
           { from: msg.from, recipients: [recipient], data: msg.data, clientName: opts.clientName },
+          {},
+          undefined,
+          { startTls: true },
         );
         if (r.ok) {
           results.push({ recipient, ok: true, classification: 'success', detail: `delivered via ${host}` });

@@ -82,11 +82,28 @@ async function readReply(wire: Wire, timeoutMs: number): Promise<Reply | null> {
 const is2yz = (r: Reply | null): boolean => r !== null && r.code >= 200 && r.code < 300;
 const is5yz = (r: Reply | null): boolean => r !== null && r.code >= 500 && r.code < 600;
 
+/** Does an EHLO reply advertise the STARTTLS extension? */
+function advertisesStartTls(ehlo: Reply): boolean {
+  return ehlo.lines.some((l) => l.text.toString('latin1').trim().toUpperCase().startsWith('STARTTLS'));
+}
+
+export interface DeliveryOptions {
+  /**
+   * Opportunistic STARTTLS: if the peer advertises STARTTLS after EHLO, upgrade
+   * the connection before the transaction (RFC 3207). Certificates are NOT
+   * validated — opportunistic TLS buys encryption in transit, not authentication,
+   * and MX certs are routinely self-signed or name-mismatched. A STARTTLS that
+   * fails to negotiate falls back to plaintext rather than dropping the mail.
+   */
+  readonly startTls?: boolean;
+}
+
 export async function deliver(
   connect: WireOptions,
   req: DeliveryRequest,
   defects: ClientDefects = {},
   timeoutMs: number = DEFAULT_TIMEOUT,
+  options: DeliveryOptions = {},
 ): Promise<DeliveryResult> {
   const base: DeliveryResult = {
     ok: false,
@@ -131,6 +148,24 @@ export async function deliver(
         const helo = await readReply(wire, timeoutMs);
         if (!is2yz(helo)) return { ...base, greetingCode, openingVerb, failure: 'HELO fallback refused' };
         heloFellBack = true;
+      } else if (options.startTls === true && advertisesStartTls(ehlo!)) {
+        // Opportunistic STARTTLS (RFC 3207): upgrade, then re-EHLO over TLS.
+        await wire.send(command('STARTTLS', defects));
+        const ready = await readReply(wire, timeoutMs);
+        if (is2yz(ready)) {
+          try {
+            await wire.startTls({ rejectUnauthorized: false, servername: connect.host });
+            await wire.send(command(`EHLO ${req.clientName}`, defects));
+            const reEhlo = await readReply(wire, timeoutMs);
+            if (!is2yz(reEhlo)) return { ...base, greetingCode, openingVerb, failure: 'EHLO after STARTTLS refused' };
+          } catch {
+            // Handshake failed — the connection is unusable now; give up this
+            // attempt so the queue retries (plaintext fallback needs a fresh
+            // connection, which the retry provides).
+            return { ...base, greetingCode, openingVerb, failure: 'STARTTLS handshake failed' };
+          }
+        }
+        // A refused STARTTLS (non-2yz) just continues in plaintext.
       }
     }
 
