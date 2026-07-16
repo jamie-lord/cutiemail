@@ -506,10 +506,24 @@ export const S4_4 = [
     testability: {
       kind: 'not-testable',
       reason:
-        'The undeliverable-mail notification is a separate outbound message ' +
-        '(a bounce) sent to the originator out of band — not a reply on the ' +
-        'connection we opened. Confirming it would need to receive mail at the ' +
-        'originator address.',
+        'The undeliverable-mail notification is a separate outbound message (a ' +
+        'bounce) sent to the originator out of band — not a reply on the ' +
+        'connection we opened. The receiving sink (task #39) removes the ' +
+        'addressing obstacle: point the accepted-then-undeliverable path back ' +
+        'at a sink we control and a bounce WOULD land there observably. What ' +
+        'remains un-testable is CONVICTION, not observation. A bounce is ' +
+        'asynchronous — RFC 5321 §4.5.4.1 lets the server queue and retry for ' +
+        'days before giving up, and §6.1 governs the eventual notification — so ' +
+        '"no bounce arrived within our observation window" is indistinguishable ' +
+        'from a conformant server that simply has not bounced YET. We can ' +
+        'confirm a fast bounce (satisfied) but can never convict its absence ' +
+        'without false-positiving a slow-but-conformant server. A confirm-only ' +
+        'check is not a negative control (nothing it can catch), so this stays ' +
+        'not-testable rather than becoming a MUST we cannot fail cleanly. This ' +
+        'was built far enough to prove the boundary — a dontBounce mutant and ' +
+        'sink-relayed DSN — then reverted, because a test whose only defect ' +
+        'signal is a timeout is exactly the false-positive class this suite ' +
+        'refuses to ship.',
     },
   },
   {
