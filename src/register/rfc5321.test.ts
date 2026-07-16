@@ -61,10 +61,19 @@ const collapse = (s: string): string => s.replace(/\s+/g, ' ').trim();
 test('every requirement quotes its source RFC verbatim', () => {
   for (const r of requirements) {
     const source = r.rfc ?? 'rfc5321';
+    const quoted = collapse(r.text);
+    // Guard the vacuous case FIRST: `"anything".includes("")` is always true, so
+    // an empty (or whitespace-only) text would pass the verbatim check for the
+    // wrong reason — a silent hole in the register's central integrity gate.
     assert.ok(
-      specText[source].includes(collapse(r.text)),
+      quoted.length > 0,
+      `${r.id} (§${r.section}) has empty requirement text; the verbatim check would ` +
+        `pass vacuously. Every requirement must quote real spec text.`,
+    );
+    assert.ok(
+      specText[source].includes(quoted),
       `${r.id} (§${r.section}) is not a verbatim quote from spec/${source}.txt.\n` +
-        `Registered: ${collapse(r.text)}\n` +
+        `Registered: ${quoted}\n` +
         `Fix the quote — do not relax this test.`,
     );
   }
