@@ -120,6 +120,14 @@ The daemon is configured entirely by environment variables:
 | `MAIL_USER` / `MAIL_PASS` | your single account, e.g. `you` / a real passphrase |
 | `MAIL_TLS_CERT` / `MAIL_TLS_KEY` | paths to a real certificate (Let's Encrypt) |
 | `MAIL_DKIM_KEY` / `MAIL_DKIM_SELECTOR` | PEM key path + selector to sign outbound (see Known limitations) |
+| `MAIL_MAX_SIZE` | max accepted message size in octets (default 25 MiB) |
+
+What the running server does, end to end: it **receives** on 25 (stamping a
+`Received:` trace line, rejecting oversized messages and mail loops), **serves**
+the mailbox on 993 with the IMAP surface a real client needs — multiple folders,
+`IDLE` for instant new-mail, `UIDPLUS` — and **sends** what's submitted on 587 by
+signing it (DKIM), stamping `Received:`, and relaying to the recipient's MX over
+opportunistic STARTTLS, with a persistent retry queue behind it.
 
 Ports 25/587/993 are privileged (< 1024), so the process needs the capability to
 bind them. The clean way is a systemd unit that grants exactly that and nothing

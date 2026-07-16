@@ -99,23 +99,27 @@ mail libraries, each with switchable defects for negative control:
 **`store/`** — persistence. `mailbox.ts` is the *reference* mailbox: an in-memory
 model that pins every IMAP storage invariant (UID monotonicity, no UID reuse,
 flags, `EXPUNGE`, sequence numbers, `UIDVALIDITY`). `sqlite-mailbox.ts` is the
-*real* one on `node:sqlite`. They expose one surface, and the corpus drives both
-through a single invariant harness — so the persistent implementation is proven to
-reproduce the reference behaviour exactly, not merely to look similar.
-`accounts.ts` (SCRAM credentials) and `queue.ts` (outbound retry) sit alongside.
+*real* one on `node:sqlite`, and it also carries `SqliteCatalog` — the set of
+named folders (INBOX, Trash, Sent, …) a real client creates; `memory-catalog.ts`
+is its reference twin. They expose one surface, and the corpus drives both through
+a single invariant harness — so the persistent implementation is proven to
+reproduce the reference behaviour exactly. `accounts.ts` (SCRAM credentials),
+`queue.ts` (the retry decision) and `sqlite-queue.ts` (the persisted outbound
+queue) sit alongside.
 
 **`server/` + `client/`** — the live network layer. `smtp-receiver.ts` and
-`imap-server.ts` are real `net`/`tls` servers that mount the reference
-implementations on sockets. `client/deliver.ts` is the sending half and
-`client/mx.ts` resolves MX hosts; `server/outbound.ts` is the loop that joins them
-— it snapshots real DNS into the tested MX ordering and relays a remote recipient's
-mail onward. These are thin: they move bytes between a socket and a reference
-engine and own no protocol logic of their own.
+`imap-server.ts` are real `net`/`tls` servers; `client/deliver.ts` is the sending
+half and `client/mx.ts` resolves MX hosts. The send pipeline is a chain of small,
+separately-tested transforms — `submission-fixup.ts` (add Date/Message-ID),
+`received.ts` (stamp the trace hop), `dkim-signer.ts` (sign), then `sqlite-queue.ts`
++ `relay-loop.ts` (persist and retry) and `outbound.ts` (resolve MX, deliver over
+STARTTLS). `mailbox-notifier.ts` is the pub/sub that lets an inbound delivery wake
+an idling IMAP connection (IDLE). Each is thin and owns one concern.
 
 **`main.ts`** — the daemon. Opens the database, seeds accounts, and starts three
-listeners (inbound SMTP, submission-with-AUTH, IMAPS). Inbound mail is stored;
-submitted mail is split by `routeRecipients` — local recipients into the mailbox,
-remote ones handed to `server/outbound.ts` for relay. `startServer()` is factored
+listeners (inbound SMTP, submission-with-AUTH, IMAPS). Inbound mail is trace-stamped
+and stored; submitted mail is split by `routeRecipients` — local recipients into a
+folder, remote ones through the send pipeline above. `startServer()` is factored
 out from `main()` so the whole assembly is itself under test. If you want to know
 what "the server" *is*, it is this file and the modules it wires.
 
