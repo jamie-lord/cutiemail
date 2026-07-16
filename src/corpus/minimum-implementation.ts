@@ -130,6 +130,39 @@ export const CASES: readonly TestCase[] = [
       return { kind: 'satisfied', detail: `HELP answered with ${r.reply.code}` };
     },
   }),
+
+  testCase({
+    id: 'bare-postmaster-accepted',
+    requirement: 'R-5321-2.3.5-g',
+    intent: 'RCPT TO:<postmaster> — bare, no domain — is accepted',
+    rationale:
+      '§2.3.5: "The reserved mailbox name \\"postmaster\\" may be used in a RCPT command ' +
+      'without domain qualification ... and MUST be accepted if so used." The one recipient the ' +
+      'RFC guarantees without a fixture. The register note fixes the traps: open the transaction ' +
+      'with MAIL FROM:<> (the null path §4.5.1 pairs with postmaster); assert the BARE form ' +
+      '<postmaster> (postmaster@domain is a different requirement); do NOT follow through to DATA; ' +
+      'and a 4yz is NOT a pass — on a greylisting server it is the expected first-contact answer, ' +
+      'so it is inconclusive (retry), never a finding.',
+    run: async (conn): Promise<Judgement> => {
+      const bad = await greetAndEhlo(conn);
+      if (bad !== null) return bad;
+      await conn.send(crlf`MAIL FROM:<>`);
+      const m = await conn.readReply(3000);
+      if (m.kind !== 'reply' || severity(m.reply) !== 2) {
+        return { kind: 'inconclusive', reason: `null-path MAIL FROM:<> not accepted (${m.kind === 'reply' ? m.reply.code : m.kind}) — cannot reach the RCPT probe` };
+      }
+      await conn.send(crlf`RCPT TO:<postmaster>`);
+      const r = await conn.readReply(3000);
+      if (r.kind === 'timeout') return { kind: 'inconclusive', reason: 'bare postmaster RCPT drew no reply within the timeout' };
+      if (r.kind !== 'reply') return { kind: 'inconclusive', reason: `bare postmaster RCPT: ${r.kind}` };
+      const sev = severity(r.reply);
+      if (sev === 2) return { kind: 'satisfied', detail: `bare postmaster accepted (${r.reply.code})` };
+      // A 4yz is a temporary deferral (greylisting) — the note's predicted first-
+      // contact answer — not a refusal of the reserved mailbox.
+      if (sev === 4) return { kind: 'inconclusive', reason: `bare postmaster deferred with ${r.reply.code} (temporary) — not a refusal, retry` };
+      return { kind: 'violated', detail: `RCPT TO:<postmaster> (bare) drew ${r.reply.code} — the reserved mailbox MUST be accepted without domain qualification` };
+    },
+  }),
 ];
 
 export const MUTANTS: readonly Mutant[] = [
@@ -151,4 +184,5 @@ export const MUTANTS: readonly Mutant[] = [
   },
   { catches: 'exactly-one-reply-per-command', defect: 'doubleReplyToNoop', why: 'two replies to one command violates R-5321-4.2-a' },
   { catches: 'help-is-answered', defect: 'rejectHelp', why: 'a 500 to HELP violates R-5321-4.1.1.8-a' },
+  { catches: 'bare-postmaster-accepted', defect: 'rejectBarePostmaster', why: 'rejecting the bare reserved mailbox <postmaster> violates R-5321-2.3.5-g' },
 ];

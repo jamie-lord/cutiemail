@@ -20,7 +20,7 @@ import { testCase } from '../conformance/test-case.ts';
 import type { TestCase, Mutant, Conn } from '../conformance/test-case.ts';
 import type { Judgement } from '../conformance/outcome.ts';
 import { crlf } from '../wire/bytes.ts';
-import { severity, advertisedExtensions } from '../wire/reply.ts';
+import { severity, advertisedExtensions, ehloKeywords } from '../wire/reply.ts';
 
 async function greeting(conn: Conn): Promise<Judgement | null> {
   const g = await conn.readReply(5000);
@@ -157,6 +157,47 @@ export const CASES: readonly TestCase[] = [
       return { kind: 'satisfied', detail: `${probed} unadvertised registered command(s) correctly refused` };
     },
   }),
+
+  testCase({
+    id: 'expn-supported-must-be-advertised',
+    requirement: 'R-5321-3.5.2-j',
+    intent: 'if EXPN is supported, EXPN appears in the EHLO keyword list',
+    rationale:
+      '§3.5.2: "if EXPN is supported, it MUST be listed as a service extension in an EHLO ' +
+      'response." A falsification (a server supporting EXPN without advertising it), scoped to ' +
+      'avoid the false positive: we convict ONLY when EXPN is CLEARLY honoured (a 2yz) yet absent ' +
+      'from the EHLO keywords. A 502/500 means EXPN is not supported (nothing to advertise → ' +
+      'satisfied); a 550/553 is ambiguous (recognised-but-refused vs generic policy) and a 4yz is ' +
+      'transient, so both are inconclusive rather than a finding. EXPN is not in the curated ESMTP ' +
+      'keyword set (it doubles as an English word), so this reads the raw EHLO keywords directly.',
+    run: async (conn): Promise<Judgement> => {
+      const bad = await greeting(conn);
+      if (bad !== null) return bad;
+      await conn.send(crlf`EHLO conformance-suite.invalid`);
+      const ehlo = await conn.readReply(3000);
+      if (ehlo.kind !== 'reply' || severity(ehlo.reply) !== 2) {
+        return { kind: 'inconclusive', reason: `EHLO: ${ehlo.kind === 'reply' ? ehlo.reply.code : ehlo.kind}` };
+      }
+      const advertisesExpn = ehloKeywords(ehlo.reply).has('EXPN');
+      await conn.send(crlf`EXPN postmaster`);
+      const r = await conn.readReply(3000);
+      if (r.kind !== 'reply') return { kind: 'inconclusive', reason: `EXPN drew ${r.kind}` };
+      const sev = severity(r.reply);
+      // 502/500 = not implemented -> nothing to advertise.
+      if (r.reply.code === 502 || r.reply.code === 500) {
+        return { kind: 'satisfied', detail: `EXPN not supported (${r.reply.code}) — no advertisement required` };
+      }
+      // A clear 2yz = supported. It MUST then be advertised.
+      if (sev === 2) {
+        return advertisesExpn
+          ? { kind: 'satisfied', detail: `EXPN supported (${r.reply.code}) and advertised in EHLO` }
+          : { kind: 'violated', detail: `EXPN is supported (drew ${r.reply.code}) but "EXPN" is absent from the EHLO keywords — §3.5.2-j requires it be listed` };
+      }
+      // 4yz transient, or a 5yz-other (550/553) recognised-but-refused: ambiguous
+      // between support and policy, so not convicted.
+      return { kind: 'inconclusive', reason: `EXPN drew ${r.reply.code} — ambiguous between supported-but-refused and not-supported; not convicting` };
+    },
+  }),
 ];
 
 export const MUTANTS: readonly Mutant[] = [
@@ -174,5 +215,10 @@ export const MUTANTS: readonly Mutant[] = [
     catches: 'unadvertised-registered-command-not-honoured',
     defect: 'honorUnadvertisedAuth',
     why: 'honouring AUTH (a 334 challenge) while never advertising it in EHLO violates R-5321-4.1.1.1-l',
+  },
+  {
+    catches: 'expn-supported-must-be-advertised',
+    defect: 'honorUnadvertisedExpn',
+    why: 'honouring EXPN (a 250) while never advertising it in EHLO violates R-5321-3.5.2-j',
   },
 ];

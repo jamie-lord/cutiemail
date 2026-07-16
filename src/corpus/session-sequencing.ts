@@ -248,6 +248,34 @@ export const CASES: readonly TestCase[] = [
       return { kind: 'inconclusive', reason: `DATA drew ${r.reply.code}` };
     },
   }),
+
+  testCase({
+    id: 'rset-before-ehlo-is-noop',
+    requirement: 'R-5321-4.1.1.5-d',
+    intent: 'RSET issued before any EHLO/HELO is a no-op and draws 250',
+    rationale:
+      '§4.1.1.5: RSET "is effectively equivalent to a NOOP (i.e., it has no effect) if issued ' +
+      'immediately after EHLO, before EHLO is issued in the session, after an end of data ' +
+      'indicator has been sent, or immediately before an EHLO." The register note flags the ' +
+      'high-value, high-divergence case: "before EHLO is issued in the session" — many servers ' +
+      'reject every command before EHLO with 503, but this sentence says RSET is not one of them. ' +
+      '"Equivalent to a NOOP" means the reply CLASS (a 250), not the exact greeting text.',
+    run: async (conn): Promise<Judgement> => {
+      const g = await conn.readReply(5000);
+      if (g.kind !== 'reply' || severity(g.reply) !== 2) {
+        return { kind: 'inconclusive', reason: `greeting: ${g.kind === 'reply' ? g.reply.code : g.kind}` };
+      }
+      // Straight to RSET — no EHLO first.
+      await conn.send(crlf`RSET`);
+      const r = await conn.readReply(3000);
+      if (r.kind === 'timeout') return { kind: 'inconclusive', reason: 'RSET-before-EHLO drew no reply within the timeout' };
+      if (r.kind !== 'reply') return { kind: 'inconclusive', reason: `RSET-before-EHLO: ${r.kind}` };
+      if (severity(r.reply) === 2) return { kind: 'satisfied', detail: `RSET before EHLO drew ${r.reply.code} (no-op)` };
+      // A 4yz is transient (shutdown/rate-limit), not a claim that RSET is illegal here.
+      if (severity(r.reply) === 4) return { kind: 'inconclusive', reason: `RSET before EHLO drew a transient ${r.reply.code}` };
+      return { kind: 'violated', detail: `RSET before EHLO drew ${r.reply.code} — §4.1.1.5-d says RSET is a no-op (250) in this state` };
+    },
+  }),
 ];
 
 export const MUTANTS: readonly Mutant[] = [
@@ -288,4 +316,5 @@ export const MUTANTS: readonly Mutant[] = [
     ],
   },
   { catches: 'data-before-rcpt-rejected', defect: 'acceptDataBeforeRcpt', why: 'entering DATA with no recipient violates R-5321-4.1.4-o' },
+  { catches: 'rset-before-ehlo-is-noop', defect: 'rset503BeforeGreeting', why: 'a 503 to RSET before EHLO violates R-5321-4.1.1.5-d (RSET is a no-op in every state)' },
 ];

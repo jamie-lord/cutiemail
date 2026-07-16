@@ -196,6 +196,24 @@ export interface Defects {
    * and declining VRFY (anti-harvesting) is standard; models the decline branch.
    */
   readonly vrfyNotSupported?: boolean;
+  /**
+   * Reject the BARE reserved mailbox `RCPT TO:<postmaster>` (no domain) with 550.
+   * Violates R-5321-2.3.5-g (bare postmaster MUST be accepted). Only the
+   * domain-less spelling; postmaster@domain is a different requirement.
+   */
+  readonly rejectBarePostmaster?: boolean;
+  /**
+   * Answer RSET with 503 "bad sequence" when issued before EHLO/HELO. Violates
+   * R-5321-4.1.1.5-d (RSET is a no-op — a 250 — in every state, including before
+   * EHLO). The clean server answers 250.
+   */
+  readonly rset503BeforeGreeting?: boolean;
+  /**
+   * Honour EXPN with a 250 while NEVER advertising it in EHLO. Violates
+   * R-5321-3.5.2-j (if EXPN is supported it MUST be listed as a service extension).
+   * The clean server does not implement EXPN (falls through to 500).
+   */
+  readonly honorUnadvertisedExpn?: boolean;
   /** Answer NOOP with a 500 "command not recognized". Violates R-5321-4.5.1-b. */
   readonly unrecognizedNoop?: boolean;
   /** Send TWO replies to a single NOOP. Violates R-5321-4.2-a (exactly one reply). */
@@ -616,6 +634,10 @@ export class MutantServer {
           if (d.postmasterCaseSensitive && localPart.toLowerCase() === 'postmaster' && localPart !== 'postmaster') {
             return replyOK(550, '5.1.1 User unknown');
           }
+          // Defect: reject the BARE (domain-less) postmaster form (§2.3.5-g).
+          if (d.rejectBarePostmaster && addr.toLowerCase() === 'postmaster') {
+            return replyOK(550, '5.1.1 User unknown');
+          }
           const verdict = this.#recipientVerdict(addr);
           if (verdict === 'reject' && !d.acceptRejectedRecipient) {
             return replyOK(550, '5.1.1 Recipient rejected');
@@ -632,6 +654,11 @@ export class MutantServer {
         return this.#write(sock, crlf`354 End data with <CR><LF>.<CR><LF>`);
 
       case 'RSET':
+        // Defect: RSET refused before EHLO — but §4.1.1.5-d says RSET is a no-op
+        // (250) in every state, including before EHLO.
+        if (d.rset503BeforeGreeting && !state.greeted) {
+          return replyOK(503, 'Error: send HELO/EHLO first');
+        }
         if (d.rset501OnArgs && /^RSET\s+\S/i.test(text)) {
           return replyOK(501, 'Error: RSET takes no arguments');
         }
@@ -671,6 +698,8 @@ export class MutantServer {
         return replyOK(214, 'https://example.com/smtp-help');
 
       case 'EXPN':
+        // Defect: honour EXPN (250) while EHLO never advertises it — §3.5.2-j.
+        if (d.honorUnadvertisedExpn) return replyOK(250, 'Expansion complete');
         // Clean baseline has no EXPN (falls through to 500). The defect makes it a
         // recognised success that wrongly clears state (§4.1.1.7-c).
         if (d.expnResetsState) {
