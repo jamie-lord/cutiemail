@@ -252,6 +252,61 @@ export const CASES: readonly TestCase[] = [
   }),
 
   testCase({
+    id: 'mail-resets-prior-recipient-state',
+    requirement: 'R-5321-3.3-b',
+    intent: 'a new MAIL FROM starts a fresh transaction, clearing recipients left from the prior one',
+    rationale:
+      '§3.3: MAIL "tells the SMTP-receiver that a new mail transaction is starting and to reset ' +
+      'all its state tables and buffers, including any recipients or mail data." The novel part ' +
+      'over RSET/EHLO clearing (already tested) is that a new MAIL clears RECIPIENTS. Observable: ' +
+      'MAIL, a valid RCPT, then a NESTED MAIL. A nested MAIL is a client MUST NOT (§4.1.4-m) that a ' +
+      'server MAY refuse with 503 (§4.1.4-o) — so ISOLATE THE VARIABLE: if the second MAIL is ' +
+      'refused (503/5yz) the reset was not exercised and the case is inconclusive, NOT a finding. ' +
+      'Only when the server ACCEPTS the second MAIL (250) has it promised the reset; a following ' +
+      'DATA must then be refused for lack of a recipient (503/554). A 354 proves the prior ' +
+      'recipient survived the reset — the §3.3-b violation.',
+    needs: { fixture: ['validRecipient'] },
+    run: async (conn): Promise<Judgement> => {
+      const notReady = await greetEhloMail(conn);
+      if (notReady !== null) return notReady;
+
+      // A valid recipient, so the first transaction has forward-path state to lose.
+      await conn.send(crlf`RCPT TO:<${conn.fixture.validRecipient!}>`);
+      const r = await conn.readReply(3000);
+      if (r.kind !== 'reply') return { kind: 'inconclusive', reason: `RCPT drew ${r.kind}, not a reply` };
+      if (severity(r.reply) !== 2) {
+        return { kind: 'inconclusive', reason: `the valid recipient was not accepted (${r.reply.code}); cannot set up leftover recipient state` };
+      }
+
+      // The reset trigger: a second MAIL. A server entitled to refuse it (§4.1.4-o)
+      // has not exercised the reset — gate to inconclusive, do not convict.
+      await conn.send(crlf`MAIL FROM:<probe2@conformance-suite.invalid>`);
+      const m2 = await conn.readReply(3000);
+      if (m2.kind !== 'reply') return { kind: 'inconclusive', reason: `the second MAIL drew ${m2.kind}, not a reply` };
+      if (severity(m2.reply) !== 2) {
+        return { kind: 'inconclusive', reason: `server refused the nested MAIL with ${m2.reply.code} — a conformant §4.1.4-o choice that does not exercise the §3.3-b reset` };
+      }
+
+      // Accepted (250) — the server has promised a reset. DATA must now find no
+      // recipient. TRAP: assert on DATA, not the second MAIL; a 250 to it is the
+      // behaviour under test, not a fault.
+      await conn.send(crlf`DATA`);
+      const d = await conn.readReply(3000);
+      if (d.kind !== 'reply') return { kind: 'inconclusive', reason: `DATA drew ${d.kind}, not a reply` };
+      if (d.reply.code === 354) {
+        return {
+          kind: 'violated',
+          detail: `the new MAIL did NOT reset the recipient buffer: DATA was accepted (354) though no RCPT was entered in the new transaction — the prior recipient survived (§3.3-b)`,
+        };
+      }
+      if (d.reply.code === 503 || d.reply.code === 554) {
+        return { kind: 'satisfied', detail: `the new MAIL reset the recipient buffer: DATA was refused (${d.reply.code}) for lack of a recipient` };
+      }
+      return { kind: 'inconclusive', reason: `DATA after the nested MAIL drew ${d.reply.code} (neither 354 nor 503/554); cannot tell whether the recipient buffer was reset` };
+    },
+  }),
+
+  testCase({
     id: 'vrfy-no-effect-on-buffers',
     requirement: 'R-5321-4.1.1.6-b',
     intent: 'VRFY between MAIL and RCPT leaves the reverse-path buffer intact',
@@ -375,6 +430,11 @@ export const MUTANTS: readonly Mutant[] = [
     catches: 'ehlo-clears-the-transaction',
     defect: 'ehloKeepsTransaction',
     why: 'a 250 to EHLO while the reverse-path buffer survives is a false "buffers cleared" confirmation, violating R-5321-4.1.1.1-j',
+  },
+  {
+    catches: 'mail-resets-prior-recipient-state',
+    defect: 'mailKeepsPriorRecipients',
+    why: 'a new MAIL that leaves the prior transaction\'s recipient in place fails to reset state per §3.3-b, so DATA wrongly proceeds on a stale forward-path',
   },
   {
     catches: 'vrfy-no-effect-on-buffers',
