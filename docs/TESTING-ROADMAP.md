@@ -107,3 +107,28 @@ Legend: **[have]** built · **[build]** must author · **[adopt]** vendor an exi
 - **Foundations** (Tier 3) grow underneath throughout.
 - Harnesses are built **ahead of or alongside** their feature: the test bed leads, the server
   fills it in. "Test suite complete" and "server minimal" are not in tension.
+
+## Status (2026-07-16): the test-bed-before-implementation phase is complete
+
+Every pillar now has a **reference implementation with a negative-controlled corpus**, so the
+test bed both specifies the server and provides the starting implementation of each piece.
+`npm run registry` prints the live inventory (currently ~662 requirements across 6 domains from
+18 RFCs). What is covered:
+
+- **SMTP** — receiver conformance suite (socket, mutant-server) + outbound client harness
+  (scriptable peer) + AUTH/SIZE decision logic.
+- **Message/MIME** — RFC 5322 + MIME 2045/2046/2047 + DSN (3464), all the confusion surfaces.
+- **IMAP (RFC 9051)** — responses, commands, literals, ENVELOPE, sequence-sets, SEARCH, and the
+  full mailbox model (UID/UIDVALIDITY/flags/EXPUNGE/seq-numbers/read-only-session/INBOX-naming).
+- **Crypto** — DKIM end-to-end both directions (canon → tags → body-hash/`l=` → RSA/Ed25519
+  verify **and** sign → key records) and SCRAM (proof + messages + account storage), real
+  `node:crypto` pinned to RFC vectors.
+- **Auth** — SPF, DMARC, ARC (structure), SMTP-AUTH state machine.
+- **Transport** — MTA-STS, SMTPUTF8, SIZE.
+- **Storage / queue** — reference mailbox + account store + outbound retry queue.
+
+**What genuinely remains is the runnable server**, not more test-bed: assemble the reference
+pieces behind SQLite persistence and live socket servers (SMTP 25/587, IMAP 993, STARTTLS/TLS
+negotiation), then the end-to-end Thunderbird round-trip. Plus the unified pass/fail coverage
+report (a corpora-as-data refactor) and narrow crypto depth (ARC AMS/AS signature verify). The
+reference models are the specification the runnable server must satisfy.
