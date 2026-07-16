@@ -249,6 +249,36 @@ export const CASES: readonly TestCase[] = [
         : { kind: 'violated', detail: `trailing whitespace refused with ${r.reply.code} (permitted — §4.1.1-a is a SHOULD to tolerate it)` };
     },
   }),
+
+  testCase({
+    id: 'reply-uses-space-when-no-text',
+    requirement: 'R-5321-4.2.1-g',
+    intent: 'a reply with no text still sends the <SP> after the code (a SHOULD — a bare code is permitted latitude)',
+    rationale:
+      '§4.2.1: "servers SHOULD send the <SP> if subsequent text is not sent." A SHOULD, and its ' +
+      'flip side §4.2-o ("senders SHOULD NOT send bare codes") is likewise a SHOULD NOT — so a ' +
+      'bare "250<CRLF>" with neither <SP> nor text is permitted latitude, not a violation (the ' +
+      'reply-separator MUST tests deliberately do NOT convict it). We record whether the server ' +
+      'always sends the <SP> or emits bare codes, reading the bare-code anomaly the reply reader ' +
+      'already flags.',
+    run: async (conn: Conn): Promise<Judgement> => {
+      const g = await conn.readReply(5000);
+      if (g.kind !== 'reply' || severity(g.reply) !== 2) {
+        return { kind: 'inconclusive', reason: `greeting: ${g.kind === 'reply' ? g.reply.code : g.kind}` };
+      }
+      await conn.send(crlf`EHLO conformance-suite.invalid`);
+      if ((await conn.readReply(3000)).kind !== 'reply') return { kind: 'inconclusive', reason: 'no EHLO reply' };
+      await conn.send(crlf`NOOP`);
+      const r = await conn.readReply(3000);
+      if (r.kind !== 'reply') return { kind: 'inconclusive', reason: `NOOP: ${r.kind}` };
+      // A bare-code anomaly (code with no separator/text) is the SHOULD decline;
+      // a normal reply (code + <SP> + text) follows the SHOULD.
+      const bare = r.reply.anomalies.some((a) => a.kind === 'bare-code');
+      return bare
+        ? { kind: 'violated', detail: 'server emits bare codes with no <SP> (permitted — §4.2.1-g/§4.2-o are SHOULD/SHOULD NOT)' }
+        : { kind: 'satisfied', detail: `reply carries the <SP> separator (${r.reply.code})` };
+    },
+  }),
 ];
 
 export const CONTROLS: readonly LatitudeControl[] = [
@@ -291,5 +321,10 @@ export const CONTROLS: readonly LatitudeControl[] = [
     case: 'trailing-whitespace-tolerated',
     follows: {}, // clean mutant's verb parser ignores trailing whitespace -> 250
     declines: { rejectTrailingWhitespace: true }, // declines: 500 on trailing whitespace
+  },
+  {
+    case: 'reply-uses-space-when-no-text',
+    follows: {}, // clean mutant sends "250 <text>" (SP present)
+    declines: { bareCodeReplies: true }, // declines: bare "250" with no SP/text
   },
 ];
