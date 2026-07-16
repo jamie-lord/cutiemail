@@ -19,11 +19,20 @@ export interface StoredMessage {
   readonly raw: Buffer;
 }
 
+/** The system flag marking a message for removal by EXPUNGE. */
+export const DELETED = '\\Deleted';
+
+export type StoreMode = 'add' | 'remove' | 'replace';
+
 export interface MailboxDefects {
   /** Assign a UID that is not higher than existing ones (reuse the counter). Violates R-9051-2.3.1.1-a. */
   readonly nonAscendingUid?: boolean;
   /** Roll UIDNEXT back when the highest message is expunged, reusing its UID. Violates R-9051-2.3.1.1-b. */
   readonly reuseExpungedUid?: boolean;
+  /** Make flag removal a no-op. Violates R-9051-2.3.2-a. */
+  readonly removeDoesntClear?: boolean;
+  /** Leave \Deleted messages in place on EXPUNGE. Violates R-9051-2.3.2-b. */
+  readonly expungeIgnoresDeleted?: boolean;
 }
 
 export class Mailbox {
@@ -71,8 +80,33 @@ export class Mailbox {
 
   /** Replace a message's flags (a set — duplicates collapse). */
   setFlags(uid: number, flags: readonly string[]): void {
+    this.storeFlags(uid, 'replace', flags);
+  }
+
+  /**
+   * Apply a STORE: add (+FLAGS), remove (-FLAGS), or replace (FLAGS). Flags are a
+   * set — adding a present flag is idempotent (R-9051-2.3.2-a).
+   */
+  storeFlags(uid: number, mode: StoreMode, flags: readonly string[]): void {
     const idx = this.#messages.findIndex((m) => m.uid === uid);
     if (idx === -1) return;
-    this.#messages[idx] = { ...this.#messages[idx]!, flags: new Set(flags) };
+    const current = new Set(this.#messages[idx]!.flags);
+    if (mode === 'replace') {
+      this.#messages[idx] = { ...this.#messages[idx]!, flags: new Set(flags) };
+      return;
+    }
+    for (const f of flags) {
+      if (mode === 'add') current.add(f);
+      else if (this.#defects.removeDoesntClear !== true) current.delete(f);
+    }
+    this.#messages[idx] = { ...this.#messages[idx]!, flags: current };
+  }
+
+  /** Remove every message flagged \Deleted (R-9051-2.3.2-b). Returns the removed UIDs. */
+  expungeDeleted(): readonly number[] {
+    if (this.#defects.expungeIgnoresDeleted === true) return [];
+    const removed = this.#messages.filter((m) => m.flags.has(DELETED)).map((m) => m.uid);
+    this.#messages = this.#messages.filter((m) => !m.flags.has(DELETED));
+    return removed;
   }
 }

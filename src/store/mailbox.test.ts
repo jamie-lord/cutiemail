@@ -7,7 +7,7 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { Mailbox } from './mailbox.ts';
+import { Mailbox, DELETED } from './mailbox.ts';
 import { imapRequirement } from '../register/imap/index.ts';
 import type { ImapRequirementId } from '../register/imap/index.ts';
 
@@ -51,4 +51,42 @@ test('R-9051-2.3.1.1-b: an expunged UID is never reused (reuseExpungedUid caught
   defect.expunge(u1);
   const u2 = defect.append(b('two'));
   assert.equal(u2, u1, 'reuseExpungedUid must be detectable');
+});
+
+test('R-9051-2.3.2-a: STORE add sets a flag and remove clears it (removeDoesntClear caught)', () => {
+  cites('R-9051-2.3.2-a');
+  const mb = new Mailbox();
+  const uid = mb.append(b('m'));
+  mb.storeFlags(uid, 'add', ['\\Seen']);
+  assert.ok(mb.messages[0]!.flags.has('\\Seen'), 'add sets the flag');
+  mb.storeFlags(uid, 'add', ['\\Seen']); // idempotent
+  assert.equal(mb.messages[0]!.flags.size, 1, 'a set — no duplicate');
+  mb.storeFlags(uid, 'remove', ['\\Seen']);
+  assert.ok(!mb.messages[0]!.flags.has('\\Seen'), 'remove clears it');
+
+  // Negative control: a no-op removal.
+  const defect = new Mailbox(1, { removeDoesntClear: true });
+  const u = defect.append(b('m'));
+  defect.storeFlags(u, 'add', ['\\Seen']);
+  defect.storeFlags(u, 'remove', ['\\Seen']);
+  assert.ok(defect.messages[0]!.flags.has('\\Seen'), 'removeDoesntClear must be detectable');
+});
+
+test('R-9051-2.3.2-b: EXPUNGE removes exactly the \\Deleted messages (expungeIgnoresDeleted caught)', () => {
+  cites('R-9051-2.3.2-b');
+  const mb = new Mailbox();
+  const keep = mb.append(b('keep'));
+  const drop = mb.append(b('drop'));
+  mb.storeFlags(drop, 'add', [DELETED]);
+  const removed = mb.expungeDeleted();
+  assert.deepEqual([...removed], [drop], 'the \\Deleted message is expunged');
+  assert.equal(mb.messages.length, 1, 'the un-flagged message stays');
+  assert.equal(mb.messages[0]!.uid, keep);
+
+  // Negative control: EXPUNGE that ignores \Deleted removes nothing.
+  const defect = new Mailbox(1, { expungeIgnoresDeleted: true });
+  const d = defect.append(b('drop'));
+  defect.storeFlags(d, 'add', [DELETED]);
+  assert.equal(defect.expungeDeleted().length, 0, 'expungeIgnoresDeleted must be detectable');
+  assert.equal(defect.messages.length, 1, 'the \\Deleted message wrongly remains');
 });

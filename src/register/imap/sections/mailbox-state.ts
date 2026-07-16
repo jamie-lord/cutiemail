@@ -48,4 +48,34 @@ export const IMAP_MAILBOX_STATE = [
       'control. Reusing an expunged UID would let a client confuse a new message for ' +
       'an old one it had cached.',
   },
+  {
+    id: 'R-9051-2.3.2-a',
+    rfc: 'rfc9051',
+    section: '2.3.2',
+    page: 15,
+    level: 'MUST',
+    party: 'both',
+    normativeSource: 'prose',
+    text: 'A flag is set by its addition to this list and is cleared by its removal.',
+    testability: { kind: 'parse' },
+    note:
+      'STORE semantics: +FLAGS adds, -FLAGS removes, FLAGS replaces. Our mailbox ' +
+      'storeFlags applies these; the removeDoesntClear defect (a no-op removal) is ' +
+      'the negative control. Flags are a set — adding a present flag is idempotent.',
+  },
+  {
+    id: 'R-9051-2.3.2-b',
+    rfc: 'rfc9051',
+    section: '2.3.2',
+    page: 15,
+    level: 'MUST',
+    party: 'both',
+    normativeSource: 'prose',
+    text: 'Message is "deleted" for removal by later EXPUNGE',
+    testability: { kind: 'parse' },
+    note:
+      'The \\Deleted flag marks a message for removal; EXPUNGE then removes exactly ' +
+      'the \\Deleted-flagged messages (not others). Our expungeDeleted removes them; ' +
+      'the expungeIgnoresDeleted defect (leave them) is the negative control.',
+  },
 ] as const satisfies readonly RequirementDef[];
