@@ -261,14 +261,6 @@ export interface Defects {
    * server clears the transaction on EHLO/HELO, the RFC §4.1.4 behaviour.
    */
   readonly ehloKeepsTransaction?: boolean;
-  /**
-   * A new MAIL FROM does NOT reset the prior transaction's recipient state — the
-   * forward-path buffer and recipient count survive into the new transaction, so
-   * a following DATA proceeds on a stale recipient the client never re-entered.
-   * Violates R-5321-3.3-b (MAIL "reset all its state tables and buffers,
-   * including any recipients or mail data"). The clean server clears them.
-   */
-  readonly mailKeepsPriorRecipients?: boolean;
   /** Answer NOOP with a 500 "command not recognized". Violates R-5321-4.5.1-b. */
   readonly unrecognizedNoop?: boolean;
   /** Send TWO replies to a single NOOP. Violates R-5321-4.2-a (exactly one reply). */
@@ -914,14 +906,14 @@ export class MutantServer {
         if (d.tempDeferAtMail) return replyOK(451, '4.3.0 try again later');
         state.hasMail = true;
         state.from = (/MAIL\s+FROM:\s*<([^>]*)>/i.exec(text)?.[1] ?? '').split(':').pop() ?? '';
-        // A new MAIL starts a fresh transaction and MUST reset the recipient state
-        // (§3.3-b): both the recipient list and the count DATA gates on. The defect
-        // keeps them, so a nested MAIL leaves a stale recipient behind and DATA
-        // then wrongly proceeds.
-        if (!d.mailKeepsPriorRecipients) {
-          state.recipients = [];
-          state.rcptCount = 0;
-        }
+        // A new MAIL starts a fresh transaction: reset the recipient list and the
+        // count DATA gates on (§3.3-b). (This is exercised only incidentally now —
+        // the in-band §3.3-b test was removed as unsound; see the R-5321-3.3-b
+        // register note: a nested MAIL is a client MUST NOT that servers may 503,
+        // and a 354 to a recipient-less DATA is §3.3-x latitude, so the reset is
+        // not convictable in-band.)
+        state.recipients = [];
+        state.rcptCount = 0;
         return replyOK(250, '2.1.0 Ok');
 
       case 'RCPT':

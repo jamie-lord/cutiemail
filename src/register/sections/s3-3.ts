@@ -84,6 +84,20 @@ export const S3_3 = [
       'Note the assertion is weak in one direction: R-5321-3.3-x is a MAY, so ' +
       'a server that accepts DATA with no recipients is not thereby proven to ' +
       'have failed to reset. Only a delivered message would prove that.',
+    deliberatelyUncovered: {
+      date: '2026-07-16',
+      reason:
+        'The in-band form is not soundly convictable, exactly as this note ' +
+        'warns: a nested MAIL is a client MUST NOT that a conformant server may ' +
+        '503 (§4.1.4-o), and a 354 to a recipient-less DATA is R-5321-3.3-x ' +
+        'permitted-latitude — so DATA=354 cannot distinguish "recipient ' +
+        'survived the reset" from "reset happened, server defers empty-DATA ' +
+        'rejection". An in-band test was written and REMOVED for exactly this ' +
+        'confound. The only sound form observes the DELIVERED message at a sink ' +
+        '(a stale recipient in the delivered envelope), but that is gated on the ' +
+        'server accepting the nested MAIL, which mainstream MTAs reject with ' +
+        '503 — low yield. Recorded rather than built.',
+    },
   },
   {
     id: 'R-5321-3.3-c',
