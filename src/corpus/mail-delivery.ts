@@ -46,8 +46,11 @@ export const CASES: readonly TestCase[] = [
     intent: 'a RCPT for a recipient the server accepts draws a 2yz',
     rationale:
       '§3.3: "If accepted, the SMTP server returns a \\"250 OK\\" reply and stores the ' +
-      'forward-path." The observable half is the 2yz acceptance of a declared-valid ' +
-      'recipient. Asserted as the 2yz class (251/250 forwarding replies also satisfy).',
+      'forward-path." The "250 OK" duty is conditioned on "If accepted" — so a 2yz acceptance ' +
+      'satisfies, a 5yz PERMANENT rejection of a declared-valid recipient is the violation, and ' +
+      'a 4yz TEMPORARY deferral (greylisting, ubiquitous per §3.3-d) is neither: the address ' +
+      'would be accepted on retry, so it is inconclusive, not a failure. (This mirrors the ' +
+      'sibling delivery cases; treating 4yz as violated would fail every greylisting MTA.)',
     needs: { fixture: ['validRecipient'] },
     run: async (conn): Promise<Judgement> => {
       const bad = await greetEhloMail(conn);
@@ -55,10 +58,11 @@ export const CASES: readonly TestCase[] = [
       await conn.send(crlf`RCPT TO:<${conn.fixture.validRecipient!}>`);
       const r = await conn.readReply(3000);
       if (r.kind === 'timeout') return { kind: 'inconclusive', reason: 'RCPT drew no reply within the timeout' };
-      if (r.kind !== 'reply') return { kind: 'violated', detail: `RCPT: server ${r.kind} instead of replying` };
-      return severity(r.reply) === 2
-        ? { kind: 'satisfied', detail: `valid recipient accepted (${r.reply.code})` }
-        : { kind: 'violated', detail: `server rejected a declared-valid recipient with ${r.reply.code}` };
+      if (r.kind !== 'reply') return { kind: 'inconclusive', reason: `RCPT: server ${r.kind} instead of replying` };
+      if (severity(r.reply) === 2) return { kind: 'satisfied', detail: `valid recipient accepted (${r.reply.code})` };
+      if (severity(r.reply) === 4) return { kind: 'inconclusive', reason: `RCPT deferred with ${r.reply.code} (greylisting) — would be accepted on retry` };
+      if (severity(r.reply) === 5) return { kind: 'violated', detail: `server PERMANENTLY rejected a declared-valid recipient with ${r.reply.code}` };
+      return { kind: 'inconclusive', reason: `RCPT drew ${r.reply.code}` };
     },
   }),
 
