@@ -244,13 +244,16 @@ export const CASES: readonly TestCase[] = [
 
   testCase({
     id: 'cr-dot-cr-not-end-of-data',
-    requirement: 'R-5321-4.1.1.4-i',
-    alsoTouches: ['R-5321-2.3.8-a'],
+    requirement: 'R-5321-2.3.8-a',
+    alsoTouches: ['R-5321-4.1.1.4-i'],
     intent: 'the "<CR>.<CR>" sequence does not terminate mail data',
     rationale:
       'The Cisco Secure Email Gateway smuggling variant: its default "Clean" setting ' +
       'converts bare CR/LF to CRLF, turning <CR>.<CR> into <CRLF>.<CRLF> and ending ' +
-      'DATA early (~40,000 domains vulnerable). Covered by §4.1.1.4-i. See ' +
+      'DATA early (~40,000 domains vulnerable). The vector is a BARE CR treated as a ' +
+      'line terminator, so the primary requirement is §2.3.8-a ("MUST NOT recognize ' +
+      'any other character or character sequence as a line terminator") — not the ' +
+      'bare-LF-specific §4.1.1.4-i, which it also touches. See ' +
       'docs/research/smtp-divergence.md §1.',
     needs: { fixture: ['validRecipient'] },
     run: async (conn): Promise<Judgement> => {
@@ -306,7 +309,7 @@ export const MUTANTS: readonly Mutant[] = [
   {
     catches: 'cr-dot-cr-not-end-of-data',
     defect: 'honourCrDotCrEndOfData',
-    why: 'treating <CR>.<CR> as end-of-data is the Cisco smuggling variant (R-5321-4.1.1.4-i)',
+    why: 'treating a bare CR as a line terminator (<CR>.<CR> as end-of-data, the Cisco smuggling variant) violates R-5321-2.3.8-a',
   },
   {
     catches: 'unterminated-command-no-action',

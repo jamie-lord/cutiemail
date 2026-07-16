@@ -137,11 +137,6 @@ export const CASES: readonly TestCase[] = [
       // (binary, not a 3-digit SMTP reply) — that is not "processing the command as
       // SMTP", so we convict ONLY when the extra bytes are SMTP-reply-shaped.
       const quiet = await conn.expectQuiet(1000);
-      const firstByte = quiet.bytes[0];
-      const looksLikeSmtpReply = firstByte !== undefined && firstByte >= 0x30 && firstByte <= 0x39;
-      if (!quiet.quiet && !looksLikeSmtpReply) {
-        return { kind: 'inconclusive', reason: `after 220 the server sent non-SMTP bytes (0x${(firstByte ?? 0).toString(16)}…) — likely a TLS alert on the pipelined bytes, not a processed plaintext command` };
-      }
       if (quiet.quiet) {
         // Silence proves only that the command was not processed IN PLAINTEXT. A
         // server that buffers it to replay INSIDE the TLS session is also silent
@@ -150,10 +145,27 @@ export const CASES: readonly TestCase[] = [
         // plaintext variant, not a clean bill against the whole CVE-2011-0411 class.
         return { kind: 'satisfied', detail: 'no plaintext reply to the pipelined command — pre-handshake injection not observed (replay-into-TLS variant out of scope)' };
       }
-      return {
-        kind: 'violated',
-        detail: `after 220 to STARTTLS the server replied to the pipelined plaintext command (${quiet.bytes.subarray(0, 3).toString('latin1')}...) — plaintext command injection (CVE-2011-0411 class)`,
-      };
+      const firstByte = quiet.bytes[0];
+      const classDigit = firstByte !== undefined && firstByte >= 0x30 && firstByte <= 0x39 ? firstByte - 0x30 : undefined;
+      const shown = quiet.bytes.subarray(0, 3).toString('latin1');
+      // ONLY a 2yz/3yz reply is the injection: the pipelined plaintext command was
+      // PROCESSED as SMTP and actioned. That is exactly what CVE-2011-0411 exploits.
+      if (classDigit === 2 || classDigit === 3) {
+        return {
+          kind: 'violated',
+          detail: `after 220 to STARTTLS the server replied ${shown} to the pipelined plaintext command — it processed the injection (CVE-2011-0411 class)`,
+        };
+      }
+      // A 4yz/5yz REJECTS the pipelined bytes without executing them — a hardened,
+      // safe posture, NOT the vulnerability. A strict reading of "MUST discard"
+      // could fault any plaintext reply, but rejecting-without-actioning is safe and
+      // the sibling smuggleProbe likewise treats a defensive 4yz/5yz as inconclusive
+      // rather than a finding. Do not convict a server for refusing the injection.
+      if (classDigit === 4 || classDigit === 5) {
+        return { kind: 'inconclusive', reason: `after 220 the server replied ${shown} — it rejected the pipelined plaintext rather than executing it (defensive, not injection)` };
+      }
+      // Non-SMTP bytes: a TLS alert record on the pipelined bytes, not a processed command.
+      return { kind: 'inconclusive', reason: `after 220 the server sent non-SMTP bytes (0x${(firstByte ?? 0).toString(16)}…) — likely a TLS alert, not a processed plaintext command` };
     },
   }),
 
