@@ -216,6 +216,7 @@ test('daemon full stack: submission → fix-up → DKIM sign → queue → relay
     assert.match(relayed, /^DKIM-Signature: v=1;/m, 'the relayed message is DKIM-signed');
     assert.match(relayed, /d=mail\.example\.test/, 'signed for our domain');
     assert.match(relayed, /s=sel/, 'with the configured selector');
+    assert.match(relayed, /^Received: from .* by mail\.example\.test with ESMTPSA id /m, 'a Received trace line (authenticated submission) was stamped');
     assert.match(relayed, /^Message-ID: </m, 'the §6409 fix-up ran before signing');
     // The DKIM-Signature must precede the headers it signed (it is prepended).
     assert.ok(relayed.indexOf('DKIM-Signature:') < relayed.indexOf('Message-ID:'), 'signature is at the top');

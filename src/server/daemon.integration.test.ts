@@ -81,10 +81,13 @@ test('daemon: deliver via inbound SMTP, read back via IMAPS with a real login', 
     assert.ok(sent.ok, `inbound delivery should succeed: ${sent.failure}`);
     assert.equal(server.mailbox.messages.length, 1, 'stored in the daemon mailbox');
 
-    // Correct login reads the message back byte-exact.
+    // The daemon prepends a Received trace line (§4.4) on inbound delivery, then
+    // the original message follows byte-exact.
     const good = await imapsLogin(server.imap.port, 'alice', 's3cret-passphrase');
     assert.ok(good.ok, 'correct credentials log in');
-    assert.deepEqual(good.body, data, 'the message reads back byte-exact over IMAPS');
+    const body = good.body!.toString('latin1');
+    assert.match(body, /^Received: from sender\.example\.net .*by mail\.example\.test with ESMTP id .*for <alice@mail\.example\.test>;/m, 'a Received trace line was prepended');
+    assert.ok(good.body!.subarray(good.body!.indexOf(Buffer.from('Subject:'))).equals(data), 'the original message follows the trace line byte-exact');
 
     // Wrong password is rejected.
     const bad = await imapsLogin(server.imap.port, 'alice', 'wrong');

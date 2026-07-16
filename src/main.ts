@@ -15,7 +15,7 @@
  */
 
 import { DatabaseSync } from 'node:sqlite';
-import { randomBytes } from 'node:crypto';
+import { randomBytes, randomUUID } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { SqliteMailbox, SqliteCatalog } from './store/sqlite-mailbox.ts';
 import { AccountStore } from './store/accounts.ts';
@@ -25,6 +25,7 @@ import { ImapServer } from './server/imap-server.ts';
 import { relayOutbound, routeRecipients, type OutboundOptions } from './server/outbound.ts';
 import { ensureSubmissionHeaders } from './server/submission-fixup.ts';
 import { dkimSign, makeSigner } from './server/dkim-signer.ts';
+import { prependReceived, protocolFor } from './server/received.ts';
 import { SqliteQueue } from './store/sqlite-queue.ts';
 import { RelayLoop } from './server/relay-loop.ts';
 // Bundled self-signed certificate — local development default only.
@@ -83,8 +84,20 @@ export async function startServer(cfg: MailServerConfig): Promise<RunningServer>
   const log = cfg.onEvent ?? ((): void => {});
   const storeLocal = (data: Buffer): void => void mailbox.append(data);
 
-  // Inbound (port 25): mail arriving for us — store it, no relay.
-  const inbound = await SmtpReceiver.start((m) => storeLocal(m.data), {
+  // Inbound (port 25): mail arriving for us — stamp our Received trace line
+  // (RFC 5321 §4.4: the final-delivery MTA prepends one) and store it.
+  const inbound = await SmtpReceiver.start((m) => {
+    const traced = prependReceived(m.data, {
+      helo: m.helo,
+      remoteAddress: m.remoteAddress,
+      by: cfg.domain,
+      protocol: protocolFor(m.overTls, false),
+      id: randomUUID(),
+      ...(m.recipients.length === 1 ? { forRecipient: m.recipients[0]! } : {}),
+      date: new Date(),
+    });
+    storeLocal(traced);
+  }, {
     domain: cfg.domain,
     tls: cfg.tls,
     host: cfg.host,
@@ -110,12 +123,23 @@ export async function startServer(cfg: MailServerConfig): Promise<RunningServer>
     const { local, remote } = routeRecipients(m.recipients, cfg.domain);
     // RFC 6409 fix-up (submission only, never on the inbound port): add Date /
     // Message-ID when the client omitted them — Gmail rejects messages without.
-    const data = ensureSubmissionHeaders(m.data, cfg.domain);
-    if (local.length > 0) storeLocal(data);
+    const fixed = ensureSubmissionHeaders(m.data, cfg.domain);
+    // Stamp our Received trace line (§4.4), then sign — DKIM does not cover
+    // Received, so the order is fix-up → Received → DKIM-Signature on top.
+    const traced = prependReceived(fixed, {
+      helo: m.helo,
+      remoteAddress: m.remoteAddress,
+      by: cfg.domain,
+      protocol: protocolFor(m.overTls, m.authenticated),
+      id: randomUUID(),
+      ...(m.recipients.length === 1 ? { forRecipient: m.recipients[0]! } : {}),
+      date: new Date(),
+    });
+    if (local.length > 0) storeLocal(traced);
     if (remote.length > 0) {
-      // Sign the outbound copy once (after fix-up), queue it, and kick the loop so
-      // the first attempt is immediate; failures are retried, not dropped.
-      const outData = signer !== undefined ? dkimSign(data, signer) : data;
+      // Sign the outbound copy once, queue it, and kick the loop so the first
+      // attempt is immediate; failures are retried, not dropped.
+      const outData = signer !== undefined ? dkimSign(traced, signer) : traced;
       queue.enqueue(m.from, remote, outData, Date.now());
       void relayLoop.tick(Date.now());
     }

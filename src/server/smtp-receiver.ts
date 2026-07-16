@@ -27,6 +27,12 @@ export interface DeliveredMessage {
   readonly data: Buffer;
   /** Whether the connection was over TLS when the message was delivered. */
   readonly overTls: boolean;
+  /** The name the client gave in EHLO/HELO (for the Received trace line). */
+  readonly helo: string;
+  /** The client's remote IP address (for the Received trace line). */
+  readonly remoteAddress: string;
+  /** Whether the client authenticated (submission) — selects ESMTPSA vs ESMTP(S). */
+  readonly authenticated: boolean;
 }
 
 export type DeliveryHandler = (message: DeliveredMessage) => void;
@@ -88,6 +94,8 @@ class Connection {
   #inData = false;
   #tls = false;
   #authed = false;
+  #helo = '';
+  readonly #remoteAddress: string;
   readonly #handler: DeliveryHandler;
   readonly #domain: string;
   readonly #opts: ReceiverOptions;
@@ -97,6 +105,7 @@ class Connection {
     this.#domain = domain;
     this.#opts = opts;
     this.#active = sock;
+    this.#remoteAddress = sock.remoteAddress ?? '';
     this.#bind(sock);
     this.#write(`220 ${domain} ESMTP`);
   }
@@ -117,7 +126,15 @@ class Connection {
         const eod = findEndOfData(this.#buf);
         if (eod === -1) break;
         const payload = eod >= 5 ? this.#buf.subarray(0, eod - 5) : Buffer.alloc(0);
-        this.#handler({ from: this.#from, recipients: [...this.#recipients], data: unstuff(payload), overTls: this.#tls });
+        this.#handler({
+          from: this.#from,
+          recipients: [...this.#recipients],
+          data: unstuff(payload),
+          overTls: this.#tls,
+          helo: this.#helo,
+          remoteAddress: this.#remoteAddress,
+          authenticated: this.#authed,
+        });
         this.#from = '';
         this.#recipients = [];
         this.#inData = false;
@@ -142,6 +159,7 @@ class Connection {
   #command(verb: string, line: string): void {
     switch (verb) {
       case 'EHLO': {
+        this.#helo = line.split(/\s+/)[1] ?? '';
         const ext: string[] = [];
         if (this.#opts.tls !== undefined && !this.#tls) ext.push('STARTTLS');
         if (this.#opts.authenticate !== undefined && this.#tls) ext.push('AUTH PLAIN');
@@ -157,6 +175,7 @@ class Connection {
         this.#auth(line);
         break;
       case 'HELO':
+        this.#helo = line.split(/\s+/)[1] ?? '';
         this.#write(`250 ${this.#domain}`);
         break;
       case 'MAIL':
