@@ -126,4 +126,20 @@ export const IMAP_MAILBOX_STATE = [
       'raise UIDVALIDITY; the allowNonIncreasingValidity defect is the negative ' +
       'control — a non-increasing value would silently corrupt a client\'s cache.',
   },
+  {
+    id: 'R-9051-2.3.1.1-d',
+    rfc: 'rfc9051',
+    section: '2.3.1.1',
+    page: 14,
+    level: 'MUST',
+    party: 'both',
+    normativeSource: 'prose',
+    text: 'a range of 12:10 is exactly equivalent to 10:12 and refers to the sequence 10,11,12.',
+    testability: { kind: 'parse' },
+    note:
+      'Sequence-set ranges are order-independent: "12:10" and "10:12" both mean ' +
+      '10,11,12. Our parser normalises the endpoints; the rangeNotCommutative defect ' +
+      '(treat a high:low range as empty) is the negative control — it would silently ' +
+      'skip messages a client asked to FETCH/STORE.',
+  },
 ] as const satisfies readonly RequirementDef[];

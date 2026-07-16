@@ -15,9 +15,10 @@ import { IMAP_LITERALS } from './sections/literals.ts';
 import { IMAP_MAILBOX_STATE } from './sections/mailbox-state.ts';
 import { IMAP_SESSION } from './sections/session.ts';
 import { IMAP_ENVELOPE } from './sections/envelope.ts';
+import { IMAP_SEQUENCE_SET } from './sections/sequence-set.ts';
 
 /** Sections of RFC 9051 extracted into the register so far. */
-export const EXTRACTED_SECTIONS: readonly string[] = ['2.2.1', '2.2.2', '2.3.1.1', '2.3.1.2', '2.3.2', '4.3', '6.3.3', '7.1', '7.5.2'];
+export const EXTRACTED_SECTIONS: readonly string[] = ['2.2.1', '2.2.2', '2.3.1.1', '2.3.1.2', '2.3.2', '4.3', '6.3.3', '7.1', '7.5.2', '9'];
 
 export const IMAP_REQUIREMENTS = [
   ...IMAP_RESPONSES,
@@ -26,6 +27,7 @@ export const IMAP_REQUIREMENTS = [
   ...IMAP_MAILBOX_STATE,
   ...IMAP_SESSION,
   ...IMAP_ENVELOPE,
+  ...IMAP_SEQUENCE_SET,
 ] as const satisfies readonly RequirementDef[];
 
 /** Every IMAP requirement ID as a union — compile-time traceability. */
