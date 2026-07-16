@@ -14,6 +14,9 @@
 
 import net from 'node:net';
 import tls from 'node:tls';
+import { parseMessage } from '../message/parse.ts';
+import { buildEnvelope, serializeEnvelope } from '../imap/envelope.ts';
+import { matchesSearch, type SearchKey } from '../imap/search.ts';
 
 export interface ServableMessage {
   readonly uid: number;
@@ -32,6 +35,22 @@ export interface ServableMailbox {
 const write = (sock: net.Socket, line: string): void => {
   sock.write(Buffer.from(`${line}\r\n`, 'latin1'));
 };
+
+const unquote = (s: string): string => s.replace(/^"|"$/g, '');
+
+/** Parse SEARCH criteria tokens into typed search keys (the common subset). */
+function parseSearchKeys(tokens: readonly string[]): SearchKey[] {
+  const keys: SearchKey[] = [];
+  for (let i = 0; i < tokens.length; i++) {
+    const k = (tokens[i] ?? '').toUpperCase();
+    if (k === 'FROM' || k === 'TO' || k === 'SUBJECT') {
+      keys.push({ type: k.toLowerCase() as 'from' | 'to' | 'subject', value: unquote(tokens[++i] ?? '') });
+    } else if (k === 'SEEN' || k === 'UNSEEN' || k === 'DELETED' || k === 'UNDELETED') {
+      keys.push({ type: k.toLowerCase() as 'seen' | 'unseen' | 'deleted' | 'undeleted' });
+    }
+  }
+  return keys;
+}
 
 export class ImapServer {
   readonly port: number;
@@ -122,11 +141,29 @@ export class ImapServer {
               sock.write(Buffer.from(`* ${seq} FETCH (BODY[] {${msg.raw.length}}\r\n`, 'latin1'));
               sock.write(msg.raw);
               sock.write(Buffer.from(')\r\n', 'latin1'));
+            } else if (item.includes('ENVELOPE')) {
+              const env = serializeEnvelope(buildEnvelope(parseMessage(msg.raw).headers));
+              write(sock, `* ${seq} FETCH (ENVELOPE ${env})`);
             } else {
               const flags = [...msg.flags].join(' ');
               write(sock, `* ${seq} FETCH (FLAGS (${flags}) UID ${msg.uid})`);
             }
             write(sock, `${tag} OK FETCH completed`);
+            break;
+          }
+          case 'SEARCH': {
+            if (!selected) {
+              write(sock, `${tag} BAD no mailbox selected`);
+              break;
+            }
+            const keys = parseSearchKeys(parts.slice(2));
+            const hits: number[] = [];
+            this.#mailbox.messages.forEach((m, i) => {
+              const searchable = { headers: parseMessage(m.raw).headers, flags: m.flags };
+              if (matchesSearch(searchable, keys)) hits.push(i + 1);
+            });
+            write(sock, `* SEARCH${hits.length > 0 ? ' ' + hits.join(' ') : ''}`);
+            write(sock, `${tag} OK SEARCH completed`);
             break;
           }
           case 'STORE': {

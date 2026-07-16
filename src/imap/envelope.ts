@@ -86,3 +86,27 @@ export function buildEnvelope(headers: readonly Header[], defects: EnvelopeDefec
 
   return { fields: ordered };
 }
+
+/** IMAP quoted-string, or NIL for null. */
+function imapString(s: string | null): string {
+  return s === null ? 'NIL' : `"${s.replace(/([\\"])/g, '\\$1')}"`;
+}
+
+/** An ENVELOPE address structure: (name adl mailbox host); adl is unused (NIL). */
+function serializeAddress(a: EnvelopeAddress): string {
+  return `(${imapString(a.name)} NIL ${imapString(a.mailbox)} ${imapString(a.host === '' ? null : a.host)})`;
+}
+
+function serializeAddressList(list: readonly EnvelopeAddress[]): string {
+  return list.length === 0 ? 'NIL' : `(${list.map(serializeAddress).join('')})`;
+}
+
+/** Serialize an ENVELOPE to the IMAP wire form: a parenthesised list in field order. */
+export function serializeEnvelope(env: Envelope): string {
+  const parts = env.fields.map((f) => {
+    if (f.value === null) return 'NIL';
+    if (typeof f.value === 'string') return imapString(f.value);
+    return serializeAddressList(f.value);
+  });
+  return `(${parts.join(' ')})`;
+}
