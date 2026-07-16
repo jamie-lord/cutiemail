@@ -11,7 +11,8 @@
     "test": "node --test 'src/**/*.test.ts'",
     "typecheck": "tsc --noEmit",
     "conformance": "node src/cli.ts",
-    "coverage": "node src/cli.ts coverage"
+    "coverage": "node src/cli.ts coverage",
+    "registry": "node -e \"import('./src/report/registry.ts').then(m => console.log(m.renderRegistrySummary(m.buildRegistrySummary())))\""
   },
   "bin": {
     "smtp-conformance": "src/cli.ts"
