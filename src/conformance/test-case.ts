@@ -26,6 +26,7 @@ import type { Wire } from '../wire/transport.ts';
 import type { Reply } from '../wire/reply.ts';
 import type { Judgement } from './outcome.ts';
 import type { Fixture } from './fixture.ts';
+import type { SinkView } from './sink.ts';
 
 /**
  * The connection view handed to a test body.
@@ -47,6 +48,14 @@ export interface Conn {
   readonly wire: Wire;
   /** Resolved fixture values for this run (addresses, domains). */
   readonly fixture: Fixture;
+  /**
+   * The receiving sink, when the run provides one: a read-back view of the
+   * messages the server under test relayed downstream. Present only for runs
+   * configured with a sink (the mutant relay harness, or a real server told to
+   * relay to our sink). A test that needs it declares `needs.sink` and yields
+   * inconclusive when it is absent — never a false finding.
+   */
+  readonly sink?: SinkView;
 }
 
 export type ReplyOutcome =
@@ -71,6 +80,12 @@ export interface Needs {
   readonly fixture?: readonly (keyof Fixture)[];
   /** TLS must be available (implicit or STARTTLS). */
   readonly tls?: boolean;
+  /**
+   * A receiving sink must be available — the run must be able to observe what the
+   * server relayed downstream. Without one (a plain run against a server we cannot
+   * make relay to us), a sink-based case is inconclusive.
+   */
+  readonly sink?: boolean;
 }
 
 export interface TestCase {

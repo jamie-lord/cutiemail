@@ -264,20 +264,23 @@ export const S4_5_1 = [
       'If the first character is a period and there are other characters on ' +
       'the line, the first character is deleted.',
     testability: {
-      kind: 'not-testable',
-      reason:
-        'Server-side dot-unstuffing (stripping the leading period the client ' +
-        'stuffed) is observable only in the delivered/stored message, not in ' +
-        'any reply code. We have no receiving sink to read the body back out, ' +
-        'so the deletion is invisible from the socket. Revisit if task #12 ' +
-        'grows an outbound sink.',
+      kind: 'wire-with-fixture',
+      fixture:
+        'A receiving sink the server relays to, so the delivered body can be read ' +
+        'back. The un-stuffing is invisible from the client socket, but observable ' +
+        'at the next hop: relay a body whose first line is a dot-stuffed period and ' +
+        'confirm the delivered body has a single leading period. The mutant relay ' +
+        'harness (verifySinkControls, defect dontUnstuffOnRelay) provides this; a ' +
+        'real server needs to be configured to relay to our sink.',
     },
     note:
       'DERIVED, hence `prose`: imperative fact defining the receiver\'s ' +
       'unstuffing obligation. Split from R-5321-4.5.2-b: same sentence, ' +
       'different party-visible surface — the end-of-mail check shows on the ' +
       'wire, the leading-period deletion does not. A server that fails to ' +
-      'unstuff silently doubles leading periods in delivered mail.',
+      'unstuff silently doubles leading periods in delivered mail. NOW TESTABLE: ' +
+      'the receiving sink (decision 0005\'s revisit trigger) reads the delivered ' +
+      'body back, and corpus case data-transparency-dot-unstuffed asserts it.',
   },
   {
     id: 'R-5321-4.5.2-d',

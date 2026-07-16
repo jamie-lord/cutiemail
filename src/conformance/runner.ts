@@ -22,6 +22,7 @@ import type { Result, Judgement, Evidence } from './outcome.ts';
 import type { Conn, ReplyOutcome, TestCase } from './test-case.ts';
 import { missingCapabilities } from './fixture.ts';
 import type { Fixture } from './fixture.ts';
+import type { SinkView } from './sink.ts';
 import { requirement } from '../register/rfc5321.ts';
 import type { RequirementId } from '../register/rfc5321.ts';
 
@@ -32,6 +33,13 @@ export interface RunConfig {
   readonly replyTimeoutMs?: number;
   /** Overall wall-clock guard per test, so one hung case cannot stall a run. */
   readonly caseTimeoutMs?: number;
+  /**
+   * A receiving sink the server under test relays to. Present only for runs that
+   * can observe downstream delivery (the mutant relay harness, or a real server
+   * configured to relay to us). Sink-based cases (needs.sink) are inconclusive
+   * without it.
+   */
+  readonly sink?: SinkView;
 }
 
 const DEFAULT_REPLY_TIMEOUT = 30_000;
@@ -41,14 +49,16 @@ const DEFAULT_CASE_TIMEOUT = 120_000;
 class LiveConn implements Conn {
   readonly wire: Wire;
   readonly fixture: Fixture;
+  readonly sink?: SinkView;
   #replyTimeout: number;
   #anomalies: string[] = [];
   #lastReply: Reply | null = null;
 
-  constructor(wire: Wire, fixture: Fixture, replyTimeout: number) {
+  constructor(wire: Wire, fixture: Fixture, replyTimeout: number, sink?: SinkView) {
     this.wire = wire;
     this.fixture = fixture;
     this.#replyTimeout = replyTimeout;
+    if (sink !== undefined) this.sink = sink;
   }
 
   send(bytes: Buffer): Promise<void> {
@@ -160,6 +170,12 @@ export async function runCase(tc: TestCase, config: RunConfig): Promise<Result> 
     );
   }
 
+  // Sink gating: a case that inspects downstream delivery needs the run to have a
+  // sink the server relays to. Without one, it is inconclusive, not a failure.
+  if (needs?.sink === true && config.sink === undefined) {
+    return inconclusive(tc, level, 'case requires a receiving sink, but this run has none configured');
+  }
+
   const started = process.hrtime.bigint();
   let wire: Wire;
   try {
@@ -168,7 +184,7 @@ export async function runCase(tc: TestCase, config: RunConfig): Promise<Result> 
     return inconclusive(tc, level, `could not connect: ${(err as Error).message}`);
   }
 
-  const conn = new LiveConn(wire, config.fixture, replyTimeout);
+  const conn = new LiveConn(wire, config.fixture, replyTimeout, config.sink);
 
   // EHLO-capability gating requires opening the session first. A case that
   // declares an ehlo need but whose server does not advertise it is inconclusive
@@ -191,7 +207,7 @@ export async function runCase(tc: TestCase, config: RunConfig): Promise<Result> 
     return inconclusive(tc, level, `EHLO gating failed: ${(err as Error).message}`);
   }
 
-  const liveConn = new LiveConn(wire, config.fixture, replyTimeout);
+  const liveConn = new LiveConn(wire, config.fixture, replyTimeout, config.sink);
 
   const judgement = await withDeadline<Judgement>(
     tc.run(liveConn).catch((err): Judgement => ({

@@ -26,6 +26,7 @@ import { CASES as termCases, MUTANTS as termMutants } from './termination.ts';
 import { CASES as syntaxCases, MUTANTS as syntaxMutants } from './syntax-case.ts';
 import { CASES as deliveryCases, MUTANTS as deliveryMutants } from './mail-delivery.ts';
 import { CASES as latitudeCases, CONTROLS as latitudeControls } from './latitude.ts';
+import { CASES as transparencyCases, MUTANTS as transparencyMutants } from './delivery-transparency.ts';
 
 export const ALL_CASES: readonly TestCase[] = [
   ...connCases,
@@ -41,6 +42,7 @@ export const ALL_CASES: readonly TestCase[] = [
   ...termCases,
   ...syntaxCases,
   ...deliveryCases,
+  ...transparencyCases,
   ...latitudeCases,
 ];
 
@@ -61,6 +63,7 @@ export const ALL_MUTANTS: readonly Mutant[] = [
   ...termMutants,
   ...syntaxMutants,
   ...deliveryMutants,
+  ...transparencyMutants,
 ];
 
 /** Guard invoked by the corpus test: no two cases may share an id. */

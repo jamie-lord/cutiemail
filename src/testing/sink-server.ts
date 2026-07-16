@@ -19,18 +19,9 @@
 
 import net from 'node:net';
 import { CR, LF, DOT } from '../wire/bytes.ts';
+import type { SinkMessage, SinkView } from '../conformance/sink.ts';
 
-export interface SinkMessage {
-  /** The reverse-path from MAIL FROM, exactly as received (angle brackets stripped). */
-  readonly from: string;
-  /** The forward-paths from RCPT TO, in order, exactly as received. */
-  readonly recipients: readonly string[];
-  /**
-   * The message content after DATA, dot-UN-stuffed and with the terminating
-   * <CRLF>.<CRLF> removed — i.e. the bytes a conformant receiver would store.
-   */
-  readonly data: Buffer;
-}
+export type { SinkMessage } from '../conformance/sink.ts';
 
 const write = (sock: net.Socket, s: string): void => {
   sock.write(Buffer.from(s + '\r\n', 'latin1'));
@@ -83,7 +74,7 @@ function findEndOfData(buf: Buffer): number | null {
   return null;
 }
 
-export class SinkServer {
+export class SinkServer implements SinkView {
   readonly port: number;
   #server: net.Server;
   readonly #received: SinkMessage[] = [];
@@ -103,6 +94,14 @@ export class SinkServer {
   /** The most recently delivered message, or undefined if none. */
   get last(): SinkMessage | undefined {
     return this.#received[this.#received.length - 1];
+  }
+
+  async waitFor(count = 1, timeoutMs = 3000): Promise<readonly SinkMessage[]> {
+    const steps = Math.max(1, Math.floor(timeoutMs / 20));
+    for (let i = 0; i < steps && this.#received.length < count; i++) {
+      await new Promise((r) => setTimeout(r, 20));
+    }
+    return this.received;
   }
 
   static async start(domain = 'sink.test'): Promise<SinkServer> {
