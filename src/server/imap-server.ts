@@ -24,6 +24,8 @@ export interface ServableMailbox {
   readonly uidValidity: number;
   readonly uidNext: number;
   readonly messages: readonly ServableMessage[];
+  storeFlags(uid: number, mode: 'add' | 'remove' | 'replace', flags: readonly string[]): void;
+  expungeDeleted(): readonly number[];
 }
 
 const write = (sock: net.Socket, line: string): void => {
@@ -112,6 +114,37 @@ export class ImapServer {
               write(sock, `* ${seq} FETCH (FLAGS (${flags}) UID ${msg.uid})`);
             }
             write(sock, `${tag} OK FETCH completed`);
+            break;
+          }
+          case 'STORE': {
+            if (!selected) {
+              write(sock, `${tag} BAD no mailbox selected`);
+              break;
+            }
+            const seq = Number(parts[2]);
+            const op = (parts[3] ?? '').toUpperCase(); // +FLAGS / -FLAGS / FLAGS
+            const flags = (parts.slice(4).join(' ').match(/\\?\w+/g) ?? []).map((f) => (f.startsWith('\\') ? `\\${f.slice(1)}` : f));
+            const msg = this.#mailbox.messages[seq - 1];
+            if (msg !== undefined && (op === '+FLAGS' || op === '-FLAGS' || op === 'FLAGS')) {
+              const mode = op === '+FLAGS' ? 'add' : op === '-FLAGS' ? 'remove' : 'replace';
+              this.#mailbox.storeFlags(msg.uid, mode, flags);
+              const now = this.#mailbox.messages.find((m) => m.uid === msg.uid);
+              write(sock, `* ${seq} FETCH (FLAGS (${now ? [...now.flags].join(' ') : ''}))`);
+            }
+            write(sock, `${tag} OK STORE completed`);
+            break;
+          }
+          case 'EXPUNGE': {
+            if (!selected) {
+              write(sock, `${tag} BAD no mailbox selected`);
+              break;
+            }
+            // Report EXPUNGE by descending sequence number so the client's numbering stays consistent.
+            const before = this.#mailbox.messages.map((m) => m.uid);
+            const removedUids = new Set(this.#mailbox.expungeDeleted());
+            const seqs = before.map((uid, i) => ({ uid, seq: i + 1 })).filter((e) => removedUids.has(e.uid));
+            for (const e of seqs.reverse()) write(sock, `* ${e.seq} EXPUNGE`);
+            write(sock, `${tag} OK EXPUNGE completed`);
             break;
           }
           case 'LOGOUT':
