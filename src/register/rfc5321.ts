@@ -42,6 +42,7 @@ import { S4_5_4 } from './sections/s4-5-4.ts';
 import { S5 } from './sections/s5.ts';
 import { S6 } from './sections/s6.ts';
 import { S7 } from './sections/s7.ts';
+import { S3207_4_2 } from './sections/s3207-4-2.ts';
 
 /**
  * Sections walked end-to-end, with every normative statement extracted.
@@ -118,6 +119,8 @@ export const REQUIREMENTS = [
   ...S5,
   ...S6,
   ...S7,
+  // RFC 3207 (STARTTLS) — the security surface RFC 5321 does not cover.
+  ...S3207_4_2,
 ] as const satisfies readonly RequirementDef[];
 
 /**

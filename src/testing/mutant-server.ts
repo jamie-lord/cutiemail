@@ -257,6 +257,14 @@ export interface Defects {
    * Violates R-5321-4.2.4-c (MUST NOT advertise capabilities you will 502/500).
    */
   readonly advertiseStarttlsButReject?: boolean;
+  /**
+   * The STARTTLS plaintext-injection vulnerability (CVE-2011-0411 class): after
+   * answering STARTTLS with 220, PROCESS a command that was pipelined in the same
+   * TCP segment (buffered before the TLS handshake) instead of discarding it.
+   * RFC 3207 §4.2 requires that buffered plaintext be discarded; processing it
+   * lets a MITM inject commands that appear to arrive inside the TLS session.
+   */
+  readonly injectAfterStartTls?: boolean;
   /** Close the connection on error without sending 421. */
   readonly closeWithout421?: boolean;
   /**
@@ -308,6 +316,9 @@ interface SessionState {
   hasMail: boolean;
   rcptCount: number;
   inData: boolean;
+  /** Set after a 220 to STARTTLS on a safe server: further plaintext is discarded,
+   *  awaiting the TLS ClientHello a real client would send next. */
+  awaitingTls: boolean;
 }
 
 const DEFAULT_DOMAIN = 'mutant.test';
@@ -380,7 +391,7 @@ export class MutantServer {
 
   #handle(sock: net.Socket): void {
     const d = this.#defects;
-    const state: SessionState = { greeted: false, hasMail: false, rcptCount: 0, inData: false };
+    const state: SessionState = { greeted: false, hasMail: false, rcptCount: 0, inData: false, awaitingTls: false };
     let buf = Buffer.alloc(0);
 
     sock.on('error', () => {});
@@ -402,6 +413,12 @@ export class MutantServer {
       buf = Buffer.concat([buf, Buffer.from(chunk)]);
 
       for (;;) {
+        // After a safe STARTTLS 220, all further plaintext is discarded — the
+        // server is waiting for the TLS ClientHello, not SMTP commands.
+        if (state.awaitingTls) {
+          buf = Buffer.alloc(0);
+          break;
+        }
         if (state.inData) {
           const consumed = this.#tryConsumeData(sock, buf, state);
           if (consumed === 0) break;
@@ -435,6 +452,26 @@ export class MutantServer {
         if (d.rejectCommandLineAt300 && line.command.length + 2 > 300) {
           this.#write(sock, crlf`500 Error: line too long`);
           buf = buf.subarray(line.consumed);
+          continue;
+        }
+        // STARTTLS injection primitive (RFC 3207 §4.2, CVE-2011-0411 class). When
+        // STARTTLS is honoured, a conformant server answers 220 then MUST discard
+        // any plaintext already buffered before the TLS handshake — it must not
+        // process a command pipelined in the same segment. We model this without a
+        // real handshake: the observable is simply whether that buffered command is
+        // answered. `advertiseStarttlsButReject` still falls through to the dispatch
+        // 502 (that is a different, advertise-vs-honour defect).
+        const verb = line.command.toString('latin1').split(/\s+/)[0]?.toUpperCase();
+        if (verb === 'STARTTLS' && !d.advertiseStarttlsButReject) {
+          this.#write(sock, crlf`220 2.0.0 Ready to start TLS`);
+          buf = buf.subarray(line.consumed);
+          if (!d.injectAfterStartTls) {
+            // Safe: discard the buffered plaintext and await the ClientHello.
+            buf = Buffer.alloc(0);
+            state.awaitingTls = true;
+          }
+          // Defect injectAfterStartTls: do NOT discard — fall through and process
+          // whatever was pipelined after STARTTLS (the injected command runs).
           continue;
         }
         this.#dispatch(sock, line.command, state);

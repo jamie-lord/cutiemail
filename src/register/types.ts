@@ -75,11 +75,18 @@ export interface DeliberatelyUncovered {
 }
 
 export interface RequirementDef {
-  /** Stable ID: R-5321-<section>-<letter>. Never renumber; retire instead. */
+  /** Stable ID: R-<rfc>-<section>-<letter>. Never renumber; retire instead. */
   readonly id: string;
-  /** RFC 5321 section, e.g. "2.3.8". */
+  /**
+   * Which RFC the `text` is quoted from, and therefore which spec file the
+   * verbatim gate checks it against. Defaults to rfc5321 (the vast majority);
+   * rfc3207 is the STARTTLS Secure-SMTP extension (the security surface RFC 5321
+   * itself does not cover).
+   */
+  readonly rfc?: 'rfc5321' | 'rfc3207';
+  /** Section within the source RFC, e.g. "2.3.8" or (for rfc3207) "4.2". */
   readonly section: string;
-  /** Page in spec/rfc5321.txt, for locating the text by hand. */
+  /** Page in the source spec .txt, for locating the text by hand. */
   readonly page: number;
   readonly level: Level;
   readonly party: Party;

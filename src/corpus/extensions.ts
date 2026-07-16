@@ -19,7 +19,7 @@
 import { testCase } from '../conformance/test-case.ts';
 import type { TestCase, Mutant, Conn } from '../conformance/test-case.ts';
 import type { Judgement } from '../conformance/outcome.ts';
-import { crlf } from '../wire/bytes.ts';
+import { crlf, cat } from '../wire/bytes.ts';
 import { severity, advertisedExtensions, ehloKeywords } from '../wire/reply.ts';
 
 async function greeting(conn: Conn): Promise<Judgement | null> {
@@ -97,6 +97,48 @@ export const CASES: readonly TestCase[] = [
         };
       }
       return { kind: 'satisfied', detail: `advertised STARTTLS honoured (${r.reply.code})` };
+    },
+  }),
+
+  testCase({
+    id: 'starttls-discards-pipelined-plaintext',
+    requirement: 'R-3207-4.2-a',
+    intent: 'a command pipelined in the same segment as STARTTLS is discarded, not processed (the STARTTLS command-injection defence)',
+    rationale:
+      'RFC 3207 §4.2: "The server MUST discard any knowledge obtained from the client ... which was ' +
+      'not obtained from the TLS negotiation itself." The CVE-2011-0411 injection: a MITM pipelines ' +
+      'a plaintext command in the SAME TCP segment as STARTTLS, and a vulnerable server buffers it ' +
+      'across the 220 and processes it as if it came from inside TLS. We send "STARTTLS<CRLF>NOOP' +
+      '<CRLF>" in ONE write; a conformant server answers only the 220 and then goes silent (awaiting ' +
+      'the ClientHello), discarding the buffered NOOP. A reply to the injected NOOP is the ' +
+      'violation. Conditional on STARTTLS being advertised.',
+    needs: { ehlo: ['STARTTLS'] },
+    run: async (conn): Promise<Judgement> => {
+      const bad = await greeting(conn);
+      if (bad !== null) return bad;
+      await conn.send(crlf`EHLO conformance-suite.invalid`);
+      const ehlo = await conn.readReply(3000);
+      if (ehlo.kind !== 'reply' || severity(ehlo.reply) !== 2) {
+        return { kind: 'inconclusive', reason: `EHLO: ${ehlo.kind === 'reply' ? ehlo.reply.code : ehlo.kind}` };
+      }
+      // The injection: STARTTLS and a pipelined NOOP in ONE write, no gap between.
+      await conn.send(cat(crlf`STARTTLS`, crlf`NOOP`));
+      const r = await conn.readReply(3000);
+      if (r.kind !== 'reply') return { kind: 'inconclusive', reason: `STARTTLS drew ${r.kind}` };
+      // A non-2yz to STARTTLS means it was refused (that is §4.2.4-c's advertise-vs-
+      // honour concern, tested separately) — nothing to say about injection here.
+      if (severity(r.reply) !== 2) return { kind: 'inconclusive', reason: `STARTTLS refused with ${r.reply.code} — cannot test the discard` };
+      // The decisive check: after the 220 the server MUST be silent (it discarded
+      // the buffered NOOP and is waiting for the TLS ClientHello). ANY further
+      // reply means it processed the injected plaintext command.
+      const quiet = await conn.expectQuiet(1000);
+      if (quiet.quiet) {
+        return { kind: 'satisfied', detail: 'buffered plaintext discarded after STARTTLS (no injection): server silent, awaiting the handshake' };
+      }
+      return {
+        kind: 'violated',
+        detail: `after 220 to STARTTLS the server replied to the pipelined plaintext command (${quiet.bytes.subarray(0, 3).toString('latin1')}...) — plaintext command injection (CVE-2011-0411 class)`,
+      };
     },
   }),
 
@@ -228,5 +270,10 @@ export const MUTANTS: readonly Mutant[] = [
     catches: 'expn-supported-must-be-advertised',
     defect: 'honorUnadvertisedExpn',
     why: 'honouring EXPN (a 250) while never advertising it in EHLO violates R-5321-3.5.2-j',
+  },
+  {
+    catches: 'starttls-discards-pipelined-plaintext',
+    defect: 'injectAfterStartTls',
+    why: 'processing a command pipelined before the TLS handshake instead of discarding it violates R-3207-4.2-a (CVE-2011-0411)',
   },
 ];

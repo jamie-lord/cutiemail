@@ -31,33 +31,39 @@ const extractedSections: readonly string[] = EXTRACTED_SECTIONS;
  * R-5321-2.4-i does exactly that — so a naive substring check would fail on
  * correctly-quoted text.
  */
-const rfc: string = (() => {
-  const raw = readFileSync(new URL('../../spec/rfc5321.txt', import.meta.url), 'utf8');
-  return (
-    raw
-      .split('\n')
-      .filter((line) => !/^Klensin\s+Standards Track\s+\[Page \d+\]$/.test(line))
-      .filter((line) => !/^RFC 5321\s+SMTP\s+October 2008$/.test(line))
-      .join('\n')
-      // The RFC is wrapped to 72 columns and breaks at existing hyphens, so
-      // "high-order" can appear as "high-\n   order". Rejoining is safe because
-      // the text only ever breaks at a hyphen that is genuinely part of the
-      // word — it never hyphenates to fit. Without this, a correct quote of
-      // "high-order bit" fails against a literal "high- order bit".
-      .replace(/-\n\s+/g, '-')
-      .replace(/\f/g, ' ')
-      .replace(/\s+/g, ' ')
-      .trim()
-  );
-})();
+const normalise = (raw: string): string =>
+  raw
+    .split('\n')
+    // Strip the generic RFC page furniture: the running footer
+    // "<author>  Standards Track  [Page N]" and the running header
+    // "RFC NNNN  <title>  <Month Year>". Generic patterns so a second RFC
+    // (3207) needs no bespoke filter.
+    .filter((line) => !/Standards Track\s+\[Page \d+\]\s*$/.test(line))
+    .filter((line) => !/^RFC \d+\b.*\b(January|February|March|April|May|June|July|August|September|October|November|December) \d{4}\s*$/.test(line))
+    .join('\n')
+    // The RFC is wrapped to 72 columns and breaks at existing hyphens, so
+    // "high-order" can appear as "high-\n   order". Rejoining is safe because
+    // the text only ever breaks at a hyphen that is genuinely part of the
+    // word — it never hyphenates to fit. Without this, a correct quote of
+    // "high-order bit" fails against a literal "high- order bit".
+    .replace(/-\n\s+/g, '-')
+    .replace(/\f/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+const specText: Record<'rfc5321' | 'rfc3207', string> = {
+  rfc5321: normalise(readFileSync(new URL('../../spec/rfc5321.txt', import.meta.url), 'utf8')),
+  rfc3207: normalise(readFileSync(new URL('../../spec/rfc3207.txt', import.meta.url), 'utf8')),
+};
 
 const collapse = (s: string): string => s.replace(/\s+/g, ' ').trim();
 
-test('every requirement quotes RFC 5321 verbatim', () => {
+test('every requirement quotes its source RFC verbatim', () => {
   for (const r of requirements) {
+    const source = r.rfc ?? 'rfc5321';
     assert.ok(
-      rfc.includes(collapse(r.text)),
-      `${r.id} (§${r.section}) is not a verbatim quote from spec/rfc5321.txt.\n` +
+      specText[source].includes(collapse(r.text)),
+      `${r.id} (§${r.section}) is not a verbatim quote from spec/${source}.txt.\n` +
         `Registered: ${collapse(r.text)}\n` +
         `Fix the quote — do not relax this test.`,
     );
@@ -74,15 +80,17 @@ test('requirement ids are unique', () => {
 
 test('requirement ids agree with the section they cite', () => {
   for (const r of requirements) {
-    const expected = `R-5321-${r.section}-`;
+    // The id embeds the source RFC: R-5321-... for RFC 5321, R-3207-... for 3207.
+    const rfcNum = (r.rfc ?? 'rfc5321').replace('rfc', '');
+    const expected = `R-${rfcNum}-${r.section}-`;
     assert.ok(
       r.id.startsWith(expected),
-      `${r.id} claims §${r.section}; id should start "${expected}"`,
+      `${r.id} claims §${r.section} of ${r.rfc ?? 'rfc5321'}; id should start "${expected}"`,
     );
     assert.match(
       r.id,
-      /^R-5321-[\d.]+-[a-z]{1,2}$/,
-      `${r.id} does not match the R-5321-<section>-<letter> scheme`,
+      /^R-(5321|3207)-[\d.]+-[a-z]{1,2}$/,
+      `${r.id} does not match the R-<rfc>-<section>-<letter> scheme`,
     );
   }
 });
