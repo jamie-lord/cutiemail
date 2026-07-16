@@ -75,6 +75,7 @@ export interface CoverageReport {
 function stateOf(
   req: RequirementDef,
   tests: readonly TestCase[],
+  primaryTests: readonly TestCase[],
   mutants: readonly Mutant[],
   latitudeControlled: ReadonlySet<string>,
 ): CoverageState {
@@ -86,7 +87,7 @@ function stateOf(
   }
   if (req.testability.kind === 'wire-with-fixture') return 'fixture-gated';
 
-  const testIds = new Set(tests.map((t) => t.id));
+  const primaryIds = new Set(primaryTests.map((t) => t.id));
   // A SHOULD/MAY tested via a latitude control is fully covered: the control
   // proves it classifies both ways (conformant vs permitted-latitude). Such a
   // requirement can never have a violation-catching mutant, so demanding one
@@ -94,12 +95,13 @@ function stateOf(
   //
   // Guard the hole: latitude credit applies ONLY to non-MUST requirements. A
   // MUST/MUST-NOT (even one a latitude case merely alsoTouches) must still earn
-  // fully-covered through a real negative-control mutant — a latitude control
-  // proves nothing about a violation it cannot produce.
+  // fully-covered through a real negative-control mutant.
   const isStrict = req.level === 'MUST' || req.level === 'MUST NOT' || req.level === 'REQUIRED';
-  if (!isStrict && [...testIds].some((id) => latitudeControlled.has(id))) return 'fully-covered';
-  // wire + tests: otherwise covered only if a mutant proves at least one test detects.
-  const hasProvenMutant = mutants.some((m) => testIds.has(m.catches));
+  if (!isStrict && [...primaryIds].some((id) => latitudeControlled.has(id))) return 'fully-covered';
+  // Otherwise covered only if a mutant proves a PRIMARY test detects the
+  // violation — an alsoTouches-only test caught by another requirement's mutant
+  // proves nothing about this one.
+  const hasProvenMutant = mutants.some((m) => primaryIds.has(m.catches));
   return hasProvenMutant ? 'fully-covered' : 'test-only';
 }
 
@@ -122,6 +124,12 @@ export function computeCoverage(
   const latitudeControlled = new Set(latitudeControlledCaseIds);
 
   const testsByReq = new Map<string, TestCase[]>();
+  // A test whose PRIMARY `requirement` is this one. Only these count toward a
+  // proving mutant: a mutant is authored to catch a specific test's specific
+  // check, so an alsoTouches-only test being caught by some other requirement's
+  // mutant proves NOTHING about this requirement. Conflating them would let the
+  // report overstate MUST coverage — the exact failure it exists to prevent.
+  const primaryTestsByReq = new Map<string, TestCase[]>();
   const orphanTests: string[] = [];
   for (const t of tests) {
     const targets = [t.requirement, ...(t.alsoTouches ?? [])];
@@ -134,13 +142,20 @@ export function computeCoverage(
       arr.push(t);
       testsByReq.set(target, arr);
     }
+    if (ids.has(t.requirement)) {
+      const arr = primaryTestsByReq.get(t.requirement) ?? [];
+      arr.push(t);
+      primaryTestsByReq.set(t.requirement, arr);
+    }
   }
 
   const requirements: RequirementCoverage[] = reqs.map((req) => {
     const reqTests = testsByReq.get(req.id) ?? [];
-    const state = stateOf(req, reqTests, mutants, latitudeControlled);
-    const testIds = reqTests.map((t) => t.id);
-    const hasMutant = mutants.some((m) => testIds.includes(m.catches));
+    const primaryTests = primaryTestsByReq.get(req.id) ?? [];
+    const state = stateOf(req, reqTests, primaryTests, mutants, latitudeControlled);
+    const testIds = reqTests.map((t) => t.id); // all touching, for display
+    const primaryTestIds = primaryTests.map((t) => t.id);
+    const hasMutant = mutants.some((m) => primaryTestIds.includes(m.catches));
     const reason =
       req.testability.kind === 'not-testable'
         ? req.testability.reason
