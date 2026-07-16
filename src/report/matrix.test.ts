@@ -63,6 +63,53 @@ test('permitted-latitude-vs-conformant IS a divergence', () => {
   assert.equal(m.divergences.length, 1);
 });
 
+test('a requirement with multiple cases never masks a finding in the cell', () => {
+  // R-5321-4.1.1.4-i really has three cases (the smuggling variants). A server
+  // that passes two but fails one must show X for the requirement, not OK —
+  // otherwise the matrix hides the finding it exists to surface.
+  const m = buildMatrix([
+    run('vulnerable', '1', [
+      result('R-5321-4.1.1.4-i', 'conformant'), // rejects bare-LF
+      result('R-5321-4.1.1.4-i', 'non-conformant'), // honours <LF>.<CR><LF> — the CVE
+      result('R-5321-4.1.1.4-i', 'conformant'), // rejects <CR>.<CR>
+    ]),
+  ]);
+  assert.equal(m.rows.length, 1);
+  assert.equal(m.rows[0]!.cells.get('vulnerable')?.outcome, 'non-conformant');
+  // and the winning cell points at the failing case, so it is findable
+  assert.equal(m.rows[0]!.cells.get('vulnerable')?.testId, 'test-R-5321-4.1.1.4-i');
+});
+
+test('a masked finding still drives divergence detection', () => {
+  // One server clean on all cases, the other clean on the first case but failing
+  // a later one. Before the aggregation fix, the failing server\'s cell was the
+  // first (conformant) result, so the divergence vanished.
+  const m = buildMatrix([
+    run('clean', '1', [
+      result('R-5321-4.1.1.4-i', 'conformant'),
+      result('R-5321-4.1.1.4-i', 'conformant'),
+    ]),
+    run('vulnerable', '1', [
+      result('R-5321-4.1.1.4-i', 'conformant'),
+      result('R-5321-4.1.1.4-i', 'non-conformant'),
+    ]),
+  ]);
+  assert.equal(m.divergences.length, 1);
+  assert.equal(m.divergences[0]!.cells.get('vulnerable')?.outcome, 'non-conformant');
+});
+
+test('a SHOULD with a declined case shows latitude over a passing case', () => {
+  // permitted-latitude outranks conformant in a cell: "declined a SHOULD here" is
+  // the more informative summary, and cannot co-occur with a MUST-level finding.
+  const m = buildMatrix([
+    run('s', '1', [
+      result('R-5321-2.4-n', 'conformant'),
+      result('R-5321-2.4-n', 'permitted-latitude'),
+    ]),
+  ]);
+  assert.equal(m.rows[0]!.cells.get('s')?.outcome, 'permitted-latitude');
+});
+
 test('per-server summaries count outcomes', () => {
   const m = buildMatrix([
     run('s', '1', [

@@ -75,6 +75,30 @@ function substantiveDisagreement(outcomes: readonly Outcome[]): boolean {
   return new Set(meaningful).size > 1;
 }
 
+/**
+ * A requirement can carry MORE THAN ONE test case — R-5321-4.1.1.4-i (the
+ * smuggling rule) has three: the bare-LF, <LF>.<CR><LF> and <CR>.<CR> end-of-data
+ * variants. A run therefore produces several results for that one requirement, and
+ * the matrix cell must aggregate them WITHOUT hiding a finding: a server that
+ * rejects bare-LF but honours <LF>.<CR><LF> (the exact CVE-2023-51764 profile
+ * Postfix/Exim/Sendmail all shipped) yields conformant + non-conformant +
+ * conformant, and taking the first would render it a flat OK on its headline
+ * requirement.
+ *
+ * Precedence, worst first: a non-conformant anywhere always wins (never mask a
+ * finding), then permitted-latitude (a declined SHOULD is more informative than a
+ * plain pass — and, being a SHOULD-level outcome, can never co-occur with a
+ * MUST-level non-conformant under one requirement), then conformant, then
+ * inconclusive (the least informative — something was actually checked in any
+ * other state). This also feeds divergence detection the right per-server cell.
+ */
+const CELL_RANK: Record<Outcome, number> = {
+  'non-conformant': 0,
+  'permitted-latitude': 1,
+  conformant: 2,
+  inconclusive: 3,
+};
+
 export function buildMatrix(runs: readonly ServerRun[]): Matrix {
   const servers = runs.map((r) => r.meta);
   const reqIds = new Set<string>();
@@ -85,11 +109,13 @@ export function buildMatrix(runs: readonly ServerRun[]): Matrix {
     const cells = new Map<string, MatrixCell>();
     let level: Result['level'] = 'MUST';
     for (const run of runs) {
-      const result = run.results.find((r) => r.requirementId === requirementId);
-      if (result !== undefined) {
-        cells.set(run.meta.serverName, { outcome: result.outcome, testId: result.testId });
-        level = result.level;
-      }
+      const forReq = run.results.filter((r) => r.requirementId === requirementId);
+      if (forReq.length === 0) continue;
+      // Worst-outcome-wins across every case of this requirement, so a finding in
+      // one case is never masked by a pass in another (see CELL_RANK).
+      const winner = forReq.reduce((a, b) => (CELL_RANK[b.outcome] < CELL_RANK[a.outcome] ? b : a));
+      cells.set(run.meta.serverName, { outcome: winner.outcome, testId: winner.testId });
+      level = winner.level;
     }
     const divergent = substantiveDisagreement([...cells.values()].map((c) => c.outcome));
     rows.push({ requirementId, level, cells, divergent });
