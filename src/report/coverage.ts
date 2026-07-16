@@ -82,9 +82,10 @@ function stateOf(
   if (req.testability.kind === 'not-testable') return 'not-testable';
   if (req.deliberatelyUncovered !== undefined) return 'deliberately-uncovered';
 
-  if (tests.length === 0) {
-    return req.testability.kind === 'wire-with-fixture' ? 'uncovered' : 'uncovered';
-  }
+  // No test at all — a genuine gap, whatever the testability kind. (A
+  // wire-with-fixture requirement only becomes 'fixture-gated' once it HAS a test
+  // waiting on the fixture; with none authored it is simply uncovered.)
+  if (tests.length === 0) return 'uncovered';
   if (req.testability.kind === 'wire-with-fixture') return 'fixture-gated';
 
   const primaryIds = new Set(primaryTests.map((t) => t.id));
