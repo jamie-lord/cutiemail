@@ -17,7 +17,7 @@
 import { DatabaseSync } from 'node:sqlite';
 import { randomBytes } from 'node:crypto';
 import { readFileSync } from 'node:fs';
-import { SqliteMailbox } from './store/sqlite-mailbox.ts';
+import { SqliteMailbox, SqliteCatalog } from './store/sqlite-mailbox.ts';
 import { AccountStore } from './store/accounts.ts';
 import { SmtpReceiver } from './server/smtp-receiver.ts';
 import type { DeliveredMessage } from './server/smtp-receiver.ts';
@@ -59,7 +59,10 @@ export interface RunningServer {
 /** Assemble and start the server from a full config. Returns the running handles. */
 export async function startServer(cfg: MailServerConfig): Promise<RunningServer> {
   const db = new DatabaseSync(cfg.dbPath);
-  const mailbox = SqliteMailbox.open(db, 1);
+  // The catalog of named mailboxes: INBOX plus whatever the client creates
+  // (real Thunderbird's first act is CREATE "Trash"). Inbound mail lands in INBOX.
+  const catalog = SqliteCatalog.open(db, 1);
+  const mailbox = catalog.get('INBOX')!;
 
   const accounts = new AccountStore();
   for (const a of cfg.accounts) accounts.setPassword(a.user, a.pass, randomBytes(16), 4096, 'sha256');
@@ -106,7 +109,7 @@ export async function startServer(cfg: MailServerConfig): Promise<RunningServer>
     host: cfg.host,
     port: cfg.submissionPort,
   });
-  const imap = await ImapServer.start(mailbox, { tls: cfg.tls, host: cfg.host, port: cfg.imapPort, authenticate: verify });
+  const imap = await ImapServer.start(catalog, { tls: cfg.tls, host: cfg.host, port: cfg.imapPort, authenticate: verify });
 
   return {
     inbound,

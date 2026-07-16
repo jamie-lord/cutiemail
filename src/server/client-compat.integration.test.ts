@@ -21,6 +21,7 @@ import assert from 'node:assert/strict';
 import net from 'node:net';
 import { ImapServer } from './imap-server.ts';
 import { Mailbox } from '../store/mailbox.ts';
+import { MemoryCatalog } from '../store/memory-catalog.ts';
 
 const delay = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
 
@@ -44,12 +45,20 @@ class Session {
     throw new Error(`timed out on ${tag} ${command}`);
   }
   async greeting(): Promise<string> {
+    return this.waitFor('* OK');
+  }
+  /** Send raw bytes (for literal continuations). */
+  raw(bytes: string): void {
+    this.#sock.write(Buffer.from(bytes, 'latin1'));
+  }
+  /** Wait until the accumulated transcript contains `needle`; return it all. */
+  async waitFor(needle: string): Promise<string> {
     for (let i = 0; i < 400; i++) {
       const s = this.#acc.toString('latin1');
-      if (s.includes('* OK')) return s;
+      if (s.includes(needle)) return s;
       await delay(5);
     }
-    throw new Error('no greeting');
+    throw new Error(`timed out waiting for ${JSON.stringify(needle)}`);
   }
 }
 
@@ -125,6 +134,64 @@ test('the Thunderbird account-setup sequence completes against the server', asyn
     assert.ok(!tbList.includes('the body'), 'RFC822.HEADER is headers only');
 
     assert.match(await s.run('t15', 'LOGOUT'), /^\* BYE/m);
+  } finally {
+    sock.destroy();
+    await server.close();
+  }
+});
+
+test('the Thunderbird folder workflow: CREATE Trash, APPEND to Sent, MOVE to delete', async () => {
+  const catalog = new MemoryCatalog();
+  const inbox = catalog.get('INBOX')!;
+  inbox.append(Buffer.from('Subject: keep\r\n\r\none\r\n', 'latin1'));
+  inbox.append(Buffer.from('Subject: bin me\r\n\r\ntwo\r\n', 'latin1'));
+
+  const server = await ImapServer.start(catalog, { authenticate: (u, p) => u === 'test' && p === 'pw' });
+  const sock = net.connect(server.port, '127.0.0.1');
+  const s = new Session(sock);
+  try {
+    await s.greeting();
+    await s.run('f1', 'LOGIN test pw');
+
+    // TB's first act after setup (captured live 2026-07-16): create Trash.
+    assert.match(await s.run('f2', 'CREATE "Trash"'), /^f2 OK/m);
+    assert.match(await s.run('f3', 'CREATE "Sent"'), /^f3 OK/m);
+    const list = await s.run('f4', 'LIST "" "*"');
+    assert.match(list, /^\* LIST \(\\HasNoChildren \\Trash\) "\/" Trash\r$/m, 'Trash carries its special-use attribute');
+    assert.match(list, /^\* LIST \(\\HasNoChildren \\Sent\) "\/" Sent\r$/m);
+    assert.match(await s.run('f5', 'CREATE "Trash"'), /^f5 NO/m, 'duplicate CREATE is refused');
+
+    // STATUS on a non-selected mailbox — how TB polls folder counts.
+    const status = await s.run('f6', 'STATUS "INBOX" (MESSAGES UNSEEN UIDNEXT)');
+    assert.match(status, /^\* STATUS INBOX \(MESSAGES 2 UNSEEN 2 UIDNEXT 3\)\r$/m);
+
+    // APPEND with a synchronizing literal — how TB files the sent copy.
+    const sentMsg = 'Subject: sent copy\r\n\r\nfiled by the client\r\n';
+    s.raw(`f7 APPEND "Sent" (\\Seen) {${sentMsg.length}}\r\n`);
+    await s.waitFor('+ Ready');
+    s.raw(`${sentMsg}\r\n`);
+    const appended = await s.waitFor('f7 ');
+    assert.match(appended, /f7 OK/, 'APPEND completes after the literal');
+    assert.equal(catalog.get('Sent')!.messages.length, 1, 'the sent copy is filed');
+    assert.ok(catalog.get('Sent')!.messages[0]!.flags.has('\\Seen'), 'APPEND flags are applied');
+
+    // Delete-via-Trash: TB moves the message (rev2 MOVE), numbering stays consistent.
+    await s.run('f8', 'SELECT "INBOX"');
+    const move = await s.run('f9', 'UID MOVE 2 "Trash"');
+    assert.match(move, /^\* 2 EXPUNGE\r$/m, 'MOVE reports the expunged sequence number');
+    assert.match(move, /^f9 OK/m);
+    assert.equal(inbox.messages.length, 1, 'the message left INBOX');
+    assert.equal(catalog.get('Trash')!.messages.length, 1, 'and landed in Trash');
+    assert.ok(catalog.get('Trash')!.messages[0]!.raw.includes(Buffer.from('bin me')), 'byte content preserved through the move');
+
+    // COPY leaves the original in place.
+    const copy = await s.run('f10', 'UID COPY 1 "Sent"');
+    assert.match(copy, /^f10 OK/m);
+    assert.equal(inbox.messages.length, 1, 'COPY does not remove the source');
+    assert.equal(catalog.get('Sent')!.messages.length, 2);
+
+    // A COPY to a missing mailbox gets the TRYCREATE hint, not a BAD.
+    assert.match(await s.run('f11', 'UID COPY 1 "Nowhere"'), /^f11 NO \[TRYCREATE\]/m);
   } finally {
     sock.destroy();
     await server.close();

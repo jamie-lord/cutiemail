@@ -14,6 +14,7 @@
 
 import { DatabaseSync } from 'node:sqlite';
 import { DELETED, type StoredMessage, type StoreMode } from './mailbox.ts';
+import { canonicalMailboxName } from './mailbox-name.ts';
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS mailbox (
@@ -36,6 +37,15 @@ CREATE TABLE IF NOT EXISTS flag (
 );
 `;
 
+/** Add the name column to databases created before multi-mailbox existed. */
+function migrateNameColumn(db: DatabaseSync): void {
+  const cols = db.prepare("SELECT name FROM pragma_table_info('mailbox')").all() as Array<{ name: string }>;
+  if (!cols.some((c) => c.name === 'name')) {
+    db.exec("ALTER TABLE mailbox ADD COLUMN name TEXT NOT NULL DEFAULT 'INBOX'");
+  }
+  db.exec('CREATE UNIQUE INDEX IF NOT EXISTS mailbox_name ON mailbox (name)');
+}
+
 export class SqliteMailbox {
   readonly #db: DatabaseSync;
   readonly #id: number;
@@ -48,9 +58,11 @@ export class SqliteMailbox {
   /** Open (or create) a mailbox in the given database (":memory:" or a file path). */
   static open(db: DatabaseSync, uidValidity = 1, id = 1): SqliteMailbox {
     db.exec(SCHEMA);
+    migrateNameColumn(db);
     const existing = db.prepare('SELECT id FROM mailbox WHERE id = ?').get(id);
     if (existing === undefined) {
-      db.prepare('INSERT INTO mailbox (id, uid_validity, uid_next) VALUES (?, ?, 1)').run(id, uidValidity);
+      // id 1 is INBOX by convention; other bare opens get a synthetic unique name.
+      db.prepare('INSERT INTO mailbox (id, uid_validity, uid_next, name) VALUES (?, ?, 1, ?)').run(id, uidValidity, id === 1 ? 'INBOX' : `mailbox-${id}`);
     }
     return new SqliteMailbox(db, id);
   }
@@ -120,5 +132,47 @@ export class SqliteMailbox {
     this.#db.prepare('DELETE FROM flag WHERE mailbox_id = ?').run(this.#id);
     this.#db.prepare('UPDATE mailbox SET uid_validity = ?, uid_next = 1 WHERE id = ?').run(newValidity, this.#id);
     return true;
+  }
+}
+
+/**
+ * The catalog of named mailboxes in one database — what multi-folder IMAP
+ * (LIST/CREATE/SELECT-by-name, Trash/Sent) serves. INBOX always exists; other
+ * names are created on demand (a real Thunderbird's first act is CREATE "Trash").
+ * Name matching is INBOX-case-insensitive per RFC 9051 §5.1 (canonicalMailboxName).
+ */
+export class SqliteCatalog {
+  readonly #db: DatabaseSync;
+
+  private constructor(db: DatabaseSync) {
+    this.#db = db;
+  }
+
+  static open(db: DatabaseSync, uidValidity = 1): SqliteCatalog {
+    db.exec(SCHEMA);
+    migrateNameColumn(db);
+    const cat = new SqliteCatalog(db);
+    if (cat.get('INBOX') === undefined) cat.create('INBOX', uidValidity);
+    return cat;
+  }
+
+  listNames(): readonly string[] {
+    const rows = this.#db.prepare('SELECT name FROM mailbox ORDER BY id').all() as Array<{ name: string }>;
+    return rows.map((r) => r.name);
+  }
+
+  get(name: string): SqliteMailbox | undefined {
+    const canon = canonicalMailboxName(name);
+    const row = this.#db.prepare('SELECT id FROM mailbox WHERE name = ?').get(canon) as { id: number } | undefined;
+    return row === undefined ? undefined : SqliteMailbox.open(this.#db, 1, Number(row.id));
+  }
+
+  /** Create a mailbox. Returns undefined if the name already exists. */
+  create(name: string, uidValidity = 1): SqliteMailbox | undefined {
+    const canon = canonicalMailboxName(name);
+    if (this.get(canon) !== undefined) return undefined;
+    const next = this.#db.prepare('SELECT COALESCE(MAX(id), 0) + 1 AS id FROM mailbox').get() as { id: number };
+    this.#db.prepare('INSERT INTO mailbox (id, uid_validity, uid_next, name) VALUES (?, ?, 1, ?)').run(Number(next.id), uidValidity, canon);
+    return SqliteMailbox.open(this.#db, uidValidity, Number(next.id));
   }
 }
