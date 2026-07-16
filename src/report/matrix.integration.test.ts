@@ -45,6 +45,31 @@ test('a clean server produces zero non-conformant results across the whole corpu
   );
 });
 
+// A server answering 4yz under transient conditions (greylisting, load, disk
+// pressure, shutdown) is fully CONFORMANT — a 4yz is never a MUST violation. So
+// it must draw zero findings, exactly like the clean server. This invariant
+// guards the whole class of "a MUST test forgot to give 4yz its latitude" false
+// positive (the accepted-transaction-stored bug the negative-control harness,
+// which only drives 250/5yz paths, could not catch). Each deferral stage is a
+// distinct conformant profile; none may convict.
+for (const [profile, defects] of [
+  ['defers-at-mail', { tempDeferAtMail: true }],
+  ['defers-at-rcpt', { tempDeferAtRcpt: true }],
+  ['defers-at-storage', { tempDeferAtStorage: true }],
+] as const) {
+  test(`a temporarily-deferring server (${profile}) produces zero non-conformant results`, async () => {
+    const run = await runAgainst(profile, defects);
+    const findings = run.results.filter((r) => r.outcome === 'non-conformant');
+    assert.equal(
+      findings.length,
+      0,
+      `a conformant ${profile} server must produce no findings (a 4yz is never a violation), got: ${findings
+        .map((f) => `${f.requirementId}(${f.testId})`)
+        .join(', ')}`,
+    );
+  });
+}
+
 test('the matrix surfaces a divergence where a broken server differs from a clean one', async () => {
   // honourBareLf makes the server EXECUTE a bare-LF command — a smuggling
   // violation the clean server does not have.

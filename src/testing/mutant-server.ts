@@ -265,6 +265,16 @@ export interface Defects {
    * lets a MITM inject commands that appear to arrive inside the TLS session.
    */
   readonly injectAfterStartTls?: boolean;
+  /**
+   * CONFORMANT temp-deferral profiles (not defects): a server under transient
+   * conditions answers 4yz. RFC 5321 permits this everywhere — a 4yz is never a
+   * MUST violation. They exist to power the "a temporarily-deferring server draws
+   * zero findings" invariant, which guards the whole class of 4yz false positive
+   * (see mail-delivery accepted-transaction-stored). Each defers at one stage:
+   */
+  readonly tempDeferAtMail?: boolean; // MAIL FROM -> 451 (e.g. load-based deferral)
+  readonly tempDeferAtRcpt?: boolean; // RCPT TO  -> 451 (the canonical greylist)
+  readonly tempDeferAtStorage?: boolean; // end-of-data -> 451 (disk pressure / post-DATA defer)
   /** Close the connection on error without sending 421. */
   readonly closeWithout421?: boolean;
   /**
@@ -516,6 +526,12 @@ export class MutantServer {
       this.#write(sock, crlf`500 Error: text line too long`);
       return eod;
     }
+    // Conformant temp-deferral at storage: the message was received but not stored
+    // (disk pressure / post-DATA deferral), so a 451 is owed, not a 250.
+    if (this.#defects.tempDeferAtStorage) {
+      this.#write(sock, crlf`451 4.3.0 message not stored, try again later`);
+      return eod;
+    }
     this.#write(sock, crlf`250 2.0.0 message accepted`);
     return eod;
   }
@@ -687,6 +703,7 @@ export class MutantServer {
         if (!state.greeted && !d.acceptMailBeforeGreeting) {
           return replyOK(503, 'Error: send HELO/EHLO first');
         }
+        if (d.tempDeferAtMail) return replyOK(451, '4.3.0 try again later');
         state.hasMail = true;
         return replyOK(250, '2.1.0 Ok');
 
@@ -694,6 +711,7 @@ export class MutantServer {
         if (!state.hasMail && !d.acceptRcptBeforeMail) {
           return replyOK(503, 'Error: need MAIL command');
         }
+        if (d.tempDeferAtRcpt) return replyOK(451, '4.7.1 greylisted, try again later');
         // Defect: treat a source-route path (a "@host," before the mailbox) as a
         // syntax error rather than recognising it. text is the whole command line.
         if (d.rejectSourceRouteAsSyntax && /RCPT\s+TO:\s*<@/i.test(text)) {
