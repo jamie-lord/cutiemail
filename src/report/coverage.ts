@@ -96,14 +96,23 @@ function stateOf(
   // Guard the hole: latitude credit applies ONLY to non-MUST requirements. A
   // MUST/MUST-NOT (even one a latitude case merely alsoTouches) must still earn
   // fully-covered through a real negative-control mutant.
+  // A non-MUST (SHOULD/MAY/etc.) can ONLY reach fully-covered through the latitude
+  // layer. Its "violation" grades to permitted-latitude, never a finding, so a
+  // negative control cannot detect it as one — meaning neither a catches-primary
+  // mutant NOR an alsoProves declaration may credit it. (This is the guard the
+  // alsoProves path was missing: without it, a SHOULD merely alsoTouched by a MUST
+  // test could be flipped to fully-covered by that MUST's mutant — exactly the
+  // §3.8-d overstatement. The latitude path is the only sound route for non-MUST.)
   const isStrict = req.level === 'MUST' || req.level === 'MUST NOT' || req.level === 'REQUIRED';
-  if (!isStrict && [...primaryIds].some((id) => latitudeControlled.has(id))) return 'fully-covered';
-  // Otherwise covered only if a mutant proves this requirement's detection —
-  // either because it catches a PRIMARY test of this requirement, or because a
-  // mutant DELIBERATELY declares this requirement in its `alsoProves` (a reviewed
-  // per-claim credit, NOT the automatic alsoTouches credit finding #6 forbade).
-  // An alsoTouches-only test merely caught by another requirement's mutant, with
-  // no explicit alsoProves, still proves nothing about this one.
+  if (!isStrict) {
+    return [...primaryIds].some((id) => latitudeControlled.has(id)) ? 'fully-covered' : 'test-only';
+  }
+  // Strict requirements are covered only if a mutant proves detection — either it
+  // catches a PRIMARY test of this requirement, or a mutant DELIBERATELY declares
+  // this requirement in its `alsoProves` (a reviewed per-claim credit, NOT the
+  // automatic alsoTouches credit finding #6 forbade). An alsoTouches-only test
+  // merely caught by another requirement's mutant, with no explicit alsoProves,
+  // still proves nothing about this one.
   const hasProvenMutant =
     mutants.some((m) => primaryIds.has(m.catches)) ||
     mutants.some((m) => (m.alsoProves ?? []).some((ap) => ap.requirement === req.id));

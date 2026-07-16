@@ -146,10 +146,12 @@ export const MUTANTS: readonly Mutant[] = [
         requirement: 'R-5321-3.8-b',
         why: '§3.8: a server "MUST NOT intentionally close the connection" except after QUIT/421/timeout — closing on an unknown command is an intentional close outside all three exceptions',
       },
-      {
-        requirement: 'R-5321-3.8-d',
-        why: '§3.8: servers are "expected to be tolerant of unknown commands, issuing a 500 reply" — closing instead is the intolerant behaviour this SHOULD warns against',
-      },
+      // NB: R-5321-3.8-d ("tolerant of unknown commands, issuing a 500") is a
+      // SHOULD. A SHOULD's decline grades to permitted-latitude, never a finding,
+      // so no negative control can DETECT its violation — closing on an unknown
+      // command is caught here as the 3.8-c/3.8-b MUST violation, not as a 3.8-d
+      // finding. 3.8-d rides along only as alsoTouches; crediting it fully-covered
+      // via this mutant would overstate coverage (coverage.ts now guards this).
     ],
   },
 ];

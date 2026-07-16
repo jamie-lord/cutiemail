@@ -416,7 +416,22 @@ export const KNOWN_ESMTP_KEYWORDS: ReadonlySet<string> = new Set([
 export function advertisedExtensions(reply: Reply): ReadonlySet<string> {
   const out = new Set<string>();
   for (const kw of ehloKeywords(reply)) {
-    if (KNOWN_ESMTP_KEYWORDS.has(kw)) out.add(kw);
+    if (KNOWN_ESMTP_KEYWORDS.has(kw)) {
+      out.add(kw);
+      continue;
+    }
+    // The deprecated `AUTH=LOGIN` form (Sendmail 8.10+, Postfix
+    // broken_sasl_auth_clients) puts the mechanisms after "=", so the whole token
+    // reads e.g. "AUTH=LOGIN" and would miss a bare-name match. Recognise the
+    // prefix before "=" so a server advertising AUTH only via the "=" hack is still
+    // seen as advertising AUTH — otherwise the unadvertised-command probe could
+    // convict it (a false positive). Servers that emit "=" almost always emit the
+    // standard "AUTH SP mechanisms" line too, but this closes the gap regardless.
+    const eq = kw.indexOf('=');
+    if (eq > 0) {
+      const base = kw.slice(0, eq);
+      if (KNOWN_ESMTP_KEYWORDS.has(base)) out.add(base);
+    }
   }
   return out;
 }

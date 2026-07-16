@@ -152,15 +152,14 @@ export const CASES: readonly TestCase[] = [
 
 export const MUTANTS: readonly Mutant[] = [
   {
+    // No alsoProves for R-5321-4.3.2-f: that requirement is about rejecting a line
+    // SHORTER than 512, but the exchange this test drives probes at EXACTLY 512 (the
+    // 4.5.3.1.4 floor). The defect would violate 4.3.2-f on a sub-512 line, but the
+    // caught exchange never sends one, so it does not demonstrate 4.3.2-f. Claiming
+    // it would credit coverage the exchange doesn't exercise (test-case.ts contract).
     catches: 'command-line-512-accepted',
     defect: 'rejectCommandLineAt300',
     why: 'rejecting a command line within the 512-octet floor violates R-5321-4.5.3.1.4-a',
-    alsoProves: [
-      {
-        requirement: 'R-5321-4.3.2-f',
-        why: '§4.3.2: "producing a \'command too long\' message for a command line shorter than 512 characters would violate ... 4.5.3.1.4" — this defect rejects a <512-octet line for length, the exact act forbidden',
-      },
-    ],
   },
   {
     catches: 'text-line-1000-accepted',

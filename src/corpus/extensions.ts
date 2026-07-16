@@ -47,11 +47,23 @@ export const CASES: readonly TestCase[] = [
       if (r.kind !== 'reply') return { kind: 'inconclusive', reason: `HELO drew ${r.kind}` };
       const sev = severity(r.reply);
       if (sev === 2) return { kind: 'satisfied', detail: `HELO accepted with ${r.reply.code}` };
-      // Only a 5yz "command not implemented/recognised" (500/502) denies HELO
-      // support. A 4yz is a transient/shutdown condition (451 try-again, 421
-      // closing) — not evidence the server lacks HELO, so it is inconclusive.
+      // A 4yz is a transient/shutdown condition (451 try-again, 421 closing) — not
+      // evidence the server lacks HELO, so it is inconclusive.
       if (sev === 4) return { kind: 'inconclusive', reason: `HELO drew a transient ${r.reply.code}` };
-      return { kind: 'violated', detail: `HELO drew ${r.reply.code} — server does not support HELO` };
+      // Only "command not implemented/recognised" (500/502) denies HELO SUPPORT —
+      // the clean violation the §2.2.1-d register note names. Any other 5yz means
+      // HELO was UNDERSTOOD but refused for a reason unrelated to command support:
+      // 550 to our `.invalid` HELO name (Postfix reject_non_fqdn/invalid_helo_
+      // hostname anti-spam policy), or 530 STARTTLS-required. Convicting those would
+      // false-positive a conformant, HELO-supporting server — so they are
+      // inconclusive, not a finding.
+      if (r.reply.code === 500 || r.reply.code === 502) {
+        return { kind: 'violated', detail: `HELO drew ${r.reply.code} (command not implemented/recognised) — server does not support HELO` };
+      }
+      return {
+        kind: 'inconclusive',
+        reason: `HELO drew ${r.reply.code}: understood but refused on policy (e.g. HELO-hostname or STARTTLS-required), not a command-support failure`,
+      };
     },
   }),
 

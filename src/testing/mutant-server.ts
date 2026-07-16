@@ -108,6 +108,12 @@ export interface Defects {
   readonly bareLfReplyTerminator?: boolean;
   /** Use '=' instead of SP as the reply code separator. Violates R-5321-4.2-i. */
   readonly malformedReplySeparator?: boolean;
+  /**
+   * Emit the FINAL line of the multiline EHLO with "=" instead of the required
+   * <SP> separator. A genuine multiline-FORMAT violation (R-5321-4.2.1-f), distinct
+   * from the single-line malformedReplySeparator above.
+   */
+  readonly malformedMultilineSeparator?: boolean;
   /** VRFY clears transaction state. Violates R-5321-4.1.1.6-b (no effect on buffers). */
   readonly vrfyResetsState?: boolean;
   /** EXPN (recognised) clears transaction state. Violates R-5321-4.1.1.7-c. */
@@ -530,7 +536,11 @@ export class MutantServer {
           const firstLine = d.ehloResponseNoDomain ? crlf`250- ` : crlf`250-${this.#domain}`;
           const lines = [firstLine];
           for (let i = 0; i < keywords.length; i++) {
-            lines.push(i === keywords.length - 1 ? crlf`250 ${keywords[i]!}` : crlf`250-${keywords[i]!}`);
+            const isFinal = i === keywords.length - 1;
+            // Defect: the final line of the multiline reply carries "=" instead of
+            // the required <SP> — a genuine §4.2.1-f multiline-format violation.
+            const finalSep = d.malformedMultilineSeparator ? crlf`250=${keywords[i]!}` : crlf`250 ${keywords[i]!}`;
+            lines.push(isFinal ? finalSep : crlf`250-${keywords[i]!}`);
           }
           this.#write(sock, Buffer.concat(lines));
         }

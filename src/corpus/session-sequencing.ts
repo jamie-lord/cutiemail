@@ -266,15 +266,14 @@ export const MUTANTS: readonly Mutant[] = [
     ],
   },
   {
+    // No alsoProves for R-5321-3.8-a here: this defect sends 221 (a positive reply)
+    // AND does close (via RST), so BOTH clauses of 3.8-a ("positive reply, after
+    // which it closes") are satisfied — the RST-vs-clean-FIN distinction is the
+    // PRIMARY 4.1.1.10-a duty, not 3.8-a. 3.8-a is already soundly proven by the
+    // sibling quitWrongReply defect (a non-positive reply).
     catches: 'quit-returns-221-and-closes',
     defect: 'quitResetsAfterReply',
     why: 'an RST after 221 instead of a clean close violates R-5321-4.1.1.10-a',
-    alsoProves: [
-      {
-        requirement: 'R-5321-3.8-a',
-        why: '§3.8: after the positive reply the server "closes the connection" — an RST is not the orderly close the section describes',
-      },
-    ],
   },
   { catches: 'helo-not-given-extended-response', defect: 'extendedResponseToHelo', why: 'an EHLO-style reply to HELO violates R-5321-3.2-b' },
   {

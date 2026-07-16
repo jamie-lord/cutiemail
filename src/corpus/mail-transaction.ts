@@ -78,14 +78,13 @@ export const CASES: readonly TestCase[] = [
 
 export const MUTANTS: readonly Mutant[] = [
   {
+    // No alsoProves for R-5321-3.3-k: its register note (s3-3.ts) adjudicates a 501
+    // to a source route as PERMITTED-LATITUDE (indistinguishable on the wire from a
+    // deliberate policy refusal by a server that parsed it fine), not as evidence of
+    // being "unprepared". So this 501-emitting defect does NOT demonstrate a 3.3-k
+    // violation; it proves only the primary 4.1.1.3-b syntax-recognition duty.
     catches: 'source-route-syntax-recognized',
     defect: 'rejectSourceRouteAsSyntax',
     why: 'returning a 501 syntax error for a source-route path violates R-5321-4.1.1.3-b',
-    alsoProves: [
-      {
-        requirement: 'R-5321-3.3-k',
-        why: '§3.3: "Servers MUST be prepared to encounter a list of source routes in the forward-path" — rejecting the source route as a syntax error is a failure to be so prepared',
-      },
-    ],
   },
 ];

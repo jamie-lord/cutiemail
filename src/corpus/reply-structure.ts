@@ -223,25 +223,37 @@ export const MUTANTS: readonly Mutant[] = [
     why: 'a reply line ended by a bare LF is not the <CRLF>-terminated line §4.2 defines (R-5321-4.2-d)',
   },
   {
+    // Single-line malformation (250= on the NOOP path). Proves only the primary
+    // §4.2-i separator grammar; it is NOT a §4.2.1-f multiline-FORMAT violation
+    // (that rule is about which separator each line of a MULTILINE reply carries),
+    // so it carries no alsoProves — see malformedMultilineSeparator below.
     catches: 'reply-separator-well-formed',
     defect: 'malformedReplySeparator',
     why: 'a byte other than <SP> or "-" after the code is outside the Reply-line grammar of §4.2 (R-5321-4.2-i)',
+  },
+  {
+    // Genuine §4.2.1-f control: the FINAL line of the multiline EHLO carries "="
+    // instead of the required <SP>, so the multiline reply violates "the last line
+    // begins with the reply code followed immediately by <SP>". reply-separator-
+    // well-formed reads the EHLO (multiline) reply and flags the malformed-separator
+    // anomaly, so it detects this on a real multiline reply — which the single-line
+    // NOOP malformation above cannot demonstrate.
+    catches: 'reply-separator-well-formed',
+    defect: 'malformedMultilineSeparator',
+    why: 'a "=" where the final line of a multiline reply must have <SP> is outside §4.2 Reply-line grammar (R-5321-4.2-i)',
     alsoProves: [
       {
         requirement: 'R-5321-4.2.1-f',
-        why: '§4.2.1 requires the code be followed immediately by "-" (non-final) or <SP> (final); a "=" separator is neither, the exact malformation this test catches',
+        why: '§4.2.1: "The last line will begin with the reply code, followed immediately by <SP>" — a multiline reply whose final line uses "=" violates the multiline-FORMAT rule, on a genuinely multiline reply',
       },
     ],
   },
   {
+    // Proves the primary §4.2.1-i code-EQUALITY rule. The reviewer correctly noted
+    // this is NOT §4.2.1-f: each line here is well-FORMED (code + "-"/SP); only the
+    // codes DIFFER, which is 4.2.1-i, a separate requirement. No 4.2.1-f alsoProves.
     catches: 'multiline-reply-code-consistent',
     defect: 'mismatchedContinuation',
     why: 'a continuation line whose code differs from the final line violates §4.2.1 (R-5321-4.2.1-i)',
-    alsoProves: [
-      {
-        requirement: 'R-5321-4.2.1-f',
-        why: '§4.2.1 requires every line — final and non-final — to begin with the reply code; a continuation whose code differs breaks that per-line code rule',
-      },
-    ],
   },
 ];
