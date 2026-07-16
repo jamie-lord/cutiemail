@@ -1,0 +1,13 @@
+{
+  "name": "mox-0.0.15-localserve",
+  "serverDomain": "localhost",
+  "host": "127.0.0.1",
+  "port": 1025,
+  "tls": "none",
+  "version": "mox-0.0.15",
+  "fixture": {
+    "clientDomain": "conformance-suite.invalid",
+    "validRecipient": "mox@localhost",
+    "postmaster": "postmaster@localhost"
+  }
+}
