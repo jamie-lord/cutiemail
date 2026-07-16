@@ -14,12 +14,45 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import net from 'node:net';
 import tls from 'node:tls';
+import { generateKeyPairSync } from 'node:crypto';
 import { startServer } from '../main.ts';
 import type { MailServerConfig } from '../main.ts';
 import { SmtpReceiver } from './smtp-receiver.ts';
 import type { DeliveredMessage } from './smtp-receiver.ts';
 import { relayOutbound, routeRecipients } from './outbound.ts';
 import { TEST_CERT, TEST_KEY } from '../testing/tls-test-cert.ts';
+
+/** Authenticate over STARTTLS and submit one message; resolves when accepted. */
+async function submit(port: number, from: string, rcpts: readonly string[], message: string): Promise<void> {
+  const plainToken = (u: string, p: string): string => Buffer.from(`\0${u}\0${p}`, 'latin1').toString('base64');
+  const raw = net.connect(port, '127.0.0.1');
+  raw.on('error', () => {});
+  const rr = new Reader(raw);
+  await rr.line('ESMTP\r\n');
+  raw.write('EHLO thunderbird\r\n');
+  await rr.line('250 STARTTLS\r\n');
+  raw.write('STARTTLS\r\n');
+  await rr.line('Ready to start TLS\r\n');
+  const secure = tls.connect({ socket: raw, rejectUnauthorized: false });
+  secure.on('error', () => {});
+  await new Promise<void>((r) => secure.once('secureConnect', () => r()));
+  const sr = new Reader(secure);
+  secure.write('EHLO thunderbird\r\n');
+  await sr.line('250 AUTH PLAIN\r\n');
+  secure.write('AUTH PLAIN ' + plainToken('alice', 'correct horse') + '\r\n');
+  await sr.line('235');
+  secure.write(`MAIL FROM:<${from}>\r\n`);
+  await sr.line('2.1.0 Ok\r\n');
+  for (const rcpt of rcpts) {
+    secure.write(`RCPT TO:<${rcpt}>\r\n`);
+    await sr.line('2.1.5 Ok\r\n');
+  }
+  secure.write('DATA\r\n');
+  await sr.line('354');
+  secure.write(message.replace(/\n/g, '\r\n') + '\r\n.\r\n');
+  await sr.line('message stored\r\n');
+  secure.end();
+}
 
 const delay = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
 const plainToken = (user: string, pass: string): string => Buffer.from(`\0${user}\0${pass}`, 'latin1').toString('base64');
@@ -151,6 +184,42 @@ test('daemon: authenticated submission relays a remote recipient and stores a lo
     const relayed = received[0]!.data.toString('latin1');
     assert.match(relayed, /^Message-ID: <[^>]+@mail\.example\.test>\r\n/m, 'a Message-ID was added at submission');
     assert.match(relayed, /^Date: /m, 'a Date was added at submission');
+  } finally {
+    await server.close();
+    await mx.close();
+  }
+});
+
+test('daemon full stack: submission → fix-up → DKIM sign → queue → relay, delivered signed', async () => {
+  const { privateKey } = generateKeyPairSync('rsa', { modulusLength: 2048 });
+  const received: DeliveredMessage[] = [];
+  const mx = await SmtpReceiver.start((m) => received.push(m), { domain: 'mx.elsewhere.example' });
+  const config: MailServerConfig = {
+    dbPath: ':memory:',
+    host: '127.0.0.1',
+    smtpPort: 0,
+    submissionPort: 0,
+    imapPort: 0,
+    domain: 'mail.example.test',
+    accounts: [{ user: 'alice', pass: 'correct horse' }],
+    tls: { key: TEST_KEY, cert: TEST_CERT },
+    dkim: { selector: 'sel', privateKeyPem: privateKey.export({ type: 'pkcs8', format: 'pem' }) as string },
+    outbound: { resolveHosts: async () => ['127.0.0.1'], port: mx.port },
+  };
+  const server = await startServer(config);
+  try {
+    // A minimal message — no Message-ID/Date — addressed to a remote recipient.
+    await submit(server.submission.port, 'alice@mail.example.test', ['friend@elsewhere.example'], 'Subject: full stack\n\nsigned, queued, relayed\n');
+
+    await waitUntil(() => received.length === 1, 'the message to reach the MX via the queue');
+    const relayed = received[0]!.data.toString('latin1');
+    assert.match(relayed, /^DKIM-Signature: v=1;/m, 'the relayed message is DKIM-signed');
+    assert.match(relayed, /d=mail\.example\.test/, 'signed for our domain');
+    assert.match(relayed, /s=sel/, 'with the configured selector');
+    assert.match(relayed, /^Message-ID: </m, 'the §6409 fix-up ran before signing');
+    // The DKIM-Signature must precede the headers it signed (it is prepended).
+    assert.ok(relayed.indexOf('DKIM-Signature:') < relayed.indexOf('Message-ID:'), 'signature is at the top');
+    assert.equal(server.queue.size, 0, 'delivered and removed from the queue');
   } finally {
     await server.close();
     await mx.close();

@@ -220,10 +220,10 @@ These are deliberate, recorded, and roughly in priority order for closing:
   Outbound mail is then signed after the §6409 fix-up. Without it, delivery
   relies on SPF alone (accepted, but spam-foldered). Signing is fail-open: a key
   problem sends the message unsigned rather than dropping it.
-- **No retry queue.** A relay that fails (recipient server down, greylisted with a
-  `4xx`) is logged and dropped — it is *not* retried. Greylisting is common, so a
-  first send may just vanish; try again. `src/store/queue.ts` has the retry
-  semantics; wiring it to persist and re-run is the next increment after DKIM.
+- **Retry queue is persistent.** A transient failure (greylist `4xx`, MX down,
+  DNS hiccup) is queued in SQLite and retried on an exponential backoff until it
+  delivers or the give-up window (~5 days) passes; a `5xx` bounces at once. The
+  queue survives a restart. `MAIL_*` needs no extra config for this.
 - **One shared mailbox, accepts every recipient.** Inbound mail for *any* address
   lands in the single account's mailbox; there is no per-user routing and no
   rejection of unknown recipients. Exactly the naive single-account behaviour you
@@ -232,9 +232,6 @@ These are deliberate, recorded, and roughly in priority order for closing:
   local mail domain. That's why this guide uses one name for host and domain
   (`you@mail.example.com`): a split like greeting `mail.example.com` + addresses
   `you@example.com` isn't separable yet.
-- **No outbound STARTTLS.** Relay to a recipient MX is plaintext on port 25.
-  Receivers accept it, but the connection isn't encrypted. Opportunistic STARTTLS
-  on the client side is a later increment.
 - **Relay is IPv4-only, deliberately.** Gmail hard-rejects IPv6 connections
   without a matching v6 PTR and authentication; the PTR this guide sets is for
   the v4 address, so the relay pins `family: 4`. Revisit if you set up full
