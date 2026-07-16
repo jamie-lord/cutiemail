@@ -163,6 +163,41 @@ export const CASES: readonly TestCase[] = [
       return { kind: 'violated', detail: `a 1000-octet text line drew ${longResult.reply.code} (5yz) where a short body was accepted — rejected within the mandated length` };
     },
   }),
+
+  testCase({
+    id: 'local-part-64-accepted',
+    requirement: 'R-5321-4.5.3.1.1-a',
+    intent: 'a 64-octet local-part (the mandated floor) is accepted, not rejected for length',
+    rationale:
+      '§4.5.3.1.1: "The maximum total length of a user name or other local-part is 64 octets." A ' +
+      'receiver MUST be able to accept a 64-octet local-part; rejecting one for LENGTH is the ' +
+      'violation. The trap: a plain 550 "no such user" is conformant, so this needs a ' +
+      'fixture-declared VALID 64-octet recipient, and isolates length by first confirming an ' +
+      'ordinary (short) recipient is accepted — only then is a 5yz on the long-but-valid one a ' +
+      'length rejection.',
+    needs: { fixture: ['validRecipient', 'longLocalPartRecipient'] },
+    run: async (conn): Promise<Judgement> => {
+      const bad = await greetAndEhlo(conn);
+      if (bad !== null) return bad;
+      await conn.send(crlf`MAIL FROM:<probe@conformance-suite.invalid>`);
+      const m = await conn.readReply(3000);
+      if (m.kind !== 'reply' || severity(m.reply) !== 2) return { kind: 'inconclusive', reason: `MAIL: ${m.kind === 'reply' ? m.reply.code : m.kind}` };
+      // Baseline: an ordinary (short) valid recipient must be accepted, so a later
+      // rejection can be attributed to length, not to the server refusing recipients.
+      await conn.send(crlf`RCPT TO:<${conn.fixture.validRecipient!}>`);
+      const base = await conn.readReply(3000);
+      if (base.kind !== 'reply' || severity(base.reply) !== 2) {
+        return { kind: 'inconclusive', reason: `the ordinary baseline recipient was not accepted (${base.kind === 'reply' ? base.reply.code : base.kind}) — cannot isolate length` };
+      }
+      // The probe: the fixture-declared VALID 64-octet-local-part recipient.
+      await conn.send(crlf`RCPT TO:<${conn.fixture.longLocalPartRecipient!}>`);
+      const r = await conn.readReply(3000);
+      if (r.kind !== 'reply') return { kind: 'inconclusive', reason: `64-octet-local-part RCPT drew ${r.kind}` };
+      if (severity(r.reply) === 2) return { kind: 'satisfied', detail: '64-octet local-part accepted' };
+      if (severity(r.reply) === 4) return { kind: 'inconclusive', reason: `64-octet-local-part RCPT drew a transient ${r.reply.code}` };
+      return { kind: 'violated', detail: `a fixture-valid 64-octet local-part drew ${r.reply.code} where an ordinary recipient was accepted — rejected within the mandated 64-octet floor` };
+    },
+  }),
 ];
 
 export const MUTANTS: readonly Mutant[] = [
@@ -181,5 +216,10 @@ export const MUTANTS: readonly Mutant[] = [
     catches: 'text-line-1000-accepted',
     defect: 'rejectTextLineAt500',
     why: 'rejecting a text line within the 1000-octet floor violates R-5321-4.5.3.1.6-a',
+  },
+  {
+    catches: 'local-part-64-accepted',
+    defect: 'rejectLongLocalPart',
+    why: 'rejecting a valid 64-octet local-part for length violates R-5321-4.5.3.1.1-a',
   },
 ];

@@ -26,6 +26,7 @@ export const richFixture: Fixture = {
   rejectedRecipient: 'nobody@example.com',
   nonRelayDomain: 'not-served.example.org',
   postmaster: 'postmaster@example.com',
+  longLocalPartRecipient: `${'a'.repeat(64)}@example.com`, // 64-octet local-part (§4.5.3.1.1 floor)
   declaredSizeLimit: 10_485_760,
   source: 'operator-declared',
 };

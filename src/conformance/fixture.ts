@@ -57,6 +57,12 @@ export interface Fixture {
   readonly overQuotaRecipient?: string;
   /** The postmaster address — RFC 5321 §4.5.1 requires it be accepted. */
   readonly postmaster?: string;
+  /**
+   * A deliverable recipient whose LOCAL-PART is a full 64 octets — the §4.5.3.1.1
+   * floor a receiver MUST accept. Must be otherwise valid so a rejection can only
+   * be a length rejection, not "no such user".
+   */
+  readonly longLocalPartRecipient?: string;
 
   /** Declared SIZE limit in octets, if the operator knows it. */
   readonly declaredSizeLimit?: number;

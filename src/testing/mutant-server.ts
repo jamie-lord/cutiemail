@@ -229,6 +229,12 @@ export interface Defects {
    */
   readonly rejectBarePostmaster?: boolean;
   /**
+   * Reject a RCPT whose local-part exceeds 40 octets — below the §4.5.3.1.1 floor
+   * of 64 the receiver MUST accept. Violates R-5321-4.5.3.1.1-a. (40 is chosen so a
+   * normal short recipient is still accepted, isolating length as the variable.)
+   */
+  readonly rejectLongLocalPart?: boolean;
+  /**
    * Answer RSET with 503 "bad sequence" when issued before EHLO/HELO. Violates
    * R-5321-4.1.1.5-d (RSET is a no-op — a 250 — in every state, including before
    * EHLO). The clean server answers 250.
@@ -860,6 +866,11 @@ export class MutantServer {
           // Defect: reject the BARE (domain-less) postmaster form (§2.3.5-g).
           if (d.rejectBarePostmaster && addr.toLowerCase() === 'postmaster') {
             return replyOK(550, '5.1.1 User unknown');
+          }
+          // Defect: reject a local-part longer than 40 octets — below the §4.5.3.1.1
+          // 64-octet floor a receiver MUST accept.
+          if (d.rejectLongLocalPart && localPart.length > 40) {
+            return replyOK(550, '5.1.3 Bad recipient address (local-part too long)');
           }
           const verdict = this.#recipientVerdict(addr);
           if (verdict === 'reject' && !d.acceptRejectedRecipient) {
