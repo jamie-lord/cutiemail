@@ -107,7 +107,29 @@ the server:
   decline for policy, a `550` is the SHOULD (§3.6.2-c).
 - **Support `postmaster`** at your own domain (§4.5.1) — the one address every server must have.
 
-## 9. SHOULD and MAY are not MUST — don't be stricter than the spec
+## 9. Delivery transparency: deliver exactly what you received
+
+Policy (section 8) is about what you *accept*. Transparency is about not *corrupting* what you
+accepted on its way to the mailbox or the next hop. None of this is visible on the SMTP
+connection — it only shows up in the delivered message — which is why this suite tests it with a
+receiving sink (a downstream server the system under test relays to; see `src/testing/sink-server.ts`).
+Every one of these is a MUST, and every one is easy to get subtly wrong:
+
+- **Dot-un-stuffing (§4.5.2).** The client doubles any body line that begins with a `.`; you MUST
+  delete that leading `.` before storing/relaying. Forget it and every leading-period line in
+  delivered mail silently grows an extra dot. (The `<CRLF>.<CRLF>` terminator itself is the
+  end-of-data marker, not body content — see section 1.)
+- **Insert a `Received:` trace line at the top (§4.4).** When you receive a message for delivery
+  or relay you MUST prepend trace information to the head of the content. A relay that forwards
+  the body untouched is non-conformant (and unauditable).
+- **Preserve the local-part case (§2.4-c/-d).** `Foo@example.com` and `foo@example.com` are
+  potentially different mailboxes; the local-part is case-sensitive, so you MUST NOT lowercase it
+  as you relay. The domain, by contrast, IS case-insensitive.
+- **Deliver all characters, including control characters (§4.5.2-e).** Horizontal tabs, vertical
+  tabs, and other control octets in the body MUST reach the mailbox intact — do not strip or
+  normalise them. (8-bit octets are a separate question gated on `8BITMIME`/SMTPUTF8.)
+
+## 10. SHOULD and MAY are not MUST — don't be stricter than the spec
 
 A large fraction of RFC 5321 is SHOULD/MAY. The suite's whole outcome model exists to avoid
 failing a server for declining a SHOULD. As an implementer, the inverse: you have latitude.
@@ -115,7 +137,7 @@ failing a server for declining a SHOULD. As an implementer, the inverse: you hav
 ignore its arguments but MAY reject them. Knowing where you have latitude keeps the
 implementation honest and interoperable.
 
-## 10. EAI / SMTPUTF8 (RFC 6531), if you implement it
+## 11. EAI / SMTPUTF8 (RFC 6531), if you implement it
 
 UTF-8 in envelope addresses is permitted only after the client issues `SMTPUTF8` (announced in
 EHLO). Without it, envelope commands stay ASCII (§2.4). When relaying to a downstream that does
