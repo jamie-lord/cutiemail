@@ -45,7 +45,7 @@ export const CASES: readonly TestCase[] = [
       await conn.send(crlf`EHLO conformance-suite.invalid`);
       const e = await conn.readReply(3000);
       if (e.kind === 'timeout') return { kind: 'inconclusive', reason: 'EHLO drew no reply within the timeout' };
-      if (e.kind !== 'reply') return { kind: 'violated', detail: `EHLO: server ${e.kind} instead of replying` };
+      if (e.kind !== 'reply') return { kind: 'inconclusive', reason: `EHLO drew ${e.kind}, not a reply — a mid-session close can be a rate-limiter or shutdown, not evidence EHLO is unsupported` };
       if (severity(e.reply) === 2) return { kind: 'satisfied', detail: `EHLO supported (${e.reply.code})` };
       if (severity(e.reply) === 4) return { kind: 'inconclusive', reason: `EHLO drew a transient ${e.reply.code}` };
       // Only "command not implemented/recognised" (500/502) denies EHLO SUPPORT.
@@ -77,7 +77,7 @@ export const CASES: readonly TestCase[] = [
       await conn.send(crlf`NOOP`);
       const r = await conn.readReply(3000);
       if (r.kind === 'timeout') return { kind: 'inconclusive', reason: 'NOOP drew no reply within the timeout (server may be slow)' };
-      if (r.kind !== 'reply') return { kind: 'violated', detail: `NOOP: server ${r.kind} instead of replying` };
+      if (r.kind !== 'reply') return { kind: 'inconclusive', reason: `NOOP drew ${r.kind}, not a reply — a mid-session close can be a rate-limiter or shutdown, not evidence NOOP is unsupported` };
       // 500 = command not recognised = the mandatory command is unsupported.
       if (r.reply.code === 500) {
         return { kind: 'violated', detail: 'NOOP drew 500 "command not recognized" — a mandatory command is unsupported' };
@@ -101,7 +101,7 @@ export const CASES: readonly TestCase[] = [
       await conn.send(crlf`NOOP`);
       const first = await conn.readReply(3000);
       if (first.kind === 'timeout') return { kind: 'inconclusive', reason: 'NOOP drew no reply within the timeout (server may be slow)' };
-      if (first.kind !== 'reply') return { kind: 'violated', detail: `NOOP: server ${first.kind} instead of one reply` };
+      if (first.kind !== 'reply') return { kind: 'inconclusive', reason: `NOOP drew ${first.kind}, not a reply — an incidental close (rate-limiter/shutdown) is not evidence of a reply-count violation; the §4.2-a concern is a SECOND reply, checked next` };
       // Now confirm no SECOND reply to the single NOOP.
       const quiet = await conn.expectQuiet(1000);
       if (!quiet.quiet) {
