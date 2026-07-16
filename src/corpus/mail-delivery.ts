@@ -79,8 +79,12 @@ export const CASES: readonly TestCase[] = [
       'may reject after DATA or bounce asynchronously. So "the honest scoring is reject-or-' +
       'defer": a 5yz at RCPT OR a rejection after end-of-data is conformant. Only FULL synchronous ' +
       'acceptance of the declared-undeliverable recipient\'s message is the violation — and even ' +
-      'that a server could still bounce async, which this suite cannot see. The rejectedRecipient ' +
-      'fixture carries the operator\'s assertion that the server is configured to reject it.',
+      'that a server could still bounce async, which this suite cannot see — which is exactly why ' +
+      'the rejectedRecipient fixture CONTRACT (see fixture.ts) pins it to SYNCHRONOUS in-session ' +
+      'rejection: declaring the address asserts the server rejects it within the session, so full ' +
+      'end-of-data acceptance is either a real §3.3-i violation or an operator mis-declaration — ' +
+      'never a false accusation against a correctly-declared server (a deferring server is simply ' +
+      'left undeclared, yielding inconclusive).',
     needs: { fixture: ['rejectedRecipient'] },
     run: async (conn): Promise<Judgement> => {
       const bad = await greetEhloMail(conn);
@@ -104,7 +108,7 @@ export const CASES: readonly TestCase[] = [
       const final = await conn.readReply(5000);
       if (final.kind !== 'reply') return { kind: 'inconclusive', reason: `end-of-data: ${final.kind}` };
       if (severity(final.reply) === 2) {
-        return { kind: 'violated', detail: `server FULLY ACCEPTED (${final.reply.code}) a message for a declared-undeliverable recipient` };
+        return { kind: 'violated', detail: `server FULLY ACCEPTED (${final.reply.code}) a message for a recipient the fixture declares it rejects synchronously — no in-session rejection at RCPT, DATA, or end-of-data (§3.3-i; see the rejectedRecipient contract)` };
       }
       return { kind: 'satisfied', detail: `deferred rejection after body (${final.reply.code})` };
     },

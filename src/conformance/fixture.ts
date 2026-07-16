@@ -47,7 +47,16 @@ export interface Fixture {
 
   /** An address the server MUST accept as a deliverable local recipient. */
   readonly validRecipient?: string;
-  /** An address in a served domain that the server MUST reject (550/551/553). */
+  /**
+   * An address in a served domain that the server rejects SYNCHRONOUSLY, in-session
+   * — a 5yz at RCPT time or, at the latest, after end-of-data (550/551/553/554).
+   * CONTRACT: declaring this address asserts the server is configured to reject it
+   * within the SMTP session. It must NOT name an address the server accepts and then
+   * bounces asynchronously (a deferred-verification / anti-harvesting posture, which
+   * §3.3 permits): the out-of-band bounce is invisible to this suite, so such an
+   * address declared here would produce a spurious finding. If the server defers,
+   * leave this unset — the check then yields inconclusive, not a false accusation.
+   */
   readonly rejectedRecipient?: string;
   /** A domain the server is NOT authoritative for and will refuse to relay to. */
   readonly nonRelayDomain?: string;

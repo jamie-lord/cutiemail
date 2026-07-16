@@ -125,10 +125,19 @@ export const CASES: readonly TestCase[] = [
       const body = Buffer.from('col1\tcol2\x0bvtab', 'latin1'); // HT 0x09 and VT 0x0b
       const got = await deliverAndCapture(conn, conn.fixture.validRecipient!, dotStuff(body));
       if ('kind' in got) return got;
-      const hasHT = got.data.includes(0x09);
-      const hasVT = got.data.includes(0x0b);
+      // Check the BODY only, NOT the whole delivered message. A conformant relay
+      // prepends a Received: trace whose folded header continuations routinely
+      // contain a horizontal tab (0x09) — scanning the full message would let that
+      // trace tab MASK a genuine strip of the body's tab (a false negative). The
+      // body is everything after the first blank line (or the whole thing if the
+      // server inserted no header block).
+      const full = got.data.toString('latin1');
+      const sep = full.indexOf('\r\n\r\n');
+      const deliveredBody = sep >= 0 ? full.slice(sep + 4) : full;
+      const hasHT = deliveredBody.includes('\t');
+      const hasVT = deliveredBody.includes('\x0b');
       return hasHT && hasVT
-        ? { kind: 'satisfied', detail: 'horizontal and vertical tabs delivered intact' }
+        ? { kind: 'satisfied', detail: 'horizontal and vertical tabs delivered intact in the body' }
         : { kind: 'violated', detail: `delivered body dropped control characters (HT present: ${hasHT}, VT present: ${hasVT}) — §4.5.2 requires all characters be delivered` };
     },
   }),
@@ -144,15 +153,30 @@ export const CASES: readonly TestCase[] = [
       'mixed-case local-part and read the recipient back at the sink: a conformant server ' +
       'preserves "Mixed.Case"; one that lowercases it delivers "mixed.case". The domain is ' +
       'case-insensitive (§2.3.4) and not asserted.',
-    needs: { sink: true },
+    needs: { sink: true, fixture: ['validRecipient'] },
     run: async (conn): Promise<Judgement> => {
-      const recipient = 'Mixed.Case@example.com';
-      const got = await deliverAndCapture(conn, recipient, Buffer.from('body', 'latin1'));
+      // A mixed-case spelling of the DECLARED valid recipient, so the probe rides a
+      // recipient the server actually routes (its own domain) rather than a
+      // hardcoded example.com a relay-restricting server would 550 straight to
+      // inconclusive. Capitalise the local-part's first letter; if the fixture's
+      // local-part offers no letter to flip, we cannot construct a case variant and
+      // gate to inconclusive. Against a strictly case-SENSITIVE server that treats
+      // the variant as a different (unknown) mailbox, the capture is inconclusive,
+      // never a finding.
+      const vr = conn.fixture.validRecipient!;
+      const at = vr.lastIndexOf('@');
+      const local = vr.slice(0, at);
+      const domain = vr.slice(at);
+      const mixedLocal = local.charAt(0).toUpperCase() + local.slice(1);
+      if (mixedLocal === local) {
+        return { kind: 'inconclusive', reason: `validRecipient local-part "${local}" has no lowercase first letter to flip; cannot construct a case-variant probe` };
+      }
+      const got = await deliverAndCapture(conn, `${mixedLocal}${domain}`, Buffer.from('body', 'latin1'));
       if ('kind' in got) return got;
       const localParts = got.recipients.map((a) => a.slice(0, a.lastIndexOf('@')));
-      return localParts.includes('Mixed.Case')
-        ? { kind: 'satisfied', detail: 'recipient local-part case preserved on delivery' }
-        : { kind: 'violated', detail: `delivered recipient local-part(s) ${JSON.stringify(localParts)} did not preserve the sent "Mixed.Case" — the case was folded` };
+      return localParts.includes(mixedLocal)
+        ? { kind: 'satisfied', detail: `recipient local-part case preserved on delivery ("${mixedLocal}")` }
+        : { kind: 'violated', detail: `delivered recipient local-part(s) ${JSON.stringify(localParts)} did not preserve the sent "${mixedLocal}" — the case was folded` };
     },
   }),
 ];
