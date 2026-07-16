@@ -12,7 +12,8 @@
     "typecheck": "tsc --noEmit",
     "conformance": "node src/cli.ts",
     "coverage": "node src/cli.ts coverage",
-    "registry": "node -e \"import('./src/report/registry.ts').then(m => console.log(m.renderRegistrySummary(m.buildRegistrySummary())))\""
+    "registry": "node -e \"import('./src/report/registry.ts').then(m => console.log(m.renderRegistrySummary(m.buildRegistrySummary())))\"",
+    "library-coverage": "node -e \"import('./src/report/library-coverage.ts').then(m => console.log(m.renderLibraryCoverage(m.libraryCoverage())))\""
   },
   "bin": {
     "smtp-conformance": "src/cli.ts"

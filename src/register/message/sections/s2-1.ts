@@ -52,6 +52,14 @@ export const M_S2_1 = [
       'The soft line-length limit. Our generator SHOULD fold to <=78 for display ' +
       'friendliness; declining it is permitted latitude, never a fault. A parser ' +
       'imposes nothing here. Registered so the SHOULD is visibly accounted for.',
+    deliberatelyUncovered: {
+      reason:
+        'A generator-side SHOULD with no parser obligation: a line over 78 (but under ' +
+        'the 998 hard limit, R-5322-2.1.1-a) is permitted latitude, never a fault, so ' +
+        'the parser deliberately flags nothing. The generator will fold to <=78 when ' +
+        'it is built; there is nothing for the parser corpus to assert.',
+      date: '2026-07-16',
+    },
   },
   {
     id: 'R-5322-2.1-a',
