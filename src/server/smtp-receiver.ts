@@ -180,7 +180,15 @@ class Connection {
         continue;
       }
       const nl = this.#buf.indexOf(Buffer.from([CR, LF]));
-      if (nl === -1) break;
+      if (nl === -1) {
+        // An unterminated command line must not grow memory without bound. The
+        // §4.5.3.1.4 command-line floor is 512 octets; 64 KiB is a generous cap.
+        if (this.#buf.length > 65536) {
+          this.#write('500 5.5.2 command line too long');
+          this.#active.end();
+        }
+        break;
+      }
       const lineBytes = this.#buf.subarray(0, nl);
       const line = lineBytes.toString('latin1');
       this.#buf = this.#buf.subarray(nl + 2);

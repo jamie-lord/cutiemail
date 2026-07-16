@@ -70,6 +70,32 @@ test('IMAP survives a barrage of malformed commands and still serves a valid one
   }
 });
 
+test('an unterminated command line is bounded, not buffered without limit', async () => {
+  // IMAP: stream a huge line with no CRLF; the server must cut it off, not OOM.
+  const imap = await ImapServer.start(new MemoryCatalog(), { authenticate: () => true });
+  const ci = new Conn(net.connect(imap.port, '127.0.0.1'));
+  try {
+    await ci.waitFor('* OK');
+    const chunk = 'a1 LOGIN ' + 'x'.repeat(20000);
+    for (let i = 0; i < 5; i++) ci.send(chunk); // ~100 KB, no CRLF
+    await ci.waitFor('BAD command line too long');
+  } finally {
+    ci.sock.destroy();
+    await imap.close();
+  }
+  // SMTP: same.
+  const smtp = await SmtpReceiver.start(() => {}, { domain: 'mx.example.test' });
+  const cs = new Conn(net.connect(smtp.port, '127.0.0.1'));
+  try {
+    await cs.waitFor('ESMTP');
+    for (let i = 0; i < 5; i++) cs.send('X'.repeat(20000)); // ~100 KB, no CRLF
+    await cs.waitFor('500 5.5.2 command line too long');
+  } finally {
+    cs.sock.destroy();
+    await smtp.close();
+  }
+});
+
 test('SMTP survives malformed commands and still completes a valid transaction', async () => {
   const delivered: unknown[] = [];
   const server = await SmtpReceiver.start((m) => delivered.push(m), { domain: 'mx.example.test' });

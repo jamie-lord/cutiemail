@@ -361,7 +361,15 @@ export class ImapServer {
         }
 
         const nl = buf.indexOf(Buffer.from([0x0d, 0x0a]));
-        if (nl === -1) break;
+        if (nl === -1) {
+          // An unterminated command line must not buffer without bound. (Large
+          // payloads use APPEND literals, which are separately capped.)
+          if (buf.length > 65536) {
+            write(sock, '* BAD command line too long, closing connection');
+            sock.end();
+          }
+          break;
+        }
         const line = buf.subarray(0, nl).toString('latin1');
         buf = buf.subarray(nl + 2);
         debugLog(line);

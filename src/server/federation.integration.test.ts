@@ -106,8 +106,10 @@ test('two daemons: a submission to A is DKIM-signed, relayed, and lands in B, tr
     await sr.line('message stored\r\n');
     secure.end();
 
-    // Wait for B to receive the relayed message.
-    for (let i = 0; i < 400 && B.mailbox.messages.length === 0; i++) await delay(10);
+    // Wait for B to receive the relayed message. Generous budget: the relay does
+    // RSA signing + a TLS handshake, and the whole suite runs test files in
+    // parallel, so a tight window flakes under load.
+    for (let i = 0; i < 1500 && B.mailbox.messages.length === 0; i++) await delay(10);
     assert.equal(B.mailbox.messages.length, 1, 'B received the message A relayed');
 
     const arrived = B.mailbox.messages[0]!.raw.toString('latin1');
