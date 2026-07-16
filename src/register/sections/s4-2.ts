@@ -713,6 +713,11 @@ export const S4_2 = [
       'number of lines, so the bound we pick is ours, not the RFC\'s — report it ' +
       'as "no terminating line within N", not as an RFC violation of a limit that ' +
       'does not exist.',
+    deliberatelyUncovered: {
+      reason:
+        'the ONLY wire-observable failure of "a multiline reply must be terminable" is a reply whose continuation never ends — which reaches our reader as bytes that never frame, i.e. a TIMEOUT. The project\'s ironclad rule is timeout -> inconclusive, never a finding (§4.5.3.2 permits minutes; a slow server is not a broken one). Any standalone conviction here would therefore either convict on a timeout (forbidden) or desync silently, and the "no terminating line within N" bound is ours, not the RFC\'s. reply-structure.ts already records this as deliberate non-coverage in prose; this encodes it. The concretely-convictable multiline slices (same code per line, well-formed separator) live in R-5321-4.2.1-f / -i.',
+      date: '2026-07-16',
+    },
   },
   {
     id: 'R-5321-4.2.1-f',

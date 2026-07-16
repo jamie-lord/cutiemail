@@ -222,6 +222,11 @@ export const S2_1 = [
       'belong to §4.2 and §4.3.2, not to this ID. Needs a timing bound to ' +
       'assert "responds" (task #9): the failure mode is silence, which only a ' +
       'timeout distinguishes from slowness.',
+    deliberatelyUncovered: {
+      reason:
+        'the note\'s own conclusion: the sole failure mode of "responds to each command with a reply" is SILENCE (no reply), and silence is distinguishable from a slow-but-conformant server only by a timeout — which the suite treats as inconclusive, never a finding (§4.5.3.2). The positive "a reply arrives, of any class" is exercised continuously by every reply-bearing case, but cannot be turned into a negative control (a mutant that stays silent is indistinguishable from a slow server). Per-command code expectations live in §4.2/§4.3.2, not here.',
+      date: '2026-07-16',
+    },
   },
   {
     id: 'R-5321-2.1-h',

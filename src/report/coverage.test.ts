@@ -20,8 +20,12 @@ const noop = async (): Promise<Judgement> => ({ kind: 'satisfied' });
 
 // Pick real requirements of known kinds so the test tracks the actual register.
 const reqs = REQUIREMENTS as readonly RequirementDef[];
-const wireReq = reqs.find((r) => r.testability.kind === 'wire')!;
-const fixtureReq = reqs.find((r) => r.testability.kind === 'wire-with-fixture');
+// These fixtures drive stateOf through the test/mutant scenarios below, so they
+// must be requirements WITHOUT a deliberatelyUncovered decision — that field
+// short-circuits stateOf to 'deliberately-uncovered' before any test/mutant is
+// considered, which would make the scenario assertions meaningless.
+const wireReq = reqs.find((r) => r.testability.kind === 'wire' && r.deliberatelyUncovered === undefined)!;
+const fixtureReq = reqs.find((r) => r.testability.kind === 'wire-with-fixture' && r.deliberatelyUncovered === undefined);
 const notTestableReq = reqs.find((r) => r.testability.kind === 'not-testable')!;
 
 test('a wire requirement with a test but no mutant is test-only, not covered', () => {
