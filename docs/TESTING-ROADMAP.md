@@ -18,9 +18,17 @@ Mail) to **send and receive** real mail. The design ethos (see also `docs/decisi
 
 A server Thunderbird can fully use plays four network roles plus a deliverability layer:
 
-```
-Thunderbird ─submission(587)─▶ US ─delivery, we are the CLIENT(25)─▶ recipient MX
-recipient   ─inbound(25)──────▶ US ─store─▶ IMAP(993) ─▶ Thunderbird reads
+```mermaid
+flowchart LR
+    TB["Thunderbird"]
+    US["US<br/>our server"]
+    MX["recipient MX"]
+    SENDER["another sender"]
+
+    TB -->|"submission · 587"| US
+    US -->|"delivery, we are the SMTP client · 25"| MX
+    SENDER -->|"inbound · 25"| US
+    US -->|"store, then IMAP · 993"| TB
 ```
 
 Thunderbird never talks SMTP to the world; it submits to us, and *we* relay outward as an SMTP

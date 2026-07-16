@@ -15,14 +15,30 @@ corpus drives. There is no separate "test double" of the parser to drift from th
 real one — the corpus tests the code that ships. That is the whole design, and
 everything below is a consequence of it.
 
+```mermaid
+flowchart TB
+    ref["Reference implementations<br/>message/ · crypto/ · auth/ · imap/ · store/ · server/"]
+    ref --> daemon["main.ts<br/>the running daemon"]
+    ref --> sut["the system-under-test<br/>the corpus drives"]
+
+    register["register/<br/>verbatim RFC requirements"] --> corpus["corpus/ · conformance/<br/>cases + verdicts"]
+    mutant["testing/mutant-server<br/>switchable defects"] --> corpus
+    sut --> corpus
+
+    daemon -.->|"same code, two roles"| sut
+```
+
 ## Follow one message
 
 The fastest way to see the server is to trace a delivery, byte for byte. This is
 exactly what `src/server/daemon.integration.test.ts` does end to end.
 
-```
-another server ──SMTP──▶  SmtpReceiver ──▶ SqliteMailbox ──▶ ImapServer ──IMAPS──▶ Thunderbird
-  deliver.ts            smtp-receiver.ts    sqlite-mailbox.ts   imap-server.ts
+```mermaid
+flowchart LR
+    A["another server<br/>client/deliver.ts"] -->|SMTP| B["SmtpReceiver<br/>server/smtp-receiver.ts"]
+    B -->|append bytes| C[("SqliteMailbox<br/>store/sqlite-mailbox.ts")]
+    C -->|read BLOB| D["ImapServer<br/>server/imap-server.ts"]
+    D -->|IMAPS| E["Thunderbird"]
 ```
 
 1. A sending MTA (in tests, our own `src/client/deliver.ts`) opens a socket and
@@ -48,6 +64,18 @@ approximately-exact.
 
 Each layer depends only on the ones above it in this list. You can read them in
 this order and never look forward.
+
+```mermaid
+flowchart TB
+    main["main.ts — the daemon"] --> net["server/ + client/ — live net/tls sockets"]
+    net --> store["store/ — SQLite persistence"]
+    net --> proto["protocol reference impls<br/>message/ · crypto/ · auth/ · imap/ · smtp/ · transport/"]
+    store --> proto
+    store --> wire["wire/ — octet primitives"]
+    proto --> wire
+```
+
+*(arrows are "depends on" — the daemon at the top, octets at the foundation.)*
 
 **`wire/`** — octet primitives. `bytes.ts` builds exact wire input (`crlf`, `lf`,
 `bare` are different functions on purpose, so a bare-LF smuggling probe reads as
@@ -91,6 +119,15 @@ want to know what "the server" *is*, it is this file and the four modules it wir
 
 A conformance suite that reports all-green against a broken server is worse than
 none. Four moving parts stop that from happening.
+
+```mermaid
+flowchart LR
+    register["register/<br/>verbatim RFC requirements<br/>(the denominator)"] --> corpus["corpus/<br/>cases citing requirement IDs"]
+    corpus --> runner["conformance/<br/>runner + central outcome"]
+    mutant["testing/mutant-server<br/>one defect at a time"] -->|must be caught by| corpus
+    runner --> report["report/<br/>self-audit: no silent gaps"]
+    spec[("spec/*.txt<br/>vendored RFCs")] -->|gate.ts verifies<br/>every quote| register
+```
 
 **`register/` — the denominator.** Every normative statement, quoted *verbatim*
 from a vendored RFC, with its RFC 2119 level, the party it binds (server / client /
