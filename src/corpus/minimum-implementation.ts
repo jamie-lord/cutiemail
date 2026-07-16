@@ -30,7 +30,7 @@ export const CASES: readonly TestCase[] = [
   testCase({
     id: 'ehlo-is-supported',
     requirement: 'R-5321-2.2.1-b',
-    alsoTouches: ['R-5321-4.5.1-b'],
+    alsoTouches: ['R-5321-4.5.1-b', 'R-5321-4.1.1.1-f'],
     intent: 'the server supports EHLO even if it implements no extensions',
     rationale:
       '§2.2.1: "servers MUST support the EHLO command even if they do not implement any ' +
@@ -175,7 +175,17 @@ export const CASES: readonly TestCase[] = [
 ];
 
 export const MUTANTS: readonly Mutant[] = [
-  { catches: 'ehlo-is-supported', defect: 'rejectEhlo', why: 'a 500 to EHLO violates R-5321-2.2.1-b (servers MUST support EHLO)' },
+  {
+    catches: 'ehlo-is-supported',
+    defect: 'rejectEhlo',
+    why: 'a 500 to EHLO violates R-5321-2.2.1-b (servers MUST support EHLO)',
+    alsoProves: [
+      {
+        requirement: 'R-5321-4.1.1.1-f',
+        why: '§4.1.1.1: not supporting SMTP service extensions "in violation of this specification" — read by the register as "a server MUST support EHLO"; a 500/502 refusal of the verb (this defect) is the exact violation',
+      },
+    ],
+  },
   {
     catches: 'noop-is-recognised',
     defect: 'unrecognizedNoop',

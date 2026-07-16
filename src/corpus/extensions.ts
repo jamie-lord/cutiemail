@@ -34,6 +34,7 @@ export const CASES: readonly TestCase[] = [
   testCase({
     id: 'helo-is-supported',
     requirement: 'R-5321-4.1.1.1-h',
+    alsoTouches: ['R-5321-2.2.1-d'],
     intent: 'the server supports HELO and replies with a 2yz',
     rationale:
       '§4.1.1.1: "servers MUST support the HELO command and reply properly to it." HELO is ' +
@@ -206,6 +207,12 @@ export const MUTANTS: readonly Mutant[] = [
     catches: 'helo-is-supported',
     defect: 'rejectHelo',
     why: 'refusing HELO violates R-5321-4.1.1.1-h (servers MUST support HELO)',
+    alsoProves: [
+      {
+        requirement: 'R-5321-2.2.1-d',
+        why: '§2.2.1: "clients and servers MUST support the original HELO mechanisms as a fallback" — the observable server half is exactly "HELO understood", and a 502 (the register note\'s named clean violation, which this defect emits) is the failure',
+      },
+    ],
   },
   {
     catches: 'advertised-starttls-is-honoured',

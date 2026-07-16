@@ -135,7 +135,7 @@ export const CASES: readonly TestCase[] = [
   testCase({
     id: 'reply-is-crlf-framed',
     requirement: 'R-5321-4.2-d',
-    alsoTouches: ['R-5321-4.2-i'],
+    alsoTouches: ['R-5321-4.2-i', 'R-5321-2.3.7-b'],
     intent: 'each reply line is terminated by <CRLF>, never a bare LF or bare CR',
     rationale:
       '§4.2: "Formally, a reply is defined to be the sequence: a three-digit code, ' +
@@ -209,6 +209,37 @@ export const CASES: readonly TestCase[] = [
         : { kind: 'satisfied', detail: `multiline reply(s) carry one code on every line (${multiline.map((m) => m.label).join(', ')})` };
     },
   }),
+
+  testCase({
+    id: 'reply-line-within-512',
+    requirement: 'R-5321-4.5.3.1.5-a',
+    intent: 'every reply line the server sends is at most 512 octets including the CRLF',
+    rationale:
+      '§4.5.3.1.5: "The maximum total length of a reply line including the reply code and the ' +
+      '<CRLF> is 512 octets." A generation constraint on the server, passively assertable over ' +
+      'every reply we read. The register note is candid that this is "cheap but weak" — normal ' +
+      'replies are short, so absence of a violation is not proof of compliance — but an observed ' +
+      'over-length line IS a clean violation. Measures each line as its bytes on the wire: the ' +
+      'three code octets, the separator (if any), the text, and the terminator.',
+    run: async (conn): Promise<Judgement> => {
+      const c = await collectReplies(conn);
+      if (!('replies' in c)) return c;
+      const offenders: string[] = [];
+      for (const { label, reply } of c.replies) {
+        reply.lines.forEach((line, i) => {
+          const octets =
+            line.codeBytes.length +
+            (line.separator === '' ? 0 : 1) +
+            line.text.length +
+            (line.terminator === 'crlf' ? 2 : 1);
+          if (octets > 512) offenders.push(`${label} line ${i + 1}: ${octets} octets`);
+        });
+      }
+      return offenders.length > 0
+        ? { kind: 'violated', detail: `reply line exceeds the 512-octet maximum: ${offenders.join('; ')}` }
+        : { kind: 'satisfied', detail: 'every reply line observed is within 512 octets' };
+    },
+  }),
 ];
 
 export const MUTANTS: readonly Mutant[] = [
@@ -218,9 +249,20 @@ export const MUTANTS: readonly Mutant[] = [
     why: 'an 8-bit octet in reply text violates the 7-bit textstring ABNF of §4.2 (R-5321-4.2-h)',
   },
   {
+    catches: 'reply-line-within-512',
+    defect: 'overlongReplyLine',
+    why: 'a reply line longer than 512 octets violates R-5321-4.5.3.1.5-a',
+  },
+  {
     catches: 'reply-is-crlf-framed',
     defect: 'bareLfReplyTerminator',
     why: 'a reply line ended by a bare LF is not the <CRLF>-terminated line §4.2 defines (R-5321-4.2-d)',
+    alsoProves: [
+      {
+        requirement: 'R-5321-2.3.7-b',
+        why: '§2.3.7 defines a reply as sent in "lines" — the register note reads its testable half as "every reply is CRLF-terminated"; a bare-LF-terminated reply (this defect) violates exactly that framing obligation',
+      },
+    ],
   },
   {
     // Single-line malformation (250= on the NOOP path). Proves only the primary

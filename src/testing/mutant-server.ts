@@ -109,6 +109,11 @@ export interface Defects {
   /** Use '=' instead of SP as the reply code separator. Violates R-5321-4.2-i. */
   readonly malformedReplySeparator?: boolean;
   /**
+   * Emit a reply LINE longer than 512 octets (code + ~600 octets of text + CRLF).
+   * Violates R-5321-4.5.3.1.5-a (max reply line incl. CRLF is 512 octets).
+   */
+  readonly overlongReplyLine?: boolean;
+  /**
    * Emit the FINAL line of the multiline EHLO with "=" instead of the required
    * <SP> separator. A genuine multiline-FORMAT violation (R-5321-4.2.1-f), distinct
    * from the single-line malformedReplySeparator above.
@@ -528,6 +533,7 @@ export class MutantServer {
       if (d.eightBitReplyText) return this.#write(sock, Buffer.concat([Buffer.from(`${code} `), Buffer.from([0xe9]), Buffer.from([CR, LF])]));
       if (d.bareLfReplyTerminator) return this.#write(sock, Buffer.concat([Buffer.from(`${code} ${msg}`, 'latin1'), Buffer.from([LF])]));
       if (d.malformedReplySeparator) return this.#write(sock, crlf`${String(code)}=${msg}`);
+      if (d.overlongReplyLine) return this.#write(sock, crlf`${String(code)} ${'x'.repeat(600)}`);
       this.#write(sock, crlf`${String(code)} ${msg}`);
     };
 
