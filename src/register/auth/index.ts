@@ -14,19 +14,21 @@ import { SCRAM } from './sections/scram.ts';
 import { SCRAM_MESSAGES } from './sections/scram-messages.ts';
 import { ARC } from './sections/arc.ts';
 import { SMTP_AUTH } from './sections/smtp-auth.ts';
+import { SCRAM_STORAGE } from './sections/scram-storage.ts';
 
 /**
  * Sections extracted so far, across SPF (RFC 7208), DMARC (RFC 7489), SCRAM
  * (RFC 5802 §3/§5.1) and ARC (RFC 8617 §5.2). Each id carries its RFC, so there is
  * no collision between the numbering spaces.
  */
-export const EXTRACTED_SECTIONS: readonly string[] = ['3', '3.1.1', '4', '4.5', '4.6.2', '5.1', '5.2', '6.3'];
+export const EXTRACTED_SECTIONS: readonly string[] = ['1', '3', '3.1.1', '4', '4.5', '4.6.2', '5.1', '5.2', '6.3'];
 
 export const AUTH_REQUIREMENTS = [
   ...SPF_RECORD,
   ...DMARC,
   ...SCRAM,
   ...SCRAM_MESSAGES,
+  ...SCRAM_STORAGE,
   ...ARC,
   ...SMTP_AUTH,
 ] as const satisfies readonly RequirementDef[];
