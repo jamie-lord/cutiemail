@@ -87,17 +87,39 @@ for (const [profile, defects] of [
 // false-positive class: a test that convicts a 530 "understood but refused on
 // policy" reply (the rset-returns-250 over-narrow was one such regression) would
 // light up here against the whole corpus, not just its own negative control.
-test('a TLS-required server answering 530 to non-exempt commands produces zero non-conformant results', async () => {
-  const run = await runAgainst('tls-required', { tlsRequired530: true });
-  const findings = run.results.filter((r) => r.outcome === 'non-conformant');
-  assert.equal(
-    findings.length,
-    0,
-    `a conformant TLS-required (530) server must produce no findings — a 530 is a policy refusal, never a MUST violation. Got: ${findings
-      .map((f) => `${f.requirementId}(${f.testId})`)
-      .join(', ')}`,
-  );
-});
+// Each of these is a CONFORMANT server posture that a naive corpus would
+// false-positive — and each corresponds to a false-positive class the suite's
+// history actually hit and fixed. Codifying them as whole-corpus zero-finding
+// invariants means a future regression that re-convicts any of these postures
+// lights up HERE (against all 68 cases), not merely in one test's own control:
+//   - tlsRequired530: 530 to non-exempt commands (RFC 3207 policy) — the class the
+//     rset-returns-250 over-narrow was in.
+//   - rejectBareLf: a smuggling-hardened server that REJECTS a bare LF — the exact
+//     Postfix-hardened posture finding #29 was about; the suite must bless it.
+//   - multilineProseHelo: a multiline PROSE banner to HELO (no extension keywords),
+//     which is NOT the forbidden EHLO-style response — the HELO-prose FP class.
+//   - greetingAddressLiteral: a "220 [192.0.2.1]" greeting (address-literal identity
+//     is a SHOULD-NOT decline, never a MUST finding).
+//   - vrfy503BeforeGreeting: 503 to VRFY before EHLO (a permitted sequencing choice).
+for (const [posture, defects] of [
+  ['tls-required-530', { tlsRequired530: true }],
+  ['rejects-bare-lf', { rejectBareLf: true }],
+  ['multiline-prose-helo', { multilineProseHelo: true }],
+  ['address-literal-greeting', { greetingAddressLiteral: true }],
+  ['vrfy-503-before-greeting', { vrfy503BeforeGreeting: true }],
+] as const) {
+  test(`a conformant "${posture}" server produces zero non-conformant results across the whole corpus`, async () => {
+    const run = await runAgainst(posture, defects);
+    const findings = run.results.filter((r) => r.outcome === 'non-conformant');
+    assert.equal(
+      findings.length,
+      0,
+      `the conformant "${posture}" posture must produce no findings, got: ${findings
+        .map((f) => `${f.requirementId}(${f.testId})`)
+        .join(', ')}`,
+    );
+  });
+}
 
 test('the matrix surfaces a divergence where a broken server differs from a clean one', async () => {
   // honourBareLf makes the server EXECUTE a bare-LF command — a smuggling
