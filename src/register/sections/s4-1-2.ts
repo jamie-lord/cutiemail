@@ -402,7 +402,14 @@ export const S4_1_2 = [
       'advertises it. ' +
       'Also note the scope: "invalid character codes" is not defined here, and ' +
       'inherits from -i/-j (non-ASCII and controls in mailbox names) and -l/-m ' +
-      '(non-LDH in domain labels). Those are the character sets to probe.',
+      '(non-LDH in domain labels). Those are the character sets to probe. ' +
+      'CALIBRATION WATCH-ITEM (task #23): the exact-501 assertion is the single ' +
+      'place in the corpus most likely to fire against a mainstream server — some ' +
+      'Postfix builds emit 500 (not 501) for a control-octet syntax error. If it ' +
+      'reds a triaged-conformant Postfix/Exim, that is a divergence to RECORD (the ' +
+      'server departs from the exact-501 MUST), and the open question is whether to ' +
+      'weaken THIS register entry to 5yz-class — NOT evidence the test is wrong. ' +
+      'Left faithful to the RFC text until a real server forces the call.',
   },
 
   {
