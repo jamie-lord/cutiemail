@@ -106,14 +106,18 @@ reproduce the reference behaviour exactly, not merely to look similar.
 
 **`server/` + `client/`** — the live network layer. `smtp-receiver.ts` and
 `imap-server.ts` are real `net`/`tls` servers that mount the reference
-implementations on sockets. `client/deliver.ts` is the sending half; `client/mx.ts`
-resolves MX hosts. These are thin: they move bytes between a socket and a
-reference engine and own no protocol logic of their own.
+implementations on sockets. `client/deliver.ts` is the sending half and
+`client/mx.ts` resolves MX hosts; `server/outbound.ts` is the loop that joins them
+— it snapshots real DNS into the tested MX ordering and relays a remote recipient's
+mail onward. These are thin: they move bytes between a socket and a reference
+engine and own no protocol logic of their own.
 
-**`main.ts`** — the daemon. ~120 lines that open the database, seed accounts, and
-start three listeners (inbound SMTP, submission-with-AUTH, IMAPS). `startServer()`
-is factored out from `main()` so the whole assembly is itself under test. If you
-want to know what "the server" *is*, it is this file and the four modules it wires.
+**`main.ts`** — the daemon. Opens the database, seeds accounts, and starts three
+listeners (inbound SMTP, submission-with-AUTH, IMAPS). Inbound mail is stored;
+submitted mail is split by `routeRecipients` — local recipients into the mailbox,
+remote ones handed to `server/outbound.ts` for relay. `startServer()` is factored
+out from `main()` so the whole assembly is itself under test. If you want to know
+what "the server" *is*, it is this file and the modules it wires.
 
 ## The test bed, and why it can be trusted
 

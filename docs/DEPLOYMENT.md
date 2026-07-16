@@ -1,0 +1,185 @@
+# Deploying to a small server and using it with real email
+
+This is the walkthrough for the thing the project is now capable of: put the
+daemon on a little Linux box, point DNS at it, and send mail to and receive mail
+from your existing inbox (Gmail, Fastmail, whatever) through a single account.
+
+It is a **test bench, not a production MTA** — naive on purpose (see
+[Known limitations](#known-limitations)). The point is to get it into the real
+world so its gaps show up against real senders and receivers instead of a test
+harness.
+
+## The shape of it
+
+```mermaid
+flowchart LR
+    GMAIL["your existing inbox<br/>(Gmail)"]
+    subgraph BOX["your Linux box · mail.example.com"]
+        DAEMON["the daemon<br/>src/main.ts"]
+        DB[("SQLite<br/>mail.db")]
+        DAEMON --- DB
+    end
+    CLIENT["a mail client<br/>(Thunderbird / your phone)"]
+
+    GMAIL -->|"SMTP to your MX · 25"| DAEMON
+    DAEMON -->|"relay to Gmail's MX · 25"| GMAIL
+    CLIENT -->|"submit · 587 AUTH"| DAEMON
+    CLIENT -->|"read · 993 IMAPS"| DAEMON
+```
+
+One box runs the daemon. Your existing inbox is the far end. A mail client
+(Thunderbird on a laptop, or your phone's mail app) talks to the daemon on 587 to
+send and 993 to read — the daemon is *your* server; it does the talking to Gmail.
+
+## What you need
+
+- A small Linux server with a **public, static IP** and **port 25 reachable both
+  ways**. Many home ISPs and some cheap VPS providers block port 25 — check
+  first, because without it you can neither receive nor relay.
+- A domain you control DNS for. This guide uses `mail.example.com` as both the
+  hostname and the mail domain (so your address is `you@mail.example.com`) — that
+  keeps every name consistent, which matters for deliverability. See the
+  [double-duty note](#known-limitations) on why one name is used for both.
+- Node ≥ 22.18 on the box. No build, no dependencies — copy the repo and run it.
+
+## DNS
+
+Four records. The A and MX get mail flowing; the PTR and SPF are what stop Gmail
+from rejecting what you send.
+
+| Record | Name | Value | Why |
+|---|---|---|---|
+| **A** | `mail.example.com` | your server's IP | where the host lives |
+| **MX** | `mail.example.com` | `10 mail.example.com` | tells senders to deliver here |
+| **PTR** (reverse DNS) | your IP | `mail.example.com` | set at your VPS provider; Gmail checks the connecting IP resolves back to its HELO name |
+| **TXT (SPF)** | `mail.example.com` | `v=spf1 a -all` | authorises *this host's* IP to send for the domain |
+
+`v=spf1 a -all` means "the domain's A record is a legitimate sender, nothing else
+is." That plus a matching PTR is the minimum for a single personal message to be
+accepted by Gmail. It will likely land in **spam** at first — DKIM is what moves
+it reliably to the inbox, and DKIM is the [next increment](#known-limitations),
+not built yet.
+
+## Running it
+
+The daemon is configured entirely by environment variables:
+
+| Variable | For a real deployment |
+|---|---|
+| `MAIL_DOMAIN` | `mail.example.com` — your hostname *and* mail domain |
+| `MAIL_DB` | `/var/lib/mailserver/mail.db` — a durable path, not `:memory:` |
+| `MAIL_HOST` | `0.0.0.0` — bind all interfaces, not just loopback |
+| `MAIL_SMTP_PORT` / `MAIL_SUBMISSION_PORT` / `MAIL_IMAP_PORT` | `25` / `587` / `993` |
+| `MAIL_USER` / `MAIL_PASS` | your single account, e.g. `you` / a real passphrase |
+| `MAIL_TLS_CERT` / `MAIL_TLS_KEY` | paths to a real certificate (Let's Encrypt) |
+
+Ports 25/587/993 are privileged (< 1024), so the process needs the capability to
+bind them. The clean way is a systemd unit that grants exactly that and nothing
+else — no running as root:
+
+```ini
+# /etc/systemd/system/mailserver.service
+[Unit]
+Description=mail server
+After=network.target
+
+[Service]
+Type=simple
+User=mail
+WorkingDirectory=/opt/mailserver
+ExecStart=/usr/bin/node src/main.ts
+Environment=MAIL_DOMAIN=mail.example.com
+Environment=MAIL_HOST=0.0.0.0
+Environment=MAIL_DB=/var/lib/mailserver/mail.db
+Environment=MAIL_SMTP_PORT=25 MAIL_SUBMISSION_PORT=587 MAIL_IMAP_PORT=993
+Environment=MAIL_USER=you MAIL_PASS=change-this-passphrase
+Environment=MAIL_TLS_CERT=/etc/letsencrypt/live/mail.example.com/fullchain.pem
+Environment=MAIL_TLS_KEY=/etc/letsencrypt/live/mail.example.com/privkey.pem
+# Bind privileged ports without root:
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+Restart=on-failure
+
+[Install]
+WantedBy=multi-user.target
+```
+
+`systemctl enable --now mailserver`, then `journalctl -fu mailserver` to watch it
+— including the `relay <addr>: sent/FAILED` lines, which are your only feedback on
+outbound delivery right now (there is no retry queue; a failed relay is logged and
+dropped).
+
+## Pointing your mail client at it
+
+In Thunderbird (or any client), add an account for `you@mail.example.com`:
+
+- **Incoming — IMAP:** `mail.example.com`, port `993`, SSL/TLS, your username +
+  password.
+- **Outgoing — SMTP:** `mail.example.com`, port `587`, STARTTLS, *same* username +
+  password (auth required).
+
+If you're using the bundled self-signed dev cert, the client will warn about the
+certificate — fine for a test, but a real Let's Encrypt cert avoids it and is what
+outside senders' opportunistic TLS expects.
+
+## What actually happens on send and receive
+
+Receiving — someone at Gmail emails `you@mail.example.com`:
+
+```mermaid
+sequenceDiagram
+    participant G as Gmail
+    participant D as daemon (port 25)
+    participant DB as SQLite
+    participant C as your client (IMAP)
+    G->>D: looks up your MX, connects, delivers
+    D->>DB: append message (byte-exact BLOB)
+    C->>DB: SELECT INBOX, FETCH
+    DB-->>C: the message, unchanged
+```
+
+Sending — you compose in Thunderbird to a Gmail address:
+
+```mermaid
+sequenceDiagram
+    participant C as your client
+    participant D as daemon (port 587)
+    participant DNS as DNS
+    participant M as Gmail's MX
+    C->>D: STARTTLS, AUTH, MAIL/RCPT/DATA
+    D-->>C: 250 accepted
+    Note over D: recipient is remote → relay
+    D->>DNS: MX of gmail.com?
+    DNS-->>D: gmail-smtp-in.l.google.com ...
+    D->>M: connect :25, deliver
+    M-->>D: 250 (or a rejection you'll see in the log)
+```
+
+Both paths are the real code — the same `smtp-receiver`, `sqlite-mailbox`,
+`imap-server`, and the new `outbound` relay that `daemon.integration.test.ts` and
+`outbound.integration.test.ts` exercise end to end.
+
+## Known limitations
+
+These are deliberate, recorded, and roughly in priority order for closing:
+
+- **No DKIM signing on outbound yet.** The crypto is built and tested
+  (`src/crypto/dkim-*`), just not wired into the send path. Until it is, expect
+  Gmail to accept-but-spam-folder what you send. This is the highest-value next
+  step for "it actually works."
+- **No retry queue.** A relay that fails (recipient server down, greylisted with a
+  `4xx`) is logged and dropped — it is *not* retried. Greylisting is common, so a
+  first send may just vanish; try again. `src/store/queue.ts` has the retry
+  semantics; wiring it to persist and re-run is the next increment after DKIM.
+- **One shared mailbox, accepts every recipient.** Inbound mail for *any* address
+  lands in the single account's mailbox; there is no per-user routing and no
+  rejection of unknown recipients. Exactly the naive single-account behaviour you
+  asked for — fine for a test, not multi-user.
+- **`MAIL_DOMAIN` does double duty** as both the SMTP greeting/HELO name and the
+  local mail domain. That's why this guide uses one name for host and domain
+  (`you@mail.example.com`): a split like greeting `mail.example.com` + addresses
+  `you@example.com` isn't separable yet.
+- **No outbound STARTTLS.** Relay to a recipient MX is plaintext on port 25.
+  Receivers accept it, but the connection isn't encrypted. Opportunistic STARTTLS
+  on the client side is a later increment.
+- **Not security-hardened.** No rate limiting, no spam filtering, no fail2ban-style
+  protection. Don't put anything you care about behind it yet.

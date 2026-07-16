@@ -22,7 +22,11 @@ npm start                # launches the daemon with dev-friendly defaults
 ```
 
 It opens the database and starts three listeners: inbound SMTP, submission SMTP (SASL PLAIN AUTH
-over TLS), and IMAPS. Configuration is by environment variable:
+over TLS), and IMAPS. Mail submitted for a remote recipient is relayed onward to that recipient's
+MX, so it will send to and receive from the real internet — enough to deploy on a small box and
+test against your own inbox. [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) is the DNS + systemd +
+client walkthrough (and the honest list of what's still naive — no DKIM signing or retry queue
+yet). Configuration is by environment variable:
 
 | Variable | Default | Meaning |
 |---|---|---|
@@ -34,9 +38,10 @@ over TLS), and IMAPS. Configuration is by environment variable:
 
 The daemon (`src/main.ts`) is thin glue over pieces built and validated separately: the SMTP
 receiver, the IMAP server, the `node:sqlite` mailbox, the SCRAM account store, the DKIM/SCRAM
-crypto. Thirteen `*.integration.test.ts` files drive the assembled server over real sockets —
+crypto. Fourteen `*.integration.test.ts` files drive the assembled server over real sockets —
 including a full deliver → store → read round-trip, STARTTLS with the command-injection defence,
-submission AUTH, DKIM sign-verify, durability across restart, and the daemon itself.
+submission AUTH, outbound relay to a recipient MX, DKIM sign-verify, durability across restart,
+and the daemon itself.
 
 How the whole thing fits together — the layers, and how the runnable server and the conformance
 test bed share one spine — is written up in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md). Start

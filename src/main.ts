@@ -20,7 +20,9 @@ import { readFileSync } from 'node:fs';
 import { SqliteMailbox } from './store/sqlite-mailbox.ts';
 import { AccountStore } from './store/accounts.ts';
 import { SmtpReceiver } from './server/smtp-receiver.ts';
+import type { DeliveredMessage } from './server/smtp-receiver.ts';
 import { ImapServer } from './server/imap-server.ts';
+import { relayOutbound, routeRecipients, type OutboundOptions } from './server/outbound.ts';
 // Bundled self-signed certificate — local development default only.
 import { TEST_CERT as DEV_CERT, TEST_KEY as DEV_KEY } from './testing/tls-test-cert.ts';
 
@@ -33,6 +35,16 @@ export interface MailServerConfig {
   readonly domain: string;
   readonly accounts: ReadonlyArray<{ readonly user: string; readonly pass: string }>;
   readonly tls: { readonly key: string; readonly cert: string };
+  /**
+   * Override outbound relay's DNS/port — used by tests to point delivery at a
+   * capture server. Production leaves it unset (real DNS, port 25).
+   */
+  readonly outbound?: {
+    readonly resolveHosts?: (domain: string) => Promise<readonly string[]>;
+    readonly port?: number;
+  };
+  /** Where to report runtime events (relay outcomes). Unset = silent. */
+  readonly onEvent?: (line: string) => void;
 }
 
 export interface RunningServer {
@@ -52,10 +64,37 @@ export async function startServer(cfg: MailServerConfig): Promise<RunningServer>
   for (const a of cfg.accounts) accounts.setPassword(a.user, a.pass, randomBytes(16), 4096, 'sha256');
   const verify = (user: string, pass: string): boolean => accounts.verifyPassword(user, pass);
 
-  const store = (m: { data: Buffer }): void => void mailbox.append(m.data);
+  const log = cfg.onEvent ?? ((): void => {});
+  const storeLocal = (data: Buffer): void => void mailbox.append(data);
 
-  const inbound = await SmtpReceiver.start(store, { domain: cfg.domain, tls: cfg.tls, host: cfg.host, port: cfg.smtpPort });
-  const submission = await SmtpReceiver.start(store, {
+  // Inbound (port 25): mail arriving for us — store it, no relay.
+  const inbound = await SmtpReceiver.start((m) => storeLocal(m.data), {
+    domain: cfg.domain,
+    tls: cfg.tls,
+    host: cfg.host,
+    port: cfg.smtpPort,
+  });
+
+  // Submission (port 587, authenticated): our user sending out. Local recipients
+  // land in the mailbox; remote ones are relayed to their MX (best-effort, logged).
+  const outboundOpts: OutboundOptions = {
+    clientName: cfg.domain,
+    log,
+    ...(cfg.outbound?.resolveHosts ? { resolveHosts: cfg.outbound.resolveHosts } : {}),
+    ...(cfg.outbound?.port !== undefined ? { port: cfg.outbound.port } : {}),
+  };
+  const submissionHandler = (m: DeliveredMessage): void => {
+    const { local, remote } = routeRecipients(m.recipients, cfg.domain);
+    if (local.length > 0) storeLocal(m.data);
+    if (remote.length > 0) {
+      void relayOutbound({ ...m, recipients: remote }, outboundOpts)
+        .then((results) => {
+          for (const r of results) log(`relay ${r.recipient}: ${r.ok ? 'sent' : 'FAILED'} — ${r.detail}`);
+        })
+        .catch((e: unknown) => log(`relay error: ${String(e)}`));
+    }
+  };
+  const submission = await SmtpReceiver.start(submissionHandler, {
     domain: cfg.domain,
     tls: cfg.tls,
     requireAuth: true,
@@ -106,15 +145,16 @@ function loadDevCert(): { key: string; cert: string } {
 
 async function main(): Promise<void> {
   const cfg = configFromEnv();
-  const server = await startServer(cfg);
   const log = (s: string): void => {
     process.stdout.write(`${s}\n`);
   };
+  const server = await startServer({ ...cfg, onEvent: log });
   log(`mail server "${cfg.domain}" started (db: ${cfg.dbPath})`);
   log(`  inbound SMTP     ${cfg.host}:${server.inbound.port}`);
   log(`  submission (AUTH) ${cfg.host}:${server.submission.port}`);
   log(`  IMAPS            ${cfg.host}:${server.imap.port}`);
   log(`  accounts: ${cfg.accounts.map((a) => a.user).join(', ')}`);
+  log('  outbound: remote mail is relayed to its MX (best-effort, no retry queue yet).');
   if (cfg.usingDevCert) log('  NOTE: using the bundled self-signed DEV certificate — set MAIL_TLS_CERT/MAIL_TLS_KEY in production.');
   const shutdown = (): void => {
     log('shutting down...');
