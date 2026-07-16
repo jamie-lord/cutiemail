@@ -30,27 +30,54 @@ export function hashAlgoOf(sig: DkimSignature): HashAlgo {
   return a.endsWith('sha1') ? 'sha1' : 'sha256';
 }
 
-/** Canonicalize `body` per `canon` and return the base64 digest under `algo`. */
-export function computeBodyHash(body: Buffer, canon: BodyCanon, algo: HashAlgo): string {
+/**
+ * Canonicalize `body` per `canon` and return the base64 digest under `algo`. If
+ * `lengthLimit` is given (the "l=" tag), only the first that-many octets of the
+ * canonicalized body are hashed — and everything after them is unsigned.
+ */
+export function computeBodyHash(body: Buffer, canon: BodyCanon, algo: HashAlgo, lengthLimit?: number): string {
   const canonicalized = canon === 'relaxed' ? relaxedBody(body) : simpleBody(body);
-  return createHash(algo).update(canonicalized).digest('base64');
+  const hashed = lengthLimit === undefined ? canonicalized : canonicalized.subarray(0, lengthLimit);
+  return createHash(algo).update(hashed).digest('base64');
+}
+
+/** The canonicalized-body length under a signature's body canon mode. */
+export function canonicalizedBodyLength(body: Buffer, canon: BodyCanon): number {
+  return (canon === 'relaxed' ? relaxedBody(body) : simpleBody(body)).length;
 }
 
 export interface BodyHashDefects {
   /** Accept a body-hash mismatch instead of failing. Violates R-6376-3.7-a. */
   readonly skipBodyHashCheck?: boolean;
+  /** Accept an "l=" larger than the canonicalized body. Violates R-6376-3.5-d. */
+  readonly acceptOverlongL?: boolean;
 }
 
 export interface BodyHashResult {
   readonly ok: boolean;
   readonly computed: string;
   readonly expected: string | null;
+  /** False when the "l=" tag was larger than the body (R-6376-3.5-d). */
+  readonly lengthValid: boolean;
 }
 
-/** Verify a message body against a parsed signature's "bh=" tag. */
+/** Verify a message body against a parsed signature's "bh=" tag, honouring "l=". */
 export function verifyBodyHash(body: Buffer, sig: DkimSignature, defects: BodyHashDefects = {}): BodyHashResult {
-  const computed = computeBodyHash(body, bodyCanonOf(sig), hashAlgoOf(sig));
+  const canon = bodyCanonOf(sig);
+  const lRaw = sig.tags.get('l');
+  const l = lRaw === undefined ? undefined : Number(lRaw);
+
+  // R-6376-3.5-d: l= must not exceed the actual canonicalized body length.
+  let lengthValid = true;
+  if (l !== undefined) {
+    const bodyLen = canonicalizedBodyLength(body, canon);
+    if (!Number.isInteger(l) || l < 0 || l > bodyLen) {
+      lengthValid = defects.acceptOverlongL === true;
+    }
+  }
+
+  const computed = computeBodyHash(body, canon, hashAlgoOf(sig), l);
   const expected = sig.bodyHash;
-  const ok = defects.skipBodyHashCheck === true ? true : computed === expected;
-  return { ok, computed, expected };
+  const hashOk = defects.skipBodyHashCheck === true ? true : computed === expected;
+  return { ok: hashOk && lengthValid, computed, expected, lengthValid };
 }

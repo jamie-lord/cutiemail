@@ -65,4 +65,24 @@ export const DKIM_SIGNATURE = [
       'acceptMissingRequiredTag defect (tolerate a missing required tag) is the ' +
       'negative control.',
   },
+  {
+    id: 'R-6376-3.5-d',
+    rfc: 'rfc6376',
+    section: '3.5',
+    page: 24,
+    level: 'MUST NOT',
+    party: 'both',
+    normativeSource: 'keyword',
+    text: 'This value MUST NOT be larger than the actual number of octets in the canonicalized message body.',
+    testability: { kind: 'parse' },
+    note:
+      'The optional "l=" body-length tag limits how many octets of the canonicalized ' +
+      'body are hashed. It MUST NOT exceed the actual body length (that would be ' +
+      'nonsensical / an overflow probe). Our verifier rejects an over-long l=; the ' +
+      'acceptOverlongL defect is the negative control. SECURITY (RFC 6376 §8.2): l= ' +
+      'is dangerous even when valid — content appended past l= is unsigned, so a ' +
+      'shorter l= lets an attacker append body content under a still-valid signature. ' +
+      'Our corpus demonstrates that append property so the risk is visible, not ' +
+      'hidden; ADR 0007 leans toward not emitting l= at all.',
+  },
 ] as const satisfies readonly RequirementDef[];

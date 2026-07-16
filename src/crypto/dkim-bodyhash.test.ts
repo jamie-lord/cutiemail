@@ -45,3 +45,29 @@ test('R-6376-3.7-a: a matching body verifies; a tampered body fails (skipBodyHas
   // Negative control: skipping the check accepts the tampered body.
   assert.ok(verifyBodyHash(tampered, sig, { skipBodyHashCheck: true }).ok, 'skipBodyHashCheck must be detectable');
 });
+
+test('R-6376-3.5-d: l= limits the hashed length and must not exceed the body (acceptOverlongL caught)', () => {
+  cites('R-6376-3.5-d');
+  // Canonicalize the body and pick an l= covering only its first part.
+  const prefix = B('signed part\r\n');
+  const full = Buffer.concat([prefix, B('APPENDED UNSIGNED CONTENT\r\n')]);
+  // The l= value is the octet length of the canonicalized signed prefix (relaxed
+  // leaves this simple line unchanged).
+  const canonPrefixLen = prefix.length;
+  const bh = computeBodyHash(full, 'relaxed', 'sha256', canonPrefixLen);
+  const sig = parseDkimSignature(B(`v=1; a=rsa-sha256; c=relaxed/relaxed; d=e.com; s=s; h=from; l=${canonPrefixLen}; bh=${bh}; b=AAAA`));
+
+  // The signature verifies over the full message (l= covers only the prefix).
+  assert.ok(verifyBodyHash(full, sig).ok, 'l= limits the hash to the signed prefix');
+
+  // SECURITY (§8.2): appending MORE content past l= still verifies — the append attack.
+  const moreAppended = Buffer.concat([full, B('and even more\r\n')]);
+  assert.ok(verifyBodyHash(moreAppended, sig).ok, 'content appended past l= is unsigned (the documented l= risk)');
+
+  // But an l= LARGER than the body is a violation.
+  const bodyLen = Buffer.from('signed part\r\n', 'latin1').length + Buffer.from('APPENDED UNSIGNED CONTENT\r\n', 'latin1').length;
+  const overlong = parseDkimSignature(B(`v=1; a=rsa-sha256; c=relaxed/relaxed; d=e.com; s=s; h=from; l=${bodyLen + 100}; bh=${bh}; b=AAAA`));
+  assert.ok(!verifyBodyHash(full, overlong).lengthValid, 'an l= larger than the body is rejected');
+  // Negative control.
+  assert.ok(verifyBodyHash(full, overlong, { acceptOverlongL: true }).lengthValid, 'acceptOverlongL must be detectable');
+});
