@@ -516,8 +516,13 @@ export const S3_6 = [
     section: '3.6.3',
     page: 28,
     level: 'MUST NOT',
+    // 'prose', not 'keyword': the MUST NOT force is inherited by reference ("this
+    // prohibition also applies"), from the antecedent prohibition in this section
+    // — there is no RFC 2119 keyword in this sentence itself. The level is correct;
+    // the source of its normativity is the prose reference, which the
+    // level-matches-keyword gate rightly excludes from its keyword check.
+    normativeSource: 'prose',
     party: 'server',
-    normativeSource: 'keyword',
     text:
       'Of course, this prohibition also applies to any modifications of these ' +
       'header fields or text (see also Section 7.9).',

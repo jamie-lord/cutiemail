@@ -79,6 +79,43 @@ test('every requirement quotes its source RFC verbatim', () => {
   }
 });
 
+// A mis-declared level is the single register error that manufactures a FALSE
+// FINDING: grade a server against `level` (runner.ts / outcome.ts), so a
+// requirement the corpus convicts as a MUST that is really a SHOULD would report
+// a conforming server non-conformant — the one accusation this suite must never
+// make. The verbatim-quote gate proves the TEXT is faithful; this proves the
+// LEVEL is faithful to that text. For every requirement whose normativity comes
+// from an explicit RFC 2119 keyword (`normativeSource: 'keyword'`), the declared
+// level's keyword family must actually appear in the quoted text. Requirements
+// whose force is prose/structural (`normativeSource: 'prose'`) are exempt — their
+// keyword lives elsewhere by design (e.g. R-5321-3.6.3-g inherits "this
+// prohibition also applies").
+test("a keyword-sourced requirement's level matches an RFC 2119 keyword in its text", () => {
+  // Family per level: the uppercase base keyword(s) that legitimise it. Base-word
+  // matching (\bMUST\b), not the full "MUST NOT" phrase, so the RFC's own
+  // lower-case tails ("SHOULD not", R-5321-4.2.5-h) do not read as a mismatch —
+  // the class digit comes from the base keyword, the negation from the "not".
+  const family: Record<RequirementDef['level'], RegExp> = {
+    MUST: /\bMUST\b|\bREQUIRED\b|\bSHALL\b/,
+    'MUST NOT': /\bMUST\b|\bSHALL\b/,
+    REQUIRED: /\bREQUIRED\b|\bMUST\b|\bSHALL\b/,
+    SHOULD: /\bSHOULD\b|\bRECOMMENDED\b/,
+    'SHOULD NOT': /\bSHOULD\b|\bRECOMMENDED\b/,
+    RECOMMENDED: /\bRECOMMENDED\b|\bSHOULD\b/,
+    MAY: /\bMAY\b|\bOPTIONAL\b/,
+  };
+  for (const r of requirements) {
+    if (r.normativeSource !== 'keyword') continue;
+    assert.match(
+      r.text,
+      family[r.level],
+      `${r.id} is declared ${r.level} with normativeSource 'keyword', but no ${r.level} ` +
+        `keyword appears in its verbatim text. Either the level is wrong (a false-finding ` +
+        `risk) or the force is by prose reference — set normativeSource: 'prose'.`,
+    );
+  }
+});
+
 test('requirement ids are unique', () => {
   const seen = new Set<string>();
   for (const r of requirements) {
