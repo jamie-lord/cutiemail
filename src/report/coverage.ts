@@ -72,12 +72,45 @@ export interface CoverageReport {
   readonly orphanTests: readonly string[];
 }
 
+/**
+ * Does a mutant PROVE detection of `reqId`?
+ *
+ * Two sound routes, and this function anchors BOTH so it cannot over-credit even
+ * if handed unvalidated mutant data (the corpus's own `index.test.ts` invariants
+ * enforce the same bound, but the report function must not depend on those tests
+ * having run — a caller reusing computeCoverage in isolation must still get the
+ * truth):
+ *
+ * 1. The mutant catches a PRIMARY test of this requirement — the case IS a test
+ *    of reqId by construction, so no further anchoring is needed.
+ * 2. The mutant DELIBERATELY `alsoProves` reqId AND the case it actually catches
+ *    genuinely touches reqId (as primary or alsoTouches). Without that second
+ *    clause a phantom `{ catches: 'typo', alsoProves: [reqId] }` would silently
+ *    flip reqId to fully-covered — the exact over-credit the whole report exists
+ *    to prevent.
+ */
+function hasProvingMutant(
+  reqId: string,
+  primaryIds: ReadonlySet<string>,
+  mutants: readonly Mutant[],
+  caseById: ReadonlyMap<string, TestCase>,
+): boolean {
+  return mutants.some((m) => {
+    if (primaryIds.has(m.catches)) return true;
+    if (!(m.alsoProves ?? []).some((ap) => ap.requirement === reqId)) return false;
+    const caught = caseById.get(m.catches);
+    if (caught === undefined) return false;
+    return [caught.requirement, ...(caught.alsoTouches ?? [])].some((t) => t === reqId);
+  });
+}
+
 function stateOf(
   req: RequirementDef,
   tests: readonly TestCase[],
   primaryTests: readonly TestCase[],
   mutants: readonly Mutant[],
   latitudeControlled: ReadonlySet<string>,
+  caseById: ReadonlyMap<string, TestCase>,
 ): CoverageState {
   if (req.testability.kind === 'not-testable') return 'not-testable';
   if (req.deliberatelyUncovered !== undefined) return 'deliberately-uncovered';
@@ -110,14 +143,10 @@ function stateOf(
   }
   // Strict requirements are covered only if a mutant proves detection — either it
   // catches a PRIMARY test of this requirement, or a mutant DELIBERATELY declares
-  // this requirement in its `alsoProves` (a reviewed per-claim credit, NOT the
-  // automatic alsoTouches credit finding #6 forbade). An alsoTouches-only test
-  // merely caught by another requirement's mutant, with no explicit alsoProves,
-  // still proves nothing about this one.
-  const hasProvenMutant =
-    mutants.some((m) => primaryIds.has(m.catches)) ||
-    mutants.some((m) => (m.alsoProves ?? []).some((ap) => ap.requirement === req.id));
-  return hasProvenMutant ? 'fully-covered' : 'test-only';
+  // this requirement in its `alsoProves` AND genuinely catches a case touching it
+  // (a reviewed per-claim credit, NOT the automatic alsoTouches credit finding #6
+  // forbade). See hasProvingMutant for the anchoring that makes this un-over-creditable.
+  return hasProvingMutant(req.id, primaryIds, mutants, caseById) ? 'fully-covered' : 'test-only';
 }
 
 /**
@@ -137,6 +166,9 @@ export function computeCoverage(
   const reqs = REQUIREMENTS as readonly RequirementDef[];
   const ids = new Set(reqs.map((r) => r.id));
   const latitudeControlled = new Set(latitudeControlledCaseIds);
+  // Resolve a mutant's caught case by id, so an alsoProves credit can be anchored
+  // to a case that genuinely touches the requirement (see hasProvingMutant).
+  const caseById = new Map(tests.map((t) => [t.id, t]));
 
   const testsByReq = new Map<string, TestCase[]>();
   // A test whose PRIMARY `requirement` is this one. Only these count toward a
@@ -167,12 +199,10 @@ export function computeCoverage(
   const requirements: RequirementCoverage[] = reqs.map((req) => {
     const reqTests = testsByReq.get(req.id) ?? [];
     const primaryTests = primaryTestsByReq.get(req.id) ?? [];
-    const state = stateOf(req, reqTests, primaryTests, mutants, latitudeControlled);
+    const state = stateOf(req, reqTests, primaryTests, mutants, latitudeControlled, caseById);
     const testIds = reqTests.map((t) => t.id); // all touching, for display
     const primaryTestIds = primaryTests.map((t) => t.id);
-    const hasMutant =
-      mutants.some((m) => primaryTestIds.includes(m.catches)) ||
-      mutants.some((m) => (m.alsoProves ?? []).some((ap) => ap.requirement === req.id));
+    const hasMutant = hasProvingMutant(req.id, new Set(primaryTestIds), mutants, caseById);
     const reason =
       req.testability.kind === 'not-testable'
         ? req.testability.reason

@@ -1,0 +1,15 @@
+{
+  "name": "aiosmtpd-1.4.6-smoke",
+  "serverDomain": "aiosmtpd.example.com",
+  "host": "127.0.0.1",
+  "port": 2600,
+  "tls": "none",
+  "version": "aiosmtpd-1.4.6",
+  "fixture": {
+    "clientDomain": "conformance-suite.invalid",
+    "validRecipient": "recipient@example.com",
+    "rejectedRecipient": "nobody@example.com",
+    "postmaster": "postmaster@example.com",
+    "nonRelayDomain": "not-served.example.org"
+  }
+}
