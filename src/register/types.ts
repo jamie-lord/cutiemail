@@ -25,6 +25,7 @@ export type SpecSource =
   | 'rfc2046'
   | 'rfc2047'
   | 'rfc6376'
+  | 'rfc8463'
   | 'rfc7208'
   | 'rfc7489'
   | 'rfc8461'
