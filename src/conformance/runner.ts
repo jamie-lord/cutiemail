@@ -119,6 +119,11 @@ function inconclusive(
   };
 }
 
+/** Wall-clock elapsed in milliseconds since an hrtime mark. */
+function elapsedMsSince(started: bigint): number {
+  return Number(process.hrtime.bigint() - started) / 1e6;
+}
+
 /** Race a promise against a wall-clock guard. */
 function withDeadline<T>(p: Promise<T>, ms: number, onTimeout: () => T): Promise<T> {
   return new Promise<T>((resolve) => {
@@ -181,7 +186,7 @@ export async function runCase(tc: TestCase, config: RunConfig): Promise<Result> 
   try {
     wire = await Wire.connect(config.connect);
   } catch (err) {
-    return inconclusive(tc, level, `could not connect: ${(err as Error).message}`);
+    return { ...inconclusive(tc, level, `could not connect: ${(err as Error).message}`), elapsedMs: elapsedMsSince(started) };
   }
 
   const conn = new LiveConn(wire, config.fixture, replyTimeout, config.sink);
@@ -194,7 +199,7 @@ export async function runCase(tc: TestCase, config: RunConfig): Promise<Result> 
       const gate = await gateOnEhlo(conn, config.fixture.clientDomain, needs.ehlo);
       if (gate !== null) {
         await wire.close();
-        return { ...inconclusive(tc, level, gate), evidence: evidenceFrom(conn) };
+        return { ...inconclusive(tc, level, gate), evidence: evidenceFrom(conn), elapsedMs: elapsedMsSince(started) };
       }
       // Re-open: the gate consumed the greeting+EHLO, and most bodies expect to
       // drive the session themselves from a clean connection. Simpler and less
@@ -204,7 +209,7 @@ export async function runCase(tc: TestCase, config: RunConfig): Promise<Result> 
     }
   } catch (err) {
     await wire.close();
-    return inconclusive(tc, level, `EHLO gating failed: ${(err as Error).message}`);
+    return { ...inconclusive(tc, level, `EHLO gating failed: ${(err as Error).message}`), evidence: evidenceFrom(conn), elapsedMs: elapsedMsSince(started) };
   }
 
   const liveConn = new LiveConn(wire, config.fixture, replyTimeout, config.sink);
@@ -219,7 +224,7 @@ export async function runCase(tc: TestCase, config: RunConfig): Promise<Result> 
   );
 
   await wire.close();
-  const elapsedMs = Number(process.hrtime.bigint() - started) / 1e6;
+  const elapsedMs = elapsedMsSince(started);
 
   // The one place Outcome is decided. A test body cannot reach this.
   let outcome;

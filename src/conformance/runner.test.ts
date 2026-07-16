@@ -185,6 +185,9 @@ test('a connection failure is inconclusive, not non-conformant', async () => {
     fixture,
   });
   assert.equal(result.outcome, 'inconclusive');
+  // The clock starts before the connect attempt, so a post-`started` inconclusive
+  // must report the real elapsed time, not the helper's hardcoded 0.
+  assert.ok(result.elapsedMs > 0, `connect-failure elapsedMs should be > 0, got ${result.elapsedMs}`);
 });
 
 test('an EHLO-gated case is inconclusive when the extension is unadvertised', async () => {
@@ -209,6 +212,9 @@ test('an EHLO-gated case is inconclusive when the extension is unadvertised', as
         result.judgement.kind === 'inconclusive' ? result.judgement.reason : '',
         /STARTTLS/,
       );
+      // The EHLO gate opens a session (greeting + EHLO round trips) after the
+      // clock starts, so its inconclusive result must carry real elapsed time.
+      assert.ok(result.elapsedMs > 0, `EHLO-gate elapsedMs should be > 0, got ${result.elapsedMs}`);
     },
   );
 });
