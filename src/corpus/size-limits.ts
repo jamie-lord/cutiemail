@@ -226,7 +226,7 @@ export const CASES: readonly TestCase[] = [
       if (r.kind !== 'reply') return { kind: 'inconclusive', reason: `long-domain RCPT drew ${r.kind}` };
       if (severity(r.reply) === 2) return { kind: 'satisfied', detail: 'long (near-255-octet) domain accepted' };
       if (severity(r.reply) === 4) return { kind: 'inconclusive', reason: `long-domain RCPT drew a transient ${r.reply.code}` };
-      return { kind: 'violated', detail: `a fixture-valid ~251-octet domain drew ${r.reply.code} where an ordinary recipient was accepted — rejected within the mandated 255-octet floor` };
+      return { kind: 'violated', detail: `a fixture-valid ~245-octet domain drew ${r.reply.code} where an ordinary recipient was accepted — rejected within the mandated 255-octet floor` };
     },
   }),
 ];
