@@ -91,7 +91,13 @@ function stateOf(
   // proves it classifies both ways (conformant vs permitted-latitude). Such a
   // requirement can never have a violation-catching mutant, so demanding one
   // would wrongly mark it half-covered.
-  if ([...testIds].some((id) => latitudeControlled.has(id))) return 'fully-covered';
+  //
+  // Guard the hole: latitude credit applies ONLY to non-MUST requirements. A
+  // MUST/MUST-NOT (even one a latitude case merely alsoTouches) must still earn
+  // fully-covered through a real negative-control mutant — a latitude control
+  // proves nothing about a violation it cannot produce.
+  const isStrict = req.level === 'MUST' || req.level === 'MUST NOT' || req.level === 'REQUIRED';
+  if (!isStrict && [...testIds].some((id) => latitudeControlled.has(id))) return 'fully-covered';
   // wire + tests: otherwise covered only if a mutant proves at least one test detects.
   const hasProvenMutant = mutants.some((m) => testIds.has(m.catches));
   return hasProvenMutant ? 'fully-covered' : 'test-only';

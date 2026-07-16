@@ -26,6 +26,7 @@ import { withMutant } from '../testing/mutant-server.ts';
 import type { Defects } from '../testing/mutant-server.ts';
 import type { TestCase } from '../conformance/test-case.ts';
 import { richFixture } from './negative-control.ts';
+import { requirement } from '../register/rfc5321.ts';
 
 const VALID_RECIPIENTS = ['recipient@example.com'];
 
@@ -78,6 +79,20 @@ export function verifyLatitudeControls(
     const covered = new Set(controls.map((c) => c.case));
     for (const c of cases) {
       assert.ok(covered.has(c.id), `latitude case ${c.id} has no control`);
+    }
+  });
+
+  test(`${moduleName}: latitude cases cite a SHOULD/MAY, never a MUST`, () => {
+    // The load-bearing guard: a latitude-controlled case is credited as
+    // fully-covered WITHOUT a violation-catching mutant. That is sound only for
+    // SHOULD/MAY (which have no violation state). A MUST case sneaking in here
+    // would be marked covered with no negative control — a real hole. Forbid it.
+    for (const c of cases) {
+      const level = requirement(c.requirement).level;
+      assert.ok(
+        level === 'SHOULD' || level === 'SHOULD NOT' || level === 'MAY' || level === 'RECOMMENDED',
+        `latitude case ${c.id} cites ${c.requirement} (${level}); latitude is only for SHOULD/MAY — a MUST needs a negative-control mutant`,
+      );
     }
   });
 }
