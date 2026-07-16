@@ -11,9 +11,9 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
 import { REQUIREMENTS, EXTRACTED_SECTIONS } from './rfc5321.ts';
 import type { RequirementDef } from './types.ts';
+import { collapse, loadSpec } from './gate.ts';
 
 /**
  * `REQUIREMENTS` is `as const`, so its type is a union of literal object types —
@@ -24,40 +24,8 @@ import type { RequirementDef } from './types.ts';
 const requirements: readonly RequirementDef[] = REQUIREMENTS;
 const extractedSections: readonly string[] = EXTRACTED_SECTIONS;
 
-/**
- * RFC text with page furniture removed and all whitespace collapsed.
- *
- * The furniture has to go because requirement text runs across page breaks —
- * R-5321-2.4-i does exactly that — so a naive substring check would fail on
- * correctly-quoted text.
- */
-const normalise = (raw: string): string =>
-  raw
-    .split('\n')
-    // Strip the generic RFC page furniture: the running footer
-    // "<author>  Standards Track  [Page N]" and the running header
-    // "RFC NNNN  <title>  <Month Year>". Generic patterns so a second RFC
-    // (3207) needs no bespoke filter.
-    .filter((line) => !/Standards Track\s+\[Page \d+\]\s*$/.test(line))
-    .filter((line) => !/^RFC \d+\b.*\b(January|February|March|April|May|June|July|August|September|October|November|December) \d{4}\s*$/.test(line))
-    .join('\n')
-    // The RFC is wrapped to 72 columns and breaks at existing hyphens, so
-    // "high-order" can appear as "high-\n   order". Rejoining is safe because
-    // the text only ever breaks at a hyphen that is genuinely part of the
-    // word — it never hyphenates to fit. Without this, a correct quote of
-    // "high-order bit" fails against a literal "high- order bit".
-    .replace(/-\n\s+/g, '-')
-    .replace(/\f/g, ' ')
-    .replace(/\s+/g, ' ')
-    .trim();
-
-const specText: Record<'rfc5321' | 'rfc3207', string> = {
-  rfc5321: normalise(readFileSync(new URL('../../spec/rfc5321.txt', import.meta.url), 'utf8')),
-  rfc3207: normalise(readFileSync(new URL('../../spec/rfc3207.txt', import.meta.url), 'utf8')),
-};
-
-const collapse = (s: string): string => s.replace(/\s+/g, ' ').trim();
-
+// Spec loading + normalisation now lives in ./gate.ts, shared with the
+// message-format register so both hold the same verbatim discipline.
 test('every requirement quotes its source RFC verbatim', () => {
   for (const r of requirements) {
     const source = r.rfc ?? 'rfc5321';
@@ -71,7 +39,7 @@ test('every requirement quotes its source RFC verbatim', () => {
         `pass vacuously. Every requirement must quote real spec text.`,
     );
     assert.ok(
-      specText[source].includes(quoted),
+      loadSpec(source).includes(quoted),
       `${r.id} (§${r.section}) is not a verbatim quote from spec/${source}.txt.\n` +
         `Registered: ${quoted}\n` +
         `Fix the quote — do not relax this test.`,

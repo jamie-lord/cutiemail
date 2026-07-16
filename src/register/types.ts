@@ -11,7 +11,14 @@
  * See docs/decisions/0001-spec-baseline.md.
  */
 
-/** RFC 2119 / RFC 8174 normative levels, as they appear in RFC 5321. */
+/**
+ * The vendored spec files a requirement can be quoted from, and therefore checked
+ * against by a verbatim gate. One entry per file in spec/. Adding an RFC here + the
+ * file in spec/ is all a new register domain needs from the shared shape.
+ */
+export type SpecSource = 'rfc5321' | 'rfc3207' | 'rfc5322' | 'rfc2045' | 'rfc2046';
+
+/** RFC 2119 / RFC 8174 normative levels, as they appear in the source RFCs. */
 export type Level =
   | 'MUST'
   | 'MUST NOT'
@@ -44,10 +51,18 @@ export type Party = 'server' | 'client' | 'both';
  */
 export type NormativeSource = 'keyword' | 'prose';
 
-/** Can this suite actually assert the requirement over a socket? */
+/** Can this suite actually assert the requirement, and how? */
 export type Testability =
   /** Assertable with a bare connection and no server-side setup. */
   | { readonly kind: 'wire' }
+  /**
+   * Assertable by feeding an input to an IN-PROCESS parser/engine and checking the
+   * result — no server, no socket. This is the library-adapter shape used by the
+   * message-format (RFC 5322/MIME), address-parsing and mail-crypto registers: the
+   * corpus is a set of (input bytes -> expected outcome) cases run against whatever
+   * implementation is put behind a thin adapter interface.
+   */
+  | { readonly kind: 'parse' }
   /**
    * Assertable, but needs known server-side state (a mailbox that must be
    * accepted, a domain we do/don't relay for, a quota). SMTP gives almost no
@@ -83,7 +98,7 @@ export interface RequirementDef {
    * rfc3207 is the STARTTLS Secure-SMTP extension (the security surface RFC 5321
    * itself does not cover).
    */
-  readonly rfc?: 'rfc5321' | 'rfc3207';
+  readonly rfc?: SpecSource;
   /** Section within the source RFC, e.g. "2.3.8" or (for rfc3207) "4.2". */
   readonly section: string;
   /** Page in the source spec .txt, for locating the text by hand. */
