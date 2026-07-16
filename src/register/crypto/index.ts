@@ -13,11 +13,12 @@ import type { RequirementDef, IdsOf } from '../types.ts';
 import { DKIM_CANON } from './sections/dkim-canon.ts';
 import { DKIM_SIGNATURE } from './sections/dkim-signature.ts';
 import { DKIM_BODYHASH } from './sections/dkim-bodyhash.ts';
+import { DKIM_SIGN } from './sections/dkim-sign.ts';
 
 /** Sections of the mail-crypto RFCs extracted into the register so far. */
-export const EXTRACTED_SECTIONS: readonly string[] = ['3.4.1', '3.4.2', '3.4.3', '3.4.4', '3.5', '3.7'];
+export const EXTRACTED_SECTIONS: readonly string[] = ['3.4.1', '3.4.2', '3.4.3', '3.4.4', '3.5', '3.7', '5'];
 
-export const CRYPTO_REQUIREMENTS = [...DKIM_CANON, ...DKIM_SIGNATURE, ...DKIM_BODYHASH] as const satisfies readonly RequirementDef[];
+export const CRYPTO_REQUIREMENTS = [...DKIM_CANON, ...DKIM_SIGNATURE, ...DKIM_BODYHASH, ...DKIM_SIGN] as const satisfies readonly RequirementDef[];
 
 /** Every mail-crypto requirement ID as a union — compile-time traceability. */
 export type CryptoRequirementId = IdsOf<typeof CRYPTO_REQUIREMENTS>;
