@@ -29,6 +29,7 @@ export type SpecSource =
   | 'rfc7208'
   | 'rfc7489'
   | 'rfc8461'
+  | 'rfc8617'
   | 'rfc6531'
   | 'rfc9051';
 
