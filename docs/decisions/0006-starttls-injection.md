@@ -41,33 +41,23 @@ mutant-server infrastructure it seemed to need.
 
 ## Consequences / scope left on the table (deliberately)
 
-- **Only the pre-handshake plaintext-injection variant is covered.** Two further
-  STARTTLS behaviours need a TLS-*terminating* mutant (a real server-side
-  `tls.TLSSocket` handshake), and are deferred as a scoped next-phase piece:
-  1. The **smuggle-into-TLS injection variant** — a command replayed *inside* the
-     established TLS stream rather than answered in plaintext before it.
-  2. The **post-handshake session reset** (RFC 3207 §4.2: "the SMTP protocol is
-     reset to the initial state"). A `keepStateAcrossStartTls` defect flag already
-     exists for it but cannot be exercised without completing a handshake.
-
-  The design is understood: opt-in `terminateTls` on the mutant, refactor `#handle`
-  into an `#attachSession(sock, state, greet)` that re-attaches the data loop to the
-  upgraded `tls.TLSSocket` (with reset or, under the defect, retained state), and a
-  vendored self-signed test cert. It was deliberately NOT built at the tail of the
-  session that built the sink, for three reasons, all "smart engineering over green
-  for its own sake":
-  - it refactors the mutant's CORE data loop, which every test depends on — high
-    blast radius for a one-requirement gain;
-  - the self-signed mutant cert forces `rejectUnauthorized:false`, which the clean
-    `Conn.startTls()` corpus path does not expose, so the negative control would be
-    a bespoke integration test rather than a graded, fixture-gated corpus case (as
-    the sink work is) — less clean, and the corpus-path version really wants a
-    calibration-time real-cert server anyway;
-  - the primary, clearly-defined CVE-2011-0411 variant (pre-handshake plaintext
-    injection) IS covered, so this is completeness, not a gap in the core defence.
-
-  The transport's client half already upgrades and flags pre-handshake buffered
-  bytes, so the remaining work is the mutant side plus the corpus/integration wiring.
+- **The TLS-terminating mutant is now BUILT** (opt-in `terminateTls`): `#handle` was
+  refactored into `#attachSession(sock, state, greet)` that re-attaches the command
+  loop to an upgraded server-side `tls.TLSSocket` (self-signed test cert in
+  `src/testing/tls-test-cert.ts`), with the session state RESET to initial after the
+  handshake unless the `keepStateAcrossStartTls` defect retains it. This covers the
+  **RFC 3207 §4.2 post-handshake session reset** ("the SMTP protocol is reset to the
+  initial state") — proven both ways in `tls-session.integration.test.ts`: a
+  conformant server refuses a post-TLS MAIL that lacks a fresh EHLO (503), a
+  state-retaining server wrongly accepts it (250). It uses `Wire` directly (with
+  `rejectUnauthorized:false` for the self-signed cert) rather than the corpus `Conn`
+  path, which is the right home until a calibration-time real-cert server exists.
+- **Still deferred: the smuggle-into-TLS injection variant** — a command replayed
+  *inside* the established TLS stream rather than answered in plaintext before it.
+  This needs faithfully modelling the exact buggy buffering order across the
+  handshake, is materially harder than the reset test, and the primary
+  CVE-2011-0411 variant (pre-handshake plaintext injection) is already covered — so
+  it is genuine completeness, not a gap in the core defence.
 - `EXTRACTED_SECTIONS` lists bare section numbers, so RFC 3207 §4.2 and RFC 5321
   §4.2 share the string "4.2" in the coverage header. Harmless today (the ids
   disambiguate); revisit if a second RFC 3207 section lands.

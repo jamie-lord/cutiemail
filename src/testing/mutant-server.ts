@@ -26,8 +26,10 @@
  */
 
 import net from 'node:net';
+import tls from 'node:tls';
 import { crlf, lf, CR, LF, DOT, dotStuff } from '../wire/bytes.ts';
 import { unstuff } from './sink-server.ts';
+import { TEST_CERT, TEST_KEY } from './tls-test-cert.ts';
 
 /**
  * The switchable defects. Each maps to one or more register requirements it
@@ -373,6 +375,14 @@ export interface MutantOptions {
    * and defects that corrupt it become observable there.
    */
   readonly relayTo?: number;
+  /**
+   * Opt-in: actually TERMINATE TLS on a honoured STARTTLS (a real server-side
+   * handshake with a self-signed test cert), instead of the no-real-TLS
+   * pre-handshake-injection model. Enables testing the RFC 3207 §4.2
+   * post-handshake session reset. Default off, so the pre-handshake injection
+   * test keeps its no-handshake behaviour.
+   */
+  readonly terminateTls?: boolean;
 }
 
 interface SessionState {
@@ -404,6 +414,7 @@ export class MutantServer {
   #validRecipients: readonly string[] | undefined;
   #rejectedRecipients: readonly string[];
   #relayTo: number | undefined;
+  #terminateTls: boolean;
 
   private constructor(
     server: net.Server,
@@ -413,6 +424,7 @@ export class MutantServer {
     validRecipients: readonly string[] | undefined,
     rejectedRecipients: readonly string[],
     relayTo: number | undefined,
+    terminateTls: boolean,
   ) {
     this.#server = server;
     this.port = port;
@@ -421,6 +433,7 @@ export class MutantServer {
     this.#validRecipients = validRecipients;
     this.#rejectedRecipients = rejectedRecipients;
     this.#relayTo = relayTo;
+    this.#terminateTls = terminateTls;
   }
 
   static start(opts: MutantOptions = {}): Promise<MutantServer> {
@@ -438,7 +451,7 @@ export class MutantServer {
           reject(new Error('no port'));
           return;
         }
-        const m = new MutantServer(server, addr.port, domain, defects, valid, rejected, opts.relayTo);
+        const m = new MutantServer(server, addr.port, domain, defects, valid, rejected, opts.relayTo, opts.terminateTls ?? false);
         server.on('connection', (sock) => m.#handle(sock));
         resolve(m);
       });
@@ -466,26 +479,38 @@ export class MutantServer {
   }
 
   #handle(sock: net.Socket): void {
-    const d = this.#defects;
-    const state: SessionState = { greeted: false, hasMail: false, rcptCount: 0, inData: false, awaitingTls: false, from: '', recipients: [] };
-    let buf = Buffer.alloc(0);
-
-    sock.on('error', () => {});
-    if (d.closeOnConnect) {
+    if (this.#defects.closeOnConnect) {
+      sock.on('error', () => {});
       // Accept then immediately hang up with no greeting — the observable violation.
       sock.end();
       return;
     }
-    if (d.silentOnConnect) {
-      // No greeting at all, but the socket stays open — indistinguishable from slow.
-    } else if (d.greetingWithoutDomain) {
-      // A bare 220 with no domain identification.
-      this.#write(sock, crlf`220`);
-    } else if (d.greetingAddressLiteral) {
-      // Identity by number — conformant (§2.3.4-a is a SHOULD NOT), the decline arm.
-      this.#write(sock, crlf`220 [192.0.2.1] ESMTP mutant`);
-    } else {
-      this.#write(sock, crlf`220 ${this.#domain} ESMTP mutant`);
+    const state: SessionState = { greeted: false, hasMail: false, rcptCount: 0, inData: false, awaitingTls: false, from: '', recipients: [] };
+    this.#attachSession(sock, state, true);
+  }
+
+  /**
+   * Attach the SMTP command loop to a socket — the plaintext connection, or (after
+   * a terminateTls STARTTLS) the upgraded TLS socket. `greet` sends the 220 opener;
+   * it is false for the post-STARTTLS session (RFC 3207: no fresh greeting after TLS).
+   */
+  #attachSession(sock: net.Socket, state: SessionState, greet: boolean): void {
+    const d = this.#defects;
+    let buf = Buffer.alloc(0);
+
+    sock.on('error', () => {});
+    if (greet) {
+      if (d.silentOnConnect) {
+        // No greeting at all, but the socket stays open — indistinguishable from slow.
+      } else if (d.greetingWithoutDomain) {
+        // A bare 220 with no domain identification.
+        this.#write(sock, crlf`220`);
+      } else if (d.greetingAddressLiteral) {
+        // Identity by number — conformant (§2.3.4-a is a SHOULD NOT), the decline arm.
+        this.#write(sock, crlf`220 [192.0.2.1] ESMTP mutant`);
+      } else {
+        this.#write(sock, crlf`220 ${this.#domain} ESMTP mutant`);
+      }
     }
 
     sock.on('data', (chunk: Buffer) => {
@@ -544,8 +569,28 @@ export class MutantServer {
         if (verb === 'STARTTLS' && !d.advertiseStarttlsButReject) {
           this.#write(sock, crlf`220 2.0.0 Ready to start TLS`);
           buf = buf.subarray(line.consumed);
+          if (this.#terminateTls) {
+            // Real handshake: hand the socket to a server-side TLS socket, stop the
+            // plaintext loop, and re-attach on 'secure' with state RESET to initial
+            // (RFC 3207 §4.2) — unless the keepStateAcrossStartTls defect retains it.
+            // The pre-handshake buffer is discarded (safe); injection is the no-TLS
+            // path, not this one.
+            sock.removeAllListeners('data');
+            const tlsSock = new tls.TLSSocket(sock, {
+              isServer: true,
+              secureContext: tls.createSecureContext({ cert: TEST_CERT, key: TEST_KEY }),
+            });
+            tlsSock.on('error', () => {});
+            tlsSock.once('secure', () => {
+              const post: SessionState = d.keepStateAcrossStartTls
+                ? { ...state, inData: false, awaitingTls: false } // retained (the violation): greeted stays true
+                : { greeted: false, hasMail: false, rcptCount: 0, inData: false, awaitingTls: false, from: '', recipients: [] };
+              this.#attachSession(tlsSock, post, false);
+            });
+            return;
+          }
           if (!d.injectAfterStartTls) {
-            // Safe: discard the buffered plaintext and await the ClientHello.
+            // Safe (no-TLS model): discard the buffered plaintext and await the ClientHello.
             buf = Buffer.alloc(0);
             state.awaitingTls = true;
           }
