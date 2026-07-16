@@ -124,7 +124,20 @@ function elapsedMsSince(started: bigint): number {
   return Number(process.hrtime.bigint() - started) / 1e6;
 }
 
-/** Race a promise against a wall-clock guard. */
+/**
+ * Race a promise against a wall-clock guard.
+ *
+ * The timer is deliberately NOT unref()'d. This deadline is the last line of
+ * defence against a case whose body hangs (a socket that neither replies, closes,
+ * nor times out at a lower layer — some servers can leave a connection in exactly
+ * that state). If the timer were unref()'d and the hung case had no other active
+ * handle keeping the event loop alive, Node would treat the loop as empty and exit
+ * SILENTLY with code 0 before the deadline ever fired — the whole run vanishing
+ * with no report. `clearTimeout` on normal completion (below) already prevents the
+ * timer from outliving a settled case, so keeping it ref'd costs nothing and
+ * guarantees the deadline actually fires. (Surfaced by a differential run against
+ * mox, where a hung case made the CLI print one line and exit 0.)
+ */
 function withDeadline<T>(p: Promise<T>, ms: number, onTimeout: () => T): Promise<T> {
   return new Promise<T>((resolve) => {
     let settled = false;
@@ -134,7 +147,6 @@ function withDeadline<T>(p: Promise<T>, ms: number, onTimeout: () => T): Promise
         resolve(onTimeout());
       }
     }, ms);
-    timer.unref();
     void p.then((v) => {
       if (!settled) {
         settled = true;

@@ -13,7 +13,7 @@
  * never a second implementation.
  */
 
-import { argv, exit, stdout, stderr } from 'node:process';
+import { argv, stdout, stderr } from 'node:process';
 import { loadTargetConfig, connectOptions, ConfigError } from './conformance/config.ts';
 import { runSuite } from './conformance/runner.ts';
 import { withPostmasterConvention } from './conformance/fixture.ts';
@@ -149,9 +149,17 @@ async function main(): Promise<number> {
   }
 }
 
+// Set process.exitCode rather than calling exit(): exit() terminates the process
+// IMMEDIATELY, which truncates buffered stdout when it is a pipe or file (the matrix
+// can be many lines). Setting exitCode lets Node drain stdout and exit naturally once
+// the event loop empties — the run has already closed all its sockets. This was a real
+// output-loss bug: `cli run` against a server that produced a large report printed only
+// the first line before exit() cut it off.
 main()
-  .then((code) => exit(code))
+  .then((code) => {
+    process.exitCode = code;
+  })
   .catch((err) => {
     stderr.write(`fatal: ${(err as Error).stack ?? String(err)}\n`);
-    exit(3);
+    process.exitCode = 3;
   });
