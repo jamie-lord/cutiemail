@@ -17,7 +17,7 @@ import { argv, exit, stdout, stderr } from 'node:process';
 import { loadTargetConfig, connectOptions, ConfigError } from './conformance/config.ts';
 import { runSuite } from './conformance/runner.ts';
 import { withPostmasterConvention } from './conformance/fixture.ts';
-import { ALL_CASES, ALL_MUTANTS } from './corpus/index.ts';
+import { ALL_CASES, ALL_MUTANTS, LATITUDE_CONTROLLED_IDS } from './corpus/index.ts';
 import { computeCoverage, renderCoverage } from './report/coverage.ts';
 import { buildMatrix, renderMatrix } from './report/matrix.ts';
 import { explain, isFinding } from './conformance/outcome.ts';
@@ -114,7 +114,7 @@ async function cmdRun(args: string[]): Promise<number> {
 }
 
 function cmdCoverage(): number {
-  stdout.write(renderCoverage(computeCoverage(ALL_CASES, ALL_MUTANTS)) + '\n');
+  stdout.write(renderCoverage(computeCoverage(ALL_CASES, ALL_MUTANTS, LATITUDE_CONTROLLED_IDS)) + '\n');
   return 0;
 }
 

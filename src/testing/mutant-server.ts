@@ -155,6 +155,12 @@ export interface Defects {
   readonly rejectHelo?: boolean;
   /** Reject the EHLO command (500). Violates R-5321-2.2.1-b (servers MUST support EHLO). */
   readonly rejectEhlo?: boolean;
+  /**
+   * Do NOT advertise 8BITMIME in EHLO. This is CONFORMANT (§2.4-n is a SHOULD, not
+   * a MUST) — it models a server declining the SHOULD, used to prove the latitude
+   * case reports permitted-latitude rather than a finding.
+   */
+  readonly no8bitmime?: boolean;
   /** Answer NOOP with a 500 "command not recognized". Violates R-5321-4.5.1-b. */
   readonly unrecognizedNoop?: boolean;
   /** Send TWO replies to a single NOOP. Violates R-5321-4.2-a (exactly one reply). */
@@ -480,9 +486,10 @@ export class MutantServer {
       case 'EHLO': {
         if (d.rejectEhlo) return replyOK(500, 'Error: command not recognized');
         state.greeted = true;
-        const keywords = d.keepStateAcrossStartTls
+        const baseKeywords = d.keepStateAcrossStartTls
           ? ['PIPELINING', 'SIZE 10240000', '8BITMIME', 'STARTTLS', 'SECRET-PRE-TLS-KEYWORD']
           : ['PIPELINING', 'SIZE 10240000', '8BITMIME', 'STARTTLS'];
+        const keywords = d.no8bitmime ? baseKeywords.filter((k) => k !== '8BITMIME') : baseKeywords;
         if (d.mismatchedContinuation) {
           this.#write(sock, crlf`250-${this.#domain}`);
           this.#write(sock, crlf`251-PIPELINING`); // wrong continuation code

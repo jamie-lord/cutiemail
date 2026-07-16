@@ -76,6 +76,7 @@ function stateOf(
   req: RequirementDef,
   tests: readonly TestCase[],
   mutants: readonly Mutant[],
+  latitudeControlled: ReadonlySet<string>,
 ): CoverageState {
   if (req.testability.kind === 'not-testable') return 'not-testable';
   if (req.deliberatelyUncovered !== undefined) return 'deliberately-uncovered';
@@ -85,8 +86,13 @@ function stateOf(
   }
   if (req.testability.kind === 'wire-with-fixture') return 'fixture-gated';
 
-  // wire + tests: covered only if a mutant proves at least one test detects.
   const testIds = new Set(tests.map((t) => t.id));
+  // A SHOULD/MAY tested via a latitude control is fully covered: the control
+  // proves it classifies both ways (conformant vs permitted-latitude). Such a
+  // requirement can never have a violation-catching mutant, so demanding one
+  // would wrongly mark it half-covered.
+  if ([...testIds].some((id) => latitudeControlled.has(id))) return 'fully-covered';
+  // wire + tests: otherwise covered only if a mutant proves at least one test detects.
   const hasProvenMutant = mutants.some((m) => testIds.has(m.catches));
   return hasProvenMutant ? 'fully-covered' : 'test-only';
 }
@@ -103,9 +109,11 @@ function stateOf(
 export function computeCoverage(
   tests: readonly TestCase[],
   mutants: readonly Mutant[],
+  latitudeControlledCaseIds: readonly string[] = [],
 ): CoverageReport {
   const reqs = REQUIREMENTS as readonly RequirementDef[];
   const ids = new Set(reqs.map((r) => r.id));
+  const latitudeControlled = new Set(latitudeControlledCaseIds);
 
   const testsByReq = new Map<string, TestCase[]>();
   const orphanTests: string[] = [];
@@ -124,7 +132,7 @@ export function computeCoverage(
 
   const requirements: RequirementCoverage[] = reqs.map((req) => {
     const reqTests = testsByReq.get(req.id) ?? [];
-    const state = stateOf(req, reqTests, mutants);
+    const state = stateOf(req, reqTests, mutants, latitudeControlled);
     const testIds = reqTests.map((t) => t.id);
     const hasMutant = mutants.some((m) => testIds.includes(m.catches));
     const reason =

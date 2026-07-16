@@ -25,6 +25,7 @@ import { CASES as bufCases, MUTANTS as bufMutants } from './command-buffer-effec
 import { CASES as termCases, MUTANTS as termMutants } from './termination.ts';
 import { CASES as syntaxCases, MUTANTS as syntaxMutants } from './syntax-case.ts';
 import { CASES as deliveryCases, MUTANTS as deliveryMutants } from './mail-delivery.ts';
+import { CASES as latitudeCases, CONTROLS as latitudeControls } from './latitude.ts';
 
 export const ALL_CASES: readonly TestCase[] = [
   ...connCases,
@@ -40,7 +41,11 @@ export const ALL_CASES: readonly TestCase[] = [
   ...termCases,
   ...syntaxCases,
   ...deliveryCases,
+  ...latitudeCases,
 ];
+
+/** Case ids proven by a latitude control (SHOULD/MAY) rather than a mutant. */
+export const LATITUDE_CONTROLLED_IDS: readonly string[] = latitudeControls.map((c) => c.case);
 
 export const ALL_MUTANTS: readonly Mutant[] = [
   ...connMutants,
