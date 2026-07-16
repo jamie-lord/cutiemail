@@ -990,7 +990,11 @@ export class MutantServer {
           state.hasMail = false;
           state.rcptCount = 0;
         }
-        return replyOK(d.rsetWrongReply ? 451 : 250, '2.0.0 Ok');
+        // Defect: refuse RSET as not-implemented. RSET is mandatory (§4.5.1) and
+        // MUST answer 250 (§4.1.1.5-b), so a 502 is an unambiguous violation — unlike
+        // a 4yz, which the corpus treats as a possibly-transient inconclusive.
+        if (d.rsetWrongReply) return replyOK(502, '5.5.1 Command not implemented');
+        return replyOK(250, '2.0.0 Ok');
 
       case 'NOOP':
         if (d.unrecognizedNoop) return replyOK(500, 'Error: command not recognized');

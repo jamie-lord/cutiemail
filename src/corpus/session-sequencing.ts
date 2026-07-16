@@ -49,9 +49,18 @@ export const CASES: readonly TestCase[] = [
       const r = await conn.readReply(3000);
       if (r.kind === 'timeout') return { kind: 'inconclusive', reason: 'RSET drew no reply within the timeout (server may be slow, §4.5.3.2)' };
       if (r.kind !== 'reply') return { kind: 'violated', detail: `RSET: server ${r.kind} instead of replying` };
-      return r.reply.code === 250
-        ? { kind: 'satisfied' }
-        : { kind: 'violated', detail: `RSET drew ${r.reply.code}, not 250` };
+      if (r.reply.code === 250) return { kind: 'satisfied' };
+      // RSET is mandatory (§4.5.1) and MUST answer 250, so a 500/502 (refused as
+      // not-implemented) is the unambiguous violation. Every OTHER non-250 reply
+      // can be conformant in context and must NOT convict: 421 (service shutting
+      // down, allowed after any command), 530 (STARTTLS-required — RFC 3207 §4 lets
+      // a TLS-required server 530 all commands except NOOP/EHLO/STARTTLS/QUIT, and
+      // RSET is not exempt; the sibling rset-before-ehlo-is-noop treats 530 as
+      // conformant), and a transient 4yz under load. Gate those to inconclusive.
+      if (r.reply.code === 500 || r.reply.code === 502) {
+        return { kind: 'violated', detail: `RSET drew ${r.reply.code} (refused as not implemented); §4.1.1.5-b requires 250 and RSET is mandatory` };
+      }
+      return { kind: 'inconclusive', reason: `RSET drew ${r.reply.code}, not 250 — but this can be conformant (421 shutdown, 530 STARTTLS-required, transient 4yz); only 500/502 convicts` };
     },
   }),
 
@@ -195,13 +204,18 @@ export const CASES: readonly TestCase[] = [
       await conn.send(crlf`RCPT TO:<someone@example.com>`);
       const r = await conn.readReply(3000);
       if (r.kind === 'timeout') return { kind: 'inconclusive', reason: 'RCPT-before-MAIL drew no reply within the timeout (server may be slow, §4.5.3.2)' };
-      if (r.kind !== 'reply') return { kind: 'violated', detail: `RCPT-before-MAIL: server ${r.kind} instead of replying` };
-      // The RFC says 503 specifically, but assert the class as the firm floor:
-      // any 5yz rejection satisfies "cannot be processed"; a 2yz acceptance is
-      // the violation. (503 exact is checked as a detail, not the pass/fail.)
-      return severity(r.reply) === 5
-        ? { kind: 'satisfied', detail: `RCPT-before-MAIL rejected with ${r.reply.code}` }
-        : { kind: 'violated', detail: `RCPT-before-MAIL drew ${r.reply.code}, not a 5yz rejection` };
+      if (r.kind !== 'reply') return { kind: 'inconclusive', reason: `RCPT-before-MAIL drew ${r.kind}, not a reply — a mid-session close can be a rate-limiter or shutdown, not evidence the out-of-order RCPT was processed` };
+      // ONLY a 2yz acceptance is the violation: the out-of-order RCPT was processed.
+      // A 5yz rejection satisfies "cannot be processed". A 4yz (421 shutdown under
+      // the corpus's many rapid connections, or a transient) is NOT a §4.1.4-o
+      // violation — it says nothing about ordering — so it must not convict.
+      if (severity(r.reply) === 2) {
+        return { kind: 'violated', detail: `RCPT-before-MAIL was ACCEPTED with ${r.reply.code} — an out-of-order command was processed (§4.1.4-o requires a 5yz rejection)` };
+      }
+      if (severity(r.reply) === 5) {
+        return { kind: 'satisfied', detail: `RCPT-before-MAIL rejected with ${r.reply.code}` };
+      }
+      return { kind: 'inconclusive', reason: `RCPT-before-MAIL drew ${r.reply.code} (a 4yz/3yz, not a 2yz acceptance or 5yz rejection); cannot attribute to an out-of-order verdict` };
     },
   }),
 
