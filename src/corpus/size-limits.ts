@@ -39,6 +39,7 @@ export const CASES: readonly TestCase[] = [
   testCase({
     id: 'command-line-512-accepted',
     requirement: 'R-5321-4.5.3.1.4-a',
+    alsoTouches: ['R-5321-4.3.2-f'],
     intent: 'a 512-octet command line is processed, not rejected as too long',
     rationale:
       '§4.5.3.1.4: "The maximum total length of a command line including the command word ' +

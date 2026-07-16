@@ -78,6 +78,7 @@ export const CASES: readonly TestCase[] = [
   testCase({
     id: 'reply-codes-are-three-digits',
     requirement: 'R-5321-4.3.2-c',
+    alsoTouches: ['R-5321-4.2-b', 'R-5321-4.2-s'],
     intent: 'the server transmits well-formed three-digit reply codes',
     rationale:
       '§4.3.2: "SMTP servers MUST NOT transmit reply codes ... that are other than three ' +

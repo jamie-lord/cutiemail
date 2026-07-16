@@ -109,6 +109,7 @@ export const CASES: readonly TestCase[] = [
   testCase({
     id: 'quit-returns-221-and-closes',
     requirement: 'R-5321-4.1.1.10-a',
+    alsoTouches: ['R-5321-3.8-a'],
     intent: 'QUIT draws a 221 reply and the server then closes the channel',
     rationale: '§4.1.1.10: QUIT "specifies that the receiver MUST send a \\"221 OK\\" reply, and then close the transmission channel."',
     run: async (conn): Promise<Judgement> => {
@@ -174,6 +175,7 @@ export const CASES: readonly TestCase[] = [
   testCase({
     id: 'rcpt-before-mail-rejected',
     requirement: 'R-5321-4.1.4-o',
+    alsoTouches: ['R-5321-3.3-p'],
     intent: 'RCPT with no prior MAIL draws a 503 (out of order, cannot be processed)',
     rationale:
       '§4.1.4: "If the commands in a transaction are out of order to the degree that they ' +

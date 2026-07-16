@@ -55,6 +55,7 @@ export const CASES: readonly TestCase[] = [
   testCase({
     id: 'noop-is-recognised',
     requirement: 'R-5321-4.5.1-b',
+    alsoTouches: ['R-5321-4.3.2-e', 'R-5321-4.5.1-a'],
     intent: 'NOOP, a mandatory command, is recognised (not answered 500 unrecognised)',
     rationale:
       '§4.5.1: "The following commands MUST be supported ... EHLO HELO MAIL RCPT DATA RSET ' +
