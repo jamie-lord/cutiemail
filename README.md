@@ -11,6 +11,37 @@ does this. There are excellent IMAP conformance tools (Dovecot's imaptest) and J
 smtp-source loads, Mailpit and GreenMail fake, and Postfix's own tooling explicitly disclaims
 compliance testing.
 
+## Running the mail server
+
+The suite grew into what it was always meant to test: a small, opinionated, modern mail server
+in TypeScript — SQLite for storage, no large libraries, hand-built on the byte layer. It sends
+and receives mail with existing clients, over TLS, and stores durably.
+
+```sh
+npm start                # launches the daemon with dev-friendly defaults
+```
+
+It opens the database and starts three listeners: inbound SMTP, submission SMTP (SASL PLAIN AUTH
+over TLS), and IMAPS. Configuration is by environment variable:
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `MAIL_DB` | `mail.db` | SQLite database path (`:memory:` for ephemeral) |
+| `MAIL_HOST` | `127.0.0.1` | bind address |
+| `MAIL_SMTP_PORT` / `MAIL_SUBMISSION_PORT` / `MAIL_IMAP_PORT` | `2525` / `5587` / `5993` | listener ports (25 / 587 / 993 in production) |
+| `MAIL_USER` / `MAIL_PASS` | `demo` / `demo` | a seeded account |
+| `MAIL_TLS_CERT` / `MAIL_TLS_KEY` | bundled dev cert | PEM cert/key paths (a self-signed dev certificate is used if unset) |
+
+The daemon (`src/main.ts`) is thin glue over pieces built and validated separately: the SMTP
+receiver, the IMAP server, the `node:sqlite` mailbox, the SCRAM account store, the DKIM/SCRAM
+crypto. Nine `*.integration.test.ts` files drive the assembled server over real sockets —
+including a full deliver → store → read round-trip, STARTTLS with the command-injection defence,
+submission AUTH, DKIM sign-verify, durability across restart, and the daemon itself.
+
+Two self-audit reports keep the test bed honest: `npm run registry` (the cross-domain
+requirement inventory) and `npm run library-coverage` (fails on any parse-testable requirement
+without a citing test).
+
 ## Why it can be trusted
 
 A conformance suite that reports all-green against a broken server is worse than no suite. Two

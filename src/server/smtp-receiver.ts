@@ -30,6 +30,10 @@ export type DeliveryHandler = (message: DeliveredMessage) => void;
 
 export interface ReceiverOptions {
   readonly domain?: string;
+  /** Bind host (default 127.0.0.1). */
+  readonly host?: string;
+  /** Bind port (default 0 — an ephemeral port, for tests). */
+  readonly port?: number;
   /** Enable STARTTLS, advertising it after EHLO and upgrading on the command. */
   readonly tls?: { readonly key: string; readonly cert: string };
   /** DEFECT: keep the receive buffer across STARTTLS (the injection vulnerability). */
@@ -259,7 +263,7 @@ export class SmtpReceiver {
     const server = net.createServer();
     const sockets = new Set<net.Socket>();
     return new Promise((resolve) => {
-      server.listen(0, '127.0.0.1', () => {
+      server.listen(options.port ?? 0, options.host ?? '127.0.0.1', () => {
         const addr = server.address();
         const port = typeof addr === 'object' && addr !== null ? addr.port : 0;
         server.on('connection', (sock) => {

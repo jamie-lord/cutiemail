@@ -57,24 +57,30 @@ export class ImapServer {
   readonly #server: net.Server;
   readonly #mailbox: ServableMailbox;
   readonly #sockets = new Set<net.Socket>();
+  readonly #authenticate: ((user: string, pass: string) => boolean) | undefined;
 
-  private constructor(server: net.Server, port: number, mailbox: ServableMailbox) {
+  private constructor(server: net.Server, port: number, mailbox: ServableMailbox, authenticate?: (user: string, pass: string) => boolean) {
     this.#server = server;
     this.port = port;
     this.#mailbox = mailbox;
+    this.#authenticate = authenticate;
   }
 
   /**
    * Start the server. With `options.tls` it serves implicit TLS (IMAPS, port 993 in
-   * production — what Thunderbird and Apple Mail use); otherwise plaintext.
+   * production — what Thunderbird and Apple Mail use); otherwise plaintext. With
+   * `options.authenticate`, LOGIN is verified against it (else any LOGIN succeeds).
    */
-  static start(mailbox: ServableMailbox, options: { tls?: { key: string; cert: string } } = {}): Promise<ImapServer> {
+  static start(
+    mailbox: ServableMailbox,
+    options: { tls?: { key: string; cert: string }; host?: string; port?: number; authenticate?: (user: string, pass: string) => boolean } = {},
+  ): Promise<ImapServer> {
     const server = options.tls !== undefined ? tls.createServer({ key: options.tls.key, cert: options.tls.cert }) : net.createServer();
     return new Promise((resolve) => {
-      server.listen(0, '127.0.0.1', () => {
+      server.listen(options.port ?? 0, options.host ?? '127.0.0.1', () => {
         const addr = server.address();
         const port = typeof addr === 'object' && addr !== null ? addr.port : 0;
-        const imap = new ImapServer(server, port, mailbox);
+        const imap = new ImapServer(server, port, mailbox, options.authenticate);
         const event = options.tls !== undefined ? 'secureConnection' : 'connection';
         server.on(event, (sock: net.Socket) => {
           imap.#sockets.add(sock);
@@ -110,9 +116,16 @@ export class ImapServer {
         const cmd = (parts[1] ?? '').toUpperCase();
 
         switch (cmd) {
-          case 'LOGIN':
-            write(sock, `${tag} OK LOGIN completed`);
+          case 'LOGIN': {
+            const user = unquote(parts[2] ?? '');
+            const pass = unquote(parts[3] ?? '');
+            if (this.#authenticate !== undefined && !this.#authenticate(user, pass)) {
+              write(sock, `${tag} NO [AUTHENTICATIONFAILED] invalid credentials`);
+            } else {
+              write(sock, `${tag} OK LOGIN completed`);
+            }
             break;
+          }
           case 'SELECT':
           case 'EXAMINE': {
             const msgs = this.#mailbox.messages;

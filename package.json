@@ -8,6 +8,7 @@
     "node": ">=22.18.0"
   },
   "scripts": {
+    "start": "node src/main.ts",
     "test": "node --test 'src/**/*.test.ts'",
     "typecheck": "tsc --noEmit",
     "conformance": "node src/cli.ts",
