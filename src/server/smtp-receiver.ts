@@ -17,6 +17,9 @@ import tls from 'node:tls';
 import type { Duplex } from 'node:stream';
 import { CR, LF, DOT } from '../wire/bytes.ts';
 
+/** MAIL_DEBUG=1 logs each received command line (AUTH redacted) to stderr. */
+const DEBUG = process.env.MAIL_DEBUG === '1';
+
 export interface DeliveredMessage {
   readonly from: string;
   readonly recipients: readonly string[];
@@ -126,6 +129,7 @@ class Connection {
       if (nl === -1) break;
       const line = this.#buf.subarray(0, nl).toString('latin1');
       this.#buf = this.#buf.subarray(nl + 2);
+      if (DEBUG) process.stderr.write(`[smtp<] ${line.replace(/^(AUTH\s+\S+\s+).*/i, '$1***')}\n`);
       const verb = line.split(/\s+/)[0]?.toUpperCase() ?? '';
       if (verb === 'STARTTLS' && this.#opts.tls !== undefined) {
         this.#startTls();

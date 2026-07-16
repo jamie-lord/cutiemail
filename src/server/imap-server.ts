@@ -45,6 +45,15 @@ export interface ServableMailbox {
 
 const CAPABILITIES = 'IMAP4rev2';
 
+/** MAIL_DEBUG=1 logs each received command line (credentials redacted) to stderr. */
+const DEBUG = process.env.MAIL_DEBUG === '1';
+function debugLog(line: string): void {
+  if (!DEBUG) return;
+  // Redact the password argument of LOGIN (tag LOGIN user pass).
+  const safe = line.replace(/^(\S+\s+LOGIN\s+\S+\s+)\S+/i, '$1***');
+  process.stderr.write(`[imap<] ${safe}\n`);
+}
+
 const write = (sock: net.Socket, line: string): void => {
   sock.write(Buffer.from(`${line}\r\n`, 'latin1'));
 };
@@ -239,6 +248,7 @@ export class ImapServer {
         if (nl === -1) break;
         const line = buf.subarray(0, nl).toString('latin1');
         buf = buf.subarray(nl + 2);
+        debugLog(line);
         const parts = line.split(' ');
         const tag = parts[0] ?? '';
 
