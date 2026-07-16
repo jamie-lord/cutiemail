@@ -114,7 +114,15 @@ export const CASES: readonly TestCase[] = [
     rationale: '§4.1.1.10: QUIT "specifies that the receiver MUST send a \\"221 OK\\" reply, and then close the transmission channel."',
     run: async (conn): Promise<Judgement> => {
       const g = await conn.readReply(5000);
+      // Gate on a 2yz greeting. A non-2yz greeting — notably a 421 "too many
+      // connections / service unavailable, closing channel" — means the session
+      // was refused up front (a real risk under the whole-corpus run, which opens
+      // 40+ rapid sequential connections from one IP and can trip a server's
+      // connection-rate limit). There is then no 221-on-QUIT obligation to test.
       if (g.kind !== 'reply') return { kind: 'inconclusive', reason: `greeting: ${g.kind}` };
+      if (severity(g.reply) !== 2) {
+        return { kind: 'inconclusive', reason: `greeting was ${g.reply.code} (session refused up front, e.g. 421 rate limit) — no QUIT obligation` };
+      }
       await conn.send(crlf`QUIT`);
       const r = await conn.readReply(3000);
       if (r.kind === 'timeout') return { kind: 'inconclusive', reason: 'QUIT drew no reply within the timeout (server may be slow, §4.5.3.2)' };

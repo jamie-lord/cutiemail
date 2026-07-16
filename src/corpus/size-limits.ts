@@ -22,6 +22,26 @@ import type { Judgement } from '../conformance/outcome.ts';
 import { crlf, cat, rep, EOD, bare, CRLF } from '../wire/bytes.ts';
 import { severity } from '../wire/reply.ts';
 
+/**
+ * Drive a full transaction (MAIL, RCPT, DATA, `body` + end-of-data) to the valid
+ * recipient and return the end-of-data reply outcome. Assumes greeting+EHLO are
+ * already done. Any setup failure surfaces as a non-'reply' outcome the caller
+ * treats as inconclusive.
+ */
+async function sendMessage(conn: Conn, body: Buffer): Promise<import('../conformance/test-case.ts').ReplyOutcome> {
+  await conn.send(crlf`MAIL FROM:<probe@conformance-suite.invalid>`);
+  const mail = await conn.readReply(3000);
+  if (mail.kind !== 'reply' || severity(mail.reply) !== 2) return mail;
+  await conn.send(crlf`RCPT TO:<${conn.fixture.validRecipient!}>`);
+  const rcpt = await conn.readReply(3000);
+  if (rcpt.kind !== 'reply' || severity(rcpt.reply) !== 2) return rcpt;
+  await conn.send(crlf`DATA`);
+  const data = await conn.readReply(3000);
+  if (data.kind !== 'reply' || data.reply.code !== 354) return data;
+  await conn.send(cat(body, EOD));
+  return conn.readReply(5000);
+}
+
 async function greetAndEhlo(conn: Conn): Promise<Judgement | null> {
   const g = await conn.readReply(5000);
   if (g.kind !== 'reply' || severity(g.reply) !== 2) {
@@ -98,42 +118,34 @@ export const CASES: readonly TestCase[] = [
     run: async (conn): Promise<Judgement> => {
       const bad = await greetAndEhlo(conn);
       if (bad !== null) return bad;
-      await conn.send(crlf`MAIL FROM:<probe@conformance-suite.invalid>`);
-      const mail = await conn.readReply(3000);
-      if (mail.kind !== 'reply' || severity(mail.reply) !== 2) {
-        return { kind: 'inconclusive', reason: `MAIL: ${mail.kind === 'reply' ? mail.reply.code : mail.kind}` };
+
+      // Isolate line-length from content/policy rejection. A 5yz at end-of-data is
+      // the canonical site of CONTENT filtering (spam/AV/policy), which the RFC
+      // permits (see the §4.5.2-d register note). So first run a control message
+      // with a SHORT innocuous body line to the same recipient: if THAT is
+      // rejected, the server rejects this transaction for reasons unrelated to
+      // line length, and we cannot judge the length MUST — inconclusive. Only if
+      // the short baseline is accepted AND the 1000-octet-line message is then
+      // rejected is length the differentiator and the rejection a violation.
+      const shortResult = await sendMessage(conn, cat(crlf`Subject: baseline`, crlf``, crlf`short body line`));
+      if (shortResult.kind !== 'reply') return { kind: 'inconclusive', reason: `baseline transaction: ${shortResult.kind}` };
+      if (severity(shortResult.reply) !== 2) {
+        return {
+          kind: 'inconclusive',
+          reason: `a short-body control message was itself rejected (${shortResult.reply.code}) — the server rejects this transaction for reasons unrelated to line length`,
+        };
       }
-      await conn.send(crlf`RCPT TO:<${conn.fixture.validRecipient!}>`);
-      const rcpt = await conn.readReply(3000);
-      if (rcpt.kind !== 'reply' || severity(rcpt.reply) !== 2) {
-        return { kind: 'inconclusive', reason: `RCPT: ${rcpt.kind === 'reply' ? rcpt.reply.code : rcpt.kind}` };
+
+      // 998-octet body line + CRLF = 1000 octets. Same recipient, only the line
+      // length differs from the accepted baseline.
+      const longResult = await sendMessage(conn, cat(crlf`Subject: length test`, crlf``, rep(0x78, 998), CRLF));
+      if (longResult.kind !== 'reply') return { kind: 'inconclusive', reason: `1000-octet line: ${longResult.kind}` };
+      if (severity(longResult.reply) === 2) return { kind: 'satisfied', detail: '1000-octet text line accepted' };
+      if (severity(longResult.reply) === 4) {
+        return { kind: 'inconclusive', reason: `temporary failure ${longResult.reply.code}, not a length rejection` };
       }
-      await conn.send(crlf`DATA`);
-      const data = await conn.readReply(3000);
-      if (data.kind !== 'reply' || data.reply.code !== 354) {
-        return { kind: 'inconclusive', reason: `DATA: ${data.kind === 'reply' ? data.reply.code : data.kind}` };
-      }
-      // A 998-octet body line + CRLF = 1000 octets. Plus a minimal header.
-      const body = cat(
-        crlf`Subject: length test`,
-        crlf``,
-        rep(0x78, 998),
-        CRLF,
-        EOD,
-      );
-      await conn.send(body);
-      const final = await conn.readReply(5000);
-      if (final.kind !== 'reply') return { kind: 'inconclusive', reason: `1000-octet line drew ${final.kind}` };
-      if (severity(final.reply) === 2) {
-        return { kind: 'satisfied', detail: '1000-octet text line accepted' };
-      }
-      // A 4yz temporary failure (greylisting, filter busy) is NOT evidence the
-      // line length was the problem — the server never rejected for length.
-      if (severity(final.reply) === 4) {
-        return { kind: 'inconclusive', reason: `temporary failure ${final.reply.code}, not a length rejection` };
-      }
-      // A 5yz is the length rejection = violation.
-      return { kind: 'violated', detail: `1000-octet text line drew ${final.reply.code} (5yz) — rejected within the mandated length` };
+      // Short accepted, long rejected 5yz: length is the only changed variable.
+      return { kind: 'violated', detail: `a 1000-octet text line drew ${longResult.reply.code} (5yz) where a short body was accepted — rejected within the mandated length` };
     },
   }),
 ];

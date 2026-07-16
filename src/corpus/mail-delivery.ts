@@ -169,18 +169,30 @@ export const CASES: readonly TestCase[] = [
       if (lower.kind !== 'reply' || severity(lower.reply) !== 2) {
         return { kind: 'inconclusive', reason: `lowercase postmaster not accepted (${lower.kind === 'reply' ? lower.reply.code : lower.kind}) — nothing to compare` };
       }
-      // Mixed case — must be treated the same.
+      // Re-establish the reverse-path buffer for the mixed-case comparison, and
+      // CHECK it was accepted — a second MAIL FROM can draw a 4yz/5yz (rate limit,
+      // duplicate-sender throttle) on an otherwise conformant server, and without
+      // this check that setup failure would be misattributed to case sensitivity.
       await conn.send(crlf`RSET`);
       await conn.readReply(3000);
       await conn.send(crlf`MAIL FROM:<probe@conformance-suite.invalid>`);
-      await conn.readReply(3000);
+      const mail2 = await conn.readReply(3000);
+      if (mail2.kind !== 'reply' || severity(mail2.reply) !== 2) {
+        return { kind: 'inconclusive', reason: `could not re-establish the reverse-path buffer (2nd MAIL FROM drew ${mail2.kind === 'reply' ? mail2.reply.code : mail2.kind}) — cannot isolate the case comparison` };
+      }
       await conn.send(crlf`RCPT TO:<Postmaster@${domain}>`);
       const mixed = await conn.readReply(3000);
       if (mixed.kind === 'timeout') return { kind: 'inconclusive', reason: 'mixed-case RCPT drew no reply within the timeout' };
       if (mixed.kind !== 'reply') return { kind: 'inconclusive', reason: `mixed-case RCPT: ${mixed.kind}` };
-      return severity(mixed.reply) === 2
-        ? { kind: 'satisfied', detail: 'Postmaster treated case-insensitively' }
-        : { kind: 'violated', detail: `lowercase postmaster accepted but mixed-case "Postmaster" drew ${mixed.reply.code} — case-sensitive treatment of the reserved local-part` };
+      if (severity(mixed.reply) === 2) return { kind: 'satisfied', detail: 'Postmaster treated case-insensitively' };
+      // A 4yz on the mixed-case RCPT is a temporary deferral (greylisting), not
+      // evidence of case-sensitive handling — inconclusive, mirroring the sibling
+      // recipient cases. Only a 5yz PERMANENT rejection, where lowercase was
+      // accepted, is the case-sensitivity violation.
+      if (severity(mixed.reply) === 4) {
+        return { kind: 'inconclusive', reason: `mixed-case Postmaster deferred with ${mixed.reply.code} (temporary) — not evidence of case sensitivity` };
+      }
+      return { kind: 'violated', detail: `lowercase postmaster accepted but mixed-case "Postmaster" drew ${mixed.reply.code} — case-sensitive treatment of the reserved local-part` };
     },
   }),
 ];

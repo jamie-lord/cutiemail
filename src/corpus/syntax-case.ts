@@ -209,8 +209,26 @@ export const CASES: readonly TestCase[] = [
       const bad = await greetAndEhlo(conn);
       if (bad !== null) return bad;
 
-      // MAIL FROM with a raw BEL (0x07) in the local-part — an invalid character
-      // code in an otherwise clean command (no other reason for rejection).
+      // Isolate the octet as the variable. First a CLEAN MAIL FROM baseline: if
+      // the server rejects even that (a TLS-required 530, AUTH-required 5yz, or
+      // any policy-first rejection), then it rejects MAIL for reasons unrelated to
+      // the octet and §4.1.2-n's exact-501 duty — which only applies when
+      // rejecting FOR the invalid character — cannot be judged. Inconclusive, not
+      // a finding. (The register note on §4.1.2-n calls out this "another reason
+      // for rejection" escape hatch explicitly.)
+      await conn.send(crlf`MAIL FROM:<probe@conformance-suite.invalid>`);
+      const baseline = await conn.readReply(3000);
+      if (baseline.kind !== 'reply' || severity(baseline.reply) !== 2) {
+        return {
+          kind: 'inconclusive',
+          reason: `clean MAIL FROM was not accepted (${baseline.kind === 'reply' ? baseline.reply.code : baseline.kind}) — the server rejects MAIL for a reason unrelated to the octet, so the 501 duty cannot be isolated`,
+        };
+      }
+      await conn.send(crlf`RSET`);
+      await conn.readReply(3000);
+
+      // Now the SAME command but with a raw BEL (0x07) in the local-part. Only the
+      // octet differs from the accepted baseline, so a rejection is FOR the octet.
       await conn.send(crlf`MAIL FROM:<pr${0x07}obe@conformance-suite.invalid>`);
       const r = await conn.readReply(3000);
       if (r.kind === 'timeout') {
