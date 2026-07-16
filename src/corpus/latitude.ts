@@ -103,6 +103,35 @@ export const CASES: readonly TestCase[] = [
         : { kind: 'satisfied', detail: `VRFY accepted without prior EHLO (${r.reply.code})` };
     },
   }),
+
+  testCase({
+    id: 'vrfy-supported',
+    requirement: 'R-5321-3.5.2-g',
+    intent: 'the server supports VRFY (a SHOULD — declining it, e.g. 502, is conformant anti-harvesting)',
+    rationale:
+      '§3.5.2: "Server implementations SHOULD support both VRFY and EXPN." A SHOULD, and the ' +
+      'reason it must be latitude not a MUST: a 502 "not implemented" for VRFY is standard ' +
+      'anti-address-harvesting practice and entirely conformant. Supporting VRFY (a 250/251/252 ' +
+      'that actually verifies or declines-to-verify-but-accepts) follows the SHOULD; a 502/500 ' +
+      'is the permitted decline. We record which.',
+    run: async (conn: Conn): Promise<Judgement> => {
+      const g = await conn.readReply(5000);
+      if (g.kind !== 'reply' || severity(g.reply) !== 2) {
+        return { kind: 'inconclusive', reason: `greeting: ${g.kind === 'reply' ? g.reply.code : g.kind}` };
+      }
+      await conn.send(crlf`EHLO conformance-suite.invalid`);
+      if ((await conn.readReply(3000)).kind !== 'reply') return { kind: 'inconclusive', reason: 'no EHLO reply' };
+      await conn.send(crlf`VRFY postmaster`);
+      const r = await conn.readReply(3000);
+      if (r.kind === 'timeout') return { kind: 'inconclusive', reason: 'VRFY drew no reply within the timeout' };
+      if (r.kind !== 'reply') return { kind: 'inconclusive', reason: `VRFY: ${r.kind}` };
+      // 502/500 "not implemented/recognized" = declined (permitted). A 25x — even
+      // 252 "cannot VRFY but will accept" — means the command is supported.
+      return r.reply.code === 502 || r.reply.code === 500
+        ? { kind: 'violated', detail: `VRFY not supported (${r.reply.code}) — permitted anti-harvesting, §3.5.2-g is a SHOULD` }
+        : { kind: 'satisfied', detail: `VRFY supported (${r.reply.code})` };
+    },
+  }),
 ];
 
 export const CONTROLS: readonly LatitudeControl[] = [
@@ -120,5 +149,10 @@ export const CONTROLS: readonly LatitudeControl[] = [
     case: 'non-mail-command-without-greeting',
     follows: {}, // clean mutant answers VRFY regardless of greeting state
     declines: { vrfy503BeforeGreeting: true }, // declines: 503 before EHLO
+  },
+  {
+    case: 'vrfy-supported',
+    follows: {}, // clean mutant answers VRFY 252 (supported)
+    declines: { vrfyNotSupported: true }, // declines: 502 not implemented (anti-harvesting)
   },
 ];

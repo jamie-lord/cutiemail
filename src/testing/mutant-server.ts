@@ -173,6 +173,11 @@ export interface Defects {
    * this models a server DECLINING that SHOULD (the clean server accepts it).
    */
   readonly vrfy503BeforeGreeting?: boolean;
+  /**
+   * Answer VRFY with 502 "not implemented". CONFORMANT — §3.5.2-g is a SHOULD,
+   * and declining VRFY (anti-harvesting) is standard; models the decline branch.
+   */
+  readonly vrfyNotSupported?: boolean;
   /** Answer NOOP with a 500 "command not recognized". Violates R-5321-4.5.1-b. */
   readonly unrecognizedNoop?: boolean;
   /** Send TWO replies to a single NOOP. Violates R-5321-4.2-a (exactly one reply). */
@@ -658,6 +663,7 @@ export class MutantServer {
         if (d.vrfy503BeforeGreeting && !state.greeted) {
           return replyOK(503, 'Error: send HELO/EHLO first');
         }
+        if (d.vrfyNotSupported) return replyOK(502, 'VRFY not implemented');
         if (d.vrfyResetsState) {
           state.hasMail = false;
           state.rcptCount = 0;
