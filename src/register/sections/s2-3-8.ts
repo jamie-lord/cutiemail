@@ -36,7 +36,16 @@ export const S2_3_8 = [
       'Longin, Dec 2023) — but note the vulnerability lives in the ' +
       'DISAGREEMENT between two implementations, so our report must classify ' +
       'the observed behaviour (honoured / rejected / silently normalised) ' +
-      'rather than only pass/fail. See task #17.',
+      'rather than only pass/fail. See task #17. ' +
+      'CALIBRATION GROUND TRUTH (2026-07-16): BOTH real servers pointed at this ' +
+      'check honour a bare-LF-terminated COMMAND — Exim 4.99.4 replied 250 to a ' +
+      'bare-LF EHLO and NOOP, and aiosmtpd 1.4.6 the same. So this MUST NOT is ' +
+      'widely violated by production MTAs for command-line terminators (distinct ' +
+      'from the DATA-phase end-of-data smuggling that CVE-2023-51766 hardened). ' +
+      'The suite is CORRECT to flag it — bare-LF acceptance is exactly the ' +
+      'smuggling-adjacent leniency it exists to surface — and a server author ' +
+      'using this suite genuinely wants to know. Recorded as a real divergence, ' +
+      'not softened: see reference-servers/CALIBRATION-exim.md.',
   },
   {
     id: 'R-5321-2.3.8-b',

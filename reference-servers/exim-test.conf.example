@@ -1,0 +1,45 @@
+# Isolated Exim test receiver for conformance calibration. RFC 2606 domains only.
+primary_hostname = exim.example.com
+exim_user = REPLACE_WITH_YOUR_UID   # id -u
+exim_group = REPLACE_WITH_YOUR_GID   # id -g
+spool_directory = /tmp/exim-test/spool
+log_file_path = /tmp/exim-test/log/exim_%s.log
+exim_path = /opt/homebrew/bin/exim
+never_users =
+disable_ipv6 = true
+
+domainlist local_domains = example.com
+acl_smtp_rcpt = acl_check_rcpt
+acl_smtp_data = acl_check_data
+
+begin acl
+
+acl_check_rcpt:
+  # RFC 5321 §4.5.1: the reserved postmaster mailbox MUST be accepted, incl. the
+  # bare (domain-less) form, which Exim qualifies to postmaster@primary_hostname.
+  accept  local_parts = postmaster
+  accept  domains = +local_domains
+          local_parts = recipient : postmaster
+  deny    domains = +local_domains
+          message = 550 No such user here
+  deny    message = 550 relay not permitted
+
+acl_check_data:
+  accept
+
+begin routers
+
+discard_router:
+  driver = accept
+  transport = discard_transport
+
+begin transports
+
+discard_transport:
+  driver = appendfile
+  file = /dev/null
+  user = jamie
+
+begin retry
+*   *   F,2h,15m
+
