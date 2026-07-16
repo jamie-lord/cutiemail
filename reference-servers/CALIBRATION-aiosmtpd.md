@@ -111,3 +111,25 @@ now grade: aiosmtpd **accepts** a 64-octet local-part and a 245-octet domain (co
 MAIL with 503, the conformant §4.1.4-o path, which the test correctly reports as "reset not
 exercised" rather than a false finding: independent confirmation that its isolate-the-variable
 gate works against real software.
+
+### STARTTLS enabled — the security corpus, calibrated against real TLS
+
+Setting `AIOSMTPD_CERT`/`AIOSMTPD_KEY` (see `aiosmtpd-target.py`) makes aiosmtpd advertise and
+honour STARTTLS, so the RFC 3207 cases grade instead of going inconclusive: **59 conformant, 4
+non-conformant, 6 inconclusive, zero false positives.** Both STARTTLS cases pass — aiosmtpd
+advertises-and-honours the upgrade (§4.2.4-c), and, the flagship security check, **correctly
+discards plaintext pipelined across the STARTTLS boundary** (R-3207-4.2-a): it is *not*
+vulnerable to the CVE-2011-0411 injection. This validates the suite's crown-jewel security
+corpus — including the TLS-terminating handshake path — against an independent TLS
+implementation, not just the mutant. 63 of 69 cases now grade against real software; the
+6 remaining inconclusive are all honest (the 4 sink cases with no relay, EXPN disabled → 502,
+and 3.3-b's conformant nested-MAIL-503 path).
+
+Reproduce the full run:
+
+```sh
+openssl req -x509 -newkey rsa:2048 -keyout /tmp/key.pem -out /tmp/cert.pem -days 1 \
+  -nodes -subj "/CN=aiosmtpd.example.com"
+AIOSMTPD_CERT=/tmp/cert.pem AIOSMTPD_KEY=/tmp/key.pem ./venv/bin/python aiosmtpd-target.py &
+node ../src/cli.ts run --config aiosmtpd.json --verbose --now 2026-07-16T12:00:00Z
+```
