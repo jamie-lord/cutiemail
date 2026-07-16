@@ -387,6 +387,9 @@ export class ImapServer {
         const cmd = (parts[cmdIndex] ?? '').toUpperCase();
         const arg = (n: number): string => parts[cmdIndex + n] ?? '';
 
+        // Never let a malformed command crash the connection or the process —
+        // an internet-facing parser must degrade to a protocol error, not throw.
+        try {
         switch (cmd) {
           case 'CAPABILITY':
             write(sock, `* CAPABILITY ${CAPABILITIES}`);
@@ -656,6 +659,9 @@ export class ImapServer {
             break;
           default:
             write(sock, `${tag} BAD command unknown`);
+        }
+        } catch {
+          write(sock, `${tag} BAD internal error handling command`);
         }
       }
     });

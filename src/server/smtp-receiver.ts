@@ -156,20 +156,25 @@ class Connection {
           this.#buf = this.#buf.subarray(eod);
           continue;
         }
-        this.#handler({
-          from: this.#from,
-          recipients: [...this.#recipients],
-          data: unstuffed,
-          overTls: this.#tls,
-          helo: this.#helo,
-          remoteAddress: this.#remoteAddress,
-          authenticated: this.#authed,
-        });
+        let stored = true;
+        try {
+          this.#handler({
+            from: this.#from,
+            recipients: [...this.#recipients],
+            data: unstuffed,
+            overTls: this.#tls,
+            helo: this.#helo,
+            remoteAddress: this.#remoteAddress,
+            authenticated: this.#authed,
+          });
+        } catch {
+          stored = false; // a store/sign failure is a temporary error, not a crash
+        }
         this.#from = '';
         this.#recipients = [];
         this.#inData = false;
         this.#buf = this.#buf.subarray(eod);
-        this.#write('250 2.0.0 message stored');
+        this.#write(stored ? '250 2.0.0 message stored' : '451 4.3.0 error storing message');
         continue;
       }
       const nl = this.#buf.indexOf(Buffer.from([CR, LF]));
@@ -182,7 +187,12 @@ class Connection {
         this.#startTls();
         return; // stop processing plaintext; anything left in #buf is discarded
       }
-      this.#command(verb, line);
+      // A malformed command must never crash the connection or the process.
+      try {
+        this.#command(verb, line);
+      } catch {
+        this.#write('451 4.3.0 internal error processing command');
+      }
     }
   }
 
