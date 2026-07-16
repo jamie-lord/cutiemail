@@ -295,6 +295,13 @@ export interface Defects {
    * begin with a Received: line.
    */
   readonly dontPrependReceived?: boolean;
+  /**
+   * When relaying, strip control characters (HT, VT, FF, …) from the body,
+   * keeping only CR/LF. Violates R-5321-4.5.2-e (ALL characters, including
+   * vertical and horizontal tabs and other control characters, are delivered).
+   * Observable at the sink as a body missing its tabs.
+   */
+  readonly stripControlCharsOnRelay?: boolean;
   /** Close the connection on error without sending 421. */
   readonly closeWithout421?: boolean;
   /**
@@ -624,7 +631,11 @@ export class MutantServer {
     // local-part case (clean) or fold it (lowercaseLocalPartOnRelay defect).
     if (this.#relayTo !== undefined) {
       const payload = eod >= 5 ? buf.subarray(0, eod - 5) : Buffer.alloc(0);
-      const stored = this.#defects.dontUnstuffOnRelay ? Buffer.from(payload) : unstuff(payload);
+      let stored = this.#defects.dontUnstuffOnRelay ? Buffer.from(payload) : unstuff(payload);
+      if (this.#defects.stripControlCharsOnRelay) {
+        // Drop control octets except CR/LF (which structure the lines).
+        stored = Buffer.from(stored.filter((b) => b >= 0x20 || b === CR || b === LF));
+      }
       const recipients = this.#defects.lowercaseLocalPartOnRelay
         ? state.recipients.map(foldLocalPart)
         : [...state.recipients];

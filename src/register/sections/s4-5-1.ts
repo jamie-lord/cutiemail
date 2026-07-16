@@ -320,12 +320,14 @@ export const S4_5_1 = [
       'including spaces, vertical and horizontal tabs, and other control ' +
       'characters.',
     testability: {
-      kind: 'not-testable',
-      reason:
-        'Delivery fidelity is observable only in the stored mailbox / next ' +
-        'hop, not in the receiver\'s reply codes. We have no sink to read the ' +
-        'delivered body, so whether tabs and control characters survived is ' +
-        'invisible from the client socket.',
+      kind: 'wire-with-fixture',
+      fixture:
+        'A receiving sink the server relays to, so the delivered body can be read ' +
+        'back. Relay a body with a horizontal tab (0x09) and a vertical tab (0x0b) ' +
+        'and confirm both survive. The mutant relay harness (verifySinkControls, ' +
+        'defect stripControlCharsOnRelay) provides this; a real server needs to be ' +
+        'configured to relay to our sink. NOW TESTABLE via the sink (decision 0005); ' +
+        'corpus case control-chars-delivered asserts it.',
     },
     note:
       'DERIVED, hence `prose`: "are to be delivered" is a MUST-force ' +

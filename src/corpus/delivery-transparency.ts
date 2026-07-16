@@ -108,6 +108,28 @@ export const CASES: readonly TestCase[] = [
   }),
 
   testCase({
+    id: 'control-chars-delivered',
+    requirement: 'R-5321-4.5.2-e',
+    intent: 'control characters in the body (HT, VT) survive to delivery',
+    rationale:
+      '§4.5.2: "All characters are to be delivered to the recipient\'s mailbox, including spaces, ' +
+      'vertical and horizontal tabs, and other control characters." A server MUST NOT strip them. ' +
+      'Invisible from the client side; we relay a body containing a horizontal tab (0x09) and a ' +
+      'vertical tab (0x0b) and confirm both survive in the delivered content.',
+    needs: { sink: true, fixture: ['validRecipient'] },
+    run: async (conn): Promise<Judgement> => {
+      const body = Buffer.from('col1\tcol2\x0bvtab', 'latin1'); // HT 0x09 and VT 0x0b
+      const got = await deliverAndCapture(conn, conn.fixture.validRecipient!, dotStuff(body));
+      if ('kind' in got) return got;
+      const hasHT = got.data.includes(0x09);
+      const hasVT = got.data.includes(0x0b);
+      return hasHT && hasVT
+        ? { kind: 'satisfied', detail: 'horizontal and vertical tabs delivered intact' }
+        : { kind: 'violated', detail: `delivered body dropped control characters (HT present: ${hasHT}, VT present: ${hasVT}) — §4.5.2 requires all characters be delivered` };
+    },
+  }),
+
+  testCase({
     id: 'local-part-case-preserved-on-delivery',
     requirement: 'R-5321-2.4-d',
     intent: 'the case of the recipient local-part is preserved through to delivery',
@@ -136,6 +158,11 @@ export const MUTANTS: readonly Mutant[] = [
     catches: 'data-transparency-dot-unstuffed',
     defect: 'dontUnstuffOnRelay',
     why: 'forwarding a body with the transport dot still doubled violates R-5321-4.5.2-c (the receiver deletes the leading period)',
+  },
+  {
+    catches: 'control-chars-delivered',
+    defect: 'stripControlCharsOnRelay',
+    why: 'stripping horizontal/vertical tabs from the relayed body violates R-5321-4.5.2-e (all characters, including control characters, are delivered)',
   },
   {
     catches: 'received-trace-inserted-on-relay',
