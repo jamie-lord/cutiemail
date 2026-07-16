@@ -60,4 +60,15 @@ export class AccountStore {
     if (c === undefined) return false;
     return verifyClientProof(c.storedKey, authMessage, clientProof, c.hash);
   }
+
+  /**
+   * Verify a plaintext password (from SASL PLAIN over TLS) against the stored keys,
+   * by re-deriving StoredKey from the password + stored salt/iterations. The stored
+   * database still holds no password — the derivation is transient.
+   */
+  verifyPassword(username: string, password: string): boolean {
+    const c = this.#creds.get(username);
+    if (c === undefined) return false;
+    return storedKey(hi(password, c.salt, c.iterations, c.hash), c.hash).equals(c.storedKey);
+  }
 }

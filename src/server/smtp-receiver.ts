@@ -1,13 +1,15 @@
 /**
  * A minimal, conformant SMTP receiver — a live server assembled from the test bed —
- * with optional STARTTLS.
+ * with optional STARTTLS and submission AUTH.
  *
  * It accepts a mail transaction (EHLO / MAIL / RCPT / DATA / QUIT) over a socket,
  * un-stuffs the DATA payload (RFC 5321 §4.5.2), and hands the delivered message to a
  * pluggable handler (the integration test wires it to the SQLite mailbox). With
  * STARTTLS enabled it advertises the extension and upgrades the connection to TLS —
  * and, crucially, DISCARDS any buffered plaintext at the upgrade (RFC 3207 §4.2, the
- * STARTTLS-command-injection defence). Raw sockets + Buffers so delivery is byte-exact.
+ * STARTTLS-command-injection defence). In submission mode it requires a successful
+ * SASL PLAIN AUTH (over TLS only, ADR 0007) before accepting mail. Raw sockets +
+ * Buffers so delivery is byte-exact.
  */
 
 import net from 'node:net';
@@ -32,9 +34,14 @@ export interface ReceiverOptions {
   readonly tls?: { readonly key: string; readonly cert: string };
   /** DEFECT: keep the receive buffer across STARTTLS (the injection vulnerability). */
   readonly retainBufferAcrossStarttls?: boolean;
+  /** Submission mode: require a successful AUTH before MAIL (rejects unauthenticated mail 530). */
+  readonly requireAuth?: boolean;
+  /** Verify a SASL PLAIN (username, password); wired to the account store by the caller. */
+  readonly authenticate?: (username: string, password: string) => boolean;
 }
 
 const addrOf = (line: string): string => /<([^>]*)>/.exec(line)?.[1] ?? '';
+const NUL = String.fromCharCode(0);
 
 function unstuff(payload: Buffer): Buffer {
   const out: Buffer[] = [];
@@ -73,6 +80,7 @@ class Connection {
   #recipients: string[] = [];
   #inData = false;
   #tls = false;
+  #authed = false;
   readonly #handler: DeliveryHandler;
   readonly #domain: string;
   readonly #opts: ReceiverOptions;
@@ -117,7 +125,7 @@ class Connection {
       const verb = line.split(/\s+/)[0]?.toUpperCase() ?? '';
       if (verb === 'STARTTLS' && this.#opts.tls !== undefined) {
         this.#startTls();
-        return; // stop processing plaintext; anything left in #buf is discarded below
+        return; // stop processing plaintext; anything left in #buf is discarded
       }
       this.#command(verb, line);
     }
@@ -125,18 +133,29 @@ class Connection {
 
   #command(verb: string, line: string): void {
     switch (verb) {
-      case 'EHLO':
-        if (this.#opts.tls !== undefined && !this.#tls) {
-          this.#write(`250-${this.#domain}`);
-          this.#write('250 STARTTLS');
-        } else {
+      case 'EHLO': {
+        const ext: string[] = [];
+        if (this.#opts.tls !== undefined && !this.#tls) ext.push('STARTTLS');
+        if (this.#opts.authenticate !== undefined && this.#tls) ext.push('AUTH PLAIN');
+        if (ext.length === 0) {
           this.#write(`250 ${this.#domain}`);
+        } else {
+          this.#write(`250-${this.#domain}`);
+          for (let i = 0; i < ext.length; i++) this.#write(`${i === ext.length - 1 ? '250 ' : '250-'}${ext[i]}`);
         }
+        break;
+      }
+      case 'AUTH':
+        this.#auth(line);
         break;
       case 'HELO':
         this.#write(`250 ${this.#domain}`);
         break;
       case 'MAIL':
+        if (this.#opts.requireAuth === true && !this.#authed) {
+          this.#write('530 5.7.0 Authentication required');
+          break;
+        }
         this.#from = addrOf(line);
         this.#recipients = [];
         this.#write('250 2.1.0 Ok');
@@ -170,12 +189,43 @@ class Connection {
     }
   }
 
+  /** Handle "AUTH PLAIN <base64>". SASL PLAIN is offered only over TLS (ADR 0007). */
+  #auth(line: string): void {
+    if (this.#opts.authenticate === undefined) {
+      this.#write('504 5.5.4 AUTH not supported');
+      return;
+    }
+    if (!this.#tls) {
+      this.#write('538 5.7.11 Encryption required for AUTH'); // no plaintext AUTH
+      return;
+    }
+    if (this.#authed) {
+      this.#write('503 5.5.1 already authenticated');
+      return;
+    }
+    const parts = line.split(/\s+/);
+    if ((parts[1] ?? '').toUpperCase() !== 'PLAIN' || parts[2] === undefined) {
+      this.#write('504 5.5.4 unsupported AUTH mechanism');
+      return;
+    }
+    // SASL PLAIN payload: authzid NUL authcid NUL passwd.
+    const decoded = Buffer.from(parts[2], 'base64').toString('latin1').split(NUL);
+    const username = decoded[1] ?? '';
+    const password = decoded[2] ?? '';
+    if (this.#opts.authenticate(username, password)) {
+      this.#authed = true;
+      this.#write('235 2.7.0 Authentication successful');
+    } else {
+      this.#write('535 5.7.8 Authentication credentials invalid');
+    }
+  }
+
   #startTls(): void {
     const raw = this.#active as net.Socket;
     this.#write('220 2.0.0 Ready to start TLS');
     raw.removeAllListeners('data');
-    // RFC 3207 §4.2: discard the buffer (and the transaction state) at the upgrade,
-    // so any plaintext injected before the handshake is not executed post-TLS.
+    // RFC 3207 §4.2: discard the buffer (and transaction state) at the upgrade, so
+    // any plaintext injected before the handshake is not executed post-TLS.
     this.#buf = this.#opts.retainBufferAcrossStarttls === true ? this.#buf : Buffer.alloc(0);
     this.#from = '';
     this.#recipients = [];
@@ -185,7 +235,6 @@ class Connection {
     this.#active = secure;
     this.#tls = true;
     this.#bind(secure);
-    // If a retained buffer holds pipelined plaintext (the defect), process it now.
     if (this.#buf.length > 0) {
       const held = this.#buf;
       this.#buf = Buffer.alloc(0);
@@ -197,7 +246,7 @@ class Connection {
 export class SmtpReceiver {
   readonly port: number;
   readonly #server: net.Server;
-  readonly #sockets = new Set<net.Socket>();
+  readonly #sockets: Set<net.Socket>;
 
   private constructor(server: net.Server, port: number, sockets: Set<net.Socket>) {
     this.#server = server;
