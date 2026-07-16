@@ -10,11 +10,12 @@
 
 import type { RequirementDef, IdsOf } from '../types.ts';
 import { MTA_STS } from './sections/mta-sts.ts';
+import { SMTPUTF8 } from './sections/smtputf8.ts';
 
-/** Sections of the transport-security RFCs extracted into the register so far. */
-export const EXTRACTED_SECTIONS: readonly string[] = ['3.2', '4.1'];
+/** Sections of the transport RFCs extracted so far (MTA-STS §3.2/§4.1, SMTPUTF8 §3.5). */
+export const EXTRACTED_SECTIONS: readonly string[] = ['3.2', '3.5', '4.1'];
 
-export const TRANSPORT_REQUIREMENTS = [...MTA_STS] as const satisfies readonly RequirementDef[];
+export const TRANSPORT_REQUIREMENTS = [...MTA_STS, ...SMTPUTF8] as const satisfies readonly RequirementDef[];
 
 /** Every transport requirement ID as a union — compile-time traceability. */
 export type TransportRequirementId = IdsOf<typeof TRANSPORT_REQUIREMENTS>;
