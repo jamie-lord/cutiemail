@@ -16,7 +16,15 @@
  * against by a verbatim gate. One entry per file in spec/. Adding an RFC here + the
  * file in spec/ is all a new register domain needs from the shared shape.
  */
-export type SpecSource = 'rfc5321' | 'rfc3207' | 'rfc5322' | 'rfc2045' | 'rfc2046' | 'rfc2047' | 'rfc6376';
+export type SpecSource =
+  | 'rfc5321'
+  | 'rfc3207'
+  | 'rfc5322'
+  | 'rfc2045'
+  | 'rfc2046'
+  | 'rfc2047'
+  | 'rfc6376'
+  | 'rfc9051';
 
 /** RFC 2119 / RFC 8174 normative levels, as they appear in the source RFCs. */
 export type Level =
