@@ -347,8 +347,6 @@ export interface Defects {
   readonly unknownCommand502?: boolean;
   /** Send mismatched continuation codes in a multiline reply. */
   readonly mismatchedContinuation?: boolean;
-  /** Accept a command line longer than 512 octets without 500. */
-  readonly acceptOverlongCommand?: boolean;
   /** After STARTTLS, do NOT discard state (advertise pre-TLS EHLO keywords). */
   readonly keepStateAcrossStartTls?: boolean;
   /**
