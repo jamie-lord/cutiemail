@@ -63,3 +63,19 @@ natively on macOS but running it isolated is more invasive (it resists a fully r
 instance); Stalwart/Mox are single Go/Rust binaries that could be fetched and run without
 Docker. Docker itself is still non-functional here (daemon unresponsive even after restart with
 permissions granted).
+
+## Re-confirmation (2026-07-17, current codebase)
+
+After a large session of server work (DKIM/queue/STARTTLS/IDLE/UIDPLUS/multi-mailbox,
+DoS hardening, transactional WAL storage, VRFY/control-octet fixes), the ground-truth
+calibration was **re-run against a freshly-launched native Exim 4.99.4** on 127.0.0.1:2526:
+
+```
+59 conformant, 2 non-conformant, 0 permitted-latitude, 7 inconclusive
+```
+
+**Identical to the original run** — same two genuine bare-LF divergences (R-5321-2.3.8-a,
+R-5321-4.1.1.4-i), same zero false positives across 59 conformant Exim behaviours. The
+conformance suite's grading remains trustworthy against a real production MTA after the
+session's changes (which touched the live servers and storage, not the corpus/runner —
+this confirms that separation held). aiosmtpd (with STARTTLS) was re-confirmed the same way.
