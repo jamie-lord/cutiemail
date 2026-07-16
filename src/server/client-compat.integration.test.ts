@@ -75,10 +75,10 @@ test('the Thunderbird account-setup sequence completes against the server', asyn
   const sock = net.connect(server.port, '127.0.0.1');
   const s = new Session(sock);
   try {
-    assert.match(await s.greeting(), /\* OK \[CAPABILITY IMAP4rev2 IDLE\]/);
+    assert.match(await s.greeting(), /\* OK \[CAPABILITY IMAP4rev2 IDLE UIDPLUS\]/);
 
     const cap = await s.run('t1', 'CAPABILITY');
-    assert.match(cap, /^\* CAPABILITY IMAP4rev2 IDLE\r$/m, 'CAPABILITY answers as a command');
+    assert.match(cap, /^\* CAPABILITY IMAP4rev2 IDLE UIDPLUS\r$/m, 'CAPABILITY answers as a command');
     assert.match(cap, /^t1 OK/m);
 
     assert.match(await s.run('t2', 'LOGIN test pw'), /^t2 OK/m);
@@ -171,13 +171,14 @@ test('the Thunderbird folder workflow: CREATE Trash, APPEND to Sent, MOVE to del
     await s.waitFor('+ Ready');
     s.raw(`${sentMsg}\r\n`);
     const appended = await s.waitFor('f7 ');
-    assert.match(appended, /f7 OK/, 'APPEND completes after the literal');
+    assert.match(appended, /f7 OK \[APPENDUID 1 1\] APPEND completed/, 'APPEND returns the UIDPLUS APPENDUID of the filed message');
     assert.equal(catalog.get('Sent')!.messages.length, 1, 'the sent copy is filed');
     assert.ok(catalog.get('Sent')!.messages[0]!.flags.has('\\Seen'), 'APPEND flags are applied');
 
     // Delete-via-Trash: TB moves the message (rev2 MOVE), numbering stays consistent.
     await s.run('f8', 'SELECT "INBOX"');
     const move = await s.run('f9', 'UID MOVE 2 "Trash"');
+    assert.match(move, /f9 OK \[COPYUID 1 2 1\] MOVE completed/, 'MOVE reports COPYUID (src uid 2 -> dst uid 1 in Trash)');
     assert.match(move, /^\* 2 EXPUNGE\r$/m, 'MOVE reports the expunged sequence number');
     assert.match(move, /^f9 OK/m);
     assert.equal(inbox.messages.length, 1, 'the message left INBOX');
@@ -192,6 +193,23 @@ test('the Thunderbird folder workflow: CREATE Trash, APPEND to Sent, MOVE to del
 
     // A COPY to a missing mailbox gets the TRYCREATE hint, not a BAD.
     assert.match(await s.run('f11', 'UID COPY 1 "Nowhere"'), /^f11 NO \[TRYCREATE\]/m);
+
+    // UIDPLUS UID EXPUNGE: only \Deleted messages within the given UID set go.
+    await s.run('f12', 'CREATE "Work"');
+    // Put two messages in Work and mark both \Deleted.
+    for (const body of ['a', 'b']) {
+      const m = `Subject: ${body}\r\n\r\n${body}\r\n`;
+      s.raw(`fA APPEND "Work" {${m.length}}\r\n`);
+      await s.waitFor('+ Ready');
+      s.raw(`${m}\r\n`);
+      await s.waitFor('fA OK');
+    }
+    await s.run('f13', 'SELECT "Work"');
+    await s.run('f14', String.raw`UID STORE 1:2 +FLAGS.SILENT (\Deleted)`);
+    const uidExpunge = await s.run('f15', 'UID EXPUNGE 1'); // only uid 1, though both are \Deleted
+    assert.match(uidExpunge, /^\* 1 EXPUNGE\r$/m, 'the targeted UID was expunged');
+    assert.equal(catalog.get('Work')!.messages.length, 1, 'the other \\Deleted message (uid 2, not in the set) stayed');
+    assert.equal(catalog.get('Work')!.messages[0]!.uid, 2);
   } finally {
     sock.destroy();
     await server.close();

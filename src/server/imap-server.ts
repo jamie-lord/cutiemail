@@ -61,7 +61,7 @@ function inboxOnly(mailbox: ServableMailbox): ServableCatalog {
   };
 }
 
-const CAPABILITIES = 'IMAP4rev2 IDLE';
+const CAPABILITIES = 'IMAP4rev2 IDLE UIDPLUS';
 
 /** Special-use attributes by conventional folder name (RFC 6154 / 9051 §7.3.1). */
 const SPECIAL_USE: Record<string, string> = {
@@ -348,8 +348,10 @@ export class ImapServer {
           if (box === undefined) {
             write(sock, `${pendingAppend.tag} NO [TRYCREATE] no such mailbox`);
           } else {
-            box.append(raw, pendingAppend.flags);
-            write(sock, `${pendingAppend.tag} OK APPEND completed`);
+            // UIDPLUS (RFC 4315): tell the client the UID it just created, so it
+            // needn't re-search for the message it filed (e.g. a Sent copy).
+            const uid = box.append(raw, pendingAppend.flags);
+            write(sock, `${pendingAppend.tag} OK [APPENDUID ${box.uidValidity} ${uid}] APPEND completed`);
           }
           pendingAppend = null;
           continue;
@@ -571,7 +573,13 @@ export class ImapServer {
               break;
             }
             const entries = this.#resolveSet(selected, set, uidMode);
-            for (const { msg } of entries) target.append(msg.raw, [...msg.flags]);
+            // UIDPLUS COPYUID: report the source and destination UIDs, in order.
+            const srcUids: number[] = [];
+            const dstUids: number[] = [];
+            for (const { msg } of entries) {
+              srcUids.push(msg.uid);
+              dstUids.push(target.append(msg.raw, [...msg.flags]));
+            }
             if (cmd === 'MOVE') {
               // Remove from the source, reporting EXPUNGE by descending sequence
               // number so the client's numbering stays consistent (RFC 9051 §6.4.8).
@@ -580,7 +588,8 @@ export class ImapServer {
                 write(sock, `* ${seq} EXPUNGE`);
               }
             }
-            write(sock, `${tag} OK ${cmd} completed`);
+            const copyuid = srcUids.length > 0 ? `[COPYUID ${target.uidValidity} ${srcUids.join(',')} ${dstUids.join(',')}] ` : '';
+            write(sock, `${tag} OK ${copyuid}${cmd} completed`);
             break;
           }
           case 'EXPUNGE': {
@@ -588,10 +597,19 @@ export class ImapServer {
               write(sock, `${tag} BAD no mailbox selected`);
               break;
             }
-            // Report EXPUNGE by descending sequence number so the client's numbering stays consistent.
-            const before = selected.messages.map((m) => m.uid);
-            const removedUids = new Set(selected.expungeDeleted());
-            const seqs = before.map((uid, i) => ({ uid, seq: i + 1 })).filter((e) => removedUids.has(e.uid));
+            const before = selected.messages.map((m) => ({ uid: m.uid, deleted: m.flags.has('\\Deleted') }));
+            // UID EXPUNGE <set> (RFC 4315): restrict to \Deleted messages within
+            // the set; plain EXPUNGE removes every \Deleted message.
+            let removedUids: Set<number>;
+            if (uidMode && arg(1) !== '') {
+              const inSet = new Set(this.#resolveSet(selected, arg(1), true).map((e) => e.msg.uid));
+              removedUids = new Set(before.filter((m) => m.deleted && inSet.has(m.uid)).map((m) => m.uid));
+              for (const uid of removedUids) selected.expunge(uid);
+            } else {
+              removedUids = new Set(selected.expungeDeleted());
+            }
+            // Report by descending sequence number so the client's numbering stays consistent.
+            const seqs = before.map((m, i) => ({ uid: m.uid, seq: i + 1 })).filter((e) => removedUids.has(e.uid));
             for (const e of seqs.reverse()) write(sock, `* ${e.seq} EXPUNGE`);
             write(sock, `${tag} OK EXPUNGE completed`);
             break;
