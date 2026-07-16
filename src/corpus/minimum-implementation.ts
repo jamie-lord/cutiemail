@@ -48,7 +48,16 @@ export const CASES: readonly TestCase[] = [
       if (e.kind !== 'reply') return { kind: 'violated', detail: `EHLO: server ${e.kind} instead of replying` };
       if (severity(e.reply) === 2) return { kind: 'satisfied', detail: `EHLO supported (${e.reply.code})` };
       if (severity(e.reply) === 4) return { kind: 'inconclusive', reason: `EHLO drew a transient ${e.reply.code}` };
-      return { kind: 'violated', detail: `EHLO drew ${e.reply.code} — the server does not support EHLO` };
+      // Only "command not implemented/recognised" (500/502) denies EHLO SUPPORT.
+      // Any other 5yz means EHLO was understood but refused for an unrelated
+      // reason — notably a hardened server rejecting our `.invalid` EHLO name
+      // (Postfix reject_unknown/invalid_helo_hostname -> 550) — which does NOT
+      // mean the server lacks EHLO. Convicting it would false-positive a
+      // conformant, EHLO-supporting server (same trap as helo-is-supported).
+      if (e.reply.code === 500 || e.reply.code === 502) {
+        return { kind: 'violated', detail: `EHLO drew ${e.reply.code} (command not implemented/recognised) — the server does not support EHLO` };
+      }
+      return { kind: 'inconclusive', reason: `EHLO drew ${e.reply.code}: understood but refused on policy (e.g. EHLO-hostname), not a command-support failure` };
     },
   }),
 

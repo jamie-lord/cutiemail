@@ -256,10 +256,11 @@ export const CASES: readonly TestCase[] = [
     rationale:
       '§4.1.1.5: RSET "is effectively equivalent to a NOOP (i.e., it has no effect) if issued ' +
       'immediately after EHLO, before EHLO is issued in the session, after an end of data ' +
-      'indicator has been sent, or immediately before an EHLO." The register note flags the ' +
-      'high-value, high-divergence case: "before EHLO is issued in the session" — many servers ' +
-      'reject every command before EHLO with 503, but this sentence says RSET is not one of them. ' +
-      '"Equivalent to a NOOP" means the reply CLASS (a 250), not the exact greeting text.',
+      'indicator has been sent and acknowledged, or immediately before a QUIT." The register ' +
+      'note flags the high-value, high-divergence case: "before EHLO is issued in the session" — ' +
+      'many servers reject every command before EHLO with a 503 bad-sequence, but this sentence ' +
+      'says RSET is not one of them. "Equivalent to a NOOP" means the reply CLASS (a 250), not ' +
+      'the exact greeting text.',
     run: async (conn): Promise<Judgement> => {
       const g = await conn.readReply(5000);
       if (g.kind !== 'reply' || severity(g.reply) !== 2) {
@@ -271,9 +272,16 @@ export const CASES: readonly TestCase[] = [
       if (r.kind === 'timeout') return { kind: 'inconclusive', reason: 'RSET-before-EHLO drew no reply within the timeout' };
       if (r.kind !== 'reply') return { kind: 'inconclusive', reason: `RSET-before-EHLO: ${r.kind}` };
       if (severity(r.reply) === 2) return { kind: 'satisfied', detail: `RSET before EHLO drew ${r.reply.code} (no-op)` };
-      // A 4yz is transient (shutdown/rate-limit), not a claim that RSET is illegal here.
-      if (severity(r.reply) === 4) return { kind: 'inconclusive', reason: `RSET before EHLO drew a transient ${r.reply.code}` };
-      return { kind: 'violated', detail: `RSET before EHLO drew ${r.reply.code} — §4.1.1.5-d says RSET is a no-op (250) in this state` };
+      // The requirement's actual defect is a 503 "bad sequence" — RSET treated as
+      // out-of-order before EHLO — so ONLY a 503 convicts. A 530 is conformant:
+      // RFC 3207 lets a TLS-required server 530 every command except NOOP/EHLO/
+      // STARTTLS/QUIT, and RSET is NOT in that exemption list. Any other non-503
+      // 5yz is likewise an unrelated refusal, and a 4yz is transient — none a
+      // §4.1.1.5-d finding.
+      if (r.reply.code === 503) {
+        return { kind: 'violated', detail: `RSET before EHLO drew 503 (bad sequence) — §4.1.1.5-d says RSET is a no-op (250) in this state, not out-of-order` };
+      }
+      return { kind: 'inconclusive', reason: `RSET before EHLO drew ${r.reply.code} (not a 503 bad-sequence — e.g. 530 TLS-required, which RFC 3207 permits); not a §4.1.1.5-d finding` };
     },
   }),
 ];

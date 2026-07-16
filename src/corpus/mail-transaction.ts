@@ -98,22 +98,19 @@ export const CASES: readonly TestCase[] = [
         return { kind: 'inconclusive', reason: 'no reply to the source-routed RCPT within the timeout — slow, not provably unprepared (§4.5.3.2)' };
       }
       if (r.kind === 'closed' || r.kind === 'reset') {
-        return { kind: 'violated', detail: `the server ${r.kind} the connection on a source-routed forward-path — the "unprepared" failure §3.3 forbids` };
+        return { kind: 'violated', detail: `the server ${r.kind} the connection on a source-routed forward-path with no reply — the "unprepared" failure §3.3 forbids` };
       }
-      // A well-formed reply of any class came back. Confirm the session survived it:
-      // an unprepared server can also reply then wedge, so probe with RSET.
+      // A well-formed reply of any class came back: the server PARSED and handled
+      // the source route, which is exactly "prepared to encounter" it. Closing the
+      // session AFTER a policy rejection (Exim `drop`, a tarpit) is not forbidden by
+      // §3.3-k — the server was demonstrably prepared — so the RSET probe below is
+      // corroboration for the note's "session usable" spirit and NEVER convicts.
       await conn.send(crlf`RSET`);
       const rs = await conn.readReply(3000);
-      if (rs.kind === 'timeout') {
-        return { kind: 'inconclusive', reason: `source route drew ${r.reply.code}, but the following RSET timed out — cannot distinguish a wedged session from a slow one` };
+      if (rs.kind === 'reply' && severity(rs.reply) === 2) {
+        return { kind: 'satisfied', detail: `source route drew a well-formed ${r.reply.code} and the session stayed usable (RSET -> ${rs.reply.code})` };
       }
-      if (rs.kind === 'closed' || rs.kind === 'reset') {
-        return { kind: 'violated', detail: `the server replied ${r.reply.code} to the source route but then ${rs.kind} the session on RSET — not left usable` };
-      }
-      if (severity(rs.reply) !== 2) {
-        return { kind: 'inconclusive', reason: `source route drew ${r.reply.code}; the following RSET drew ${rs.reply.code} (not 2yz) — session state unclear, not convicting` };
-      }
-      return { kind: 'satisfied', detail: `source route drew a well-formed ${r.reply.code} and the session stayed usable (RSET -> ${rs.reply.code})` };
+      return { kind: 'satisfied', detail: `source route drew a well-formed ${r.reply.code} — the server parsed and handled it (prepared); it then ${rs.kind === 'reply' ? `answered RSET ${rs.reply.code}` : rs.kind} (a post-rejection close is policy, not a §3.3-k failure)` };
     },
   }),
 ];
