@@ -47,6 +47,10 @@ export interface ReceiverOptions {
   readonly tls?: { readonly key: string; readonly cert: string };
   /** DEFECT: keep the receive buffer across STARTTLS (the injection vulnerability). */
   readonly retainBufferAcrossStarttls?: boolean;
+  /** Maximum message size in octets (RFC 1870 SIZE). Advertised in EHLO and
+   *  enforced during DATA so an over-large message can't exhaust memory.
+   *  Undefined = no limit (tests). */
+  readonly maxMessageSize?: number;
   /** Submission mode: require a successful AUTH before MAIL (rejects unauthenticated mail 530). */
   readonly requireAuth?: boolean;
   /** Verify a SASL PLAIN (username, password); wired to the account store by the caller. */
@@ -123,6 +127,17 @@ class Connection {
     this.#buf = Buffer.concat([this.#buf, Buffer.from(chunk)]);
     for (;;) {
       if (this.#inData) {
+        // Cap the buffered DATA so an unterminated or oversized message cannot
+        // grow memory without bound (RFC 1870 SIZE, enforced on actual bytes).
+        const max = this.#opts.maxMessageSize;
+        if (max !== undefined && this.#buf.length > max) {
+          this.#write('552 5.3.4 message size exceeds fixed maximum message size');
+          this.#inData = false;
+          this.#from = '';
+          this.#recipients = [];
+          this.#active.end();
+          return;
+        }
         const eod = findEndOfData(this.#buf);
         if (eod === -1) break;
         const payload = eod >= 5 ? this.#buf.subarray(0, eod - 5) : Buffer.alloc(0);
@@ -161,6 +176,7 @@ class Connection {
       case 'EHLO': {
         this.#helo = line.split(/\s+/)[1] ?? '';
         const ext: string[] = [];
+        if (this.#opts.maxMessageSize !== undefined) ext.push(`SIZE ${this.#opts.maxMessageSize}`);
         if (this.#opts.tls !== undefined && !this.#tls) ext.push('STARTTLS');
         if (this.#opts.authenticate !== undefined && this.#tls) ext.push('AUTH PLAIN');
         if (ext.length === 0) {
@@ -178,15 +194,24 @@ class Connection {
         this.#helo = line.split(/\s+/)[1] ?? '';
         this.#write(`250 ${this.#domain}`);
         break;
-      case 'MAIL':
+      case 'MAIL': {
         if (this.#opts.requireAuth === true && !this.#authed) {
           this.#write('530 5.7.0 Authentication required');
+          break;
+        }
+        // RFC 1870: a SIZE= declaration already over the limit is rejected up
+        // front, before the client transmits (the real check is on actual bytes).
+        const max = this.#opts.maxMessageSize;
+        const declared = /\bSIZE=(\d+)/i.exec(line);
+        if (max !== undefined && declared !== null && Number(declared[1]) > max) {
+          this.#write('552 5.3.4 message size exceeds fixed maximum message size');
           break;
         }
         this.#from = addrOf(line);
         this.#recipients = [];
         this.#write('250 2.1.0 Ok');
         break;
+      }
       case 'RCPT':
         this.#recipients.push(addrOf(line));
         this.#write('250 2.1.5 Ok');

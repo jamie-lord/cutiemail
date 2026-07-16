@@ -58,6 +58,8 @@ export interface MailServerConfig {
   readonly onEvent?: (line: string) => void;
   /** How often the relay loop drains the queue (default 60s). */
   readonly relayIntervalMs?: number;
+  /** Max accepted message size in octets (RFC 1870 SIZE). Undefined = no limit. */
+  readonly maxMessageSize?: number;
 }
 
 export interface RunningServer {
@@ -108,6 +110,7 @@ export async function startServer(cfg: MailServerConfig): Promise<RunningServer>
     tls: cfg.tls,
     host: cfg.host,
     port: cfg.smtpPort,
+    ...(cfg.maxMessageSize !== undefined ? { maxMessageSize: cfg.maxMessageSize } : {}),
   });
 
   // Submission (port 587, authenticated): our user sending out. Local recipients
@@ -157,6 +160,7 @@ export async function startServer(cfg: MailServerConfig): Promise<RunningServer>
     authenticate: verify,
     host: cfg.host,
     port: cfg.submissionPort,
+    ...(cfg.maxMessageSize !== undefined ? { maxMessageSize: cfg.maxMessageSize } : {}),
   });
   const imap = await ImapServer.start(catalog, { tls: cfg.tls, host: cfg.host, port: cfg.imapPort, authenticate: verify, notifier });
 
@@ -202,6 +206,7 @@ function configFromEnv(): MailServerConfig & { usingDevCert: boolean } {
     accounts: [{ user: process.env.MAIL_USER ?? 'demo', pass: process.env.MAIL_PASS ?? 'demo' }],
     tls: dev,
     ...(dkim !== undefined ? { dkim } : {}),
+    maxMessageSize: Number(process.env.MAIL_MAX_SIZE ?? 26_214_400), // 25 MiB default
     usingDevCert,
   };
 }
