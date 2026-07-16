@@ -30,6 +30,9 @@ export const richFixture: Fixture = {
 };
 
 const VALID_RECIPIENTS = ['recipient@example.com'];
+// The mutant must reject the fixture's declared rejected recipient (550) so the
+// delivery-path rejection cases have a conformant baseline to observe.
+const REJECTED_RECIPIENTS = richFixture.rejectedRecipient ? [richFixture.rejectedRecipient] : [];
 
 function defectFor(name: string): Defects {
   return { [name]: true } as Defects;
@@ -54,7 +57,7 @@ export function verifyNegativeControls(
 
     test(`${moduleName}: ${mutant.catches} — clean server is not a finding`, async () => {
       assert.ok(tc !== undefined, `mutant catches unknown case ${mutant.catches}`);
-      await withMutant({ validRecipients: VALID_RECIPIENTS }, async (port) => {
+      await withMutant({ validRecipients: VALID_RECIPIENTS, rejectedRecipients: REJECTED_RECIPIENTS }, async (port) => {
         const result = await runCase(tc, {
           connect: { host: '127.0.0.1', port },
           fixture: richFixture,
@@ -75,7 +78,7 @@ export function verifyNegativeControls(
     test(`${moduleName}: ${mutant.catches} — catches defect "${mutant.defect}"`, async () => {
       assert.ok(tc !== undefined, `mutant catches unknown case ${mutant.catches}`);
       await withMutant(
-        { defects: defectFor(mutant.defect), validRecipients: VALID_RECIPIENTS },
+        { defects: defectFor(mutant.defect), validRecipients: VALID_RECIPIENTS, rejectedRecipients: REJECTED_RECIPIENTS },
         async (port) => {
           const result = await runCase(tc, {
             connect: { host: '127.0.0.1', port },

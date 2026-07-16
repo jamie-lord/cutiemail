@@ -114,6 +114,12 @@ export interface Defects {
   readonly requireUppercaseVerbs?: boolean;
   /** Accept commands containing C0/DEL control characters. Violates R-5321-4.1.2-j/-n. */
   readonly acceptControlCharsInCommand?: boolean;
+  /** Reject a recipient with 550 (models wrongly refusing a valid recipient). Violates §3.3-h. */
+  readonly rejectValidRecipient?: boolean;
+  /** Accept a fixture-declared rejected recipient with 250. Violates §3.3-i (MUST reject undeliverable). */
+  readonly acceptRejectedRecipient?: boolean;
+  /** Reply to end-of-data with a 5yz even for an accepted transaction. Violates §3.3-t. */
+  readonly rejectAcceptedMessage?: boolean;
   /**
    * Reject a control-char command with a NON-501 5yz (500). The command IS
    * rejected (so §4.1.2-j is satisfied — not executed), but §4.1.2-n's EXACT-501
@@ -185,8 +191,15 @@ export interface Defects {
 export interface MutantOptions {
   readonly domain?: string;
   readonly defects?: Defects;
-  /** Recipients the server treats as valid. Default: accept all. */
+  /**
+   * Recipients the server treats as valid (250). Default: accept all. When set,
+   * a RCPT for an address NOT in this list is rejected 550 — this is how the
+   * mutant models an operator-declared fixture (a valid vs a rejected recipient),
+   * so the fixture-gated delivery-path cases have something to observe.
+   */
   readonly validRecipients?: readonly string[];
+  /** Recipients the server explicitly rejects (550), even if validRecipients is unset. */
+  readonly rejectedRecipients?: readonly string[];
 }
 
 interface SessionState {
@@ -203,17 +216,31 @@ export class MutantServer {
   #server: net.Server;
   #domain: string;
   #defects: Defects;
+  #validRecipients: readonly string[] | undefined;
+  #rejectedRecipients: readonly string[];
 
-  private constructor(server: net.Server, port: number, domain: string, defects: Defects) {
+  private constructor(
+    server: net.Server,
+    port: number,
+    domain: string,
+    defects: Defects,
+    validRecipients: readonly string[] | undefined,
+    rejectedRecipients: readonly string[],
+  ) {
     this.#server = server;
     this.port = port;
     this.#domain = domain;
     this.#defects = defects;
+    this.#validRecipients = validRecipients;
+    this.#rejectedRecipients = rejectedRecipients;
   }
 
   static start(opts: MutantOptions = {}): Promise<MutantServer> {
     const domain = opts.domain ?? DEFAULT_DOMAIN;
     const defects = opts.defects ?? {};
+    const lc = (a: string): string => a.toLowerCase();
+    const valid = opts.validRecipients?.map(lc);
+    const rejected = (opts.rejectedRecipients ?? []).map(lc);
     return new Promise((resolve, reject) => {
       const server = net.createServer();
       server.on('error', reject);
@@ -223,11 +250,23 @@ export class MutantServer {
           reject(new Error('no port'));
           return;
         }
-        const m = new MutantServer(server, addr.port, domain, defects);
+        const m = new MutantServer(server, addr.port, domain, defects, valid, rejected);
         server.on('connection', (sock) => m.#handle(sock));
         resolve(m);
       });
     });
+  }
+
+  /**
+   * Decide the RCPT reply for an address per the declared fixture.
+   *
+   * Only EXPLICITLY rejected recipients are refused; everything else is accepted.
+   * (We do not reject "not in validRecipients", to preserve the accept-all
+   * default the existing corpus relies on — the fixture models a specific
+   * rejected address, not an allow-list.)
+   */
+  #recipientVerdict(addr: string): 'accept' | 'reject' {
+    return this.#rejectedRecipients.includes(addr.toLowerCase()) ? 'reject' : 'accept';
   }
 
   close(): Promise<void> {
@@ -328,6 +367,11 @@ export class MutantServer {
     state.inData = false;
     state.hasMail = false;
     state.rcptCount = 0;
+    // Defect: reject an otherwise-accepted message at end-of-data.
+    if (this.#defects.rejectAcceptedMessage) {
+      this.#write(sock, crlf`554 5.0.0 message rejected`);
+      return eod;
+    }
     // Defect: reject a message containing a text line longer than 500 octets,
     // below the 1000-octet floor §4.5.3.1.6 requires a server to accept.
     if (this.#defects.rejectTextLineAt500 && this.#hasOverlongTextLine(buf.subarray(0, eod), 500)) {
@@ -490,8 +534,18 @@ export class MutantServer {
         if (d.rejectSourceRouteAsSyntax && /RCPT\s+TO:\s*<@/i.test(text)) {
           return replyOK(501, 'Error: syntax');
         }
-        state.rcptCount++;
-        return replyOK(250, '2.1.5 Ok');
+        {
+          // Extract the address for the fixture verdict. RCPT TO:<addr> (last @-path).
+          const m = /RCPT\s+TO:\s*<([^>]*)>/i.exec(text);
+          const addr = m?.[1]?.split(':').pop() ?? '';
+          if (d.rejectValidRecipient) return replyOK(550, '5.1.1 User unknown');
+          const verdict = this.#recipientVerdict(addr);
+          if (verdict === 'reject' && !d.acceptRejectedRecipient) {
+            return replyOK(550, '5.1.1 Recipient rejected');
+          }
+          state.rcptCount++;
+          return replyOK(250, '2.1.5 Ok');
+        }
 
       case 'DATA':
         if (state.rcptCount === 0 && !d.acceptDataBeforeRcpt) {

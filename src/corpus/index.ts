@@ -24,6 +24,7 @@ import { CASES as replyCases, MUTANTS as replyMutants } from './reply-structure.
 import { CASES as bufCases, MUTANTS as bufMutants } from './command-buffer-effects.ts';
 import { CASES as termCases, MUTANTS as termMutants } from './termination.ts';
 import { CASES as syntaxCases, MUTANTS as syntaxMutants } from './syntax-case.ts';
+import { CASES as deliveryCases, MUTANTS as deliveryMutants } from './mail-delivery.ts';
 
 export const ALL_CASES: readonly TestCase[] = [
   ...connCases,
@@ -38,6 +39,7 @@ export const ALL_CASES: readonly TestCase[] = [
   ...bufCases,
   ...termCases,
   ...syntaxCases,
+  ...deliveryCases,
 ];
 
 export const ALL_MUTANTS: readonly Mutant[] = [
@@ -53,6 +55,7 @@ export const ALL_MUTANTS: readonly Mutant[] = [
   ...bufMutants,
   ...termMutants,
   ...syntaxMutants,
+  ...deliveryMutants,
 ];
 
 /** Guard invoked by the corpus test: no two cases may share an id. */
