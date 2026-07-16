@@ -26,7 +26,8 @@
  */
 
 import net from 'node:net';
-import { crlf, lf, CR, LF, DOT } from '../wire/bytes.ts';
+import { crlf, lf, CR, LF, DOT, dotStuff } from '../wire/bytes.ts';
+import { unstuff } from './sink-server.ts';
 
 /**
  * The switchable defects. Each maps to one or more register requirements it
@@ -275,6 +276,18 @@ export interface Defects {
   readonly tempDeferAtMail?: boolean; // MAIL FROM -> 451 (e.g. load-based deferral)
   readonly tempDeferAtRcpt?: boolean; // RCPT TO  -> 451 (the canonical greylist)
   readonly tempDeferAtStorage?: boolean; // end-of-data -> 451 (disk pressure / post-DATA defer)
+  /**
+   * When relaying (relayTo set), do NOT dot-un-stuff the received body — forward it
+   * with the transport dots still doubled. Violates R-5321-4.5.2-a (the receiver
+   * deletes the leading period). Observable at the sink as an extra leading dot.
+   */
+  readonly dontUnstuffOnRelay?: boolean;
+  /**
+   * When relaying, lowercase the recipient local-part. Violates R-5321-2.4-c/-d
+   * (the local-part MUST be preserved as-is; only the domain is case-insensitive).
+   * Observable at the sink as a case-folded recipient.
+   */
+  readonly lowercaseLocalPartOnRelay?: boolean;
   /** Close the connection on error without sending 421. */
   readonly closeWithout421?: boolean;
   /**
@@ -319,6 +332,14 @@ export interface MutantOptions {
   readonly validRecipients?: readonly string[];
   /** Recipients the server explicitly rejects (550), even if validRecipients is unset. */
   readonly rejectedRecipients?: readonly string[];
+  /**
+   * If set, the mutant acts as a relay: on successful end-of-data it delivers the
+   * received message to a sink SMTP receiver at this port (127.0.0.1). This is what
+   * makes the transparency requirements (dot-un-stuffing §4.5.2, local-part case
+   * preservation §2.4-c/-d) testable — the sink captures what the mutant forwarded,
+   * and defects that corrupt it become observable there.
+   */
+  readonly relayTo?: number;
 }
 
 interface SessionState {
@@ -329,9 +350,18 @@ interface SessionState {
   /** Set after a 220 to STARTTLS on a safe server: further plaintext is discarded,
    *  awaiting the TLS ClientHello a real client would send next. */
   awaitingTls: boolean;
+  /** Reverse-path and forward-paths captured for relay to the sink. */
+  from: string;
+  recipients: string[];
 }
 
 const DEFAULT_DOMAIN = 'mutant.test';
+
+/** Lowercase the local-part of an address, leaving the domain untouched. */
+function foldLocalPart(addr: string): string {
+  const at = addr.lastIndexOf('@');
+  return at <= 0 ? addr.toLowerCase() : `${addr.slice(0, at).toLowerCase()}${addr.slice(at)}`;
+}
 
 export class MutantServer {
   readonly port: number;
@@ -340,6 +370,7 @@ export class MutantServer {
   #defects: Defects;
   #validRecipients: readonly string[] | undefined;
   #rejectedRecipients: readonly string[];
+  #relayTo: number | undefined;
 
   private constructor(
     server: net.Server,
@@ -348,6 +379,7 @@ export class MutantServer {
     defects: Defects,
     validRecipients: readonly string[] | undefined,
     rejectedRecipients: readonly string[],
+    relayTo: number | undefined,
   ) {
     this.#server = server;
     this.port = port;
@@ -355,6 +387,7 @@ export class MutantServer {
     this.#defects = defects;
     this.#validRecipients = validRecipients;
     this.#rejectedRecipients = rejectedRecipients;
+    this.#relayTo = relayTo;
   }
 
   static start(opts: MutantOptions = {}): Promise<MutantServer> {
@@ -372,7 +405,7 @@ export class MutantServer {
           reject(new Error('no port'));
           return;
         }
-        const m = new MutantServer(server, addr.port, domain, defects, valid, rejected);
+        const m = new MutantServer(server, addr.port, domain, defects, valid, rejected, opts.relayTo);
         server.on('connection', (sock) => m.#handle(sock));
         resolve(m);
       });
@@ -401,7 +434,7 @@ export class MutantServer {
 
   #handle(sock: net.Socket): void {
     const d = this.#defects;
-    const state: SessionState = { greeted: false, hasMail: false, rcptCount: 0, inData: false, awaitingTls: false };
+    const state: SessionState = { greeted: false, hasMail: false, rcptCount: 0, inData: false, awaitingTls: false, from: '', recipients: [] };
     let buf = Buffer.alloc(0);
 
     sock.on('error', () => {});
@@ -509,6 +542,46 @@ export class MutantServer {
   }
 
   #tryConsumeData(sock: net.Socket, buf: Buffer, state: SessionState): number {
+    return this.#consumeDataInner(sock, buf, state);
+  }
+
+  /**
+   * Relay a received message to the configured sink, acting as a lockstep SMTP
+   * client. Fire-and-forget: the test reads the delivered message from the sink.
+   * Errors are swallowed — a failed relay simply means the sink captures nothing,
+   * which a sink-based test treats as inconclusive, never a false finding.
+   */
+  #relay(from: string, recipients: readonly string[], storedBody: Buffer): Promise<void> {
+    const port = this.#relayTo;
+    return new Promise<void>((resolve) => {
+      if (port === undefined) return resolve();
+      const sock = net.connect(port, '127.0.0.1');
+      const queue = [`EHLO ${this.#domain}`, `MAIL FROM:<${from}>`, ...recipients.map((r) => `RCPT TO:<${r}>`), 'DATA'];
+      let bodySent = false;
+      const finish = (): void => {
+        sock.destroy();
+        resolve();
+      };
+      sock.on('error', finish);
+      // Lockstep: the sink sends exactly one reply per command, so one 'data' event
+      // corresponds to one reply. Advance one step per reply.
+      sock.on('data', () => {
+        if (queue.length > 0) {
+          sock.write(Buffer.from(queue.shift()! + '\r\n', 'latin1'));
+          return;
+        }
+        if (!bodySent) {
+          bodySent = true;
+          sock.write(Buffer.concat([dotStuff(storedBody), Buffer.from('\r\n.\r\n', 'latin1')]));
+          return;
+        }
+        sock.write(Buffer.from('QUIT\r\n', 'latin1'));
+        finish();
+      });
+    });
+  }
+
+  #consumeDataInner(sock: net.Socket, buf: Buffer, state: SessionState): number {
     // Look for CRLF.CRLF always; under defect also LF.LF.
     const eod = this.#findEndOfData(buf);
     if (eod === null) return 0;
@@ -532,6 +605,20 @@ export class MutantServer {
       this.#write(sock, crlf`451 4.3.0 message not stored, try again later`);
       return eod;
     }
+    // Relay to the sink, if configured — this is what makes the transparency
+    // requirements observable. Un-stuff the received body (clean) or forward it
+    // still-stuffed (dontUnstuffOnRelay defect), and preserve the recipient
+    // local-part case (clean) or fold it (lowercaseLocalPartOnRelay defect).
+    if (this.#relayTo !== undefined) {
+      const payload = eod >= 5 ? buf.subarray(0, eod - 5) : Buffer.alloc(0);
+      const stored = this.#defects.dontUnstuffOnRelay ? Buffer.from(payload) : unstuff(payload);
+      const recipients = this.#defects.lowercaseLocalPartOnRelay
+        ? state.recipients.map(foldLocalPart)
+        : [...state.recipients];
+      void this.#relay(state.from, recipients, stored);
+    }
+    state.from = '';
+    state.recipients = [];
     this.#write(sock, crlf`250 2.0.0 message accepted`);
     return eod;
   }
@@ -705,6 +792,8 @@ export class MutantServer {
         }
         if (d.tempDeferAtMail) return replyOK(451, '4.3.0 try again later');
         state.hasMail = true;
+        state.from = (/MAIL\s+FROM:\s*<([^>]*)>/i.exec(text)?.[1] ?? '').split(':').pop() ?? '';
+        state.recipients = [];
         return replyOK(250, '2.1.0 Ok');
 
       case 'RCPT':
@@ -743,6 +832,7 @@ export class MutantServer {
             return replyOK(550, '5.1.1 Recipient rejected');
           }
           state.rcptCount++;
+          state.recipients.push(addr); // exact case, for relay/preservation checks
           return replyOK(250, '2.1.5 Ok');
         }
 

@@ -48,7 +48,7 @@ function addrOf(line: string): string {
  * <CRLF>.<CRLF>. Operates on CRLF-delimited lines — the exact inverse of
  * bytes.ts `dotStuff`.
  */
-function unstuff(payload: Buffer): Buffer {
+export function unstuff(payload: Buffer): Buffer {
   const out: Buffer[] = [];
   let start = 0;
   let atLineStart = true;
