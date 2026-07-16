@@ -11,14 +11,15 @@ import type { RequirementDef, IdsOf } from '../types.ts';
 import { SPF_RECORD } from './sections/spf-record.ts';
 import { DMARC } from './sections/dmarc.ts';
 import { SCRAM } from './sections/scram.ts';
+import { SCRAM_MESSAGES } from './sections/scram-messages.ts';
 
 /**
  * Sections extracted so far, across SPF (RFC 7208 §4.x), DMARC (RFC 7489 §3.x/§6.x)
- * and SCRAM (RFC 5802 §3). Each id also carries its RFC, so there is no collision.
+ * and SCRAM (RFC 5802 §3/§5.1). Each id also carries its RFC, so there is no collision.
  */
-export const EXTRACTED_SECTIONS: readonly string[] = ['3', '3.1.1', '4.5', '4.6.2', '6.3'];
+export const EXTRACTED_SECTIONS: readonly string[] = ['3', '3.1.1', '4.5', '4.6.2', '5.1', '6.3'];
 
-export const AUTH_REQUIREMENTS = [...SPF_RECORD, ...DMARC, ...SCRAM] as const satisfies readonly RequirementDef[];
+export const AUTH_REQUIREMENTS = [...SPF_RECORD, ...DMARC, ...SCRAM, ...SCRAM_MESSAGES] as const satisfies readonly RequirementDef[];
 
 /** Every mail-auth requirement ID as a union — compile-time traceability. */
 export type AuthRequirementId = IdsOf<typeof AUTH_REQUIREMENTS>;
