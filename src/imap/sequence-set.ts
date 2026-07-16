@@ -40,7 +40,10 @@ export function parseSequenceSet(set: string, largest: number, defects: Sequence
     if (!Number.isInteger(a) || !Number.isInteger(b)) continue;
     // R-9051-2.3.1.1-d: ranges are order-independent.
     const [lo, hi] = defects.rangeNotCommutative === true ? [a, b] : [Math.min(a, b), Math.max(a, b)];
-    for (let n = lo; n <= hi; n++) if (n >= 1) result.add(n);
+    // Clamp the range to [1, largest]. No message exists beyond `largest`, so a
+    // range extending past it matches nothing there — and enumerating to a huge
+    // literal endpoint (e.g. "1:99999999999") would exhaust memory (a DoS).
+    for (let n = Math.max(lo, 1); n <= Math.min(hi, largest); n++) result.add(n);
   }
   return [...result].sort((x, y) => x - y);
 }
