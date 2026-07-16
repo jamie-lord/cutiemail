@@ -9,11 +9,15 @@
 
 import type { RequirementDef, IdsOf } from '../types.ts';
 import { SPF_RECORD } from './sections/spf-record.ts';
+import { DMARC } from './sections/dmarc.ts';
 
-/** Sections of the mail-auth RFCs extracted into the register so far. */
-export const EXTRACTED_SECTIONS: readonly string[] = ['4.5', '4.6.2'];
+/**
+ * Sections extracted so far. SPF (RFC 7208 §4.x) and DMARC (RFC 7489 §3.x/§6.x)
+ * share this list; there is no collision between the two numbering spaces.
+ */
+export const EXTRACTED_SECTIONS: readonly string[] = ['3.1.1', '4.5', '4.6.2', '6.3'];
 
-export const AUTH_REQUIREMENTS = [...SPF_RECORD] as const satisfies readonly RequirementDef[];
+export const AUTH_REQUIREMENTS = [...SPF_RECORD, ...DMARC] as const satisfies readonly RequirementDef[];
 
 /** Every mail-auth requirement ID as a union — compile-time traceability. */
 export type AuthRequirementId = IdsOf<typeof AUTH_REQUIREMENTS>;
