@@ -63,6 +63,12 @@ export interface Fixture {
    * be a length rejection, not "no such user".
    */
   readonly longLocalPartRecipient?: string;
+  /**
+   * A deliverable/relayable recipient whose DOMAIN approaches the §4.5.3.1.2 floor
+   * of 255 octets. Must be otherwise acceptable so a rejection can only be a length
+   * rejection.
+   */
+  readonly longDomainRecipient?: string;
 
   /** Declared SIZE limit in octets, if the operator knows it. */
   readonly declaredSizeLimit?: number;

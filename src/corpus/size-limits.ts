@@ -198,6 +198,37 @@ export const CASES: readonly TestCase[] = [
       return { kind: 'violated', detail: `a fixture-valid 64-octet local-part drew ${r.reply.code} where an ordinary recipient was accepted — rejected within the mandated 64-octet floor` };
     },
   }),
+
+  testCase({
+    id: 'long-domain-accepted',
+    requirement: 'R-5321-4.5.3.1.2-a',
+    intent: 'a domain near the 255-octet floor is accepted, not rejected for length',
+    rationale:
+      '§4.5.3.1.2: "The maximum total length of a domain name or number is 255 octets." A receiver ' +
+      'MUST accept a domain up to this length; rejecting a long-but-valid domain for LENGTH is the ' +
+      'violation. Same isolate-the-variable design as the local-part floor: a fixture-declared ' +
+      'valid long-domain recipient, and an ordinary recipient accepted first so a 5yz on the long ' +
+      'one is attributable to length.',
+    needs: { fixture: ['validRecipient', 'longDomainRecipient'] },
+    run: async (conn): Promise<Judgement> => {
+      const bad = await greetAndEhlo(conn);
+      if (bad !== null) return bad;
+      await conn.send(crlf`MAIL FROM:<probe@conformance-suite.invalid>`);
+      const m = await conn.readReply(3000);
+      if (m.kind !== 'reply' || severity(m.reply) !== 2) return { kind: 'inconclusive', reason: `MAIL: ${m.kind === 'reply' ? m.reply.code : m.kind}` };
+      await conn.send(crlf`RCPT TO:<${conn.fixture.validRecipient!}>`);
+      const base = await conn.readReply(3000);
+      if (base.kind !== 'reply' || severity(base.reply) !== 2) {
+        return { kind: 'inconclusive', reason: `the ordinary baseline recipient was not accepted (${base.kind === 'reply' ? base.reply.code : base.kind}) — cannot isolate length` };
+      }
+      await conn.send(crlf`RCPT TO:<${conn.fixture.longDomainRecipient!}>`);
+      const r = await conn.readReply(3000);
+      if (r.kind !== 'reply') return { kind: 'inconclusive', reason: `long-domain RCPT drew ${r.kind}` };
+      if (severity(r.reply) === 2) return { kind: 'satisfied', detail: 'long (near-255-octet) domain accepted' };
+      if (severity(r.reply) === 4) return { kind: 'inconclusive', reason: `long-domain RCPT drew a transient ${r.reply.code}` };
+      return { kind: 'violated', detail: `a fixture-valid ~251-octet domain drew ${r.reply.code} where an ordinary recipient was accepted — rejected within the mandated 255-octet floor` };
+    },
+  }),
 ];
 
 export const MUTANTS: readonly Mutant[] = [
@@ -221,5 +252,10 @@ export const MUTANTS: readonly Mutant[] = [
     catches: 'local-part-64-accepted',
     defect: 'rejectLongLocalPart',
     why: 'rejecting a valid 64-octet local-part for length violates R-5321-4.5.3.1.1-a',
+  },
+  {
+    catches: 'long-domain-accepted',
+    defect: 'rejectLongDomain',
+    why: 'rejecting a valid near-255-octet domain for length violates R-5321-4.5.3.1.2-a',
   },
 ];

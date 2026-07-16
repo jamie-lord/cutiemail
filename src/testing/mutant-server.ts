@@ -235,6 +235,12 @@ export interface Defects {
    */
   readonly rejectLongLocalPart?: boolean;
   /**
+   * Reject a RCPT whose DOMAIN exceeds 120 octets — below the §4.5.3.1.2 floor of
+   * 255 the receiver MUST accept. Violates R-5321-4.5.3.1.2-a. (120 is chosen so a
+   * normal short domain is still accepted, isolating length as the variable.)
+   */
+  readonly rejectLongDomain?: boolean;
+  /**
    * Answer RSET with 503 "bad sequence" when issued before EHLO/HELO. Violates
    * R-5321-4.1.1.5-d (RSET is a no-op — a 250 — in every state, including before
    * EHLO). The clean server answers 250.
@@ -871,6 +877,11 @@ export class MutantServer {
           // 64-octet floor a receiver MUST accept.
           if (d.rejectLongLocalPart && localPart.length > 40) {
             return replyOK(550, '5.1.3 Bad recipient address (local-part too long)');
+          }
+          // Defect: reject a domain longer than 120 octets — below the §4.5.3.1.2
+          // 255-octet floor a receiver MUST accept.
+          if (d.rejectLongDomain && (addr.split('@')[1]?.length ?? 0) > 120) {
+            return replyOK(550, '5.1.2 Bad recipient domain (too long)');
           }
           const verdict = this.#recipientVerdict(addr);
           if (verdict === 'reject' && !d.acceptRejectedRecipient) {

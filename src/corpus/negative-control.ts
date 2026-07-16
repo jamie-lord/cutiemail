@@ -27,6 +27,8 @@ export const richFixture: Fixture = {
   nonRelayDomain: 'not-served.example.org',
   postmaster: 'postmaster@example.com',
   longLocalPartRecipient: `${'a'.repeat(64)}@example.com`, // 64-octet local-part (§4.5.3.1.1 floor)
+  // ~251-octet domain, valid label lengths (<=63 each), near the §4.5.3.1.2 floor of 255.
+  longDomainRecipient: `user@${'a'.repeat(60)}.${'a'.repeat(60)}.${'a'.repeat(60)}.${'a'.repeat(60)}.example`,
   declaredSizeLimit: 10_485_760,
   source: 'operator-declared',
 };
