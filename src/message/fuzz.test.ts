@@ -20,6 +20,10 @@ import { parseDkimSignature } from '../crypto/dkim-signature.ts';
 import { parseDkimKeyRecord } from '../crypto/dkim-keyrecord.ts';
 import { parseSpfRecord } from '../auth/spf.ts';
 import { parseDmarcRecord } from '../auth/dmarc.ts';
+import { parseMultipart } from './multipart.ts';
+import { decodeEncodedWords } from './encoded-word.ts';
+import { validateDeliveryStatus } from './dsn.ts';
+import { detectLiteral } from '../imap/literal.ts';
 
 /** Deterministic xorshift32 PRNG — reproducible fuzzing. */
 function rng(seed: number): () => number {
@@ -111,6 +115,34 @@ test('parseSpfRecord never throws on fuzzed input', () => {
 });
 test('parseDmarcRecord never throws on fuzzed input', () => {
   fuzzParser('parseDmarcRecord', 'v=DMARC1; p=quarantine; rua=mailto:a@b.test; pct=50', (b) => parseDmarcRecord(b));
+});
+
+test('decodeEncodedWords never throws on fuzzed input', () => {
+  fuzzParser('decodeEncodedWords', '=?UTF-8?B?aGVsbG8gd29ybGQ=?= plain =?ISO-8859-1?Q?caf=E9?=', (b) => decodeEncodedWords(b));
+});
+test('validateDeliveryStatus never throws on fuzzed input', () => {
+  fuzzParser('validateDeliveryStatus', 'Reporting-MTA: dns; mx.test\r\n\r\nFinal-Recipient: rfc822; a@b.test\r\nAction: failed\r\nStatus: 5.1.1\r\n', (b) => validateDeliveryStatus(b));
+});
+test('detectLiteral never throws on fuzzed input', () => {
+  fuzzParser('detectLiteral', 'a1 APPEND "INBOX" (\\Seen) {12345}', (b) => detectLiteral(b));
+});
+
+test('parseMultipart never throws on fuzzed body or boundary', () => {
+  const rand = rng(0xb0057ea);
+  const seedBody = Buffer.from(
+    '--sep\r\nContent-Type: text/plain\r\n\r\npart one\r\n--sep\r\nContent-Type: text/html\r\n\r\n<p>two</p>\r\n--sep--\r\n',
+    'latin1',
+  );
+  for (let i = 0; i < ITERATIONS; i++) {
+    const body = fuzzBytes(rand, seedBody);
+    // Boundary: sometimes the real one, sometimes fuzzed (incl. empty and regex-special chars).
+    const boundary = rand() < 0.5 ? 'sep' : fuzzBytes(rand, Buffer.from('sep')).toString('latin1');
+    try {
+      parseMultipart(body, boundary);
+    } catch (e) {
+      assert.fail(`parseMultipart threw on body hex ${body.subarray(0, 40).toString('hex')} boundary ${JSON.stringify(boundary)}: ${String(e)}`);
+    }
+  }
 });
 
 test('parseSequenceSet never throws on fuzzed input', () => {
