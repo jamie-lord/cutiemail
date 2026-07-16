@@ -23,13 +23,14 @@ import { M_S3_3 } from './sections/s3-3.ts';
 import { M_S3_4_1 } from './sections/s3-4-1.ts';
 import { M_S3_6 } from './sections/s3-6.ts';
 import { M_S2045 } from './sections/s2045.ts';
+import { M_S2046 } from './sections/s2046.ts';
 
 /**
  * Sections extracted into the register so far. RFC 5322 sections (2.x, 3.x) and
  * RFC 2045 MIME sections (4, 5, 5.2, 6) share this list; there is no collision
  * between the two numbering spaces at present.
  */
-export const EXTRACTED_SECTIONS: readonly string[] = ['2.1', '2.1.1', '2.2', '3.3', '3.4.1', '3.6', '4', '5', '5.2', '6'];
+export const EXTRACTED_SECTIONS: readonly string[] = ['2.1', '2.1.1', '2.2', '3.3', '3.4.1', '3.6', '4', '5', '5.1.1', '5.2', '6'];
 
 export const MESSAGE_REQUIREMENTS = [
   ...M_S2_1,
@@ -38,6 +39,7 @@ export const MESSAGE_REQUIREMENTS = [
   ...M_S3_4_1,
   ...M_S3_6,
   ...M_S2045,
+  ...M_S2046,
 ] as const satisfies readonly RequirementDef[];
 
 /** Every message-format requirement ID as a union — compile-time traceability. */
