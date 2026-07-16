@@ -52,12 +52,18 @@ mutant-server infrastructure it seemed to need.
   state-retaining server wrongly accepts it (250). It uses `Wire` directly (with
   `rejectUnauthorized:false` for the self-signed cert) rather than the corpus `Conn`
   path, which is the right home until a calibration-time real-cert server exists.
-- **Still deferred: the smuggle-into-TLS injection variant** — a command replayed
-  *inside* the established TLS stream rather than answered in plaintext before it.
-  This needs faithfully modelling the exact buggy buffering order across the
-  handshake, is materially harder than the reset test, and the primary
-  CVE-2011-0411 variant (pre-handshake plaintext injection) is already covered — so
-  it is genuine completeness, not a gap in the core defence.
+- **The smuggle-into-TLS injection variant is now BUILT too** (`smuggleIntoTls`
+  defect): after the handshake, the plaintext pipelined before it is fed into the
+  encrypted session via `#attachSession`'s `initialBuf`, so the injected command
+  runs in the authenticated context. `tls-session.integration.test.ts` proves it
+  both ways (pipeline `STARTTLS<CRLF>NOOP<CRLF>`, complete the handshake, then read
+  unprompted — a vulnerable server replays the smuggled NOOP inside TLS, a
+  conformant one is silent).
+
+**Update (later same session): the deferral above is CLOSED.** All three STARTTLS
+variants are now covered — pre-handshake plaintext injection (the corpus case),
+smuggle-into-TLS, and the §4.2 post-handshake session reset — via the opt-in
+`terminateTls` TLS-terminating mutant and `tls-session.integration.test.ts`.
 - `EXTRACTED_SECTIONS` lists bare section numbers, so RFC 3207 §4.2 and RFC 5321
   §4.2 share the string "4.2" in the coverage header. Harmless today (the ids
   disambiguate); revisit if a second RFC 3207 section lands.
