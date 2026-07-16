@@ -145,10 +145,49 @@ export const CASES: readonly TestCase[] = [
         : { kind: 'violated', detail: `server rejected a complete valid transaction with ${final.reply.code}` };
     },
   }),
+
+  testCase({
+    id: 'postmaster-local-part-case-insensitive',
+    requirement: 'R-5321-4.1.1.3-m',
+    intent: 'a RCPT to "Postmaster" in mixed case is treated the same as lowercase "postmaster"',
+    rationale:
+      '§4.1.1.3: "in a departure from the usual rules for local-parts, the \\"Postmaster\\" ' +
+      'string ... is treated as case-insensitive." So RCPT TO:<Postmaster@domain> must fare no ' +
+      'worse than <postmaster@domain>. We compare the two spellings: if lowercase is accepted ' +
+      'but a mixed-case Postmaster is rejected, the server is treating the reserved local-part ' +
+      'case-sensitively — the violation. (If lowercase itself is not accepted, the server has ' +
+      'no postmaster to compare against and the case is inconclusive.)',
+    needs: { fixture: ['postmaster'] },
+    run: async (conn): Promise<Judgement> => {
+      const bad = await greetEhloMail(conn);
+      if (bad !== null) return bad;
+      const pm = conn.fixture.postmaster!;
+      const domain = pm.split('@')[1] ?? 'example.com';
+      // Lowercase baseline.
+      await conn.send(crlf`RCPT TO:<postmaster@${domain}>`);
+      const lower = await conn.readReply(3000);
+      if (lower.kind !== 'reply' || severity(lower.reply) !== 2) {
+        return { kind: 'inconclusive', reason: `lowercase postmaster not accepted (${lower.kind === 'reply' ? lower.reply.code : lower.kind}) — nothing to compare` };
+      }
+      // Mixed case — must be treated the same.
+      await conn.send(crlf`RSET`);
+      await conn.readReply(3000);
+      await conn.send(crlf`MAIL FROM:<probe@conformance-suite.invalid>`);
+      await conn.readReply(3000);
+      await conn.send(crlf`RCPT TO:<Postmaster@${domain}>`);
+      const mixed = await conn.readReply(3000);
+      if (mixed.kind === 'timeout') return { kind: 'inconclusive', reason: 'mixed-case RCPT drew no reply within the timeout' };
+      if (mixed.kind !== 'reply') return { kind: 'inconclusive', reason: `mixed-case RCPT: ${mixed.kind}` };
+      return severity(mixed.reply) === 2
+        ? { kind: 'satisfied', detail: 'Postmaster treated case-insensitively' }
+        : { kind: 'violated', detail: `lowercase postmaster accepted but mixed-case "Postmaster" drew ${mixed.reply.code} — case-sensitive treatment of the reserved local-part` };
+    },
+  }),
 ];
 
 export const MUTANTS: readonly Mutant[] = [
   { catches: 'valid-recipient-accepted', defect: 'rejectValidRecipient', why: 'rejecting a valid recipient with 550 violates R-5321-3.3-h' },
   { catches: 'undeliverable-recipient-not-fully-accepted', defect: 'acceptRejectedRecipient', why: 'fully accepting a message for a known-undeliverable recipient violates R-5321-3.3-i' },
   { catches: 'accepted-transaction-stored', defect: 'rejectAcceptedMessage', why: 'rejecting a complete valid transaction at end-of-data violates R-5321-3.3-t' },
+  { catches: 'postmaster-local-part-case-insensitive', defect: 'postmasterCaseSensitive', why: 'rejecting mixed-case Postmaster while accepting lowercase violates R-5321-4.1.1.3-m' },
 ];

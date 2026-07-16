@@ -120,6 +120,8 @@ export interface Defects {
   readonly acceptRejectedRecipient?: boolean;
   /** Reply to end-of-data with a 5yz even for an accepted transaction. Violates §3.3-t. */
   readonly rejectAcceptedMessage?: boolean;
+  /** Reject a RCPT whose local-part is "Postmaster" in non-lowercase. Violates §4.1.1.3-m. */
+  readonly postmasterCaseSensitive?: boolean;
   /**
    * Reject a control-char command with a NON-501 5yz (500). The command IS
    * rejected (so §4.1.2-j is satisfied — not executed), but §4.1.2-n's EXACT-501
@@ -538,7 +540,14 @@ export class MutantServer {
           // Extract the address for the fixture verdict. RCPT TO:<addr> (last @-path).
           const m = /RCPT\s+TO:\s*<([^>]*)>/i.exec(text);
           const addr = m?.[1]?.split(':').pop() ?? '';
+          const localPart = addr.split('@')[0] ?? '';
           if (d.rejectValidRecipient) return replyOK(550, '5.1.1 User unknown');
+          // Defect: treat "Postmaster" as case-SENSITIVE — reject any spelling
+          // that is not exactly lowercase "postmaster" (§4.1.1.3-m requires
+          // case-insensitive treatment of the Postmaster local-part).
+          if (d.postmasterCaseSensitive && localPart.toLowerCase() === 'postmaster' && localPart !== 'postmaster') {
+            return replyOK(550, '5.1.1 User unknown');
+          }
           const verdict = this.#recipientVerdict(addr);
           if (verdict === 'reject' && !d.acceptRejectedRecipient) {
             return replyOK(550, '5.1.1 Recipient rejected');
