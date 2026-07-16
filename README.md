@@ -31,7 +31,8 @@ Everything traces to the [requirement register](src/register/) — all 570 norma
 in RFC 5321 §§1–7, plus the STARTTLS command-injection requirement from RFC 3207 §4.2, each
 quoted verbatim (enforced by a test that checks every quote against the vendored RFC — 5321 or
 3207 — it claims), with its level, the party it binds, and whether it is observable from a
-receiver socket at all. Of the 571, **219 are wire-testable**; the rest bind the client or are
+receiver socket at all. Of the 571, **223 are wire-testable** (some only with a receiving sink);
+the rest bind the client or are
 unobservable, and the register says so rather than hiding behind a flattering percentage. Every
 wire-testable MUST is now either covered by a proven negative control or carries a recorded
 "deliberately uncovered" decision — there are no silent gaps.
@@ -100,6 +101,11 @@ ways against the mutant server. Highlights:
 - **Size limits, error handling, mail transaction, connection, termination, syntax/case,
   mail delivery** — the §4.5.3.1 floors, connection survival through errors, source-route
   preparedness, greeting/EHLO identity, and the delivery path.
+- **Delivery-path transparency** — the surface that is invisible from the client side and only
+  observable at a *receiving sink* the server relays to: dot-un-stuffing (§4.5.2), local-part
+  case preservation (§2.4-d), the prepended Received: trace line (§4.4), and control-character
+  delivery (§4.5.2-e). The sink is a faithful receiver; the mutant relays to it so each defect
+  is caught in the delivered message.
 - **Latitude observations** — SHOULD/MAY branches (8BITMIME, VRFY/EXPN/HELP support,
   NOOP-parameter and trailing-whitespace tolerance, …) recorded for the per-server matrix but
   never scored as findings.
