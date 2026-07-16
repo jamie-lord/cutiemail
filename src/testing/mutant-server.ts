@@ -479,6 +479,13 @@ export class MutantServer {
   }
 
   close(): Promise<void> {
+    // Force-destroy any live connection first: server.close() alone waits for
+    // connections to end, so a lingering TLS session (e.g. a test that forgot to
+    // close its client) would hang the close forever. closeAllConnections (Node
+    // 18.2+) tears them down so close() always resolves promptly; guarded with a
+    // typeof check so it degrades gracefully if the runtime lacks it.
+    const server = this.#server as net.Server & { closeAllConnections?: () => void };
+    if (typeof server.closeAllConnections === 'function') server.closeAllConnections();
     return new Promise((resolve) => this.#server.close(() => resolve()));
   }
 
