@@ -26,6 +26,7 @@ import { relayOutbound, routeRecipients, type OutboundOptions } from './server/o
 import { ensureSubmissionHeaders } from './server/submission-fixup.ts';
 import { dkimSign, makeSigner } from './server/dkim-signer.ts';
 import { prependReceived, protocolFor } from './server/received.ts';
+import { MailboxNotifier } from './server/mailbox-notifier.ts';
 import { SqliteQueue } from './store/sqlite-queue.ts';
 import { RelayLoop } from './server/relay-loop.ts';
 // Bundled self-signed certificate — local development default only.
@@ -82,7 +83,12 @@ export async function startServer(cfg: MailServerConfig): Promise<RunningServer>
   const verify = (user: string, pass: string): boolean => accounts.verifyPassword(user, pass);
 
   const log = cfg.onEvent ?? ((): void => {});
-  const storeLocal = (data: Buffer): void => void mailbox.append(data);
+  // Notify idling IMAP connections when INBOX gains a message (IDLE, RFC 2177).
+  const notifier = new MailboxNotifier();
+  const storeLocal = (data: Buffer): void => {
+    mailbox.append(data);
+    notifier.notify('INBOX');
+  };
 
   // Inbound (port 25): mail arriving for us — stamp our Received trace line
   // (RFC 5321 §4.4: the final-delivery MTA prepends one) and store it.
@@ -152,7 +158,7 @@ export async function startServer(cfg: MailServerConfig): Promise<RunningServer>
     host: cfg.host,
     port: cfg.submissionPort,
   });
-  const imap = await ImapServer.start(catalog, { tls: cfg.tls, host: cfg.host, port: cfg.imapPort, authenticate: verify });
+  const imap = await ImapServer.start(catalog, { tls: cfg.tls, host: cfg.host, port: cfg.imapPort, authenticate: verify, notifier });
 
   // Drain the queue on a timer, and once now to recover anything left by a crash.
   relayLoop.start(cfg.relayIntervalMs ?? 60_000);

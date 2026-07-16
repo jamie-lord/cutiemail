@@ -75,10 +75,10 @@ test('the Thunderbird account-setup sequence completes against the server', asyn
   const sock = net.connect(server.port, '127.0.0.1');
   const s = new Session(sock);
   try {
-    assert.match(await s.greeting(), /\* OK \[CAPABILITY IMAP4rev2\]/);
+    assert.match(await s.greeting(), /\* OK \[CAPABILITY IMAP4rev2 IDLE\]/);
 
     const cap = await s.run('t1', 'CAPABILITY');
-    assert.match(cap, /^\* CAPABILITY IMAP4rev2\r$/m, 'CAPABILITY answers as a command');
+    assert.match(cap, /^\* CAPABILITY IMAP4rev2 IDLE\r$/m, 'CAPABILITY answers as a command');
     assert.match(cap, /^t1 OK/m);
 
     assert.match(await s.run('t2', 'LOGIN test pw'), /^t2 OK/m);

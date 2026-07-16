@@ -26,6 +26,7 @@ import { buildEnvelope, serializeEnvelope } from '../imap/envelope.ts';
 import { matchesSearch, type SearchKey } from '../imap/search.ts';
 import { parseSequenceSet } from '../imap/sequence-set.ts';
 import { canonicalMailboxName } from '../store/mailbox-name.ts';
+import type { MailboxNotifier } from './mailbox-notifier.ts';
 
 export interface ServableMessage {
   readonly uid: number;
@@ -60,7 +61,7 @@ function inboxOnly(mailbox: ServableMailbox): ServableCatalog {
   };
 }
 
-const CAPABILITIES = 'IMAP4rev2';
+const CAPABILITIES = 'IMAP4rev2 IDLE';
 
 /** Special-use attributes by conventional folder name (RFC 6154 / 9051 §7.3.1). */
 const SPECIAL_USE: Record<string, string> = {
@@ -199,12 +200,14 @@ export class ImapServer {
   readonly #catalog: ServableCatalog;
   readonly #sockets = new Set<net.Socket>();
   readonly #authenticate: ((user: string, pass: string) => boolean) | undefined;
+  readonly #notifier: MailboxNotifier | undefined;
 
-  private constructor(server: net.Server, port: number, catalog: ServableCatalog, authenticate?: (user: string, pass: string) => boolean) {
+  private constructor(server: net.Server, port: number, catalog: ServableCatalog, authenticate?: (user: string, pass: string) => boolean, notifier?: MailboxNotifier) {
     this.#server = server;
     this.port = port;
     this.#catalog = catalog;
     this.#authenticate = authenticate;
+    this.#notifier = notifier;
   }
 
   /**
@@ -215,7 +218,7 @@ export class ImapServer {
    */
   static start(
     target: ServableMailbox | ServableCatalog,
-    options: { tls?: { key: string; cert: string }; host?: string; port?: number; authenticate?: (user: string, pass: string) => boolean } = {},
+    options: { tls?: { key: string; cert: string }; host?: string; port?: number; authenticate?: (user: string, pass: string) => boolean; notifier?: MailboxNotifier } = {},
   ): Promise<ImapServer> {
     const catalog: ServableCatalog = 'listNames' in target ? target : inboxOnly(target);
     const server = options.tls !== undefined ? tls.createServer({ key: options.tls.key, cert: options.tls.cert }) : net.createServer();
@@ -223,7 +226,7 @@ export class ImapServer {
       server.listen(options.port ?? 0, options.host ?? '127.0.0.1', () => {
         const addr = server.address();
         const port = typeof addr === 'object' && addr !== null ? addr.port : 0;
-        const imap = new ImapServer(server, port, catalog, options.authenticate);
+        const imap = new ImapServer(server, port, catalog, options.authenticate, options.notifier);
         const event = options.tls !== undefined ? 'secureConnection' : 'connection';
         server.on(event, (sock: net.Socket) => {
           imap.#sockets.add(sock);
@@ -325,8 +328,11 @@ export class ImapServer {
   #handle(sock: net.Socket): void {
     let buf = Buffer.alloc(0);
     let selected: ServableMailbox | null = null;
+    let selectedName: string | null = null;
     let pendingAppend: PendingAppend | null = null;
+    let idle: { tag: string; unsub: () => void } | null = null;
     sock.on('error', () => {});
+    sock.on('close', () => idle?.unsub());
     write(sock, `* OK [CAPABILITY ${CAPABILITIES}] server ready`);
 
     sock.on('data', (chunk: Buffer) => {
@@ -354,6 +360,17 @@ export class ImapServer {
         const line = buf.subarray(0, nl).toString('latin1');
         buf = buf.subarray(nl + 2);
         debugLog(line);
+
+        // While idling, the only expected client input is DONE (RFC 2177).
+        if (idle !== null) {
+          if (line.trim().toUpperCase() === 'DONE') {
+            idle.unsub();
+            write(sock, `${idle.tag} OK IDLE terminated`);
+            idle = null;
+          }
+          continue; // ignore any other stray input during IDLE
+        }
+
         const parts = line.split(' ');
         const tag = parts[0] ?? '';
 
@@ -471,12 +488,14 @@ export class ImapServer {
           }
           case 'SELECT':
           case 'EXAMINE': {
-            const box = this.#catalog.get(unquote(arg(1)) || 'INBOX');
+            const name = unquote(arg(1)) || 'INBOX';
+            const box = this.#catalog.get(name);
             if (box === undefined) {
               write(sock, `${tag} NO no such mailbox`);
               break;
             }
             selected = box;
+            selectedName = canonicalMailboxName(name);
             write(sock, `* ${box.messages.length} EXISTS`);
             write(sock, '* FLAGS (\\Seen \\Answered \\Flagged \\Deleted \\Draft)');
             write(sock, '* OK [PERMANENTFLAGS (\\Seen \\Answered \\Flagged \\Deleted \\Draft)] flags stored');
@@ -577,10 +596,36 @@ export class ImapServer {
             write(sock, `${tag} OK EXPUNGE completed`);
             break;
           }
+          case 'IDLE': {
+            // RFC 2177: hold the connection and push untagged EXISTS as the
+            // mailbox changes, until the client sends DONE.
+            if (selected === null || selectedName === null) {
+              write(sock, `${tag} BAD no mailbox selected`);
+              break;
+            }
+            if (this.#notifier === undefined) {
+              write(sock, `${tag} NO IDLE unavailable`);
+              break;
+            }
+            const name = selectedName;
+            let lastExists = selected.messages.length;
+            const unsub = this.#notifier.subscribe(name, () => {
+              const box = this.#catalog.get(name);
+              const n = box?.messages.length ?? 0;
+              if (n !== lastExists) {
+                write(sock, `* ${n} EXISTS`);
+                lastExists = n;
+              }
+            });
+            idle = { tag, unsub };
+            write(sock, '+ idling');
+            break;
+          }
           case 'CLOSE':
             // Expunge silently and deselect (RFC 9051 §6.4.2).
             if (selected !== null) selected.expungeDeleted();
             selected = null;
+            selectedName = null;
             write(sock, `${tag} OK CLOSE completed`);
             break;
           case 'LOGOUT':
