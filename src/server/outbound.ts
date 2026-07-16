@@ -18,7 +18,13 @@
 import { resolveMx, resolve4, resolve6 } from 'node:dns/promises';
 import { deliver } from '../client/deliver.ts';
 import { resolveMxHosts, type DnsResolver, type MxRecord } from '../client/mx.ts';
-import type { DeliveredMessage } from './smtp-receiver.ts';
+
+/** The envelope + bytes to relay — the subset of a delivered message relay needs. */
+export interface RelayableMessage {
+  readonly from: string;
+  readonly recipients: readonly string[];
+  readonly data: Buffer;
+}
 
 export interface OutboundOptions {
   /** The name to announce in EHLO/HELO — our own server's hostname. */
@@ -37,6 +43,8 @@ export interface OutboundOptions {
 export interface RelayResult {
   readonly recipient: string;
   readonly ok: boolean;
+  /** For the retry queue: success · transient (retry) · permanent (bounce). */
+  readonly classification: 'success' | 'transient' | 'permanent';
   readonly detail: string;
 }
 
@@ -105,7 +113,7 @@ async function realDnsHosts(domain: string): Promise<readonly string[]> {
  * time, trying that recipient's MX hosts in preference order until one accepts.
  * Never throws: every recipient yields a RelayResult, so a caller can log the lot.
  */
-export async function relayOutbound(msg: DeliveredMessage, opts: OutboundOptions): Promise<readonly RelayResult[]> {
+export async function relayOutbound(msg: RelayableMessage, opts: OutboundOptions): Promise<readonly RelayResult[]> {
   const resolveHosts = opts.resolveHosts ?? realDnsHosts;
   const port = opts.port ?? 25;
   const results: RelayResult[] = [];
@@ -113,7 +121,8 @@ export async function relayOutbound(msg: DeliveredMessage, opts: OutboundOptions
   for (const recipient of msg.recipients) {
     const domain = domainOf(recipient);
     if (domain === '') {
-      results.push({ recipient, ok: false, detail: 'no domain in recipient address' });
+      // A malformed recipient is never deliverable — bounce, do not retry.
+      results.push({ recipient, ok: false, classification: 'permanent', detail: 'no domain in recipient address' });
       continue;
     }
 
@@ -121,16 +130,20 @@ export async function relayOutbound(msg: DeliveredMessage, opts: OutboundOptions
     try {
       hosts = await resolveHosts(domain);
     } catch (e) {
-      results.push({ recipient, ok: false, detail: `MX lookup failed: ${String(e)}` });
+      // A DNS failure is transient — the domain may resolve on a later attempt.
+      results.push({ recipient, ok: false, classification: 'transient', detail: `MX lookup failed: ${String(e)}` });
       continue;
     }
     if (hosts.length === 0) {
-      results.push({ recipient, ok: false, detail: `no MX or address record for ${domain}` });
+      // No MX/A right now — treat as transient (conservative: a temporary DNS
+      // gap must not bounce mail; a truly dead domain bounces after give-up).
+      results.push({ recipient, ok: false, classification: 'transient', detail: `no MX or address record for ${domain}` });
       continue;
     }
 
     let delivered = false;
     let lastError = '';
+    let lastClass: 'transient' | 'permanent' = 'transient';
     for (const host of hosts) {
       try {
         // family: 4 — Gmail 550s IPv6 connections without a matching v6 PTR;
@@ -140,16 +153,21 @@ export async function relayOutbound(msg: DeliveredMessage, opts: OutboundOptions
           { from: msg.from, recipients: [recipient], data: msg.data, clientName: opts.clientName },
         );
         if (r.ok) {
-          results.push({ recipient, ok: true, detail: `delivered via ${host}` });
+          results.push({ recipient, ok: true, classification: 'success', detail: `delivered via ${host}` });
           delivered = true;
           break;
         }
         lastError = r.failure ?? `refused (data ${r.dataCode ?? '?'})`;
+        // The code that refused us, in transaction order. 5yz = permanent (bounce);
+        // 4yz or a dropped connection = transient (retry).
+        const code = r.dataCode ?? r.rcptCodes.find((c) => c >= 400) ?? r.mailCode ?? r.greetingCode;
+        lastClass = code !== null && code >= 500 && code < 600 ? 'permanent' : 'transient';
       } catch (e) {
         lastError = String(e);
+        lastClass = 'transient';
       }
     }
-    if (!delivered) results.push({ recipient, ok: false, detail: `all hosts failed: ${lastError || 'unknown'}` });
+    if (!delivered) results.push({ recipient, ok: false, classification: lastClass, detail: `all hosts failed: ${lastError || 'unknown'}` });
   }
 
   return results;

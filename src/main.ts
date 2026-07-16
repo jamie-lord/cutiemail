@@ -25,6 +25,8 @@ import { ImapServer } from './server/imap-server.ts';
 import { relayOutbound, routeRecipients, type OutboundOptions } from './server/outbound.ts';
 import { ensureSubmissionHeaders } from './server/submission-fixup.ts';
 import { dkimSign, makeSigner } from './server/dkim-signer.ts';
+import { SqliteQueue } from './store/sqlite-queue.ts';
+import { RelayLoop } from './server/relay-loop.ts';
 // Bundled self-signed certificate — local development default only.
 import { TEST_CERT as DEV_CERT, TEST_KEY as DEV_KEY } from './testing/tls-test-cert.ts';
 
@@ -52,6 +54,8 @@ export interface MailServerConfig {
   };
   /** Where to report runtime events (relay outcomes). Unset = silent. */
   readonly onEvent?: (line: string) => void;
+  /** How often the relay loop drains the queue (default 60s). */
+  readonly relayIntervalMs?: number;
 }
 
 export interface RunningServer {
@@ -59,6 +63,8 @@ export interface RunningServer {
   readonly submission: SmtpReceiver;
   readonly imap: ImapServer;
   readonly mailbox: SqliteMailbox;
+  readonly queue: SqliteQueue;
+  readonly relayLoop: RelayLoop;
   close(): Promise<void>;
 }
 
@@ -96,6 +102,10 @@ export async function startServer(cfg: MailServerConfig): Promise<RunningServer>
   // DKIM signer, if a key is configured. Signing moves outbound from spam to inbox.
   const signer = cfg.dkim !== undefined ? makeSigner(cfg.domain, cfg.dkim.selector, cfg.dkim.privateKeyPem) : undefined;
 
+  // The persistent outbound queue + the loop that drains it (survives restart).
+  const queue = SqliteQueue.open(db);
+  const relayLoop = new RelayLoop(queue, (m) => relayOutbound(m, outboundOpts), { log });
+
   const submissionHandler = (m: DeliveredMessage): void => {
     const { local, remote } = routeRecipients(m.recipients, cfg.domain);
     // RFC 6409 fix-up (submission only, never on the inbound port): add Date /
@@ -103,13 +113,11 @@ export async function startServer(cfg: MailServerConfig): Promise<RunningServer>
     const data = ensureSubmissionHeaders(m.data, cfg.domain);
     if (local.length > 0) storeLocal(data);
     if (remote.length > 0) {
-      // Sign the outbound copy (after fix-up, so Date/Message-ID are covered).
+      // Sign the outbound copy once (after fix-up), queue it, and kick the loop so
+      // the first attempt is immediate; failures are retried, not dropped.
       const outData = signer !== undefined ? dkimSign(data, signer) : data;
-      void relayOutbound({ ...m, data: outData, recipients: remote }, outboundOpts)
-        .then((results) => {
-          for (const r of results) log(`relay ${r.recipient}: ${r.ok ? 'sent' : 'FAILED'} — ${r.detail}`);
-        })
-        .catch((e: unknown) => log(`relay error: ${String(e)}`));
+      queue.enqueue(m.from, remote, outData, Date.now());
+      void relayLoop.tick(Date.now());
     }
   };
   const submission = await SmtpReceiver.start(submissionHandler, {
@@ -122,12 +130,19 @@ export async function startServer(cfg: MailServerConfig): Promise<RunningServer>
   });
   const imap = await ImapServer.start(catalog, { tls: cfg.tls, host: cfg.host, port: cfg.imapPort, authenticate: verify });
 
+  // Drain the queue on a timer, and once now to recover anything left by a crash.
+  relayLoop.start(cfg.relayIntervalMs ?? 60_000);
+  void relayLoop.tick(Date.now());
+
   return {
     inbound,
     submission,
     imap,
     mailbox,
+    queue,
+    relayLoop,
     async close() {
+      relayLoop.stop();
       await inbound.close();
       await submission.close();
       await imap.close();

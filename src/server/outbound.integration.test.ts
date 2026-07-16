@@ -66,7 +66,7 @@ test('relayOutbound delivers to the recipient MX, byte-exact', async () => {
   try {
     const data = Buffer.from('Subject: outbound\r\n\r\nrelayed to the world\r\n', 'latin1');
     const results = await relayOutbound(
-      { from: 'me@mail.example.test', recipients: ['friend@elsewhere.example'], data, overTls: true },
+      { from: 'me@mail.example.test', recipients: ['friend@elsewhere.example'], data },
       { clientName: 'mail.example.test', resolveHosts: async () => ['127.0.0.1'], port: mx.port },
     );
     assert.deepEqual(
@@ -85,7 +85,7 @@ test('relayOutbound delivers to the recipient MX, byte-exact', async () => {
 
 test('relayOutbound reports failure (not throw) when a domain has no MX/address', async () => {
   const results = await relayOutbound(
-    { from: 'me@mail.example.test', recipients: ['nobody@nowhere.invalid'], data: Buffer.from('x'), overTls: true },
+    { from: 'me@mail.example.test', recipients: ['nobody@nowhere.invalid'], data: Buffer.from('x') },
     { clientName: 'mail.example.test', resolveHosts: async () => [] },
   );
   assert.equal(results.length, 1);
