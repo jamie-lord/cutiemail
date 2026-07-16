@@ -192,7 +192,7 @@ async function main(): Promise<void> {
   log(`  submission (AUTH) ${cfg.host}:${server.submission.port}`);
   log(`  IMAPS            ${cfg.host}:${server.imap.port}`);
   log(`  accounts: ${cfg.accounts.map((a) => a.user).join(', ')}`);
-  log('  outbound: remote mail is relayed to its MX (best-effort, no retry queue yet).');
+  log(`  outbound: remote mail is queued and relayed to its MX, with retry${cfg.dkim !== undefined ? ' and DKIM signing' : ''}.`);
   if (cfg.usingDevCert) log('  NOTE: using the bundled self-signed DEV certificate — set MAIL_TLS_CERT/MAIL_TLS_KEY in production.');
   const shutdown = (): void => {
     log('shutting down...');
