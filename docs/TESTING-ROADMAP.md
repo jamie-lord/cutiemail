@@ -73,7 +73,7 @@ Legend: **[have]** built · **[build]** must author · **[adopt]** vendor an exi
 | # | Area | Spec | Harness | Notes |
 |---|---|---|---|---|
 | 6 | SPF | RFC 7208 | **[adopt]** openSPF YAML suite (~200 cases) | Inbound sender check. |
-| 7 | DKIM | RFC 6376 | **[adopt]** vectors + **[build]** canonicalization | Sign outbound, verify inbound. Canonicalization (simple/relaxed) is the subtle part. |
+| 7 | DKIM | RFC 6376 | **[building]** canonicalization landed (`src/crypto/dkim-canon.ts`, `src/register/crypto/`); signing/verification + vectors to come | Sign outbound, verify inbound. **Canonicalization (the subtle part) landed:** all four simple/relaxed header+body algorithms, pinned to the RFC 6376 §3.4.5 worked-example vectors as ground truth, each with a negative-control defect. First entry in a new **mail-crypto register domain**. Still to build: the signature (RSA/Ed25519 sign+verify), the `DKIM-Signature` tag parser, the `b=`/`bh=` hashing, key-record DNS. |
 | 8 | DMARC | RFC 7489 | **[build]** against vectors | Policy + SPF/DKIM **alignment**. |
 | 9 | ARC | RFC 8617 | **[adopt]** ValiMail `arc_test_suite` | Survives forwarding. *Lever: **deferrable** — DKIM+SPF+DMARC are the must-haves.* |
 
