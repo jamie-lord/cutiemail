@@ -146,6 +146,11 @@ test('daemon: authenticated submission relays a remote recipient and stores a lo
     await waitUntil(() => received.length === 1, 'the remote copy to reach the MX');
     assert.deepEqual(received[0]!.recipients, ['friend@elsewhere.example'], 'only the remote recipient was relayed');
     assert.ok(received[0]!.data.includes(Buffer.from('local and remote at once')), 'the relayed body is the submitted message');
+    // RFC 6409 fix-up: the client sent neither header; the MSA must have added
+    // both (Gmail rejects mail without a Message-ID).
+    const relayed = received[0]!.data.toString('latin1');
+    assert.match(relayed, /^Message-ID: <[^>]+@mail\.example\.test>\r\n/m, 'a Message-ID was added at submission');
+    assert.match(relayed, /^Date: /m, 'a Date was added at submission');
   } finally {
     await server.close();
     await mx.close();

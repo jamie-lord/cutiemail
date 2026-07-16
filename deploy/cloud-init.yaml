@@ -11,6 +11,7 @@ packages:
   - ufw
 
 users:
+  - default          # keep the platform-injected SSH key on root
   - name: mail
     system: true
     home: /opt/mailserver

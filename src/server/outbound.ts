@@ -133,8 +133,10 @@ export async function relayOutbound(msg: DeliveredMessage, opts: OutboundOptions
     let lastError = '';
     for (const host of hosts) {
       try {
+        // family: 4 — Gmail 550s IPv6 connections without a matching v6 PTR;
+        // our PTR is set for the v4 address, so relay over IPv4 only.
         const r = await deliver(
-          { host, port, tls: 'none' },
+          { host, port, tls: 'none', family: 4 },
           { from: msg.from, recipients: [recipient], data: msg.data, clientName: opts.clientName },
         );
         if (r.ok) {

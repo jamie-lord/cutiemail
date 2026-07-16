@@ -95,6 +95,13 @@ export interface WireOptions {
   readonly tls?: 'none' | 'implicit';
   readonly tlsOptions?: tls.ConnectionOptions;
   readonly connectTimeoutMs?: number;
+  /**
+   * Restrict the address family when resolving `host`. Outbound relay sets 4:
+   * large receivers (Gmail) hard-reject IPv6 connections without a matching v6
+   * PTR + auth, so a dual-stack box that happens to prefer AAAA gets 550s that
+   * IPv4 (where our PTR does match) does not.
+   */
+  readonly family?: 4 | 6;
 }
 
 const DEFAULT_CONNECT_TIMEOUT_MS = 30_000;
@@ -175,8 +182,8 @@ export class Wire {
     return new Promise<Wire>((resolve, reject) => {
       const useTls = opts.tls === 'implicit';
       const socket = useTls
-        ? tls.connect({ host: opts.host, port: opts.port, ...opts.tlsOptions })
-        : net.connect({ host: opts.host, port: opts.port });
+        ? tls.connect({ host: opts.host, port: opts.port, ...(opts.family !== undefined ? { family: opts.family } : {}), ...opts.tlsOptions })
+        : net.connect({ host: opts.host, port: opts.port, ...(opts.family !== undefined ? { family: opts.family } : {}) });
 
       const timer = setTimeout(() => {
         socket.destroy();

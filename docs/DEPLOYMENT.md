@@ -38,9 +38,11 @@ Hetzner Cloud is the cheapest way to spin this up and throw it away — an ARM
 it. `deploy/hetzner-up.sh` and `deploy/hetzner-down.sh` automate the whole thing.
 
 This path gets **receiving** working — mail *to* `you@mail.example.com` lands in
-the mailbox and you read it over IMAP. Sending outward is deliberately not part of
-it: Hetzner blocks outbound port 25 on new accounts, so relay-to-the-world waits
-(see [Known limitations](#known-limitations)).
+the mailbox and you read it over IMAP. Sending outward may work too, but check
+first: Hetzner blocks outbound port 25 on *new* accounts (established accounts
+have it open — test with `nc gmail-smtp-in.l.google.com 25` from the box). For
+what receivers demand of outbound mail, see
+[Known limitations](#known-limitations).
 
 ```mermaid
 flowchart TB
@@ -226,5 +228,9 @@ These are deliberate, recorded, and roughly in priority order for closing:
 - **No outbound STARTTLS.** Relay to a recipient MX is plaintext on port 25.
   Receivers accept it, but the connection isn't encrypted. Opportunistic STARTTLS
   on the client side is a later increment.
+- **Relay is IPv4-only, deliberately.** Gmail hard-rejects IPv6 connections
+  without a matching v6 PTR and authentication; the PTR this guide sets is for
+  the v4 address, so the relay pins `family: 4`. Revisit if you set up full
+  IPv6 forward-confirmed rDNS.
 - **Not security-hardened.** No rate limiting, no spam filtering, no fail2ban-style
   protection. Don't put anything you care about behind it yet.

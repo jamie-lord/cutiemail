@@ -23,6 +23,7 @@ import { SmtpReceiver } from './server/smtp-receiver.ts';
 import type { DeliveredMessage } from './server/smtp-receiver.ts';
 import { ImapServer } from './server/imap-server.ts';
 import { relayOutbound, routeRecipients, type OutboundOptions } from './server/outbound.ts';
+import { ensureSubmissionHeaders } from './server/submission-fixup.ts';
 // Bundled self-signed certificate — local development default only.
 import { TEST_CERT as DEV_CERT, TEST_KEY as DEV_KEY } from './testing/tls-test-cert.ts';
 
@@ -85,9 +86,12 @@ export async function startServer(cfg: MailServerConfig): Promise<RunningServer>
   };
   const submissionHandler = (m: DeliveredMessage): void => {
     const { local, remote } = routeRecipients(m.recipients, cfg.domain);
-    if (local.length > 0) storeLocal(m.data);
+    // RFC 6409 fix-up (submission only, never on the inbound port): add Date /
+    // Message-ID when the client omitted them — Gmail rejects messages without.
+    const data = ensureSubmissionHeaders(m.data, cfg.domain);
+    if (local.length > 0) storeLocal(data);
     if (remote.length > 0) {
-      void relayOutbound({ ...m, recipients: remote }, outboundOpts)
+      void relayOutbound({ ...m, data, recipients: remote }, outboundOpts)
         .then((results) => {
           for (const r of results) log(`relay ${r.recipient}: ${r.ok ? 'sent' : 'FAILED'} — ${r.detail}`);
         })

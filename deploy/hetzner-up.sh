@@ -98,6 +98,8 @@ from your normal inbox and it should arrive.
   read over IMAP:  IMAPS $MAIL_DOMAIN:993, user '$MAIL_USER' (self-signed cert -> accept the warning)
   destroy it all:  SERVER_NAME=$SERVER_NAME $DIR/hetzner-down.sh
 
-Note: sending OUT to the world won't work yet — Hetzner blocks outbound port 25
-on new accounts, and we haven't wired DKIM. This box is for receiving.
+Note: outbound relay needs port 25 open OUTBOUND (blocked on new Hetzner
+accounts — test: nc gmail-smtp-in.l.google.com 25) and an SPF record:
+  TXT  $MAIL_DOMAIN  "v=spf1 ip4:$IP -all"
+Without DKIM expect first sends to land in spam.
 DONE
