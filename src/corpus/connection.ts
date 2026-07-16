@@ -52,6 +52,7 @@ export const CASES: readonly TestCase[] = [
   testCase({
     id: 'greeting-identifies-the-server',
     requirement: 'R-5321-4.1.1.1-d',
+    alsoTouches: ['R-5321-4.2-g'],
     intent: 'the greeting identifies the server (a domain/hostname after the code)',
     rationale:
       '§4.1.1.1: "The SMTP server identifies itself to the SMTP client in the connection ' +
@@ -122,6 +123,12 @@ export const MUTANTS: readonly Mutant[] = [
     catches: 'greeting-identifies-the-server',
     defect: 'greetingWithoutDomain',
     why: 'a greeting with no domain identification violates R-5321-4.1.1.1-d',
+    alsoProves: [
+      {
+        requirement: 'R-5321-4.2-g',
+        why: '§4.2 Greeting ABNF: "220 " (Domain / address-literal) ... — a bare 220 with no Domain on the first line violates the greeting grammar, on the 220 code the production governs',
+      },
+    ],
   },
   {
     catches: 'ehlo-response-identifies-the-server',

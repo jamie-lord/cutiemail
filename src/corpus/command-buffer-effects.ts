@@ -207,6 +207,51 @@ export const CASES: readonly TestCase[] = [
   }),
 
   testCase({
+    id: 'ehlo-clears-the-transaction',
+    requirement: 'R-5321-4.1.1.1-j',
+    intent: 'a second EHLO mid-transaction clears the reverse-path buffer, so a following RCPT is out of sequence (503)',
+    rationale:
+      '§4.1.1.1: EHLO/HELO "and a \\"250 OK\\" reply to one of them, confirm that ... there is no ' +
+      'transaction in progress and all state tables and buffers are cleared." So a 250 to EHLO is ' +
+      'a PROMISE the transaction was reset — this is the EHLO-as-RSET behaviour, and the register ' +
+      'note flags it as genuinely under-implemented. Observable exactly like RSET: MAIL FROM, then ' +
+      'EHLO, then RCPT. Only a 503 (bad sequence) proves the sender was discarded; a 2yz acceptance ' +
+      'means the buffer survived the EHLO — the false confirmation. TRAP (register note): assert on ' +
+      'the RCPT, NOT the EHLO — a server is entitled to answer EHLO 250 mid-transaction; that IS ' +
+      'the behaviour under test.',
+    needs: { fixture: ['validRecipient'] },
+    run: async (conn): Promise<Judgement> => {
+      const notReady = await greetEhloMail(conn);
+      if (notReady !== null) return notReady;
+
+      // Re-issue EHLO mid-transaction; a 250 promises the reverse-path buffer is gone.
+      await conn.send(crlf`EHLO conformance-suite.invalid`);
+      const e = await conn.readReply(3000);
+      if (e.kind === 'timeout') return { kind: 'inconclusive', reason: 'second EHLO drew no reply within the timeout (server may be slow, §4.5.3.2)' };
+      if (e.kind !== 'reply') return { kind: 'inconclusive', reason: `second EHLO drew ${e.kind}, not a reply` };
+      if (e.reply.code !== 250) return { kind: 'inconclusive', reason: `second EHLO drew ${e.reply.code}, not 250 — no "buffers cleared" confirmation was made` };
+
+      await conn.send(crlf`RCPT TO:<${conn.fixture.validRecipient!}>`);
+      const r = await conn.readReply(3000);
+      if (r.kind === 'timeout') return { kind: 'inconclusive', reason: 'RCPT after the second EHLO drew no reply within the timeout (server may be slow, §4.5.3.2)' };
+      if (r.kind !== 'reply') return { kind: 'inconclusive', reason: `RCPT after the second EHLO drew ${r.kind}, not a reply` };
+      if (r.reply.code === 503) {
+        return { kind: 'satisfied', detail: 'EHLO cleared the transaction: RCPT after it drew 503 (bad sequence), so the sender was discarded as the 250 confirmed' };
+      }
+      if (severity(r.reply) === 2) {
+        return {
+          kind: 'violated',
+          detail: `EHLO returned 250 but did NOT clear the transaction: RCPT after it was accepted with ${r.reply.code}, so the reverse-path buffer survived — the confirmation was false`,
+        };
+      }
+      return {
+        kind: 'inconclusive',
+        reason: `RCPT after the second EHLO drew ${r.reply.code} (neither 503 nor a 2yz acceptance); cannot tell whether the buffer was cleared`,
+      };
+    },
+  }),
+
+  testCase({
     id: 'vrfy-no-effect-on-buffers',
     requirement: 'R-5321-4.1.1.6-b',
     intent: 'VRFY between MAIL and RCPT leaves the reverse-path buffer intact',
@@ -325,6 +370,11 @@ export const MUTANTS: readonly Mutant[] = [
     catches: 'rset-discards-transaction-state',
     defect: 'ignoreRset',
     why: 'a server that does not discard the sender on RSET violates R-5321-4.1.1.5-a',
+  },
+  {
+    catches: 'ehlo-clears-the-transaction',
+    defect: 'ehloKeepsTransaction',
+    why: 'a 250 to EHLO while the reverse-path buffer survives is a false "buffers cleared" confirmation, violating R-5321-4.1.1.1-j',
   },
   {
     catches: 'vrfy-no-effect-on-buffers',

@@ -214,6 +214,13 @@ export interface Defects {
    * The clean server does not implement EXPN (falls through to 500).
    */
   readonly honorUnadvertisedExpn?: boolean;
+  /**
+   * EHLO/HELO does NOT clear the in-progress transaction (reverse-path buffer),
+   * so a 250 to EHLO mid-transaction is a false confirmation. Violates
+   * R-5321-4.1.1.1-j (a 250 to EHLO confirms buffers are cleared). The clean
+   * server clears the transaction on EHLO/HELO, the RFC §4.1.4 behaviour.
+   */
+  readonly ehloKeepsTransaction?: boolean;
   /** Answer NOOP with a 500 "command not recognized". Violates R-5321-4.5.1-b. */
   readonly unrecognizedNoop?: boolean;
   /** Send TWO replies to a single NOOP. Violates R-5321-4.2-a (exactly one reply). */
@@ -553,6 +560,12 @@ export class MutantServer {
       case 'EHLO': {
         if (d.rejectEhlo) return replyOK(500, 'Error: command not recognized');
         state.greeted = true;
+        // §4.1.4/§4.1.1.1-j: EHLO clears any in-progress transaction. The defect
+        // keeps it, making the 250 a false "buffers cleared" confirmation.
+        if (!d.ehloKeepsTransaction) {
+          state.hasMail = false;
+          state.rcptCount = 0;
+        }
         const baseKeywords = d.keepStateAcrossStartTls
           ? ['PIPELINING', 'SIZE 10240000', '8BITMIME', 'STARTTLS', 'SECRET-PRE-TLS-KEYWORD']
           : ['PIPELINING', 'SIZE 10240000', '8BITMIME', 'STARTTLS'];
@@ -587,6 +600,11 @@ export class MutantServer {
       case 'HELO':
         if (d.rejectHelo) return replyOK(502, 'Error: HELO not supported');
         state.greeted = true;
+        // HELO clears an in-progress transaction too (§4.1.4).
+        if (!d.ehloKeepsTransaction) {
+          state.hasMail = false;
+          state.rcptCount = 0;
+        }
         if (d.multilineProseHelo) {
           // Conformant: multiline, but pure prose — no extension keywords.
           this.#write(sock, crlf`250-${this.#domain} at your service`);
