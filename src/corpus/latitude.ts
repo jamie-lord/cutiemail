@@ -279,6 +279,31 @@ export const CASES: readonly TestCase[] = [
         : { kind: 'satisfied', detail: `reply carries the <SP> separator (${r.reply.code})` };
     },
   }),
+
+  testCase({
+    id: 'greeting-identifies-by-name',
+    requirement: 'R-5321-2.3.4-a',
+    intent: 'the server greets with a domain NAME, not an address literal (a SHOULD NOT — a numeric identity is conformant latitude)',
+    rationale:
+      '§2.3.4: hosts "SHOULD NOT be identified by numerical addresses, i.e., by address literals." A ' +
+      'SHOULD NOT, so a server that greets with "220 [192.0.2.1] ..." is exercising permitted ' +
+      'latitude, not violating anything — some IP-only or misconfigured hosts do. We record which ' +
+      'identity the server volunteers in its 220 greeting: a name follows the SHOULD NOT, an ' +
+      'address literal declines it.',
+    run: async (conn: Conn): Promise<Judgement> => {
+      const g = await conn.readReply(5000);
+      if (g.kind !== 'reply' || g.reply.code !== 220) {
+        return { kind: 'inconclusive', reason: `greeting: ${g.kind === 'reply' ? g.reply.code : g.kind} (not a 220 to read an identity from)` };
+      }
+      const text = (g.reply.lines[0]?.text.toString('latin1') ?? '').trim();
+      const token = text.split(/\s+/)[0] ?? '';
+      // Address literal: bracketed [x.x.x.x] or a bare dotted-quad.
+      const isNumeric = /^\[.*\]$/.test(token) || /^\d{1,3}(\.\d{1,3}){3}$/.test(token);
+      return isNumeric
+        ? { kind: 'violated', detail: `greeting identifies by number ("${token}") — permitted, §2.3.4-a is a SHOULD NOT` }
+        : { kind: 'satisfied', detail: `greeting identifies by name ("${token}")` };
+    },
+  }),
 ];
 
 export const CONTROLS: readonly LatitudeControl[] = [
@@ -326,5 +351,10 @@ export const CONTROLS: readonly LatitudeControl[] = [
     case: 'reply-uses-space-when-no-text',
     follows: {}, // clean mutant sends "250 <text>" (SP present)
     declines: { bareCodeReplies: true }, // declines: bare "250" with no SP/text
+  },
+  {
+    case: 'greeting-identifies-by-name',
+    follows: {}, // clean mutant greets "220 mutant.test ..." (a name)
+    declines: { greetingAddressLiteral: true }, // declines: "220 [192.0.2.1] ..." (a number)
   },
 ];

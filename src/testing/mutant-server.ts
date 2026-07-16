@@ -173,6 +173,13 @@ export interface Defects {
   readonly closeOnConnect?: boolean;
   /** Send a greeting with no domain identification ("220" alone). Violates R-5321-4.1.1.1-d. */
   readonly greetingWithoutDomain?: boolean;
+  /**
+   * Greet with an address-literal identity ("220 [192.0.2.1] ...") instead of a
+   * domain name. CONFORMANT — §2.3.4-a is a SHOULD NOT — so this models a server
+   * DECLINING that SHOULD NOT (the clean server greets with a name). Used as the
+   * `declines` arm of the 2.3.4-a latitude profile.
+   */
+  readonly greetingAddressLiteral?: boolean;
   /** EHLO reply's first line carries no server domain. Violates R-5321-4.1.1.1-d. */
   readonly ehloResponseNoDomain?: boolean;
   /** Reject the HELO command. Violates R-5321-4.1.1.1-h (servers MUST support HELO). */
@@ -462,6 +469,9 @@ export class MutantServer {
     } else if (d.greetingWithoutDomain) {
       // A bare 220 with no domain identification.
       this.#write(sock, crlf`220`);
+    } else if (d.greetingAddressLiteral) {
+      // Identity by number — conformant (§2.3.4-a is a SHOULD NOT), the decline arm.
+      this.#write(sock, crlf`220 [192.0.2.1] ESMTP mutant`);
     } else {
       this.#write(sock, crlf`220 ${this.#domain} ESMTP mutant`);
     }
