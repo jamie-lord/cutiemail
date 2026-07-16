@@ -152,14 +152,20 @@ export const CASES: readonly TestCase[] = [
       if (lower.reply.code === 250) {
         return { kind: 'satisfied', detail: 'lower-case ehlo drew 250, identical to upper-case EHLO' };
       }
-      if (severity(lower.reply) === 5) {
+      // ONLY 500/502 ("command not recognized/implemented") is the case-sensitivity
+      // violation: the server failed to recognise the lower-cased verb. Crucially, a
+      // 503 is NOT a case violation — it means the server DID recognise "ehlo" (so it
+      // is case-insensitive) but refused the re-issued EHLO as out of sequence, which
+      // §4.1.4 permits. Convicting a 503 would false-positive a case-insensitive
+      // server that simply disallows a duplicate EHLO. Every other non-250 (503, a
+      // policy 5yz, a transient 4yz) is therefore inconclusive.
+      if (lower.reply.code === 500 || lower.reply.code === 502) {
         return {
           kind: 'violated',
-          detail: `server rejected the lower-case verb "ehlo" with ${lower.reply.code} while accepting "EHLO" with 250 — command verbs are not case sensitive (§2.4)`,
+          detail: `server rejected the lower-case verb "ehlo" with ${lower.reply.code} (command not recognised) while accepting "EHLO" with 250 — command verbs are not case sensitive (§2.4)`,
         };
       }
-      // A 4yz (or other) to a valid, well-formed command we cannot pin on case.
-      return { kind: 'inconclusive', reason: `lower-case ehlo drew ${lower.reply.code}; not attributable to case sensitivity` };
+      return { kind: 'inconclusive', reason: `lower-case ehlo drew ${lower.reply.code} — not a 500/502 unrecognised-verb rejection (a 503 means it WAS recognised but refused as a duplicate EHLO, §4.1.4); not attributable to case sensitivity` };
     },
   }),
 

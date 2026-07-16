@@ -244,6 +244,16 @@ export const MUTANTS: readonly Mutant[] = [
     ],
   },
   {
+    // The rejectCommandLineAt300 control above trips the test's earlier 400-octet
+    // (§4.3.2-f) probe and returns before the at-floor 512 branch runs — so that
+    // branch (the actual R-5321-4.5.3.1.4-a check) had no negative control. This
+    // control passes everything <= 511 and rejects only AT 512, so the 400-octet
+    // probe succeeds and the 512 branch is the thing proven to detect a violation.
+    catches: 'command-line-512-accepted',
+    defect: 'rejectCommandLineAt511',
+    why: 'rejecting a command line AT the 512-octet floor violates R-5321-4.5.3.1.4-a — this control exercises the at-floor branch the 300-octet control skips',
+  },
+  {
     catches: 'text-line-1000-accepted',
     defect: 'rejectTextLineAt500',
     why: 'rejecting a text line within the 1000-octet floor violates R-5321-4.5.3.1.6-a',

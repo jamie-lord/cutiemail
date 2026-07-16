@@ -357,6 +357,14 @@ export interface Defects {
    */
   readonly rejectCommandLineAt300?: boolean;
   /**
+   * Reject command lines longer than 511 octets — i.e. reject a line AT the
+   * §4.5.3.1.4 512-octet floor while accepting everything below it. Distinct from
+   * rejectCommandLineAt300: it PASSES the sub-512 (§4.3.2-f) probe and trips only
+   * the at-floor 512 branch, giving that branch its own negative control (the 300
+   * control trips the earlier sub-512 probe and never reaches the 512 check).
+   */
+  readonly rejectCommandLineAt511?: boolean;
+  /**
    * Reject text lines (in DATA) longer than 500 octets — below the 1000-octet
    * floor §4.5.3.1.6 requires. Simulates a too-small text buffer.
    */
@@ -569,6 +577,13 @@ export class MutantServer {
         // Defect: reject a command line the RFC requires the server to accept.
         // command.length excludes CRLF; +2 approximates the §4.5.3.1.4 total.
         if (d.rejectCommandLineAt300 && line.command.length + 2 > 300) {
+          this.#write(sock, crlf`500 Error: line too long`);
+          buf = buf.subarray(line.consumed);
+          continue;
+        }
+        // At-floor variant: passes everything <= 511 octets (so the sub-512 probe
+        // succeeds) and rejects only AT the 512 floor — exercises the 512 branch.
+        if (d.rejectCommandLineAt511 && line.command.length + 2 > 511) {
           this.#write(sock, crlf`500 Error: line too long`);
           buf = buf.subarray(line.consumed);
           continue;
