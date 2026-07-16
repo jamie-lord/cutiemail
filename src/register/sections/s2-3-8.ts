@@ -72,16 +72,17 @@ export const S2_3_8 = [
       'SMTP client implementations MUST NOT transmit these characters except ' +
       'when they are intended as line terminators and then MUST, as indicated ' +
       'above, transmit them only as a <CRLF> sequence.',
-    testability: {
-      kind: 'not-testable',
-      reason:
-        'Binds the client. This suite is the client, so it can only comply, ' +
-        'not observe — and it deliberately violates this requirement in the ' +
-        'smuggling corpus, which is the correct thing for a test client to do.',
-    },
+    testability: { kind: 'wire-client' },
     note:
-      'Registered rather than dropped: deleting client-side requirements would ' +
-      'shrink the denominator and flatter our coverage. See decision 0001 ' +
-      '("Scope: what we test").',
+      'RECLASSIFIED to wire-client (ADR 0008). Two DISTINCT clients must not be ' +
+      'conflated: the RECEIVER suite\'s own probe-client deliberately violates ' +
+      'this (it emits bare LF to test servers) — that is correct for a test ' +
+      'client and is why this was not-testable from the receiver seat. But the ' +
+      'requirement binds "SMTP client implementations", and our PRODUCT\'s ' +
+      'delivery client is one: the outbound suite drives it against a scripted ' +
+      'peer and asserts every octet it transmits uses CRLF, never a bare CR or ' +
+      'LF. The emitBareLf client-defect is the negative control. This is the ' +
+      'generate half of the smuggling MUST NOT (the recognize half, R-5321-2.3.8-a, ' +
+      'stays wire-testable on the receiver).',
   },
 ] as const satisfies readonly RequirementDef[];

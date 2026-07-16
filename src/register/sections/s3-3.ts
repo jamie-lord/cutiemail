@@ -609,20 +609,17 @@ export const S3_3 = [
     text:
       'the end of mail data must be indicated so that the command and reply ' +
       'dialog can be resumed.',
-    testability: {
-      kind: 'not-testable',
-      reason:
-        'Binds the sender: it is the client that indicates end of data. A ' +
-        'client that never does simply hangs until the §4.5.3.2.5 DATA ' +
-        'timeout, which tells us about the timeout, not about this.',
-    },
+    testability: { kind: 'wire-client' },
     note:
       'PROSE with a lowercase "must" — normative in force, and 5321 predates ' +
       'RFC 8174\'s insistence that only the uppercase form counts. Level MUST ' +
       'on that reading. ' +
-      'The mechanism it demands is R-5321-3.3-v (the lone "." line); this ' +
-      'sentence only establishes that SOME indication is required. Our client ' +
-      'obviously obeys it.',
+      'The mechanism it demands is R-5321-3.3-v (the lone "." line). ' +
+      'RECLASSIFIED to wire-client (ADR 0008): a client that never indicates ' +
+      'end-of-data just hangs until a server timeout, so the receiver seat ' +
+      'learns nothing — but driving our own delivery client, we assert it emits ' +
+      'the terminating <CRLF>.<CRLF>. The skipTerminatingDot client-defect is ' +
+      'the negative control.',
   },
   {
     id: 'R-5321-3.3-v',
@@ -720,23 +717,18 @@ export const S3_3 = [
       'If one of those replies (or any other 5yz reply) is received, the ' +
       'client MUST NOT send the message data; more generally, message data ' +
       'MUST NOT be sent unless a 354 reply is received.',
-    testability: {
-      kind: 'not-testable',
-      reason:
-        'Binds the client. Nothing a server does reveals whether the client ' +
-        'was entitled to send what it sent.',
-    },
+    testability: { kind: 'wire-client' },
     note:
       'Two rules in one sentence — the 5yz-specific one and the general ' +
       '"only after 354" one — kept as a single entry because both bind the ' +
-      'same party with the same (nil) testability, so splitting would buy ' +
-      'nothing but a letter. The general clause is the load-bearing one. ' +
-      'This binds OUR client hard, and unlike R-5321-2.4-g it is not a rule we ' +
-      'should ever deliberately violate in the corpus: barrelling on after a ' +
-      '5yz would leave the server\'s parser in a state neither side agrees on, ' +
-      'and every subsequent observation in the session would be junk. If we ' +
-      'ever do want to test a server\'s reaction to unsolicited data, that is ' +
-      'a §4.1.4 sequencing probe with its own session, not this.',
+      'same party the same way. The general clause is the load-bearing one. ' +
+      'RECLASSIFIED to wire-client (ADR 0008): nothing a THIRD-PARTY server does ' +
+      'reveals whether its client was entitled to send, but we can drive our OWN ' +
+      'delivery client against a scripted peer that answers MAIL/RCPT with 5yz ' +
+      'and assert the client never opens DATA. The ignore5yzAndSendData ' +
+      'client-defect is the negative control — the one place we make our client ' +
+      'misbehave on purpose, safely, against a scripted peer rather than a real ' +
+      'server whose parser state we would otherwise wreck.',
   },
   {
     id: 'R-5321-3.3-z',

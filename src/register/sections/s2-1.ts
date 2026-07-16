@@ -239,24 +239,18 @@ export const S2_1 = [
       'The dialog is purposely lock-step, one-at-a-time, although this can be ' +
       'modified by mutually agreed upon extension requests such as command ' +
       'pipelining (RFC 2920 [19]).',
-    testability: {
-      kind: 'not-testable',
-      reason:
-        'Binds the client: it is the client that would break lock-step by ' +
-        'sending ahead. §2.1 imposes no matching duty on a receiver to detect ' +
-        'or punish a client that does, so there is no server behaviour to fail.',
-    },
+    testability: { kind: 'wire-client' },
     note:
       '"purposely lock-step" reads as design commentary but has the force of a ' +
       'MUST NOT on unnegotiated pipelining, hence `prose`. ' +
-      'THE TRAP, and it is a live one: a naive test sends two commands in one ' +
-      'write without PIPELINING advertised and fails the server for answering ' +
-      'both. That is a false positive. Nothing in 5321 requires a server to ' +
-      'reject early-sent commands, and virtually every real server tolerates ' +
-      'them; §4.1.1 only requires that the server not be confused. If we probe ' +
-      'this at all it records BEHAVIOUR (does the server buffer, or does it ' +
-      'error), never pass/fail. The negotiated-pipelining path is RFC 2920 and ' +
-      'belongs to the extension corpus (task #19).',
+      'RECLASSIFIED to wire-client (ADR 0008): from the RECEIVER suite this was ' +
+      'not-testable — nothing in 5321 makes a server punish a client that sends ' +
+      'ahead, and a naive receiver-side probe that fails a server for tolerating ' +
+      'early commands is a false positive. But it binds the CLIENT, and our own ' +
+      'delivery client is directly observable: the outbound suite drives it and ' +
+      'asserts it waits for each reply before the next command. The ' +
+      'pipelineWithoutWaiting client-defect is the negative control. The ' +
+      'negotiated-pipelining path is RFC 2920 (extension corpus, task #19).',
   },
   {
     id: 'R-5321-2.1-i',

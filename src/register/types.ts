@@ -64,6 +64,19 @@ export type Testability =
    */
   | { readonly kind: 'parse' }
   /**
+   * Assertable by driving OUR OWN reference SMTP delivery client against a
+   * scripted peer and observing the protocol it emits. This is the mirror of the
+   * mutant-server pattern: a reference client with switchable defects is the
+   * system under test, a scripted server (conformant or adversarial) is the peer,
+   * and the corpus asserts the client's on-the-wire behaviour. It exists because a
+   * client-binding requirement ("the client MUST transmit CRLF only", "MUST NOT
+   * send data after a 5yz") is invisible to the RECEIVER conformance suite — which
+   * connects outward to a third-party server and can only observe the server — but
+   * is directly observable when we are the one driving the client. See
+   * docs/decisions/0008-outbound-client-harness.md.
+   */
+  | { readonly kind: 'wire-client' }
+  /**
    * Assertable, but needs known server-side state (a mailbox that must be
    * accepted, a domain we do/don't relay for, a quota). SMTP gives almost no
    * way to establish this in-band — see task #12, the hard problem.

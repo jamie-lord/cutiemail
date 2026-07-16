@@ -79,14 +79,14 @@ export const S2_2 = [
     party: 'client',
     normativeSource: 'keyword',
     text: 'clients SHOULD preferentially utilize EHLO rather than HELO.',
-    testability: {
-      kind: 'not-testable',
-      reason:
-        'Binds the client. Nothing a server does reveals whether the peer ' +
-        'preferred EHLO. Our own client takes this SHOULD by default, but the ' +
-        'corpus must retain the ability to open with HELO in order to exercise ' +
-        'R-5321-2.2.1-d.',
-    },
+    testability: { kind: 'wire-client' },
+    note:
+      'RECLASSIFIED to wire-client (ADR 0008): a SHOULD binding the client. From ' +
+      'the receiver seat nothing reveals whether the peer preferred EHLO, but the ' +
+      'outbound suite drives our own delivery client and asserts it opens with ' +
+      'EHLO. The heloOnly client-defect (never attempt EHLO) is the negative ' +
+      'control. The receiver probe-client keeps its ability to open with HELO to ' +
+      'exercise R-5321-2.2.1-d — a separate client for a separate job.',
   },
   {
     id: 'R-5321-2.2.1-d',

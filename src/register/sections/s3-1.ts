@@ -309,23 +309,17 @@ export const S3_1 = [
       'For a particular connection attempt, if the server returns a "command ' +
       'not recognized" response to EHLO, the client SHOULD be able to fall ' +
       'back and send HELO.',
-    testability: {
-      kind: 'not-testable',
-      reason:
-        'Binds the client, and binds it as a capability ("SHOULD be able to") ' +
-        'rather than an action — even a client that has the fallback will not ' +
-        'exercise it against a server that answers EHLO correctly. Nothing a ' +
-        'server does reveals whether the client could have fallen back.',
-    },
+    testability: { kind: 'wire-client' },
     note:
-      'A requirement on our own tool, not on the system under test: the harness ' +
-      'should implement the fallback so that an EHLO-hostile server is still ' +
-      'reachable for the rest of the corpus. But the corpus must NOT fall back ' +
-      'silently and then report HELO-derived results as EHLO results — record ' +
-      'which verb actually succeeded. ' +
-      '"For a particular connection attempt" is doing work: it scopes the ' +
-      'fallback to this connection and withholds permission to cache "this ' +
-      'server is HELO-only" across sessions, which §4.1.4 and operational ' +
-      'experience (a server upgraded mid-run) both argue against.',
+      'RECLASSIFIED to wire-client (ADR 0008): a SHOULD-be-able-to capability of ' +
+      'the client. A server answering EHLO correctly never elicits the fallback, ' +
+      'so the receiver seat cannot observe it — but the outbound suite scripts a ' +
+      'peer to answer EHLO with 500 "command not recognized" and asserts our ' +
+      'delivery client then sends HELO and completes. The noHeloFallback ' +
+      'client-defect (give up instead of falling back) is the negative control. ' +
+      '"For a particular connection attempt" scopes the fallback to this ' +
+      'connection and withholds permission to cache "this server is HELO-only" ' +
+      'across sessions, which §4.1.4 and a server upgraded mid-run both argue ' +
+      'against.',
   },
 ] as const satisfies readonly RequirementDef[];

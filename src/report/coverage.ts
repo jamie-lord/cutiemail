@@ -39,6 +39,13 @@ export type CoverageState =
   | 'fixture-gated'
   /** Testable, deliberately not covered, with a recorded reason. */
   | 'deliberately-uncovered'
+  /**
+   * A client-binding requirement covered by the OUTBOUND client suite (the
+   * reference-delivery-client harness), not by this receiver suite. Not a gap and
+   * not permanently untestable — simply scored by a different corpus. See
+   * docs/decisions/0008-outbound-client-harness.md.
+   */
+  | 'client-suite'
   /** Not testable by this suite, with a recorded reason. */
   | 'not-testable'
   /** Testable, no test, no decision. THE gap the report exists to surface. */
@@ -113,6 +120,10 @@ function stateOf(
   caseById: ReadonlyMap<string, TestCase>,
 ): CoverageState {
   if (req.testability.kind === 'not-testable') return 'not-testable';
+  // Covered by the outbound client suite, not this receiver corpus — so it is
+  // neither a gap nor untestable from this report's seat. The client suite holds
+  // its own negative-controlled proof (src/client/deliver.test.ts).
+  if (req.testability.kind === 'wire-client') return 'client-suite';
   if (req.deliberatelyUncovered !== undefined) return 'deliberately-uncovered';
 
   // No test at all — a genuine gap, whatever the testability kind. (A
@@ -224,6 +235,7 @@ export function computeCoverage(
     'test-only': 0,
     'fixture-gated': 0,
     'deliberately-uncovered': 0,
+    'client-suite': 0,
     'not-testable': 0,
     uncovered: 0,
   };
@@ -275,6 +287,7 @@ export function renderCoverage(report: CoverageReport): string {
     `  test-only               ${report.byState['test-only']}   (test, but NO proof it detects — half-covered)`,
     `  fixture-gated           ${report.byState['fixture-gated']}   (needs operator-declared server state)`,
     `  deliberately-uncovered  ${report.byState['deliberately-uncovered']}   (a recorded decision)`,
+    `  client-suite            ${report.byState['client-suite']}   (client-binding, covered by the outbound client suite)`,
     `  not-testable            ${report.byState['not-testable']}   (client-binding or unobservable, with reason)`,
     `  uncovered               ${report.byState.uncovered}   (testable, no test, no decision — THE gaps)`,
   ];
