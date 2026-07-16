@@ -24,6 +24,7 @@ export type SpecSource =
   | 'rfc2046'
   | 'rfc2047'
   | 'rfc6376'
+  | 'rfc7208'
   | 'rfc9051';
 
 /** RFC 2119 / RFC 8174 normative levels, as they appear in the source RFCs. */
