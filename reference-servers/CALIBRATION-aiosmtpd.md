@@ -82,3 +82,13 @@ pass/fail.
 Still open (task #23): a permissive server can't exercise the strict-rejection and
 hardened-path requirements. Only Postfix/Exim — which *do* reject bare-LF, *do* enforce
 sizes, *do* run STARTTLS — will calibrate those. Run #23 on a host with working Docker egress.
+
+## Independently reproduced (2026-07-16)
+
+Re-run from scratch in a fresh venv (`aiosmtpd 1.4.6`, a different install from the one above)
+against the same target and config: **identical result — 68 cases, the same 4 non-conformant
+findings (R-5321-2.3.8-a, 4.1.1.4-i, 4.1.2-j, 4.1.2-n), the same 9 inconclusive, 55
+conformant, zero false positives.** The transcripts confirm each finding at the byte level (a
+bare-LF EHLO drawing a full `250` extension list, `250 OK` to a NUL-bearing MAIL). This is the
+project's "assume we are wrong until proven" rule applied to its own calibration record: the
+claim above is confirmed by a second independent run, not taken on faith.
