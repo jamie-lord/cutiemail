@@ -94,16 +94,20 @@ export const CASES: readonly TestCase[] = [
       '§4.4: "When an SMTP server receives a message for delivery or further processing, it MUST ' +
       'insert trace (\\"time stamp\\" or \\"Received\\") information at the beginning of the message ' +
       'content." Invisible from the client side, but observable at the sink: the delivered content ' +
-      'begins with a Received: header. We assert only the PRESENCE and leading POSITION of a ' +
-      'Received: line, not its exact format (§4.4-b..f detail the internals; a server may vary them).',
+      'begins with a Received: header. We assert only the PRESENCE of a Received: line in the ' +
+      'delivered header block, not its exact format (§4.4-b..f detail the internals; a server may ' +
+      'vary them) nor that it is the literal first line — a conformant server MAY prepend a ' +
+      'Return-Path: at final delivery (§4.4), so a strict first-line check would false-positive it.',
     needs: { sink: true, fixture: ['validRecipient'] },
     run: async (conn): Promise<Judgement> => {
       const got = await deliverAndCapture(conn, conn.fixture.validRecipient!, Buffer.from('a message body', 'latin1'));
       if ('kind' in got) return got;
-      const firstLine = got.data.toString('latin1').split('\r\n')[0] ?? '';
-      return /^Received:/i.test(firstLine)
-        ? { kind: 'satisfied', detail: 'delivered content begins with a Received: trace line' }
-        : { kind: 'violated', detail: `delivered content does not begin with a Received: line (first line: ${JSON.stringify(firstLine.slice(0, 80))}) — no trace inserted` };
+      // The header block is everything before the first blank line (or the whole
+      // content if there is none). A conformant relay inserts a Received: line here.
+      const headerBlock = got.data.toString('latin1').split('\r\n\r\n')[0] ?? '';
+      return /^Received:/im.test(headerBlock)
+        ? { kind: 'satisfied', detail: 'delivered content carries a Received: trace line in the header block' }
+        : { kind: 'violated', detail: `delivered content has no Received: line in its header block (${JSON.stringify(headerBlock.slice(0, 100))}) — no trace inserted` };
     },
   }),
 
