@@ -325,6 +325,11 @@ export const S4_2 = [
       'a stricter reading than most implementers hold and that failing a server on ' +
       'an ABNF byte range no prose backs is how a conformance suite loses ' +
       'credibility. Report it, do not fail on it, unless 5321bis firms it up.',
+    deliberatelyUncovered: {
+      reason:
+        'the UNIQUE content of this entry over R-5321-4.2-s is the second-digit 0-5 restriction, which exists only in the §4.2 ABNF with no prose and no keyword anywhere in RFC 5321. Convicting a server (a MUST + `violated` is a finding with no escape) on that byte range would be a false positive against the many conforming-in-practice servers that never intended the ABNF that strictly, and 5321bis has not firmed it up (see docs/decisions/0004). The first-digit half IS covered, via R-5321-4.2-s. This is an observe-not-convict decision, exactly as the note prescribes ("Report it, do not fail on it").',
+      date: '2026-07-16',
+    },
   },
   {
     id: 'R-5321-4.2-k',
