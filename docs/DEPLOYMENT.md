@@ -119,6 +119,7 @@ The daemon is configured entirely by environment variables:
 | `MAIL_SMTP_PORT` / `MAIL_SUBMISSION_PORT` / `MAIL_IMAP_PORT` | `25` / `587` / `993` |
 | `MAIL_USER` / `MAIL_PASS` | your single account, e.g. `you` / a real passphrase |
 | `MAIL_TLS_CERT` / `MAIL_TLS_KEY` | paths to a real certificate (Let's Encrypt) |
+| `MAIL_DKIM_KEY` / `MAIL_DKIM_SELECTOR` | PEM key path + selector to sign outbound (see Known limitations) |
 
 Ports 25/587/993 are privileged (< 1024), so the process needs the capability to
 bind them. The clean way is a systemd unit that grants exactly that and nothing
@@ -209,10 +210,16 @@ Both paths are the real code — the same `smtp-receiver`, `sqlite-mailbox`,
 
 These are deliberate, recorded, and roughly in priority order for closing:
 
-- **No DKIM signing on outbound yet.** The crypto is built and tested
-  (`src/crypto/dkim-*`), just not wired into the send path. Until it is, expect
-  Gmail to accept-but-spam-folder what you send. This is the highest-value next
-  step for "it actually works."
+- **DKIM signing is wired in** (opt-in). Set `MAIL_DKIM_KEY` (a PEM RSA private
+  key, ≥1024-bit) and `MAIL_DKIM_SELECTOR`, and publish the matching public key
+  as a TXT record at `<selector>._domainkey.<domain>`. Generate and publish with:
+  ```sh
+  openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 -out dkim.key
+  echo "v=DKIM1; k=rsa; p=$(openssl rsa -in dkim.key -pubout -outform DER 2>/dev/null | base64 -w0)"
+  ```
+  Outbound mail is then signed after the §6409 fix-up. Without it, delivery
+  relies on SPF alone (accepted, but spam-foldered). Signing is fail-open: a key
+  problem sends the message unsigned rather than dropping it.
 - **No retry queue.** A relay that fails (recipient server down, greylisted with a
   `4xx`) is logged and dropped — it is *not* retried. Greylisting is common, so a
   first send may just vanish; try again. `src/store/queue.ts` has the retry
