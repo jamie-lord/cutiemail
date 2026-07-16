@@ -1,7 +1,9 @@
 /**
  * Integration: the mutant relays to a sink, so the transparency requirements
- * (dot-un-stuffing §4.5.2, local-part case preservation §2.4-c/-d) become
- * observable and — crucially — DETECTABLE. Each is proven both ways: a clean
+ * (dot-un-stuffing §4.5.2, local-part case preservation §2.4-d) become
+ * observable and — crucially — DETECTABLE. (§2.4-d is the PRESERVE-case-on-relay
+ * duty proven here; §2.4-c is the distinct treat-as-case-sensitive duty.) Each is
+ * proven both ways: a clean
  * relay delivers a faithful message to the sink; a defective one corrupts it in
  * exactly the way the requirement forbids, and the corruption shows up at the
  * sink. This is the negative-control proof for the delivery-path surface that was
@@ -96,7 +98,7 @@ test('§4.5.2 dot-un-stuffing: dontUnstuffOnRelay is DETECTED as an extra leadin
   }
 });
 
-test('§2.4-c local-part case preservation: a clean relay preserves the mixed-case recipient', async () => {
+test('§2.4-d local-part case preservation: a clean relay preserves the mixed-case recipient', async () => {
   const sink = await relayThrough({}, 'sender@example.com', 'Mixed.Case@example.com', Buffer.from('hi', 'latin1'));
   try {
     assert.deepEqual(sink.last!.recipients, ['Mixed.Case@example.com']);
@@ -105,7 +107,7 @@ test('§2.4-c local-part case preservation: a clean relay preserves the mixed-ca
   }
 });
 
-test('§2.4-c local-part case preservation: lowercaseLocalPartOnRelay is DETECTED at the sink', async () => {
+test('§2.4-d local-part case preservation: lowercaseLocalPartOnRelay is DETECTED at the sink', async () => {
   const sink = await relayThrough({ lowercaseLocalPartOnRelay: true }, 'sender@example.com', 'Mixed.Case@example.com', Buffer.from('hi', 'latin1'));
   try {
     // The domain is untouched; the local-part was wrongly folded.
