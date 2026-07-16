@@ -28,6 +28,31 @@ async function greetAndEhlo(conn: Conn): Promise<Judgement | null> {
 
 export const CASES: readonly TestCase[] = [
   testCase({
+    id: 'ehlo-is-supported',
+    requirement: 'R-5321-2.2.1-b',
+    alsoTouches: ['R-5321-4.5.1-b'],
+    intent: 'the server supports EHLO even if it implements no extensions',
+    rationale:
+      '§2.2.1: "servers MUST support the EHLO command even if they do not implement any ' +
+      'specific extensions." EHLO is the ESMTP entry point; a server that 500s it is below ' +
+      'the baseline. A 5yz "command not recognized" is the violation; any 2yz (even a bare ' +
+      '250 with no extension lines) satisfies.',
+    run: async (conn): Promise<Judgement> => {
+      const g = await conn.readReply(5000);
+      if (g.kind !== 'reply' || severity(g.reply) !== 2) {
+        return { kind: 'inconclusive', reason: `greeting: ${g.kind === 'reply' ? g.reply.code : g.kind}` };
+      }
+      await conn.send(crlf`EHLO conformance-suite.invalid`);
+      const e = await conn.readReply(3000);
+      if (e.kind === 'timeout') return { kind: 'inconclusive', reason: 'EHLO drew no reply within the timeout' };
+      if (e.kind !== 'reply') return { kind: 'violated', detail: `EHLO: server ${e.kind} instead of replying` };
+      if (severity(e.reply) === 2) return { kind: 'satisfied', detail: `EHLO supported (${e.reply.code})` };
+      if (severity(e.reply) === 4) return { kind: 'inconclusive', reason: `EHLO drew a transient ${e.reply.code}` };
+      return { kind: 'violated', detail: `EHLO drew ${e.reply.code} — the server does not support EHLO` };
+    },
+  }),
+
+  testCase({
     id: 'noop-is-recognised',
     requirement: 'R-5321-4.5.1-b',
     intent: 'NOOP, a mandatory command, is recognised (not answered 500 unrecognised)',
@@ -107,6 +132,7 @@ export const CASES: readonly TestCase[] = [
 ];
 
 export const MUTANTS: readonly Mutant[] = [
+  { catches: 'ehlo-is-supported', defect: 'rejectEhlo', why: 'a 500 to EHLO violates R-5321-2.2.1-b (servers MUST support EHLO)' },
   { catches: 'noop-is-recognised', defect: 'unrecognizedNoop', why: 'a 500 to NOOP means the mandatory command set is incomplete (R-5321-4.5.1-b)' },
   { catches: 'exactly-one-reply-per-command', defect: 'doubleReplyToNoop', why: 'two replies to one command violates R-5321-4.2-a' },
   { catches: 'help-is-answered', defect: 'rejectHelp', why: 'a 500 to HELP violates R-5321-4.1.1.8-a' },

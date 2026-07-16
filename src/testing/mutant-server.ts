@@ -153,6 +153,8 @@ export interface Defects {
   readonly ehloResponseNoDomain?: boolean;
   /** Reject the HELO command. Violates R-5321-4.1.1.1-h (servers MUST support HELO). */
   readonly rejectHelo?: boolean;
+  /** Reject the EHLO command (500). Violates R-5321-2.2.1-b (servers MUST support EHLO). */
+  readonly rejectEhlo?: boolean;
   /** Answer NOOP with a 500 "command not recognized". Violates R-5321-4.5.1-b. */
   readonly unrecognizedNoop?: boolean;
   /** Send TWO replies to a single NOOP. Violates R-5321-4.2-a (exactly one reply). */
@@ -476,6 +478,7 @@ export class MutantServer {
 
     switch (verb) {
       case 'EHLO': {
+        if (d.rejectEhlo) return replyOK(500, 'Error: command not recognized');
         state.greeted = true;
         const keywords = d.keepStateAcrossStartTls
           ? ['PIPELINING', 'SIZE 10240000', '8BITMIME', 'STARTTLS', 'SECRET-PRE-TLS-KEYWORD']
