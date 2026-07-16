@@ -1,7 +1,9 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { ALL_CASES, ALL_MUTANTS, duplicateCaseIds } from './index.ts';
+import { ALL_CASES, ALL_MUTANTS, LATITUDE_CONTROLLED_IDS, duplicateCaseIds } from './index.ts';
 import { REQUIREMENTS, requirement } from '../register/rfc5321.ts';
+import type { RequirementDef } from '../register/types.ts';
+import { computeCoverage } from '../report/coverage.ts';
 
 test('no two corpus cases share an id', () => {
   assert.deepEqual(duplicateCaseIds(), []);
@@ -65,6 +67,53 @@ test('every case cites a non-client, testable requirement (primary and alsoTouch
       );
     }
   }
+});
+
+// The headline claim, made executable.
+//
+// The README and the coverage report assert that every wire-testable MUST is
+// either covered by a proven negative control or carries a recorded decision —
+// "no silent gaps". That is the whole trust story, and until now it was
+// guaranteed only by prose and a manual read of the coverage output. So it could
+// rot exactly like the compliance tables this project exists to distrust: add a
+// MUST to the register, delete a mutant, reclassify a requirement, and the claim
+// quietly becomes false with nothing failing.
+//
+// This is that claim as an invariant. A strict (MUST/MUST NOT/REQUIRED),
+// server-observable, PLAIN-wire requirement (kind 'wire' — not fixture-gated,
+// which is a distinct honest state, and not not-testable) may only be
+// 'fully-covered' (test + proven mutant) or 'deliberately-uncovered' (a recorded
+// decision). It may NEVER be 'uncovered' (no test, no decision — a silent gap) or
+// 'test-only' (a test never shown to have teeth). If this test fails, the
+// project's central promise is no longer true; fix the coverage, not the test.
+test('no strict wire-testable MUST is a silent gap (the headline coverage claim)', () => {
+  const report = computeCoverage(ALL_CASES, ALL_MUTANTS, LATITUDE_CONTROLLED_IDS);
+  const defById = new Map<string, RequirementDef>(
+    (REQUIREMENTS as readonly RequirementDef[]).map((d) => [d.id, d]),
+  );
+  const offenders = report.requirements.filter((r) => {
+    const def = defById.get(r.id)!;
+    const strict = def.level === 'MUST' || def.level === 'MUST NOT' || def.level === 'REQUIRED';
+    const observable = def.party !== 'client';
+    const plainWire = def.testability.kind === 'wire';
+    return strict && observable && plainWire && (r.state === 'uncovered' || r.state === 'test-only');
+  });
+  assert.deepEqual(
+    offenders.map((r) => `${r.id} [${r.state}]`),
+    [],
+    'a strict, observable, plain-wire MUST is a silent gap — it must be fully-covered ' +
+      'by a proven negative control or carry a deliberatelyUncovered decision',
+  );
+});
+
+// Citation drift backstop: a test citing a requirement absent from the register
+// is caught at runtime (orphanTests). The type system should prevent it, but the
+// register and corpus are edited by hand, so the report surfaces it and this
+// pins it to zero — an orphan means a coverage number computed against a mistyped
+// id, silently crediting or dropping a requirement.
+test('no corpus test cites a requirement outside the register (no orphans)', () => {
+  const report = computeCoverage(ALL_CASES, ALL_MUTANTS, LATITUDE_CONTROLLED_IDS);
+  assert.deepEqual(report.orphanTests, [], 'a test cites a requirement id not in the register');
 });
 
 test('every alsoProves claim is real and bounded by its caught test', () => {
