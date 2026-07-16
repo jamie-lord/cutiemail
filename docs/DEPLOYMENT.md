@@ -91,21 +91,22 @@ if you want to do it by hand or on another provider.
 
 ## DNS
 
-Four records. The A and MX get mail flowing; the PTR and SPF are what stop Gmail
-from rejecting what you send.
+The A and MX get mail flowing; PTR + the SPF/DKIM/DMARC trifecta are what earn a
+receiver's trust and keep you out of the spam folder.
 
 | Record | Name | Value | Why |
 |---|---|---|---|
 | **A** | `mail.example.com` | your server's IP | where the host lives |
 | **MX** | `mail.example.com` | `10 mail.example.com` | tells senders to deliver here |
 | **PTR** (reverse DNS) | your IP | `mail.example.com` | set at your VPS provider; Gmail checks the connecting IP resolves back to its HELO name |
-| **TXT (SPF)** | `mail.example.com` | `v=spf1 a -all` | authorises *this host's* IP to send for the domain |
+| **TXT (SPF)** | `mail.example.com` | `v=spf1 ip4:<your-ip> -all` | authorises *this host's* IP to send for the domain |
+| **TXT (DKIM)** | `<selector>._domainkey.mail.example.com` | `v=DKIM1; k=rsa; p=<pubkey>` | the public key that verifies your DKIM signatures (see Running it) |
+| **TXT (DMARC)** | `_dmarc.mail.example.com` | `v=DMARC1; p=none; rua=mailto:you@mail.example.com` | the policy receivers apply; `p=none` monitors without quarantining |
 
-`v=spf1 a -all` means "the domain's A record is a legitimate sender, nothing else
-is." That plus a matching PTR is the minimum for a single personal message to be
-accepted by Gmail. It will likely land in **spam** at first — DKIM is what moves
-it reliably to the inbox, and DKIM is the [next increment](#known-limitations),
-not built yet.
+All three align because the From domain, the DKIM `d=`, and the SPF domain are the
+same name — so a receiver checking DMARC sees SPF *and* DKIM pass for the sending
+domain, which is what moves mail from spam to the inbox. `p=none` is right while
+you're testing; tighten to `quarantine`/`reject` once you trust your setup.
 
 ## Running it
 
