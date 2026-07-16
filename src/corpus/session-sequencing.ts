@@ -50,17 +50,25 @@ export const CASES: readonly TestCase[] = [
       if (r.kind === 'timeout') return { kind: 'inconclusive', reason: 'RSET drew no reply within the timeout (server may be slow, §4.5.3.2)' };
       if (r.kind !== 'reply') return { kind: 'violated', detail: `RSET: server ${r.kind} instead of replying` };
       if (r.reply.code === 250) return { kind: 'satisfied' };
-      // RSET is mandatory (§4.5.1) and MUST answer 250, so a 500/502 (refused as
-      // not-implemented) is the unambiguous violation. Every OTHER non-250 reply
-      // can be conformant in context and must NOT convict: 421 (service shutting
-      // down, allowed after any command), 530 (STARTTLS-required — RFC 3207 §4 lets
-      // a TLS-required server 530 all commands except NOOP/EHLO/STARTTLS/QUIT, and
-      // RSET is not exempt; the sibling rset-before-ehlo-is-noop treats 530 as
-      // conformant), and a transient 4yz under load. Gate those to inconclusive.
-      if (r.reply.code === 500 || r.reply.code === 502) {
-        return { kind: 'violated', detail: `RSET drew ${r.reply.code} (refused as not implemented); §4.1.1.5-b requires 250 and RSET is mandatory` };
+      // RSET MUST answer 250 (§4.1.1.5-b) and is a no-op in EVERY state (§4.1.1.5-d),
+      // so it is never "out of order". The ONLY conformant non-250 replies are the
+      // 530 STARTTLS-required policy (RFC 3207 §4 — RSET is NOT on the exempt list)
+      // and a transient/shutdown 4yz (421 and friends). Gate exactly those two to
+      // inconclusive. Every OTHER 5yz — 500/502 (not implemented), 503 (bad
+      // sequence, which §4.1.1.5-d forbids for RSET), 501/504/550/554 — is a genuine
+      // violation. This mirrors the siblings rset-before-ehlo-is-noop (convicts a
+      // 503 to RSET) and noop-returns-250 (convicts any non-250), rather than
+      // narrowing to 500/502 alone and letting a 503-class refusal escape.
+      if (r.reply.code === 530) {
+        return { kind: 'inconclusive', reason: 'RSET drew 530 (STARTTLS required) — RFC 3207 policy, not a §4.1.1.5-b violation' };
       }
-      return { kind: 'inconclusive', reason: `RSET drew ${r.reply.code}, not 250 — but this can be conformant (421 shutdown, 530 STARTTLS-required, transient 4yz); only 500/502 convicts` };
+      if (severity(r.reply) === 4) {
+        return { kind: 'inconclusive', reason: `RSET drew a transient ${r.reply.code} (421 shutdown / temporary) — not a §4.1.1.5-b violation` };
+      }
+      if (severity(r.reply) === 5) {
+        return { kind: 'violated', detail: `RSET drew ${r.reply.code}; §4.1.1.5-b requires 250 and RSET is a no-op in every state (§4.1.1.5-d), so no 5yz other than the 530 STARTTLS policy is conformant` };
+      }
+      return { kind: 'inconclusive', reason: `RSET drew ${r.reply.code} (an unexpected non-250 2yz/3yz); cannot cleanly convict` };
     },
   }),
 
@@ -301,7 +309,7 @@ export const CASES: readonly TestCase[] = [
 ];
 
 export const MUTANTS: readonly Mutant[] = [
-  { catches: 'rset-returns-250', defect: 'rsetWrongReply', why: 'a non-250 reply to RSET violates R-5321-4.1.1.5-b' },
+  { catches: 'rset-returns-250', defect: 'rsetWrongReply', why: 'answering RSET with a 5yz (the mutant sends 502) instead of the required 250 violates R-5321-4.1.1.5-b — RSET is a no-op in every state, so only the 530 STARTTLS policy or a transient 4yz would be conformant' },
   { catches: 'rset-does-not-close-connection', defect: 'rsetClosesConnection', why: 'closing on RSET violates R-5321-4.1.1.5-e' },
   { catches: 'noop-returns-250', defect: 'noopWrongReply', why: 'a non-250 reply to NOOP violates R-5321-4.1.1.9-b' },
   {
