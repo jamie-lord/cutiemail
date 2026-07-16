@@ -98,6 +98,34 @@ Register the module in `src/corpus/index.ts` (add to `ALL_CASES` / `ALL_MUTANTS`
 coverage report reads those, so an unregistered module is invisible — which the report will
 show as uncovered requirements, not as a pass.
 
+Wire the module's `*.test.ts` to the matching harness (all in `negative-control.ts`):
+`verifyNegativeControls` for ordinary MUST cases, `verifyLatitudeControls` for SHOULD/MAY,
+`verifySinkControls` for delivery-path cases. Each proves every case both ways for you.
+
+## Three kinds of case, three harnesses
+
+- **MUST / MUST NOT** — a `TestCase` + a `Mutant` in `MUTANTS`, proven by `verifyNegativeControls`
+  (clean → not a finding; defect → non-conformant). The default.
+- **SHOULD / MAY** — a `TestCase` (whose `run` returns `violated` on the decline; the outcome
+  model maps that to `permitted-latitude`, never a finding) + a `LatitudeControl` in `CONTROLS`
+  giving the `follows`/`declines` mutant defects, proven by `verifyLatitudeControls`. NEVER give
+  a SHOULD/MAY a negative control — a declined SHOULD is not a violation, so a mutant cannot
+  "catch" it, and `coverage.ts` blocks crediting it that way.
+- **Delivery-path (invisible on the connection)** — dot-un-stuffing, case preservation, trace
+  insertion, body fidelity. A `TestCase` with `needs: { sink: true }` whose `run` drives a
+  transaction and reads `conn.sink` (a `SinkView` of the delivered message), + a `Mutant` whose
+  defect corrupts the relayed message, proven by `verifySinkControls`. Inconclusive without a
+  sink (a plain run against a server we can't make relay to us), never a false finding.
+
+## alsoProves: one defect, several requirements
+
+When two register entries state the SAME wire behaviour in different sections (e.g. NOOP
+unrecognised violates both §4.5.1-b and §4.3.2-e), add an `alsoProves` array to the mutant —
+each entry a `{ requirement, why }` for a requirement the caught test's exchange genuinely also
+demonstrates. It is a DELIBERATE, per-claim credit, NOT automatic: an invariant test bounds each
+`alsoProves` to the caught test's own `requirement`/`alsoTouches`, and `coverage.ts` refuses to
+credit a non-MUST this way (SHOULD/MAY go through latitude). Never use it to paper over a gap.
+
 ## Definition of done
 
 - `npm run typecheck` and `npm test` green.
