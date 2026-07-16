@@ -90,3 +90,34 @@ test('R-9051-2.3.2-b: EXPUNGE removes exactly the \\Deleted messages (expungeIgn
   assert.equal(defect.expungeDeleted().length, 0, 'expungeIgnoresDeleted must be detectable');
   assert.equal(defect.messages.length, 1, 'the \\Deleted message wrongly remains');
 });
+
+test('R-9051-2.3.1.2-a: sequence numbers are ordered by ascending UID (seqNumsDescending caught)', () => {
+  cites('R-9051-2.3.1.2-a');
+  const mb = new Mailbox();
+  const [a, , c] = [mb.append(b('a')), mb.append(b('b')), mb.append(b('c'))];
+  assert.equal(mb.sequenceNumber(a), 1, 'lowest UID is seq 1');
+  assert.equal(mb.sequenceNumber(c), 3, 'highest UID is seq 3');
+  // Negative control: descending order flips the positions.
+  const defect = new Mailbox(1, { seqNumsDescending: true });
+  const da = defect.append(b('a'));
+  defect.append(b('b'));
+  defect.append(b('c'));
+  assert.notEqual(defect.sequenceNumber(da), 1, 'seqNumsDescending must be detectable');
+});
+
+test('R-9051-2.3.1.2-b: EXPUNGE decrements subsequent sequence numbers (staleSeqNumsAfterExpunge caught)', () => {
+  cites('R-9051-2.3.1.2-b');
+  const mb = new Mailbox();
+  const first = mb.append(b('a')); // seq 1
+  const second = mb.append(b('b')); // seq 2
+  assert.equal(mb.sequenceNumber(second), 2);
+  mb.expunge(first); // the second message is now seq 1
+  assert.equal(mb.sequenceNumber(second), 1, 'the later message renumbers down');
+
+  // Negative control: keeping the expunged message counted leaves it stale.
+  const defect = new Mailbox(1, { staleSeqNumsAfterExpunge: true });
+  const f = defect.append(b('a'));
+  const s = defect.append(b('b'));
+  defect.expunge(f);
+  assert.equal(defect.sequenceNumber(s), 2, 'staleSeqNumsAfterExpunge must be detectable');
+});

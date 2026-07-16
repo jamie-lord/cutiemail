@@ -33,12 +33,18 @@ export interface MailboxDefects {
   readonly removeDoesntClear?: boolean;
   /** Leave \Deleted messages in place on EXPUNGE. Violates R-9051-2.3.2-b. */
   readonly expungeIgnoresDeleted?: boolean;
+  /** Order sequence numbers by descending UID. Violates R-9051-2.3.1.2-a. */
+  readonly seqNumsDescending?: boolean;
+  /** Keep an expunged message counted in sequence numbers (stale). Violates R-9051-2.3.1.2-b. */
+  readonly staleSeqNumsAfterExpunge?: boolean;
 }
 
 export class Mailbox {
   readonly uidValidity: number;
   #uidNext = 1;
   #messages: StoredMessage[] = [];
+  /** UIDs expunged but still counted for sequence numbers (staleSeqNumsAfterExpunge only). */
+  #staleUids: number[] = [];
   readonly #defects: MailboxDefects;
 
   constructor(uidValidity = 1, defects: MailboxDefects = {}) {
@@ -76,6 +82,18 @@ export class Mailbox {
     if (this.#defects.reuseExpungedUid === true && uid === this.#uidNext - 1) {
       this.#uidNext = uid;
     }
+    if (this.#defects.staleSeqNumsAfterExpunge === true) this.#staleUids.push(uid);
+  }
+
+  /**
+   * The 1-based message sequence number of `uid`, ordered by ascending UID
+   * (R-9051-2.3.1.2). Recomputed live, so an EXPUNGE renumbers subsequent messages.
+   */
+  sequenceNumber(uid: number): number | null {
+    const counted = [...this.#messages.map((m) => m.uid), ...this.#staleUids];
+    counted.sort((a, b) => (this.#defects.seqNumsDescending === true ? b - a : a - b));
+    const idx = counted.indexOf(uid);
+    return idx === -1 ? null : idx + 1;
   }
 
   /** Replace a message's flags (a set — duplicates collapse). */

@@ -78,4 +78,35 @@ export const IMAP_MAILBOX_STATE = [
       'the \\Deleted-flagged messages (not others). Our expungeDeleted removes them; ' +
       'the expungeIgnoresDeleted defect (leave them) is the negative control.',
   },
+  {
+    id: 'R-9051-2.3.1.2-a',
+    rfc: 'rfc9051',
+    section: '2.3.1.2',
+    page: 14,
+    level: 'MUST',
+    party: 'both',
+    normativeSource: 'keyword',
+    text: 'This position MUST be ordered by ascending unique identifiers.',
+    testability: { kind: 'parse' },
+    note:
+      'A message sequence number is a 1-based position ordered by ascending UID. Our ' +
+      'mailbox computes it that way; the seqNumsDescending defect (order by descending ' +
+      'UID) is the negative control.',
+  },
+  {
+    id: 'R-9051-2.3.1.2-b',
+    rfc: 'rfc9051',
+    section: '2.3.1.2',
+    page: 14,
+    level: 'MUST',
+    party: 'both',
+    normativeSource: 'prose',
+    text: 'when a message is permanently removed (expunged) from the mailbox, the message sequence number for all subsequent messages is decremented.',
+    testability: { kind: 'parse' },
+    note:
+      'The classic off-by-one source: after an EXPUNGE, every later message\'s sequence ' +
+      'number drops by one. Our mailbox recomputes live so this is automatic; the ' +
+      'staleSeqNumsAfterExpunge defect (keep the expunged message counted) is the ' +
+      'negative control.',
+  },
 ] as const satisfies readonly RequirementDef[];
