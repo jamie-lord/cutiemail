@@ -288,6 +288,14 @@ export interface Defects {
    */
   readonly injectAfterStartTls?: boolean;
   /**
+   * The smuggle-INTO-TLS variant (needs terminateTls): after a real handshake,
+   * process the plaintext that was pipelined before it AS IF it arrived inside the
+   * TLS session — the injected command runs in the authenticated context. Violates
+   * RFC 3207 §4.2 (discard buffered plaintext). The more dangerous CVE-2011-0411
+   * form: a MITM's injected command appears to come from the client, encrypted.
+   */
+  readonly smuggleIntoTls?: boolean;
+  /**
    * CONFORMANT temp-deferral profiles (not defects): a server under transient
    * conditions answers 4yz. RFC 5321 permits this everywhere — a 4yz is never a
    * MUST violation. They exist to power the "a temporarily-deferring server draws
@@ -494,7 +502,7 @@ export class MutantServer {
    * a terminateTls STARTTLS) the upgraded TLS socket. `greet` sends the 220 opener;
    * it is false for the post-STARTTLS session (RFC 3207: no fresh greeting after TLS).
    */
-  #attachSession(sock: net.Socket, state: SessionState, greet: boolean): void {
+  #attachSession(sock: net.Socket, state: SessionState, greet: boolean, initialBuf: Buffer = Buffer.alloc(0)): void {
     const d = this.#defects;
     let buf = Buffer.alloc(0);
 
@@ -513,7 +521,7 @@ export class MutantServer {
       }
     }
 
-    sock.on('data', (chunk: Buffer) => {
+    const onData = (chunk: Buffer): void => {
       buf = Buffer.concat([buf, Buffer.from(chunk)]);
 
       for (;;) {
@@ -573,8 +581,9 @@ export class MutantServer {
             // Real handshake: hand the socket to a server-side TLS socket, stop the
             // plaintext loop, and re-attach on 'secure' with state RESET to initial
             // (RFC 3207 §4.2) — unless the keepStateAcrossStartTls defect retains it.
-            // The pre-handshake buffer is discarded (safe); injection is the no-TLS
-            // path, not this one.
+            // A conformant server discards the pre-handshake buffer; the smuggleIntoTls
+            // defect instead carries it into the encrypted session (the injection).
+            const smuggled = d.smuggleIntoTls ? Buffer.from(buf) : Buffer.alloc(0);
             sock.removeAllListeners('data');
             const tlsSock = new tls.TLSSocket(sock, {
               isServer: true,
@@ -585,7 +594,7 @@ export class MutantServer {
               const post: SessionState = d.keepStateAcrossStartTls
                 ? { ...state, inData: false, awaitingTls: false } // retained (the violation): greeted stays true
                 : { greeted: false, hasMail: false, rcptCount: 0, inData: false, awaitingTls: false, from: '', recipients: [] };
-              this.#attachSession(tlsSock, post, false);
+              this.#attachSession(tlsSock, post, false, smuggled);
             });
             return;
           }
@@ -601,7 +610,13 @@ export class MutantServer {
         this.#dispatch(sock, line.command, state);
         buf = buf.subarray(line.consumed);
       }
-    });
+    };
+
+    sock.on('data', onData);
+    // Smuggle-into-TLS: any plaintext retained across the handshake is fed into the
+    // now-encrypted session as if it arrived inside TLS — the injected command runs
+    // in the authenticated context. A conformant server passes an EMPTY initialBuf.
+    if (initialBuf.length > 0) onData(initialBuf);
   }
 
   #looksLikeCommand(buf: Buffer): boolean {

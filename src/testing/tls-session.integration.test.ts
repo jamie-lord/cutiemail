@@ -64,3 +64,39 @@ test('keepStateAcrossStartTls is DETECTED: the server retains pre-TLS greeting s
   const code = await mailAfterTlsWithoutEhlo({ keepStateAcrossStartTls: true });
   assert.equal(code, 250, `the defect retains pre-TLS state, so MAIL is accepted (250) instead of refused, got ${code}`);
 });
+
+/** Pipeline a plaintext NOOP right after STARTTLS, complete the handshake, then
+ *  read WITHOUT sending anything: an unprompted reply inside TLS is the smuggled
+ *  command executing in the encrypted session. Returns whether that happened. */
+async function smuggleIntoTlsProbe(defects: Defects): Promise<'injected' | 'clean'> {
+  const mutant = await MutantServer.start({ defects, terminateTls: true, validRecipients: ['recipient@example.com'] });
+  try {
+    const wire = await Wire.connect({ host: '127.0.0.1', port: mutant.port, tls: 'none' });
+    try {
+      await readReply(wire); // greeting
+      await wire.send(Buffer.from('EHLO client.test\r\n', 'latin1'));
+      await readReply(wire); // 250
+      // The injection: STARTTLS and a pipelined NOOP in ONE plaintext segment.
+      await wire.send(Buffer.from('STARTTLS\r\nNOOP\r\n', 'latin1'));
+      const tlsReady = await readReply(wire); // 220 for STARTTLS (NOOP held, not answered in plaintext)
+      assert.equal(tlsReady.code, 220);
+      await wire.startTls({ rejectUnauthorized: false });
+      // Inside TLS now. Read without prompting: a vulnerable server replays the
+      // smuggled NOOP and sends a 250 here; a conformant server discarded it (silence).
+      const r = await wire.read(replyFramer, 1000, frameReplyAtEof);
+      return r.kind === 'framed' ? 'injected' : 'clean';
+    } finally {
+      await wire.close();
+    }
+  } finally {
+    await mutant.close();
+  }
+}
+
+test('smuggle-into-TLS: a conformant server discards the pipelined command — no unprompted reply inside TLS', async () => {
+  assert.equal(await smuggleIntoTlsProbe({}), 'clean');
+});
+
+test('smuggleIntoTls is DETECTED: the pipelined command is replayed inside the TLS session', async () => {
+  assert.equal(await smuggleIntoTlsProbe({ smuggleIntoTls: true }), 'injected');
+});
