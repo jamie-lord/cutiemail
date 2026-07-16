@@ -13,6 +13,7 @@
  */
 
 import net from 'node:net';
+import tls from 'node:tls';
 
 export interface ServableMessage {
   readonly uid: number;
@@ -36,6 +37,7 @@ export class ImapServer {
   readonly port: number;
   readonly #server: net.Server;
   readonly #mailbox: ServableMailbox;
+  readonly #sockets = new Set<net.Socket>();
 
   private constructor(server: net.Server, port: number, mailbox: ServableMailbox) {
     this.#server = server;
@@ -43,20 +45,31 @@ export class ImapServer {
     this.#mailbox = mailbox;
   }
 
-  static start(mailbox: ServableMailbox): Promise<ImapServer> {
-    const server = net.createServer();
+  /**
+   * Start the server. With `options.tls` it serves implicit TLS (IMAPS, port 993 in
+   * production — what Thunderbird and Apple Mail use); otherwise plaintext.
+   */
+  static start(mailbox: ServableMailbox, options: { tls?: { key: string; cert: string } } = {}): Promise<ImapServer> {
+    const server = options.tls !== undefined ? tls.createServer({ key: options.tls.key, cert: options.tls.cert }) : net.createServer();
     return new Promise((resolve) => {
       server.listen(0, '127.0.0.1', () => {
         const addr = server.address();
         const port = typeof addr === 'object' && addr !== null ? addr.port : 0;
         const imap = new ImapServer(server, port, mailbox);
-        server.on('connection', (sock) => imap.#handle(sock));
+        const event = options.tls !== undefined ? 'secureConnection' : 'connection';
+        server.on(event, (sock: net.Socket) => {
+          imap.#sockets.add(sock);
+          sock.on('close', () => imap.#sockets.delete(sock));
+          imap.#handle(sock);
+        });
         resolve(imap);
       });
     });
   }
 
   close(): Promise<void> {
+    for (const s of this.#sockets) s.destroy();
+    this.#sockets.clear();
     return new Promise((resolve) => this.#server.close(() => resolve()));
   }
 
