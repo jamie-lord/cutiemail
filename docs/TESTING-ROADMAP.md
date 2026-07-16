@@ -81,7 +81,7 @@ Legend: **[have]** built · **[build]** must author · **[adopt]** vendor an exi
 
 | # | Area | Spec | Harness | Notes / opinionated lever |
 |---|---|---|---|---|
-| 10 | TLS / transport security | RFC 3207, 8314, 8461, 7672 | **[build]** negotiation/downgrade | STARTTLS both ways, implicit TLS, cert lifecycle. *Lever: **MTA-STS over DANE** — DANE needs DNSSEC validation Node does not provide.* |
+| 10 | TLS / transport security | RFC 3207, 8314, 8461, 7672 | **[building]** MTA-STS policy parser + MX matcher (`src/transport/mta-sts.ts`, `src/register/transport/`); STARTTLS (RFC 3207) already in the SMTP register; negotiation/downgrade tests to come | STARTTLS both ways, implicit TLS, cert lifecycle. **MTA-STS landed:** policy parse (version/mode gates) + the security-critical MX wildcard matcher (one left-most label only, RFC 8461 §4.1 examples), each negative-controlled. Still to build: policy fetch/caching, TLS-RPT, certificate validation, STARTTLS downgrade-resistance tests. *Lever: **MTA-STS over DANE** — DANE needs DNSSEC validation Node does not provide.* |
 | 11 | Storage (SQLite) | — | **[build]** property + crash-recovery | Schema, crash consistency, concurrency, **IMAP UID monotonicity**, transaction integrity. |
 | 12 | Queue / spool | RFC 5321 §4.5.4, 3464 | **[build]** | Persistence, retry scheduling, dead-letter, bounce, recovery-after-kill. Overlaps #3. |
 | 13 | Accounts / auth backend | SCRAM, argon2 | **[build]** | Password hashing, SCRAM state, brute-force lockout. |
