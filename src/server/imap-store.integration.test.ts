@@ -82,3 +82,46 @@ test('IMAP STORE marks flags and EXPUNGE removes \\Deleted messages', async () =
     db.close();
   }
 });
+
+test('non-silent STORE reports the accurate resulting flag set for add/remove/replace', async () => {
+  const db = new DatabaseSync(':memory:');
+  const mailbox = SqliteMailbox.open(db);
+  mailbox.append(Buffer.from('Subject: m\r\n\r\nbody\r\n', 'latin1'), ['\\Flagged']); // starts \Flagged
+  const imap = await ImapServer.start(mailbox);
+  const c = new Client(imap.port);
+  try {
+    await c.expect('* OK');
+    c.send('a1 LOGIN user pass');
+    await c.expect('a1 OK');
+    c.send('a2 SELECT INBOX');
+    await c.expect('a2 OK');
+
+    // +FLAGS merges with the existing \Flagged — the response must show BOTH.
+    c.send('a3 STORE 1 +FLAGS (\\Seen)');
+    const added = await c.expect('a3 OK');
+    assert.match(added, /\* 1 FETCH \(FLAGS \(\\Flagged \\Seen\)\)/, 'add reports the union, not just the added flag');
+
+    // -FLAGS removes just the named flag.
+    c.send('a4 STORE 1 -FLAGS (\\Flagged)');
+    const removed = await c.expect('a4 OK');
+    assert.match(removed, /\* 1 FETCH \(FLAGS \(\\Seen\)\)/, 'remove reports the remaining flags');
+
+    // Bare FLAGS replaces the whole set.
+    c.send('a5 STORE 1 FLAGS (\\Answered)');
+    const replaced = await c.expect('a5 OK');
+    assert.match(replaced, /\* 1 FETCH \(FLAGS \(\\Answered\)\)/, 'replace reports exactly the new set');
+    assert.deepEqual([...mailbox.messages[0]!.flags], ['\\Answered'], 'and persists exactly that set');
+
+    // .SILENT suppresses the untagged FETCH entirely.
+    c.send('a6 STORE 1 +FLAGS.SILENT (\\Seen)');
+    const silent = await c.expect('a6 OK');
+    assert.doesNotMatch(silent, /\* 1 FETCH/, 'a .SILENT store emits no untagged FETCH');
+    assert.ok(mailbox.messages[0]!.flags.has('\\Seen'), 'but the flag is still persisted');
+
+    c.send('a7 LOGOUT');
+    c.end();
+  } finally {
+    await imap.close();
+    db.close();
+  }
+});

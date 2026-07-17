@@ -634,9 +634,16 @@ export class ImapServer {
               for (const { seq, msg } of this.#resolveSet(selected, set, uidMode)) {
                 selected.storeFlags(msg.uid, mode, flags);
                 if (!silent) {
-                  const now = selected.messages.find((m) => m.uid === msg.uid);
+                  // Compute the resulting flag set from the pre-store snapshot rather
+                  // than re-reading the store — a re-read per message is O(n) each, so a
+                  // bulk non-silent STORE would be O(n²) and stall the single-threaded
+                  // event loop for seconds. storeFlags stores flags verbatim (dedup only),
+                  // so this mirrors the persisted result exactly.
+                  const now = new Set(mode === 'replace' ? [] : msg.flags);
+                  if (mode === 'remove') for (const f of flags) now.delete(f);
+                  else for (const f of flags) now.add(f);
                   const uidPart = uidMode ? ` UID ${msg.uid}` : '';
-                  write(sock, `* ${seq} FETCH (FLAGS (${now ? [...now.flags].join(' ') : ''})${uidPart})`);
+                  write(sock, `* ${seq} FETCH (FLAGS (${[...now].join(' ')})${uidPart})`);
                 }
               }
             }
