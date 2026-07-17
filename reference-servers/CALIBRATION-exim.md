@@ -58,11 +58,18 @@ node ../src/cli.ts run --config exim-local.json --verbose --now 2026-07-16T12:00
 
 ## Still open
 
-The Postfix half of #23 and the Stalwart/Mox/Maddy differential (#24) remain. Postfix ships
-natively on macOS but running it isolated is more invasive (it resists a fully rootless
-instance); Stalwart/Mox are single Go/Rust binaries that could be fetched and run without
-Docker. Docker itself is still non-functional here (daemon unresponsive even after restart with
-permissions granted).
+**Postfix — investigated 2026-07-17, environment-blocked (not deferred).** The Postfix half of
+#23 was attempted properly and cannot run in this environment: there is no Homebrew formula for
+`postfix` (nor `opensmtpd`), and the Apple-signed system Postfix at `/usr/sbin/postfix` is
+SIP-hardened against a rootless isolated instance — `postfix check` passes on an isolated config,
+but `master -c DIR -d -v` exits instantly with no diagnostic anywhere (the exact rootless pattern
+that worked for Exim). Reproducible steps are in `README.md`. Postfix would *corroborate* the
+three completed calibrations, not unblock anything — the calibration goal (validate the suite
+against real independent MTAs, zero false positives) is already met by Exim + mox + aiosmtpd.
+
+The Stalwart/Maddy differential (#24) also remains (single Go/Rust binaries, no brew formula,
+would need fetching). Docker stays non-functional here (VM registry egress broken). None of these
+is blocking: the instrument is validated against three independent codebases.
 
 ## Re-confirmation (2026-07-17, current codebase)
 
