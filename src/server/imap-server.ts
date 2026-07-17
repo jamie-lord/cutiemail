@@ -550,6 +550,7 @@ export class ImapServer {
     // is awaiting its base64 SASL response on the next line.
     let authenticated = false;
     let pendingAuth: string | null = null;
+    let readOnly = false; // set when the mailbox was opened with EXAMINE, not SELECT
     sock.on('error', () => {});
     sock.on('close', () => idle?.unsub());
     // RFC 9051 §5.4: autologout an inactive connection (timer ≥ 30 min). An IDLE
@@ -833,12 +834,15 @@ export class ImapServer {
             }
             selected = box;
             selectedName = canonicalMailboxName(name);
+            // EXAMINE opens read-only (RFC 9051 §6.3.2): no flag changes, no EXPUNGE.
+            readOnly = cmd === 'EXAMINE';
             write(sock, `* ${box.messages.length} EXISTS`);
             write(sock, '* FLAGS (\\Seen \\Answered \\Flagged \\Deleted \\Draft)');
-            write(sock, '* OK [PERMANENTFLAGS (\\Seen \\Answered \\Flagged \\Deleted \\Draft)] flags stored');
+            // Read-only advertises no settable permanent flags.
+            write(sock, `* OK [PERMANENTFLAGS (${readOnly ? '' : '\\Seen \\Answered \\Flagged \\Deleted \\Draft'})] flags stored`);
             write(sock, `* OK [UIDVALIDITY ${box.uidValidity}] UIDs valid`);
             write(sock, `* OK [UIDNEXT ${box.uidNext}] Predicted next UID`);
-            write(sock, `${tag} OK [READ-WRITE] ${cmd} completed`);
+            write(sock, `${tag} OK [${readOnly ? 'READ-ONLY' : 'READ-WRITE'}] ${cmd} completed`);
             break;
           }
           case 'FETCH': {
@@ -853,7 +857,8 @@ export class ImapServer {
             // RFC 9051 §6.4.5: a BODY[...] fetch WITHOUT .PEEK sets \Seen as a side
             // effect; BODY.PEEK[...] does not. A client relying on the implicit mark
             // (rather than an explicit STORE) needs this to see the message as read.
-            const marksSeen = atts.bodySections.some((s) => !s.peek);
+            // A read-only (EXAMINE) mailbox never has its flags changed by a fetch.
+            const marksSeen = !readOnly && atts.bodySections.some((s) => !s.peek);
             for (const { seq, msg } of this.#resolveSet(selected, set, uidMode)) {
               this.#emitFetch(sock, seq, msg, atts, uidMode);
               if (marksSeen && !msg.flags.has('\\Seen')) {
@@ -895,6 +900,10 @@ export class ImapServer {
           case 'STORE': {
             if (selected === null) {
               write(sock, `${tag} BAD no mailbox selected`);
+              break;
+            }
+            if (readOnly) {
+              write(sock, `${tag} NO mailbox is read-only (opened with EXAMINE)`);
               break;
             }
             const set = arg(1);
@@ -965,6 +974,10 @@ export class ImapServer {
               write(sock, `${tag} BAD no mailbox selected`);
               break;
             }
+            if (readOnly) {
+              write(sock, `${tag} NO mailbox is read-only (opened with EXAMINE)`);
+              break;
+            }
             const before = selected.messages.map((m) => ({ uid: m.uid, deleted: m.flags.has('\\Deleted') }));
             // UID EXPUNGE <set> (RFC 4315): restrict to \Deleted messages within
             // the set; plain EXPUNGE removes every \Deleted message.
@@ -1008,10 +1021,12 @@ export class ImapServer {
             break;
           }
           case 'CLOSE':
-            // Expunge silently and deselect (RFC 9051 §6.4.2).
-            if (selected !== null) selected.expungeDeleted();
+            // Expunge silently and deselect (RFC 9051 §6.4.2) — but a read-only
+            // (EXAMINE) mailbox is never expunged, just deselected.
+            if (selected !== null && !readOnly) selected.expungeDeleted();
             selected = null;
             selectedName = null;
+            readOnly = false;
             write(sock, `${tag} OK CLOSE completed`);
             break;
           case 'LOGOUT':

@@ -76,3 +76,26 @@ test('RENAME INBOX moves its messages to the target and leaves INBOX empty', asy
     await server.close();
   }
 });
+
+test('EXAMINE opens read-only: [READ-ONLY], no \\Seen on fetch, STORE/EXPUNGE refused', async () => {
+  const cat = SqliteCatalog.open(new DatabaseSync(':memory:'));
+  cat.get('INBOX')!.append(Buffer.from('Subject: t\r\n\r\nbody\r\n', 'latin1'));
+  const server = await ImapServer.start(cat, { authenticate: () => true });
+  const c = client(server.port);
+  try {
+    await new Promise<void>((r) => c.sock.once('connect', () => r()));
+    await c.run('a1', 'LOGIN u p');
+    assert.match(await c.run('a2', 'EXAMINE INBOX'), /^a2 OK \[READ-ONLY\]/m, 'EXAMINE reports READ-ONLY');
+    // A non-PEEK body fetch must not set \Seen on a read-only mailbox.
+    await c.run('a3', 'FETCH 1 BODY[]');
+    assert.deepEqual([...cat.get('INBOX')!.messages[0]!.flags], [], 'no \\Seen side-effect under EXAMINE');
+    assert.match(await c.run('a4', 'STORE 1 +FLAGS (\\Flagged)'), /^a4 NO/m, 'STORE is refused read-only');
+    assert.match(await c.run('a5', 'EXPUNGE'), /^a5 NO/m, 'EXPUNGE is refused read-only');
+    // SELECT of the same mailbox is read-write again.
+    assert.match(await c.run('a6', 'SELECT INBOX'), /^a6 OK \[READ-WRITE\]/m, 'SELECT is read-write');
+    assert.match(await c.run('a7', 'STORE 1 +FLAGS (\\Flagged)'), /^a7 OK/m, 'STORE works after SELECT');
+  } finally {
+    c.sock.destroy();
+    await server.close();
+  }
+});
