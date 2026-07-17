@@ -43,7 +43,48 @@ function headerValue(headers: readonly Header[], name: string): string | null {
 /** Parse an address list header value into ENVELOPE address structures. */
 export function parseAddressList(value: string | null): readonly EnvelopeAddress[] {
   if (value === null || value.trim() === '') return [];
-  return value.split(',').map((raw) => parseOneAddress(raw.trim())).filter((a): a is EnvelopeAddress => a !== null);
+  return splitAddressList(value)
+    .map((raw) => parseOneAddress(raw.trim()))
+    .filter((a): a is EnvelopeAddress => a !== null);
+}
+
+/**
+ * Split an address list on the commas that SEPARATE addresses — not the ones
+ * inside a quoted display-name (`"Lastname, Firstname" <a@b>`) or an angle-addr.
+ * A plain `.split(',')` mangles the very common "Last, First" display name into
+ * two bogus addresses.
+ */
+function splitAddressList(value: string): string[] {
+  const parts: string[] = [];
+  let cur = '';
+  let inQuote = false;
+  let inAngle = false;
+  for (let i = 0; i < value.length; i++) {
+    const c = value[i]!;
+    if (inQuote) {
+      cur += c;
+      if (c === '\\' && i + 1 < value.length) cur += value[++i];
+      else if (c === '"') inQuote = false;
+      continue;
+    }
+    if (c === '"') {
+      inQuote = true;
+      cur += c;
+    } else if (c === '<') {
+      inAngle = true;
+      cur += c;
+    } else if (c === '>') {
+      inAngle = false;
+      cur += c;
+    } else if (c === ',' && !inAngle) {
+      parts.push(cur);
+      cur = '';
+    } else {
+      cur += c;
+    }
+  }
+  parts.push(cur);
+  return parts.filter((p) => p.trim().length > 0);
 }
 
 function parseOneAddress(raw: string): EnvelopeAddress | null {

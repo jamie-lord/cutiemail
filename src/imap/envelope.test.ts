@@ -54,3 +54,19 @@ test('R-9051-7.5.2-b: absent Sender/Reply-To default to From (nilAbsentSender ca
   const defect = new Map(buildEnvelope(MESSAGE, { nilAbsentSender: true }).fields.map((f) => [f.name, f.value]));
   assert.equal(defect.get('sender'), null, 'nilAbsentSender must be detectable');
 });
+
+test('a quoted display-name with a comma is one address, not split on the inner comma', () => {
+  // "Lastname, Firstname" is extremely common; a naive comma-split mangles it.
+  const headers = parseMessage(
+    Buffer.from('From: "Doe, John" <john@example.com>\r\nTo: "Roe, Jane" <jane@example.net>, plain@example.org\r\nSubject: x\r\n\r\nb\r\n', 'latin1'),
+  ).headers;
+  const env = buildEnvelope(headers);
+  const from = env.fields.find((f) => f.name === 'from')!.value as { name: string | null; mailbox: string; host: string }[];
+  assert.equal(from.length, 1, 'the From is a single address despite the comma in the display name');
+  assert.deepEqual(from[0], { name: 'Doe, John', mailbox: 'john', host: 'example.com' });
+
+  const to = env.fields.find((f) => f.name === 'to')!.value as { name: string | null; mailbox: string; host: string }[];
+  assert.equal(to.length, 2, 'the two genuinely-separate To addresses still split');
+  assert.equal(to[0]!.name, 'Roe, Jane');
+  assert.equal(to[1]!.mailbox, 'plain');
+});
