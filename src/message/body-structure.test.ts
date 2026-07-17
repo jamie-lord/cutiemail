@@ -7,7 +7,7 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { bodyResponse, bodyStructureResponse } from './body-structure.ts';
+import { bodyResponse, bodyStructureResponse, resolvePart } from './body-structure.ts';
 
 const msg = (s: string): Buffer => Buffer.from(s.replace(/\n/g, '\r\n'), 'latin1');
 
@@ -84,4 +84,32 @@ test('a pathologically deep multipart is bounded, not a stack overflow (DoS guar
   // Must return a value (bounded at the depth cap), never throw a RangeError.
   const bs = bodyStructureResponse(Buffer.from(m, 'latin1'));
   assert.ok(bs.length > 0 && bs.startsWith('('), 'a deeply nested message yields a bounded structure, not a crash');
+});
+
+test('BODYSTRUCTURE and resolvePart never crash on fuzzed / malformed MIME', () => {
+  // Deterministic mulberry32 PRNG (no Math.random) so a failure reproduces.
+  let a = 0xb0d5 >>> 0;
+  const rng = (): number => {
+    a = (a + 0x6d2b79f5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+  const frags = [
+    'Content-Type: multipart/mixed; boundary=B\r\n', 'Content-Type: text/plain\r\n', 'Content-Type: ///\r\n',
+    'Content-Type: message/rfc822\r\n', 'Content-Transfer-Encoding: base64\r\n', 'Content-Disposition: attachment; filename=\r\n',
+    '--B\r\n', '--B--\r\n', '--\r\n', '\r\n', 'body bytes\r\n', 'boundary=', 'name="x"', String.fromCharCode(0), 'x'.repeat(50),
+  ];
+  for (let i = 0; i < 800; i++) {
+    let raw = '';
+    const n = 1 + Math.floor(rng() * 20);
+    for (let j = 0; j < n; j++) raw += frags[Math.floor(rng() * frags.length)]!;
+    const buf = Buffer.from(raw, 'latin1');
+    // None of these must throw; the structure must serialise to a parenthesised value.
+    const bs = bodyStructureResponse(buf);
+    assert.ok(bs.startsWith('('), `structure must be a parenthesised value for input #${i}`);
+    bodyResponse(buf);
+    resolvePart(buf, [1]);
+    resolvePart(buf, [1, 2, 1]);
+  }
 });
