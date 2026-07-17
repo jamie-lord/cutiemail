@@ -151,6 +151,33 @@ test('STORE (UNCHANGEDSINCE n) applies to unchanged messages and rejects changed
   }
 });
 
+test('a CONDSTORE-enabled connection sees MODSEQ in a peer flag change pushed during IDLE', async () => {
+  // The full phone+desktop case: desktop (A) has CONDSTORE on and is idling; the phone
+  // (B) flags a message; A must be told as an untagged FETCH carrying the new MODSEQ, so
+  // A can advance its own sync state without a HIGHESTMODSEQ round-trip.
+  const catalog = catalogWith(1);
+  const server = await ImapServer.start(catalog, { authenticate: () => true, notifier: new MailboxNotifier() });
+  const a = await login(server.port);
+  const b = await login(server.port);
+  try {
+    await a.run('a2', 'SELECT INBOX (CONDSTORE)');
+    await b.run('b2', 'SELECT INBOX');
+    const base = a.mark();
+    a.send('a3 IDLE\r\n');
+    await a.waitFor('+ idling');
+    await b.run('b3', 'STORE 1 +FLAGS (\\Flagged)');
+    await a.waitFor('MODSEQ (');
+    const pushed = a.seen.slice(base);
+    assert.match(pushed, /\* 1 FETCH \(FLAGS \([^)]*\\Flagged[^)]*\) MODSEQ \(\d+\) UID \d+\)/, 'the idling CONDSTORE client sees FLAGS + MODSEQ + UID');
+    a.send('DONE\r\n');
+    await a.waitFor('a3 OK');
+  } finally {
+    a.sock.destroy();
+    b.sock.destroy();
+    await server.close();
+  }
+});
+
 test('STATUS HIGHESTMODSEQ reports the mailbox mod-sequence and it advances on a flag change', async () => {
   const catalog = catalogWith(1);
   const server = await ImapServer.start(catalog, { authenticate: () => true, notifier: new MailboxNotifier() });
