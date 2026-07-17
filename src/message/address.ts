@@ -45,6 +45,32 @@ export interface AddressDefects {
   readonly acceptOverlongLocalPart?: boolean;
 }
 
+/** LDH: the hostname alphabet — letters, digits, hyphen (RFC 5321 §4.1.2 sub-domain). */
+function isLdh(b: number): boolean {
+  return (b >= 0x41 && b <= 0x5a) || (b >= 0x61 && b <= 0x7a) || (b >= 0x30 && b <= 0x39) || b === 0x2d;
+}
+
+/**
+ * Validate a domain as dot-separated LDH labels: each non-empty, LDH-only, and NOT
+ * starting or ending with a hyphen. This is the hostname grammar modern mail uses —
+ * stricter than the atext dot-atom (which would pass "-iana.org" and "iana-.com"), and
+ * the reason those are rejected. Address literals ("[...]") are validated separately.
+ */
+function domainError(domain: Buffer): string | null {
+  if (domain[0] === DOT || domain[domain.length - 1] === DOT) return 'leading or trailing dot';
+  const labels: number[][] = [[]];
+  for (const b of domain) {
+    if (b === DOT) labels.push([]);
+    else labels[labels.length - 1]!.push(b);
+  }
+  for (const label of labels) {
+    if (label.length === 0) return 'empty label';
+    if (label[0] === 0x2d || label[label.length - 1] === 0x2d) return 'label starts or ends with a hyphen';
+    for (const b of label) if (!isLdh(b)) return 'non-LDH octet in domain';
+  }
+  return null;
+}
+
 /** Validate a dot-atom: non-empty atext runs separated by single dots, no edge dots. */
 function dotAtomError(part: Buffer, allowInvalidChars: boolean): string | null {
   if (part.length === 0) return 'empty';
@@ -76,8 +102,21 @@ export function parseAddrSpec(input: Buffer, defects: AddressDefects = {}): Addr
     let i = 1;
     let closed = -1;
     for (; i < input.length; i++) {
-      if (input[i] === 0x5c) i++; // backslash-escape: skip the next octet
-      else if (input[i] === DQUOTE) { closed = i; break; }
+      const c = input[i]!;
+      if (c === 0x5c) {
+        // quoted-pair: "\" then a printable ASCII octet (VCHAR/WSP, %d32-126). An escaped
+        // control or 8-bit octet (e.g. "\<0xa9>") is not a valid quoted-pair.
+        const next = input[i + 1];
+        if (next === undefined) return { ok: false, reason: 'unterminated quoted-pair in local-part' };
+        if (!(next >= 0x20 && next <= 0x7e)) return { ok: false, reason: 'invalid quoted-pair in local-part' };
+        i++; // skip the escaped octet
+      } else if (c === DQUOTE) {
+        closed = i;
+        break;
+      } else if (c < 0x20 || c === 0x7f) {
+        // qtext excludes control octets (a raw NUL/CR/LF inside the quotes is illegal).
+        return { ok: false, reason: 'control octet in quoted local-part' };
+      }
     }
     if (closed === -1) return { ok: false, reason: 'unterminated quoted local-part' };
     if (input[closed + 1] !== AT) return { ok: false, reason: 'quoted local-part not followed by "@"' };
@@ -114,8 +153,14 @@ export function parseAddrSpec(input: Buffer, defects: AddressDefects = {}): Addr
   if (domain.length > 0) {
     if (domain[0] === 0x5b /* [ */) {
       if (domain[domain.length - 1] !== 0x5d /* ] */) return { ok: false, reason: 'unterminated address-literal' };
+      // dcontent excludes "[", "]" and "\" (RFC 5321 §4.1.2): a nested/extra bracket or a
+      // backslash is a malformed literal, e.g. "[RFC-5322-[domain-literal]".
+      for (let i = 1; i < domain.length - 1; i++) {
+        const b = domain[i]!;
+        if (b === 0x5b || b === 0x5d || b === 0x5c) return { ok: false, reason: 'invalid octet in address-literal' };
+      }
     } else {
-      const err = dotAtomError(domain, false);
+      const err = domainError(domain);
       if (err !== null) return { ok: false, reason: `invalid domain: ${err}` };
     }
   }
