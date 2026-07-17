@@ -161,7 +161,10 @@ plaintext fallback). When the relay finally gives up, `bounce.ts` assembles a
 a null return-path, so bounces can't loop). `imap-server.ts` also serves the full
 read side a real client needs — `BODYSTRUCTURE` and per-part `BODY[n]` fetch (so a
 client renders an attachment without downloading the whole message), the fetch
-macros, `INTERNALDATE`, extended `SEARCH`/`ESEARCH`, and `DELETE`/`RENAME`.
+macros, `INTERNALDATE`, extended `SEARCH`/`ESEARCH`, `DELETE`/`RENAME`, the
+`SPECIAL-USE` folders, and `CONDSTORE` (RFC 7162) — a persisted per-message
+mod-sequence so a reconnecting client resyncs only the delta (`FETCH CHANGEDSINCE`)
+and guards a flag edit against a racing client (`STORE UNCHANGEDSINCE`).
 `mailbox-notifier.ts` is the pub/sub that lets one connection's change reach another:
 an inbound delivery, or an APPEND/EXPUNGE/MOVE on any connection, wakes every other
 connection selected on that mailbox. Each connection keeps its own view of the
