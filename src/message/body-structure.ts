@@ -185,6 +185,7 @@ function serialize(part: BodyPart, extended: boolean): string {
  * FETCH BODY[<part>] so a client can download just an attachment.
  */
 export function resolvePart(raw: Buffer, path: readonly number[]): Buffer | null {
+  if (path.length > MAX_MIME_DEPTH) return null; // no real message nests this deep
   let current = raw;
   for (let level = 0; level < path.length; level++) {
     const idx = path[level]!;
