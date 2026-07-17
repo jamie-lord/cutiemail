@@ -15,13 +15,16 @@
  */
 
 import { DatabaseSync } from 'node:sqlite';
-import { randomBytes, randomUUID } from 'node:crypto';
+import { randomUUID } from 'node:crypto';
 import { readFileSync } from 'node:fs';
-import { SqliteMailbox, SqliteCatalog } from './store/sqlite-mailbox.ts';
-import { AccountStore } from './store/accounts.ts';
+import { SqliteCatalog } from './store/sqlite-mailbox.ts';
+import { AccountRegistry } from './store/account-registry.ts';
+import { MailStores } from './store/mail-stores.ts';
+import { MemoryCatalog } from './store/memory-catalog.ts';
 import { SmtpReceiver } from './server/smtp-receiver.ts';
 import type { DeliveredMessage } from './server/smtp-receiver.ts';
 import { ImapServer } from './server/imap-server.ts';
+import type { ServableMailbox } from './server/imap-server.ts';
 import { relayOutbound, routeRecipients, type OutboundOptions } from './server/outbound.ts';
 import { ensureSubmissionHeaders, formatDate } from './server/submission-fixup.ts';
 import { buildBounceMessage } from './server/bounce.ts';
@@ -44,7 +47,11 @@ export interface MailServerConfig {
   readonly submissionPort: number;
   readonly imapPort: number;
   readonly domain: string;
-  readonly accounts: ReadonlyArray<{ readonly user: string; readonly pass: string }>;
+  /**
+   * The local accounts. `mailDbPath` overrides where that user's mail database lives
+   * (default `mail-<user>.db`, or `:memory:` when the control DB is in-memory).
+   */
+  readonly accounts: ReadonlyArray<{ readonly user: string; readonly pass: string; readonly mailDbPath?: string }>;
   readonly tls: { readonly key: string; readonly cert: string };
   /**
    * Override outbound relay's DNS/port — used by tests to point delivery at a
@@ -120,7 +127,9 @@ export interface RunningServer {
   readonly inbound: SmtpReceiver;
   readonly submission: SmtpReceiver;
   readonly imap: ImapServer;
-  readonly mailbox: SqliteMailbox;
+  /** The first account's INBOX — the single-account integration harness reads it. */
+  readonly mailbox: ServableMailbox;
+  readonly stores: MailStores;
   readonly queue: SqliteQueue;
   readonly relayLoop: RelayLoop;
   close(): Promise<void>;
@@ -128,34 +137,63 @@ export interface RunningServer {
 
 /** Assemble and start the server from a full config. Returns the running handles. */
 export async function startServer(cfg: MailServerConfig): Promise<RunningServer> {
-  const db = new DatabaseSync(cfg.dbPath);
-  // WAL journaling: cleaner crash recovery and a reader never blocks the writer —
-  // the right mode for a server. (A no-op for an in-memory db, used by tests.)
+  // The control-plane database (ADR 0009): the account registry + the global outbound
+  // queue. Each USER's mail lives in its own database (one file per user), opened on
+  // demand by the store manager below. WAL: cleaner crash recovery, a reader never
+  // blocks the writer. (A no-op for an in-memory db, used by tests.)
+  const controlDb = new DatabaseSync(cfg.dbPath);
   try {
-    db.exec('PRAGMA journal_mode=WAL');
+    controlDb.exec('PRAGMA journal_mode=WAL');
   } catch {
     /* :memory: and some builds don't support WAL — harmless */
   }
-  // The catalog of named mailboxes: INBOX plus whatever the client creates
-  // (real Thunderbird's first act is CREATE "Trash"). Inbound mail lands in INBOX.
-  const catalog = SqliteCatalog.open(db, 1);
-  const mailbox = catalog.get('INBOX')!;
-  // Pre-provision the conventional special-use folders (RFC 6154) so a client
-  // discovers them via LIST/SPECIAL-USE and files Sent/Drafts/Trash there, instead
-  // of inventing its own "Sent Items"/"Deleted Messages" duplicates. Names match the
-  // SPECIAL_USE table in imap-server.ts, which tags them in LIST responses.
-  for (const name of ['Sent', 'Drafts', 'Trash', 'Junk', 'Archive']) catalog.create(name);
-
-  const accounts = new AccountStore();
-  for (const a of cfg.accounts) accounts.setPassword(a.user, a.pass, randomBytes(16), 4096, 'sha256');
-  const verify = (user: string, pass: string): boolean => accounts.verifyPassword(user, pass);
-
+  const inMemory = cfg.dbPath === ':memory:';
   const log = cfg.onEvent ?? ((): void => {});
-  // Notify idling IMAP connections when INBOX gains a message (IDLE, RFC 2177).
-  const notifier = new MailboxNotifier();
-  const storeLocal = (data: Buffer, internalDate: number = Date.now()): void => {
-    mailbox.append(data, [], internalDate);
-    notifier.notify('INBOX');
+
+  // The persistent account registry. Configured accounts are (re)seeded from config,
+  // which stays the source of truth for them; the registry also holds each user's
+  // mail-database path (default `mail-<user>.db` beside the control DB, or `:memory:`
+  // when the control DB is in-memory, or an explicit per-account override).
+  const registry = AccountRegistry.open(controlDb);
+  const mailDbPathFor = (user: string, explicit?: string): string => explicit ?? (inMemory ? ':memory:' : `mail-${user}.db`);
+  for (const a of cfg.accounts) registry.upsert(a.user, a.pass, mailDbPathFor(a.user, a.mailDbPath));
+  const verify = (user: string, pass: string): boolean => registry.verifyPassword(user, pass);
+
+  // The per-user store manager: opens each user's mail DB once, provisioning INBOX + the
+  // RFC 6154 special-use folders, and caches the live {catalog, notifier} so all of that
+  // user's connections AND deliveries share it (required for IDLE + multi-connection sync).
+  const stores = new MailStores((login) => {
+    const row = registry.lookup(login);
+    if (row === undefined || !row.enabled) return undefined;
+    const udb = new DatabaseSync(row.mailDbPath);
+    try {
+      udb.exec('PRAGMA journal_mode=WAL');
+    } catch {
+      /* in-memory — harmless */
+    }
+    const userCatalog = SqliteCatalog.open(udb, 1);
+    for (const name of ['Sent', 'Drafts', 'Trash', 'Junk', 'Archive']) userCatalog.create(name);
+    return { catalog: userCatalog, notifier: new MailboxNotifier(), close: () => udb.close() };
+  });
+
+  // Which local account (if any) a recipient address belongs to. Only our own domain,
+  // and the local-part is matched case-insensitively against the login (a modern
+  // convenience — RFC 5321 §2.4 leaves local-part case to the destination, and that is
+  // us). An unknown local recipient returns undefined → the caller rejects it (no
+  // catch-all, ADR 0009), which is also what stops us being backscatter for mail we
+  // cannot deliver.
+  const loginForLocalAddress = (address: string): string | undefined => {
+    const at = address.lastIndexOf('@');
+    if (at === -1 || address.slice(at + 1).toLowerCase() !== cfg.domain.toLowerCase()) return undefined;
+    const local = address.slice(0, at).toLowerCase();
+    return registry.list().find((r) => r.login.toLowerCase() === local)?.login;
+  };
+  // Append a message to a local user's INBOX and wake their idling connections.
+  const deliverTo = (login: string, data: Buffer, internalDate: number = Date.now()): void => {
+    const store = stores.get(login);
+    if (store === undefined) return; // unknown/disabled — acceptRecipient already gated this
+    store.catalog.get('INBOX')!.append(data, [], internalDate);
+    store.notifier.notify('INBOX');
   };
 
   // Inbound (port 25): mail arriving for us — verify DKIM, stamp Authentication-Results
@@ -219,22 +257,22 @@ export async function startServer(cfg: MailServerConfig): Promise<RunningServer>
     });
     const stamped = Buffer.concat([Buffer.from(`${authResults}\r\n`, 'latin1'), traced]);
     // INTERNALDATE = the moment we accepted the message (RFC 9051 §2.3.3), the same
-    // instant stamped into the Received trace line above.
-    storeLocal(stamped, receivedAt.getTime());
+    // instant stamped into the Received trace line above. Deliver a copy to each of our
+    // local recipients' own INBOX (ADR 0009).
+    for (const rcpt of m.recipients) {
+      const login = loginForLocalAddress(rcpt);
+      if (login !== undefined) deliverTo(login, stamped, receivedAt.getTime());
+    }
   }, {
     domain: cfg.domain,
     tls: cfg.tls,
     host: cfg.host,
     port: cfg.smtpPort,
-    // Accept inbound mail only for our own domain (catch-all to the single mailbox).
-    // Rejecting other domains at RCPT is what stops us relaying / becoming backscatter
-    // for mail we can't deliver. The local-part is NOT case-folded or restricted —
-    // §2.4 makes it case-sensitive and the domain's own business; every local address
-    // maps to the one mailbox here.
-    acceptRecipient: (address) => {
-      const at = address.lastIndexOf('@');
-      return at !== -1 && address.slice(at + 1).toLowerCase() === cfg.domain.toLowerCase();
-    },
+    // Accept mail only for a KNOWN local account on our domain — an unknown recipient is
+    // rejected (no catch-all, ADR 0009), which also stops us relaying / becoming
+    // backscatter for mail we can't deliver. The local-part is matched case-insensitively
+    // against the account login (see loginForLocalAddress).
+    acceptRecipient: (address) => loginForLocalAddress(address) !== undefined,
     ...(cfg.maxMessageSize !== undefined ? { maxMessageSize: cfg.maxMessageSize } : {}),
     maxReceivedHops: cfg.maxReceivedHops ?? 100,
   });
@@ -250,8 +288,8 @@ export async function startServer(cfg: MailServerConfig): Promise<RunningServer>
   // DKIM signer, if a key is configured. Signing moves outbound from spam to inbox.
   const signer = cfg.dkim !== undefined ? makeSigner(cfg.domain, cfg.dkim.selector, cfg.dkim.privateKeyPem) : undefined;
 
-  // The persistent outbound queue + the loop that drains it (survives restart).
-  const queue = SqliteQueue.open(db);
+  // The persistent outbound queue (in the control DB) + the loop that drains it.
+  const queue = SqliteQueue.open(controlDb);
   const relayLoop = new RelayLoop(queue, (m) => relayOutbound(m, outboundOpts), {
     log,
     // RFC 5321 §6.1: notify the sender when we permanently give up. Build the bounce
@@ -266,10 +304,9 @@ export async function startServer(cfg: MailServerConfig): Promise<RunningServer>
         date: formatDate(new Date()),
         token: randomUUID(),
       });
-      const at = from.lastIndexOf('@');
-      const senderDomain = at === -1 ? '' : from.slice(at + 1).toLowerCase();
-      if (senderDomain === cfg.domain.toLowerCase()) {
-        storeLocal(bounce); // the sender is local — the bounce lands in their INBOX
+      const login = loginForLocalAddress(from);
+      if (login !== undefined) {
+        deliverTo(login, bounce); // the sender is one of ours — the bounce lands in their INBOX
       } else {
         queue.enqueue('', [from], bounce, Date.now()); // null return-path, relayed onward
       }
@@ -293,7 +330,10 @@ export async function startServer(cfg: MailServerConfig): Promise<RunningServer>
       ...(m.recipients.length === 1 ? { forRecipient: m.recipients[0]! } : {}),
       date: new Date(),
     });
-    if (local.length > 0) storeLocal(traced);
+    for (const rcpt of local) {
+      const login = loginForLocalAddress(rcpt);
+      if (login !== undefined) deliverTo(login, traced);
+    }
     if (remote.length > 0) {
       // Sign the outbound copy once, queue it, and kick the loop so the first
       // attempt is immediate; failures are retried, not dropped.
@@ -312,17 +352,36 @@ export async function startServer(cfg: MailServerConfig): Promise<RunningServer>
     ...(cfg.maxMessageSize !== undefined ? { maxMessageSize: cfg.maxMessageSize } : {}),
     maxReceivedHops: cfg.maxReceivedHops ?? 100,
   });
-  const imap = await ImapServer.start(catalog, { tls: cfg.tls, host: cfg.host, port: cfg.imapPort, authenticate: verify, notifier });
+  // Multi-account IMAP (ADR 0009): the base catalog is a never-served placeholder —
+  // every authenticated connection rebinds to its own user's store via resolveAccount,
+  // or is rejected — so no session is ever served this empty catalog.
+  const imap = await ImapServer.start(new MemoryCatalog(), {
+    tls: cfg.tls,
+    host: cfg.host,
+    port: cfg.imapPort,
+    authenticate: verify,
+    resolveAccount: (login) => {
+      const s = stores.get(login);
+      return s === undefined ? undefined : { catalog: s.catalog, notifier: s.notifier };
+    },
+  });
 
   // Drain the queue on a timer, and once now to recover anything left by a crash.
   relayLoop.start(cfg.relayIntervalMs ?? 60_000);
   void relayLoop.tick(Date.now());
+
+  // Expose the first account's INBOX for the single-account integration harness.
+  const firstUser = cfg.accounts[0]?.user;
+  const firstStore = firstUser !== undefined ? stores.get(firstUser) : undefined;
+  const mailbox = firstStore?.catalog.get('INBOX');
+  if (mailbox === undefined) throw new Error('a mail server needs at least one account');
 
   return {
     inbound,
     submission,
     imap,
     mailbox,
+    stores,
     queue,
     relayLoop,
     async close() {
@@ -330,7 +389,8 @@ export async function startServer(cfg: MailServerConfig): Promise<RunningServer>
       await inbound.close();
       await submission.close();
       await imap.close();
-      db.close();
+      stores.closeAll();
+      controlDb.close();
     },
   };
 }
@@ -347,13 +407,16 @@ function configFromEnv(): MailServerConfig & { usingDevCert: boolean } {
   const dkimSelector = process.env.MAIL_DKIM_SELECTOR;
   const dkim = dkimKeyPath !== undefined && dkimSelector !== undefined ? { selector: dkimSelector, privateKeyPem: readFileSync(dkimKeyPath, 'utf8') } : undefined;
   return {
-    dbPath: process.env.MAIL_DB ?? 'mail.db',
+    // The control DB (registry + queue). MAIL_DB now names the FIRST account's mail
+    // database, so an existing single-account deploy migrates with no data loss: its
+    // mail.db becomes that user's mail store, and the control DB is a new file alongside.
+    dbPath: process.env.MAIL_CONTROL_DB ?? 'control.db',
     host: process.env.MAIL_HOST ?? '127.0.0.1',
     smtpPort: Number(process.env.MAIL_SMTP_PORT ?? 2525),
     submissionPort: Number(process.env.MAIL_SUBMISSION_PORT ?? 5587),
     imapPort: Number(process.env.MAIL_IMAP_PORT ?? 5993),
     domain: process.env.MAIL_DOMAIN ?? 'mail.example.com',
-    accounts: [{ user: process.env.MAIL_USER ?? 'demo', pass: process.env.MAIL_PASS ?? 'demo' }],
+    accounts: [{ user: process.env.MAIL_USER ?? 'demo', pass: process.env.MAIL_PASS ?? 'demo', mailDbPath: process.env.MAIL_DB ?? 'mail.db' }],
     tls: dev,
     ...(dkim !== undefined ? { dkim } : {}),
     maxMessageSize: Number(process.env.MAIL_MAX_SIZE ?? 26_214_400), // 25 MiB default

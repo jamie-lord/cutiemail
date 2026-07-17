@@ -73,13 +73,15 @@ test('delivery transparency: dot-un-stuffing, control octets, and local-part cas
         '.\r\n',
       'latin1',
     );
-    await deliverRaw(server.inbound.port, 'MixedCase@mail.example.test', data);
+    // The account is `you`; a mixed-case localpart routes to it (case-insensitive match)
+    // yet the Received line must preserve the recipient exactly as the client wrote it.
+    await deliverRaw(server.inbound.port, 'You@mail.example.test', data);
 
     assert.equal(server.mailbox.messages.length, 1);
     const stored = server.mailbox.messages[0]!.raw.toString('latin1');
 
     // §4.4: a Received line was prepended, and it preserves the recipient case (§2.4-d).
-    assert.match(stored, /^Received: from probe\.example .*for <MixedCase@mail\.example\.test>;/m, 'Received prepended, recipient case preserved');
+    assert.match(stored, /^Received: from probe\.example .*for <You@mail\.example\.test>;/m, 'Received prepended, recipient case preserved');
 
     // §4.5.2: the doubled dot was un-stuffed to a single dot.
     assert.ok(stored.includes('\r\n.secret leading dot\r\n'), 'the transport dot was removed (..secret -> .secret)');
