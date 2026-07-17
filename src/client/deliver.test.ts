@@ -97,6 +97,30 @@ test('R-5321-2.3.8-c: the client transmits CRLF only, never a bare LF (and emitB
   });
 });
 
+test('R-5321-4.5.2-a: the client dot-stuffs a leading period on transmit (skipDotStuffing caught)', async () => {
+  cites('R-5321-4.5.2-a');
+  // A body whose lines begin with a period — the transmit-side smuggling surface.
+  const dotted = {
+    ...REQUEST,
+    data: Buffer.from('Subject: dots\r\n\r\n.hidden\r\n..already\r\nnormal\r\n', 'latin1'),
+  };
+  // Conformant: each leading period is doubled on the wire.
+  await withPeer({}, async (peer) => {
+    await deliver(connectTo(peer.port), dotted);
+    const wire = peer.deliveries[0]!.rawData.toString('latin1');
+    assert.ok(wire.includes('\r\n..hidden\r\n'), 'a leading period is doubled (.hidden -> ..hidden)');
+    assert.ok(wire.includes('\r\n...already\r\n'), 'an existing double is stuffed too (..already -> ...already)');
+    assert.ok(wire.includes('\r\nnormal\r\n'), 'a non-dotted line is untouched');
+  });
+  // Negative control: skipDotStuffing sends the raw periods — a smuggling vector.
+  await withPeer({}, async (peer) => {
+    await deliver(connectTo(peer.port), dotted, { skipDotStuffing: true });
+    const wire = peer.deliveries[0]!.rawData.toString('latin1');
+    assert.ok(wire.includes('\r\n.hidden\r\n'), 'the defect leaves the single leading period unstuffed — detectable');
+    assert.ok(!wire.includes('..hidden'), 'no stuffing happened under the defect');
+  });
+});
+
 test('R-5321-2.1-h: the client is lock-step — no command sent before the prior reply (pipeline caught)', async () => {
   cites('R-5321-2.1-h');
   // The peer withholds the MAIL reply and snapshots what it has received at reply

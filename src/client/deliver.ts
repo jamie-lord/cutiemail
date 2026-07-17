@@ -46,6 +46,9 @@ export interface ClientDefects {
   readonly heloOnly?: boolean;
   /** On an EHLO refusal, give up instead of falling back to HELO. Undoes R-5321-3.2-c. */
   readonly noHeloFallback?: boolean;
+  /** Transmit the DATA payload WITHOUT dot-stuffing leading dots. Violates
+   *  R-5321-4.5.2-a — the send-side of the SMTP-smuggling surface. */
+  readonly skipDotStuffing?: boolean;
 }
 
 export interface DeliveryResult {
@@ -267,7 +270,9 @@ export async function deliver(
  * the terminator (R-5321-3.3-u) — the peer then never sees end-of-data.
  */
 async function transmitData(wire: Wire, req: DeliveryRequest, defects: ClientDefects, _timeoutMs: number): Promise<boolean> {
-  const body = dotStuff(req.data);
+  // R-5321-4.5.2-a: the sender MUST dot-stuff — double a leading '.' on each body
+  // line so it can't be read as end-of-data. The defect skips it (smuggling).
+  const body = defects.skipDotStuffing === true ? req.data : dotStuff(req.data);
   await wire.send(body);
   if (defects.skipTerminatingDot !== true) {
     // EOD is <CRLF>.<CRLF>; under the bare-LF defect send the <LF>.<LF> form so

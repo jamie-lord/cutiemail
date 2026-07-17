@@ -33,6 +33,8 @@ export class RelayLoop {
   readonly #defects: QueueDefects;
   #timer: ReturnType<typeof setInterval> | null = null;
   #ticking = false;
+  /** A tick requested while one was running — its `now`, so the re-run isn't lost. */
+  #pending: number | null = null;
 
   constructor(queue: SqliteQueue, relay: RelayFn, options: RelayLoopOptions = {}) {
     this.#queue = queue;
@@ -41,13 +43,23 @@ export class RelayLoop {
     this.#defects = options.defects ?? {};
   }
 
-  /** Process every entry due at `now`. Safe against re-entrancy (a slow tick won't overlap). */
+  /**
+   * Process every entry due at `now`. Ticks never overlap — but a tick requested
+   * while one is running is NOT dropped: it is remembered and run as soon as the
+   * current one finishes. (Dropping it meant a message enqueued mid-tick waited
+   * for the next timer interval — up to a minute — before its first attempt.)
+   */
   async tick(now: number): Promise<void> {
+    this.#pending = now;
     if (this.#ticking) return;
     this.#ticking = true;
     try {
-      for (const entry of this.#queue.due(now)) {
-        await this.#processEntry(entry, now);
+      while (this.#pending !== null) {
+        const at = this.#pending;
+        this.#pending = null;
+        for (const entry of this.#queue.due(at)) {
+          await this.#processEntry(entry, at);
+        }
       }
     } finally {
       this.#ticking = false;

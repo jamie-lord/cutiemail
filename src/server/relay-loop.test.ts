@@ -79,6 +79,34 @@ test('past the give-up window, a still-failing message bounces', async () => {
   assert.equal(queue.size, 0, 'a message failing past the give-up window is bounced');
 });
 
+test('a tick requested while one is in progress is not dropped (no interval-length delay)', async () => {
+  const queue = SqliteQueue.open(new DatabaseSync(':memory:'));
+  let releaseFirst!: () => void;
+  const firstBlocked = new Promise<void>((resolve) => (releaseFirst = resolve));
+  let calls = 0;
+  const relay = async (m: { recipients: readonly string[] }): Promise<readonly RelayResult[]> => {
+    calls += 1;
+    if (calls === 1) await firstBlocked; // hold the first entry's relay open
+    return m.recipients.map((rc) => r(rc, 'success'));
+  };
+  const loop = new RelayLoop(queue, relay);
+
+  queue.enqueue('me@x.test', ['a@y.test'], Buffer.from('one'), 1000);
+  const tick1 = loop.tick(1000); // starts, blocks inside the first relay
+  await new Promise((res) => setTimeout(res, 10));
+
+  // A second message arrives and its immediate tick fires WHILE the first is running.
+  queue.enqueue('me@x.test', ['b@y.test'], Buffer.from('two'), 1000);
+  const tick2 = loop.tick(1000); // must be remembered, not silently dropped
+
+  await new Promise((res) => setTimeout(res, 10));
+  releaseFirst();
+  await Promise.all([tick1, tick2]);
+
+  assert.equal(queue.size, 0, 'both messages were delivered — the mid-tick request re-ran, not waited for the interval');
+  assert.equal(calls, 2, 'the second message was actually attempted');
+});
+
 test('a queued message survives a restart (fresh loop, same database)', async () => {
   const db = new DatabaseSync(':memory:');
   const queue = SqliteQueue.open(db);

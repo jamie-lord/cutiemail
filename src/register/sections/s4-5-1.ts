@@ -212,19 +212,18 @@ export const S4_5_1 = [
       'character of the line.  If it is a period, one additional period is ' +
       'inserted at the beginning of the line.',
     testability: {
-      kind: 'not-testable',
-      reason:
-        'Binds the sending client (dot-stuffing on transmit). This suite ' +
-        'connects to a server and never observes a client transmitting, so ' +
-        'the stuffing step is out of view. The server-side counterpart is ' +
-        'R-5321-4.5.2-b / -c.',
+      kind: 'wire-client',
     },
     note:
       'DERIVED, hence `prose`: the transparency procedure is stated as ' +
       'imperative fact ("is inserted"), not with a keyword, but it defines ' +
       'conformant client behaviour — a client that fails to stuff a leading ' +
-      'period corrupts the message or truncates it at a bare-period line. Our ' +
-      'own client MUST implement this to send test bodies faithfully.',
+      'period corrupts the message or truncates it at a bare-period line. ' +
+      'Reclassified not-testable → wire-client (ADR 0008): the receiver suite ' +
+      'cannot observe a transmitting client, but driving OUR client against a ' +
+      'capturing peer shows the doubled dot on the wire, and the skipDotStuffing ' +
+      'defect proves the check detects its omission — the send-side of the ' +
+      'smuggling surface. Server-side counterpart: R-5321-4.5.2-b / -c.',
   },
   {
     id: 'R-5321-4.5.2-b',
