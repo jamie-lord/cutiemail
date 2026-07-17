@@ -59,6 +59,14 @@ export interface ReceiverOptions {
   readonly requireAuth?: boolean;
   /** Verify a SASL PLAIN (username, password); wired to the account store by the caller. */
   readonly authenticate?: (username: string, password: string) => boolean;
+  /**
+   * Decide whether to accept a recipient at RCPT time. Returns false to reject it.
+   * The inbound (port 25) path uses this to accept only local mailboxes — otherwise
+   * we would accept (and misdeliver, or become backscatter for) mail addressed to
+   * unknown users or foreign domains. Unset = accept every recipient (the submission
+   * path, where an authenticated user may relay anywhere).
+   */
+  readonly acceptRecipient?: (address: string) => boolean;
 }
 
 const addrOf = (line: string): string => /<([^>]*)>/.exec(line)?.[1] ?? '';
@@ -314,8 +322,18 @@ class Connection {
           this.#write('503 5.5.1 need MAIL before RCPT');
           break;
         }
-        this.#recipients.push(addrOf(line));
-        this.#write('250 2.1.5 Ok');
+        {
+          const rcpt = addrOf(line);
+          // Reject recipients we don't serve (RFC 5321 §7.2): otherwise we accept and
+          // misdeliver mail for unknown users, and become a backscatter source for
+          // foreign domains we can't actually relay to.
+          if (this.#opts.acceptRecipient !== undefined && !this.#opts.acceptRecipient(rcpt)) {
+            this.#write('550 5.7.1 relaying denied — recipient not hosted here');
+            break;
+          }
+          this.#recipients.push(rcpt);
+          this.#write('250 2.1.5 Ok');
+        }
         break;
       case 'DATA':
         if (this.#recipients.length === 0) {

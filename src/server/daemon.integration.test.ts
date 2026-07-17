@@ -9,6 +9,7 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import net from 'node:net';
 import tls from 'node:tls';
 import { startServer } from '../main.ts';
 import type { MailServerConfig } from '../main.ts';
@@ -92,6 +93,42 @@ test('daemon: deliver via inbound SMTP, read back via IMAPS with a real login', 
     // Wrong password is rejected.
     const bad = await imapsLogin(server.imap.port, 'alice', 'wrong');
     assert.ok(!bad.ok, 'a wrong password is rejected at LOGIN');
+  } finally {
+    await server.close();
+  }
+});
+
+test('daemon inbound rejects RCPT for a foreign domain (no relay / backscatter)', async () => {
+  const server = await startServer(CONFIG);
+  const rcptReply = async (rcpt: string): Promise<string> => {
+    const sock = net.connect(server.inbound.port, '127.0.0.1');
+    sock.on('error', () => {});
+    let acc = '';
+    sock.on('data', (d) => (acc += d.toString('latin1')));
+    await new Promise<void>((r) => sock.once('connect', () => r()));
+    const step = (s: string): Promise<void> =>
+      new Promise((r) => {
+        acc = '';
+        sock.write(Buffer.from(s, 'latin1'));
+        setTimeout(r, 40);
+      });
+    await delay(40);
+    await step('EHLO probe\r\n');
+    await step('MAIL FROM:<a@probe.test>\r\n');
+    await step(`RCPT TO:<${rcpt}>\r\n`);
+    const reply = acc.trim();
+    sock.destroy();
+    return reply;
+  };
+  try {
+    // Catch-all for our own domain — any localpart is accepted (single mailbox).
+    assert.match(await rcptReply('alice@mail.example.test'), /^250 /, 'a local recipient is accepted');
+    assert.match(await rcptReply('whoever@mail.example.test'), /^250 /, 'any localpart at our domain is accepted (catch-all)');
+    // A foreign domain must be refused — we are not an open relay and will not
+    // accept mail we cannot deliver.
+    const foreign = await rcptReply('victim@gmail.com');
+    assert.match(foreign, /^55[04] /, 'a foreign-domain recipient is rejected');
+    assert.match(foreign, /relay/i, 'the rejection names relaying denied');
   } finally {
     await server.close();
   }

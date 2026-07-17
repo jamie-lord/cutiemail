@@ -122,6 +122,15 @@ export async function startServer(cfg: MailServerConfig): Promise<RunningServer>
     tls: cfg.tls,
     host: cfg.host,
     port: cfg.smtpPort,
+    // Accept inbound mail only for our own domain (catch-all to the single mailbox).
+    // Rejecting other domains at RCPT is what stops us relaying / becoming backscatter
+    // for mail we can't deliver. The local-part is NOT case-folded or restricted —
+    // §2.4 makes it case-sensitive and the domain's own business; every local address
+    // maps to the one mailbox here.
+    acceptRecipient: (address) => {
+      const at = address.lastIndexOf('@');
+      return at !== -1 && address.slice(at + 1).toLowerCase() === cfg.domain.toLowerCase();
+    },
     ...(cfg.maxMessageSize !== undefined ? { maxMessageSize: cfg.maxMessageSize } : {}),
     maxReceivedHops: cfg.maxReceivedHops ?? 100,
   });
