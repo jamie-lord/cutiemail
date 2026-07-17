@@ -286,9 +286,11 @@ These aren't style preferences; break one and something real breaks.
 - **To understand the test discipline:** `register/types.ts` and
   `conformance/test-case.ts` (both have long, load-bearing header comments), then
   `testing/mutant-server.ts`.
-- **To understand the philosophy:** `docs/TESTING-ROADMAP.md` is the map of every
-  pillar and its status; `docs/IMPLEMENTING-A-CONFORMANT-SERVER.md` is the hard-won
-  guidance on the requirements that are easy to get wrong.
+- **To understand the philosophy:** `docs/WORKING-AGREEMENT.md` is how the project
+  is meant to be built (scope discipline, the "no test that passes for the wrong
+  reason" rule); `docs/TESTING-ROADMAP.md` is the map of every pillar and its status;
+  `docs/IMPLEMENTING-A-CONFORMANT-SERVER.md` is the hard-won guidance on the
+  requirements that are easy to get wrong.
 
 ## Adding an RFC
 

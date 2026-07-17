@@ -161,9 +161,9 @@ WantedBy=multi-user.target
 ```
 
 `systemctl enable --now mailserver`, then `journalctl -fu mailserver` to watch it
-— including the `relay <addr>: sent/FAILED` lines, which are your only feedback on
-outbound delivery right now (there is no retry queue; a failed relay is logged and
-dropped).
+— including the queue lines that report each relay attempt, its result, and any
+retry or give-up. A transient failure is retried on a backoff from the persistent
+SQLite queue (below); a `5xx` bounces at once.
 
 ## Pointing your mail client at it
 
@@ -233,10 +233,11 @@ These are deliberate, recorded, and roughly in priority order for closing:
   DNS hiccup) is queued in SQLite and retried on an exponential backoff until it
   delivers or the give-up window (~5 days) passes; a `5xx` bounces at once. The
   queue survives a restart. `MAIL_*` needs no extra config for this.
-- **One shared mailbox, accepts every recipient.** Inbound mail for *any* address
-  lands in the single account's mailbox; there is no per-user routing and no
-  rejection of unknown recipients. Exactly the naive single-account behaviour you
-  asked for — fine for a test, not multi-user.
+- **One shared mailbox, no per-user routing.** Inbound mail for *any* address at
+  the hosted domain lands in the single account's mailbox — there is no per-user
+  routing. Recipients at *other* domains are rejected at `RCPT` (no open relay, no
+  backscatter); it just doesn't distinguish users within its own domain. Exactly
+  the naive single-account behaviour you asked for — fine for a test, not multi-user.
 - **`MAIL_DOMAIN` does double duty** as both the SMTP greeting/HELO name and the
   local mail domain. That's why this guide uses one name for host and domain
   (`you@mail.example.com`): a split like greeting `mail.example.com` + addresses
@@ -245,5 +246,9 @@ These are deliberate, recorded, and roughly in priority order for closing:
   without a matching v6 PTR and authentication; the PTR this guide sets is for
   the v4 address, so the relay pins `family: 4`. Revisit if you set up full
   IPv6 forward-confirmed rDNS.
-- **Not security-hardened.** No rate limiting, no spam filtering, no fail2ban-style
-  protection. Don't put anything you care about behind it yet.
+- **Hardened at the protocol layer, not operationally.** The wire surface has been
+  adversarially audited — SMTP-smuggling defence, DoS caps (recipient count, DATA
+  scan, reply framing), auth-header spoofing and DMARC display-spoof fixes, an MX
+  SSRF guard, a bounded TLS handshake. But there is still *no rate limiting, no spam
+  filtering, and no fail2ban-style protection*, and it has not been through a
+  third-party security review. Don't put anything you care about behind it yet.
