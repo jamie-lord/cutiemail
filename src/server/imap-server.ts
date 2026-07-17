@@ -942,6 +942,12 @@ export class ImapServer {
               write(sock, `${tag} BAD no mailbox selected`);
               break;
             }
+            // MOVE deletes from the (selected) source, so it is refused on a read-only
+            // mailbox; COPY only reads the source and is allowed.
+            if (cmd === 'MOVE' && readOnly) {
+              write(sock, `${tag} NO mailbox is read-only (opened with EXAMINE)`);
+              break;
+            }
             const set = arg(1);
             const target = this.#catalog.get(unquote(parts.slice(cmdIndex + 2).join(' ')));
             if (target === undefined) {
