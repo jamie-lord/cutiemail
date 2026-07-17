@@ -35,6 +35,12 @@ CREATE TABLE IF NOT EXISTS flag (
   flag TEXT NOT NULL,
   PRIMARY KEY (mailbox_id, uid, flag)
 );
+CREATE TABLE IF NOT EXISTS expunged (
+  mailbox_id INTEGER NOT NULL,
+  uid INTEGER NOT NULL,
+  mod_seq INTEGER NOT NULL,
+  PRIMARY KEY (mailbox_id, uid)
+);
 `;
 
 /** Add the name column to databases created before multi-mailbox existed. */
@@ -155,7 +161,19 @@ export class SqliteMailbox {
   }
 
   expunge(uid: number): void {
-    this.#tx(() => this.#expungeRow(uid));
+    this.#tx(() => {
+      const exists = this.#db.prepare('SELECT 1 FROM message WHERE mailbox_id = ? AND uid = ?').get(this.#id, uid) !== undefined;
+      this.#expungeRow(uid);
+      // Log the removal against a new mod-sequence so QRESYNC can report it as VANISHED.
+      if (exists) this.#db.prepare('INSERT OR REPLACE INTO expunged (mailbox_id, uid, mod_seq) VALUES (?, ?, ?)').run(this.#id, uid, this.#nextModseq());
+    });
+  }
+
+  /** UIDs expunged after `modseq` (RFC 7162 QRESYNC VANISHED EARLIER), ascending. */
+  expungedSince(modseq: number, restrictTo?: ReadonlySet<number>): number[] {
+    const rows = this.#db.prepare('SELECT uid FROM expunged WHERE mailbox_id = ? AND mod_seq > ? ORDER BY uid').all(this.#id, modseq) as Array<{ uid: number }>;
+    const uids = rows.map((r) => Number(r.uid));
+    return restrictTo === undefined ? uids : uids.filter((u) => restrictTo.has(u));
   }
 
   storeFlags(uid: number, mode: StoreMode, flags: readonly string[]): void {
@@ -179,6 +197,12 @@ export class SqliteMailbox {
       const rows = this.#db.prepare('SELECT uid FROM flag WHERE mailbox_id = ? AND flag = ? ORDER BY uid').all(this.#id, DELETED) as Array<{ uid: number }>;
       const uids = rows.map((r) => Number(r.uid));
       for (const uid of uids) this.#expungeRow(uid);
+      // One mod-sequence for the batch; log each removed UID against it (QRESYNC).
+      if (uids.length > 0) {
+        const m = this.#nextModseq();
+        const ins = this.#db.prepare('INSERT OR REPLACE INTO expunged (mailbox_id, uid, mod_seq) VALUES (?, ?, ?)');
+        for (const uid of uids) ins.run(this.#id, uid, m);
+      }
       return uids;
     });
   }
@@ -195,6 +219,7 @@ export class SqliteMailbox {
     this.#tx(() => {
       this.#db.prepare('DELETE FROM message WHERE mailbox_id = ?').run(this.#id);
       this.#db.prepare('DELETE FROM flag WHERE mailbox_id = ?').run(this.#id);
+      this.#db.prepare('DELETE FROM expunged WHERE mailbox_id = ?').run(this.#id); // old UIDs meaningless
       this.#db.prepare('UPDATE mailbox SET uid_validity = ?, uid_next = 1, highest_modseq = 1 WHERE id = ?').run(newValidity, this.#id);
     });
     return true;

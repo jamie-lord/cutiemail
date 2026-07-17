@@ -55,6 +55,12 @@ export class Mailbox {
   #staleUids: number[] = [];
   /** The mailbox's highest mod-sequence (RFC 7162). Nonzero even when empty. */
   #highestModseq = 1;
+  /**
+   * Expunged UIDs and the mod-sequence at which each was removed (RFC 7162 QRESYNC).
+   * Lets a reconnecting client learn which of its cached UIDs vanished (VANISHED
+   * EARLIER) in one round-trip, instead of diffing the whole UID list.
+   */
+  #expungedLog: { uid: number; modseq: number }[] = [];
   readonly #defects: MailboxDefects;
 
   constructor(uidValidity = 1, defects: MailboxDefects = {}) {
@@ -81,6 +87,7 @@ export class Mailbox {
     this.#uidNext = 1;
     this.#staleUids = [];
     this.#highestModseq = 1;
+    this.#expungedLog = []; // UIDVALIDITY changed — old UIDs are meaningless now
     return true;
   }
 
@@ -120,12 +127,27 @@ export class Mailbox {
     const idx = this.#messages.findIndex((m) => m.uid === uid);
     if (idx === -1) return;
     this.#messages.splice(idx, 1);
+    // An expunge gets a new mod-sequence and is logged, so QRESYNC can report it as
+    // VANISHED to a client that reconnects with an older mod-sequence.
+    this.#expungedLog.push({ uid, modseq: this.#nextModseq() });
     // Conformant: UIDNEXT never rolls back. The reuseExpungedUid defect rolls it
     // back when the highest-assigned UID is expunged, so the next append reuses it.
     if (this.#defects.reuseExpungedUid === true && uid === this.#uidNext - 1) {
       this.#uidNext = uid;
     }
     if (this.#defects.staleSeqNumsAfterExpunge === true) this.#staleUids.push(uid);
+  }
+
+  /**
+   * UIDs expunged after `modseq` (RFC 7162 §3.2.5.2 VANISHED (EARLIER)), ascending.
+   * A client that last synced at `modseq` learns exactly which of its cached UIDs are
+   * gone. Optionally restricted to a set of UIDs the client actually knows about.
+   */
+  expungedSince(modseq: number, restrictTo?: ReadonlySet<number>): number[] {
+    const uids = this.#expungedLog
+      .filter((e) => e.modseq > modseq && (restrictTo === undefined || restrictTo.has(e.uid)))
+      .map((e) => e.uid);
+    return [...new Set(uids)].sort((a, b) => a - b);
   }
 
   /**
@@ -168,6 +190,11 @@ export class Mailbox {
     if (this.#defects.expungeIgnoresDeleted === true) return [];
     const removed = this.#messages.filter((m) => m.flags.has(DELETED)).map((m) => m.uid);
     this.#messages = this.#messages.filter((m) => !m.flags.has(DELETED));
+    // One mod-sequence for the batch; log each removed UID against it (QRESYNC).
+    if (removed.length > 0) {
+      const m = this.#nextModseq();
+      for (const uid of removed) this.#expungedLog.push({ uid, modseq: m });
+    }
     return removed;
   }
 }

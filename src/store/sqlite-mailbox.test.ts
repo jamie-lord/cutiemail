@@ -31,6 +31,7 @@ interface MailboxLike {
   expunge(uid: number): void;
   storeFlags(uid: number, mode: 'add' | 'remove' | 'replace', flags: readonly string[]): void;
   expungeDeleted(): readonly number[];
+  expungedSince(modseq: number, restrictTo?: ReadonlySet<number>): number[];
   sequenceNumber(uid: number): number | null;
   invalidate(newValidity: number): boolean;
 }
@@ -50,8 +51,16 @@ function exercise(mb: MailboxLike): unknown {
   const seqOfLast = mb.sequenceNumber(afterExpunge);
   mb.storeFlags(uids[2]!, 'add', [DELETED]);
   const expunged = [...mb.expungeDeleted()];
+  // QRESYNC expunge log: both uids[0] (single expunge) and uids[2] (expungeDeleted)
+  // must be reported as vanished-since-0, ascending; a restrict set narrows it; and
+  // nothing is vanished after the latest mod-sequence.
+  const vanishedAll = [...mb.expungedSince(0)];
+  const vanishedRestricted = [...mb.expungedSince(0, new Set([uids[2]!]))];
+  const vanishedAboveLatest = mb.expungedSince(mb.highestModseq).length;
   const validityBefore = mb.uidValidity;
+  // A UIDVALIDITY change wipes the expunge log — old UIDs are meaningless afterward.
   const invalidateOk = mb.invalidate(validityBefore + 1);
+  const vanishedAfterInvalidate = mb.expungedSince(0).length;
   const invalidateRejected = !mb.invalidate(validityBefore); // now below current -> refused
   return {
     ascending: uids[0]! < uids[1]! && uids[1]! < uids[2]!,
@@ -70,6 +79,11 @@ function exercise(mb: MailboxLike): unknown {
     storeBumpedModseq: modseqOfBAfterStore > modseqOfB,
     highestTracksLastChange: modseqOfBAfterStore <= highestAfterAppends + 2,
     highestAfterInvalidate: mb.highestModseq,
+    // QRESYNC expunge-log observables — identical on both backends.
+    vanishedAll,
+    vanishedRestricted,
+    vanishedAboveLatest,
+    vanishedAfterInvalidate,
   };
 }
 
@@ -103,7 +117,16 @@ test('the SQLite mailbox survives a close and reopen (persistence)', () => {
     assert.ok(modseqBefore >= 1 && reopened.highestModseq >= modseqBefore, 'HIGHESTMODSEQ persisted and is nonzero');
     reopened.storeFlags(uid, 'add', ['\\Seen']);
     assert.ok(reopened.messages[0]!.modseq > modseqBefore, 'a post-reopen flag change advances the mod-sequence, not resets it');
+    // The QRESYNC expunge log must also survive a restart — a client reconnecting after
+    // the server bounced must still learn which UIDs vanished while it was away.
+    const uid2 = reopened.append(b('doomed'));
+    reopened.expunge(uid2);
+    assert.deepEqual(reopened.expungedSince(0), [uid2], 'the expunge is logged');
     second.close();
+    const third = new DatabaseSync(path);
+    const again = SqliteMailbox.open(third, 7);
+    assert.deepEqual(again.expungedSince(0), [uid2], 'the expunge log survived the reopen');
+    third.close();
   } finally {
     rmSync(path, { force: true });
   }
