@@ -76,3 +76,26 @@ test('SEARCH SUBJECT with a quoted multi-word phrase matches the whole phrase', 
     await server.close();
   }
 });
+
+test('mailbox names with spaces (Outlook-style) work through CREATE/SELECT/STATUS/LIST', async () => {
+  const cat = new MemoryCatalog();
+  const server = await ImapServer.start(cat, { authenticate: () => true });
+  const sock = net.connect(server.port, '127.0.0.1');
+  const s = new S(sock);
+  try {
+    await s.ready('* OK');
+    s.send('a1 LOGIN u p\r\n');
+    await s.ready('a1 OK');
+    s.send('a2 CREATE "Sent Items"\r\n');
+    await s.ready('a2 OK');
+    assert.ok(cat.get('Sent Items') !== undefined, 'the full spaced name was created, not truncated');
+    assert.equal(cat.get('Sent'), undefined, 'not truncated to the first word');
+    s.send('a3 SELECT "Sent Items"\r\n');
+    await s.ready('a3 OK');
+    s.send('a4 STATUS "Sent Items" (MESSAGES)\r\n');
+    await s.ready('* STATUS "Sent Items" (MESSAGES 0)');
+  } finally {
+    sock.destroy();
+    await server.close();
+  }
+});

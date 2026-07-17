@@ -432,6 +432,12 @@ export class ImapServer {
         }
         const cmd = (parts[cmdIndex] ?? '').toUpperCase();
         const arg = (n: number): string => parts[cmdIndex + n] ?? '';
+        // Quote-aware argument tokens — for mailbox names that may contain spaces
+        // ("Sent Items", "Deleted Items"). A plain split(' ') truncates them.
+        const afterTag = line.slice(tag.length).trimStart();
+        const afterUid = uidMode ? afterTag.replace(/^\S+\s+/, '') : afterTag;
+        const qargs = imapTokens(afterUid.slice(cmd.length).trimStart());
+        const qarg = (n: number): string => qargs[n - 1] ?? '';
 
         // Never let a malformed command crash the connection or the process —
         // an internet-facing parser must degrade to a protocol error, not throw.
@@ -479,7 +485,7 @@ export class ImapServer {
             write(sock, `${tag} OK ${cmd} completed`);
             break;
           case 'CREATE': {
-            const name = unquote(arg(1));
+            const name = qarg(1);
             if (canonicalMailboxName(name) === 'INBOX') {
               write(sock, `${tag} NO INBOX already exists`);
             } else if (this.#catalog.create(name) === undefined) {
@@ -490,7 +496,7 @@ export class ImapServer {
             break;
           }
           case 'STATUS': {
-            const name = unquote(arg(1));
+            const name = qarg(1);
             const box = this.#catalog.get(name);
             if (box === undefined) {
               write(sock, `${tag} NO no such mailbox`);
@@ -552,7 +558,7 @@ export class ImapServer {
           }
           case 'SELECT':
           case 'EXAMINE': {
-            const name = unquote(arg(1)) || 'INBOX';
+            const name = qarg(1) || 'INBOX';
             const box = this.#catalog.get(name);
             if (box === undefined) {
               write(sock, `${tag} NO no such mailbox`);
