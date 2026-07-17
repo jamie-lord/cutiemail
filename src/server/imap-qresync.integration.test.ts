@@ -133,6 +133,88 @@ test('UID FETCH (CHANGEDSINCE n VANISHED) reports expunged UIDs in the set', asy
   }
 });
 
+test('a QRESYNC-enabled session receives VANISHED, not EXPUNGE, for a real-time peer expunge', async () => {
+  // RFC 7162 §3.2.4: once QRESYNC is enabled the server uses VANISHED to report
+  // expunges, not the EXPUNGE response. A desktop with QRESYNC on, idling, must be told
+  // VANISHED when the phone expunges a message.
+  const catalog = catalogWith(3);
+  const server = await ImapServer.start(catalog, { authenticate: () => true, notifier: new MailboxNotifier() });
+  const a = await login(server.port); // QRESYNC enabled
+  const b = await login(server.port);
+  try {
+    await a.run('a3', 'SELECT INBOX');
+    await b.run('b3', 'SELECT INBOX');
+    const mark = a.mark();
+    a.send('a4 IDLE\r\n');
+    await a.waitFor('+ idling');
+    // B expunges UID 2.
+    await b.run('b4', 'UID STORE 2 +FLAGS (\\Deleted)');
+    await b.run('b5', 'EXPUNGE');
+    await a.waitFor('VANISHED');
+    const news = a.seen.slice(mark);
+    assert.match(news, /\* VANISHED 2/, 'the QRESYNC session is told VANISHED 2');
+    assert.doesNotMatch(news.replace(/\(EARLIER\)/g, ''), /\* \d+ EXPUNGE/, 'and NOT an EXPUNGE response');
+    a.send('DONE\r\n');
+    await a.waitFor('a4 OK');
+  } finally {
+    a.sock.destroy();
+    b.sock.destroy();
+    await server.close();
+  }
+});
+
+test('SELECT (QRESYNC ...) without ENABLE QRESYNC is a tagged BAD (RFC 7162 §3.2.5)', async () => {
+  const server = await ImapServer.start(catalogWith(2), { authenticate: () => true });
+  const s = new Session(net.connect(server.port, '127.0.0.1'));
+  try {
+    await s.waitFor('* OK');
+    await s.run('a1', 'LOGIN test pw'); // note: no ENABLE QRESYNC
+    const resp = await s.run('a2', 'SELECT INBOX (QRESYNC (1 1))');
+    assert.match(resp, /a2 BAD/, 'the QRESYNC parameter is rejected without ENABLE');
+    assert.doesNotMatch(resp, /EXISTS/, 'and the mailbox is not selected');
+  } finally {
+    s.sock.destroy();
+    await server.close();
+  }
+});
+
+test('SELECT (CONDSTORE QRESYNC ...) — QRESYNC after another param still replays (regex not anchored)', async () => {
+  const catalog = catalogWith(3);
+  const server = await ImapServer.start(catalog, { authenticate: () => true });
+  const s = await login(server.port);
+  try {
+    const sel = await s.run('a3', 'SELECT INBOX (CONDSTORE)');
+    const base = Number(/HIGHESTMODSEQ (\d+)/.exec(sel)![1]);
+    await s.run('a4', 'UID STORE 2 +FLAGS (\\Deleted)');
+    await s.run('a5', 'EXPUNGE');
+    // QRESYNC is the SECOND select-param here.
+    const resync = await s.run('a6', `SELECT INBOX (CONDSTORE QRESYNC (1 ${base}))`);
+    assert.match(resync, /\* VANISHED \(EARLIER\) 2/, 'the QRESYNC replay fires even when it is not the first param');
+  } finally {
+    s.sock.destroy();
+    await server.close();
+  }
+});
+
+test('FETCH VANISHED misuse (non-UID, or no CHANGEDSINCE) is a tagged BAD (RFC 7162 §3.2.6)', async () => {
+  const server = await ImapServer.start(catalogWith(2), { authenticate: () => true });
+  const s = await login(server.port);
+  try {
+    await s.run('a3', 'SELECT INBOX (CONDSTORE)');
+    // Non-UID FETCH with VANISHED.
+    const bad1 = await s.run('a4', 'FETCH 1:* (FLAGS) (CHANGEDSINCE 1 VANISHED)');
+    assert.match(bad1, /a4 BAD/, 'VANISHED on a non-UID FETCH is rejected');
+    // UID FETCH with VANISHED but no CHANGEDSINCE.
+    const bad2 = await s.run('a5', 'UID FETCH 1:* (FLAGS) (VANISHED)');
+    assert.match(bad2, /a5 BAD/, 'VANISHED without CHANGEDSINCE is rejected');
+    // The connection is still usable.
+    await s.run('a6', 'NOOP');
+  } finally {
+    s.sock.destroy();
+    await server.close();
+  }
+});
+
 test('SELECT (QRESYNC ...) with a stale UIDVALIDITY does not replay (client must full-resync)', async () => {
   const catalog = catalogWith(2);
   const server = await ImapServer.start(catalog, { authenticate: () => true });

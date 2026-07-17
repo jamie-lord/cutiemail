@@ -649,15 +649,30 @@ export class ImapServer {
      * messages referenceable until the client acknowledges) is a larger rearchitecture
      * left as a recorded decision.
      */
+    // Report removed messages: once QRESYNC is enabled the server MUST use a single
+    // VANISHED (no EARLIER) instead of per-message EXPUNGE (RFC 7162 §3.2.10); otherwise
+    // classic EXPUNGE by descending sequence so the client's numbering stays valid.
+    const emitExpunged = (uids: readonly number[], descendingPositions: readonly number[]): void => {
+      if (qresync) {
+        if (uids.length > 0) write(sock, `* VANISHED ${compressSequenceSet([...uids].sort((a, b) => a - b))}`);
+      } else {
+        for (const pos of descendingPositions) write(sock, `* ${pos} EXPUNGE`);
+      }
+    };
+
     const syncSelected = (): void => {
       if (selected === null) return;
       const current = selected.messages.map((m) => m.uid);
       const present = new Set(current);
-      const removed: number[] = []; // 1-based positions in the client's current view
+      const removedPositions: number[] = []; // 1-based positions in the client's current view
+      const removedUids: number[] = [];
       knownUids.forEach((uid, i) => {
-        if (!present.has(uid)) removed.push(i + 1);
+        if (!present.has(uid)) {
+          removedPositions.push(i + 1);
+          removedUids.push(uid);
+        }
       });
-      for (const pos of removed.reverse()) write(sock, `* ${pos} EXPUNGE`);
+      emitExpunged(removedUids, [...removedPositions].reverse());
       knownUids = knownUids.filter((uid) => present.has(uid));
       const knownSet = new Set(knownUids);
       if (current.some((uid) => !knownSet.has(uid))) {
@@ -980,6 +995,12 @@ export class ImapServer {
           }
           case 'SELECT':
           case 'EXAMINE': {
+            // RFC 7162 §3.2.5: a (QRESYNC …) select parameter is a tagged BAD unless the
+            // client issued ENABLE QRESYNC first. Checked before anything is selected.
+            if (/QRESYNC\s*\(/i.test(line) && !qresync) {
+              write(sock, `${tag} BAD QRESYNC parameter used without ENABLE QRESYNC`);
+              break;
+            }
             const name = qarg(1) || 'INBOX';
             const box = this.#catalog.get(name);
             if (box === undefined) {
@@ -1021,7 +1042,9 @@ export class ImapServer {
             // saw; the server replays what changed since, so the client resyncs in one
             // round-trip instead of refetching the mailbox. We use uidvalidity + modseq
             // (+ optional known-uid set); the seq-match optimisation is ignored.
-            const qm = /\(\s*QRESYNC\s*\(\s*(\d+)\s+(\d+)(?:\s+([\d:,*]+))?/i.exec(line);
+            // Not anchored to a leading "(" so it also matches when QRESYNC follows another
+            // select-param, e.g. SELECT INBOX (CONDSTORE QRESYNC (1 20)).
+            const qm = /QRESYNC\s*\(\s*(\d+)\s+(\d+)(?:\s+([\d:,*]+))?/i.exec(line);
             if (qm !== null) {
               condstore = true;
               const clientValidity = Number(qm[1]);
@@ -1062,10 +1085,17 @@ export class ImapServer {
             if (condstore) atts.modseq = true; // once enabled, every FETCH carries MODSEQ
             // (CHANGEDSINCE n VANISHED) (RFC 7162 §3.2.5.2): also report, as one
             // VANISHED (EARLIER), the UIDs in the set that were expunged since n — so a
-            // reconnecting client learns removals in the same round-trip. UID FETCH only.
-            if (uidMode && changedSince !== null && /\bVANISHED\b/i.test(spec)) {
+            // reconnecting client learns removals in the same round-trip. The VANISHED
+            // modifier is valid ONLY on a UID FETCH and ONLY with CHANGEDSINCE; misuse is
+            // a tagged BAD (§3.2.6), not silently ignored.
+            const wantsVanished = /\bVANISHED\b/i.test(spec);
+            if (wantsVanished && (!uidMode || changedSince === null)) {
+              write(sock, `${tag} BAD VANISHED requires UID FETCH with CHANGEDSINCE`);
+              break;
+            }
+            if (wantsVanished) {
               const setUids = new Set(parseSequenceSet(set, selected.uidNext > 1 ? selected.uidNext - 1 : 0));
-              const vanished = selected.expungedSince(changedSince, setUids);
+              const vanished = selected.expungedSince(changedSince!, setUids);
               if (vanished.length > 0) write(sock, `* VANISHED (EARLIER) ${compressSequenceSet(vanished)}`);
             }
             // RFC 9051 §6.4.5: a BODY[...] fetch WITHOUT .PEEK sets \Seen as a side
@@ -1269,12 +1299,11 @@ export class ImapServer {
               dstUids.push(target.append(msg.raw, [...msg.flags], msg.internalDate));
             }
             if (cmd === 'MOVE') {
-              // Remove from the source, reporting EXPUNGE by descending sequence
-              // number so the client's numbering stays consistent (RFC 9051 §6.4.8).
-              for (const { seq, msg } of [...entries].sort((a, b) => b.seq - a.seq)) {
-                selected.expunge(msg.uid);
-                write(sock, `* ${seq} EXPUNGE`);
-              }
+              // Remove from the source, reporting VANISHED (QRESYNC) or EXPUNGE by
+              // descending sequence so the client's numbering stays consistent (§6.4.8).
+              const descending = [...entries].sort((a, b) => b.seq - a.seq);
+              for (const { msg } of descending) selected.expunge(msg.uid);
+              emitExpunged(srcUids, descending.map((e) => e.seq));
               knownUids = selected.messages.map((m) => m.uid);
               if (selectedName !== null) this.#notifier?.notify(selectedName);
             }
@@ -1308,9 +1337,10 @@ export class ImapServer {
             } else {
               removedUids = new Set(selected.expungeDeleted());
             }
-            // Report by descending sequence number so the client's numbering stays consistent.
+            // VANISHED (QRESYNC) or descending-sequence EXPUNGE so the client's numbering
+            // stays consistent.
             const seqs = before.map((m, i) => ({ uid: m.uid, seq: i + 1 })).filter((e) => removedUids.has(e.uid));
-            for (const e of seqs.reverse()) write(sock, `* ${e.seq} EXPUNGE`);
+            emitExpunged([...removedUids], seqs.reverse().map((e) => e.seq));
             // We just told this client about these removals; keep its view in step so a
             // later NOOP/CHECK does not re-announce them as if another connection acted.
             knownUids = selected.messages.map((m) => m.uid);
