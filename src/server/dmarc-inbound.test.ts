@@ -69,3 +69,13 @@ test('no DMARC record is "none"; a DNS error is "temperror"', async () => {
     'temperror',
   );
 });
+
+test('the expanded suffix list prevents FALSE alignment under a multi-part ccTLD', async () => {
+  // Two unrelated registrants under .co.za must NOT be treated as the same org domain
+  // (that would be a false DMARC pass). From is victim.co.za; DKIM d= attacker.co.za.
+  assert.equal(organizationalDomain('victim.co.za'), 'victim.co.za');
+  assert.equal(organizationalDomain('attacker.co.za'), 'attacker.co.za');
+  const rec = dmarcAt({ '_dmarc.victim.co.za': 'v=DMARC1; p=reject' });
+  const out = await checkDmarc({ rawMessage: msg('victim.co.za'), dkimPassedDomains: ['attacker.co.za'], spfResult: 'none', spfDomain: '', resolveTxt: rec });
+  assert.equal(out.verdict, 'fail', 'a different registrant under the same ccTLD is not aligned');
+});

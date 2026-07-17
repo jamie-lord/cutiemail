@@ -34,8 +34,24 @@ export interface DmarcOutcome {
   readonly fromDomain: string | null;
 }
 
-/** A few multi-part public suffixes so the org-domain heuristic gets the common ones right. */
-const MULTI_PART_TLDS = new Set(['co.uk', 'org.uk', 'gov.uk', 'ac.uk', 'co.jp', 'com.au', 'co.nz', 'com.br']);
+/**
+ * Common multi-part public suffixes, so the org-domain heuristic does not compute a
+ * suffix that is TOO SHORT (e.g. treating "co.za" as the registered domain) — which
+ * would wrongly align two unrelated domains under it and yield a false DMARC pass.
+ * Not the full Public Suffix List (~10k entries), but covers the ccTLDs real mail uses.
+ */
+const MULTI_PART_TLDS = new Set([
+  // United Kingdom
+  'co.uk', 'org.uk', 'gov.uk', 'ac.uk', 'me.uk', 'net.uk', 'ltd.uk', 'plc.uk', 'sch.uk',
+  // Japan / Korea / China / Taiwan / Hong Kong / Singapore
+  'co.jp', 'ne.jp', 'or.jp', 'go.jp', 'co.kr', 'or.kr', 'com.cn', 'net.cn', 'org.cn', 'gov.cn', 'com.tw', 'com.hk', 'com.sg',
+  // Australia / New Zealand
+  'com.au', 'net.au', 'org.au', 'edu.au', 'gov.au', 'co.nz', 'net.nz', 'org.nz', 'govt.nz',
+  // Brazil / Argentina / Mexico
+  'com.br', 'net.br', 'org.br', 'gov.br', 'com.ar', 'com.mx',
+  // India / South Africa / Israel / Turkey / Ukraine / Poland / Russia
+  'co.in', 'net.in', 'org.in', 'gen.in', 'co.za', 'org.za', 'co.il', 'com.tr', 'com.ua', 'com.pl', 'com.ru',
+]);
 
 /** Registered ("organizational") domain: the last two labels, or three for a known multi-part TLD. */
 export function organizationalDomain(domain: string): string {
