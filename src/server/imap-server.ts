@@ -90,6 +90,41 @@ const write = (sock: net.Socket, line: string): void => {
 
 const unquote = (s: string): string => s.replace(/^"|"$/g, '');
 
+/**
+ * Tokenise an IMAP argument string, keeping a "quoted string" (which may contain
+ * spaces) as ONE token — so SEARCH SUBJECT "annual report" searches for the whole
+ * phrase, not just "annual". A plain split(' ') breaks quoted multi-word values.
+ */
+function imapTokens(s: string): string[] {
+  const tokens: string[] = [];
+  let i = 0;
+  while (i < s.length) {
+    while (i < s.length && s[i] === ' ') i += 1;
+    if (i >= s.length) break;
+    if (s[i] === '"') {
+      let value = '';
+      i += 1;
+      while (i < s.length && s[i] !== '"') {
+        if (s[i] === '\\' && i + 1 < s.length) {
+          value += s[i + 1];
+          i += 2;
+        } else {
+          value += s[i];
+          i += 1;
+        }
+      }
+      i += 1; // skip closing quote
+      tokens.push(value);
+    } else {
+      let j = i;
+      while (j < s.length && s[j] !== ' ') j += 1;
+      tokens.push(s.slice(i, j));
+      i = j;
+    }
+  }
+  return tokens;
+}
+
 /** Parse SEARCH criteria tokens into typed search keys (the common subset). */
 function parseSearchKeys(tokens: readonly string[]): SearchKey[] {
   const keys: SearchKey[] = [];
@@ -553,7 +588,10 @@ export class ImapServer {
               write(sock, `${tag} BAD no mailbox selected`);
               break;
             }
-            const keys = parseSearchKeys(parts.slice(cmdIndex + 1));
+            // Tokenise the raw criteria (after the SEARCH verb) respecting quotes,
+            // so a quoted multi-word value stays whole.
+            const critAt = line.toUpperCase().indexOf('SEARCH') + 'SEARCH'.length;
+            const keys = parseSearchKeys(imapTokens(line.slice(critAt)));
             const hits: number[] = [];
             selected.messages.forEach((m, i) => {
               const searchable = { headers: parseMessage(m.raw).headers, flags: m.flags };
