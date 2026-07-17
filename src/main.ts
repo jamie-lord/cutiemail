@@ -96,14 +96,15 @@ export async function startServer(cfg: MailServerConfig): Promise<RunningServer>
   const log = cfg.onEvent ?? ((): void => {});
   // Notify idling IMAP connections when INBOX gains a message (IDLE, RFC 2177).
   const notifier = new MailboxNotifier();
-  const storeLocal = (data: Buffer): void => {
-    mailbox.append(data);
+  const storeLocal = (data: Buffer, internalDate: number = Date.now()): void => {
+    mailbox.append(data, [], internalDate);
     notifier.notify('INBOX');
   };
 
   // Inbound (port 25): mail arriving for us — stamp our Received trace line
   // (RFC 5321 §4.4: the final-delivery MTA prepends one) and store it.
   const inbound = await SmtpReceiver.start((m) => {
+    const receivedAt = new Date();
     const traced = prependReceived(m.data, {
       helo: m.helo,
       remoteAddress: m.remoteAddress,
@@ -111,9 +112,11 @@ export async function startServer(cfg: MailServerConfig): Promise<RunningServer>
       protocol: protocolFor(m.overTls, false),
       id: randomUUID(),
       ...(m.recipients.length === 1 ? { forRecipient: m.recipients[0]! } : {}),
-      date: new Date(),
+      date: receivedAt,
     });
-    storeLocal(traced);
+    // INTERNALDATE = the moment we accepted the message (RFC 9051 §2.3.3), the same
+    // instant stamped into the Received trace line above.
+    storeLocal(traced, receivedAt.getTime());
   }, {
     domain: cfg.domain,
     tls: cfg.tls,

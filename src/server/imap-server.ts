@@ -15,8 +15,8 @@
  *
  * It takes either a single mailbox (wrapped as an INBOX-only catalog — the shape
  * most tests use) or a catalog (MemoryCatalog / SqliteCatalog) for real
- * multi-folder service. INTERNALDATE remains a recorded gap (the store keeps no
- * receive time); if a client visibly needs it, it jumps the queue.
+ * multi-folder service. INTERNALDATE is stamped at receive time (and preserved
+ * across APPEND/COPY), and the FAST/ALL/FULL fetch macros expand to include it.
  */
 
 import net from 'node:net';
@@ -31,14 +31,37 @@ import type { MailboxNotifier } from './mailbox-notifier.ts';
 export interface ServableMessage {
   readonly uid: number;
   readonly flags: ReadonlySet<string>;
+  /** INTERNALDATE as epoch-millis (0 = unknown). Set by the receiver / APPEND. */
+  readonly internalDate: number;
   readonly raw: Buffer;
+}
+
+const IMAP_MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'] as const;
+
+/** Render an epoch-millis value as an IMAP INTERNALDATE ("dd-Mon-yyyy HH:MM:SS +0000"), always UTC. */
+function formatImapDateTime(ms: number): string {
+  const d = new Date(ms);
+  const p2 = (n: number): string => String(n).padStart(2, '0');
+  const day = String(d.getUTCDate()).padStart(2, ' '); // ABNF date-day-fixed: SP-padded to width 2
+  return `${day}-${IMAP_MONTHS[d.getUTCMonth()]!}-${d.getUTCFullYear()} ${p2(d.getUTCHours())}:${p2(d.getUTCMinutes())}:${p2(d.getUTCSeconds())} +0000`;
+}
+
+/** Parse an IMAP date-time ("17-Jul-2026 01:30:00 +0000") to epoch-millis, or null if malformed. */
+function parseImapDateTime(s: string): number | null {
+  const m = /^\s*(\d{1,2})-([A-Za-z]{3})-(\d{4})\s+(\d{2}):(\d{2}):(\d{2})\s+([+-]\d{4})\s*$/.exec(s);
+  if (m === null) return null;
+  const month = IMAP_MONTHS.findIndex((mon) => mon.toLowerCase() === m[2]!.toLowerCase());
+  if (month === -1) return null;
+  const zone = m[7]!;
+  const offsetMin = (zone[0] === '-' ? -1 : 1) * (Number(zone.slice(1, 3)) * 60 + Number(zone.slice(3, 5)));
+  return Date.UTC(Number(m[3]), month, Number(m[1]), Number(m[4]), Number(m[5]), Number(m[6])) - offsetMin * 60_000;
 }
 
 export interface ServableMailbox {
   readonly uidValidity: number;
   readonly uidNext: number;
   readonly messages: readonly ServableMessage[];
-  append(raw: Buffer, flags?: readonly string[]): number;
+  append(raw: Buffer, flags?: readonly string[], internalDate?: number): number;
   expunge(uid: number): void;
   storeFlags(uid: number, mode: 'add' | 'remove' | 'replace', flags: readonly string[]): void;
   expungeDeleted(): readonly number[];
@@ -161,6 +184,7 @@ interface FetchAtts {
   rfc822: boolean;
   rfc822Header: boolean;
   rfc822Text: boolean;
+  internalDate: boolean;
   bodySections: { section: string; partial?: { origin: number; count: number }; peek: boolean }[];
 }
 
@@ -174,6 +198,7 @@ function parseFetchAtts(spec: string): FetchAtts {
     rfc822: false,
     rfc822Header: false,
     rfc822Text: false,
+    internalDate: false,
     bodySections: [],
   };
   // Pull out BODY[..] / BODY.PEEK[..] first — brackets may contain spaces — with
@@ -191,11 +216,21 @@ function parseFetchAtts(spec: string): FetchAtts {
     const t = tok.toUpperCase();
     if (t === 'UID') atts.uid = true;
     else if (t === 'FLAGS') atts.flags = true;
+    else if (t === 'INTERNALDATE') atts.internalDate = true;
     else if (t === 'RFC822.SIZE') atts.size = true;
     else if (t === 'ENVELOPE') atts.envelope = true;
     else if (t === 'RFC822.HEADER') atts.rfc822Header = true;
     else if (t === 'RFC822.TEXT') atts.rfc822Text = true;
     else if (t === 'RFC822' || t === 'RFC822.PEEK') atts.rfc822 = true;
+    // The fetch macros (RFC 9051 §6.4.5). FAST/ALL/FULL are how clients populate a
+    // message list in one round-trip; each includes INTERNALDATE. (BODYSTRUCTURE, the
+    // BODY item in FULL, is a separate unimplemented item — we expand FULL like ALL.)
+    else if (t === 'ALL' || t === 'FAST' || t === 'FULL') {
+      atts.flags = true;
+      atts.internalDate = true;
+      atts.size = true;
+      if (t !== 'FAST') atts.envelope = true;
+    }
   }
   return atts;
 }
@@ -230,6 +265,7 @@ interface PendingAppend {
   readonly tag: string;
   readonly mailboxName: string;
   readonly flags: readonly string[];
+  readonly internalDate: number;
   readonly size: number;
 }
 
@@ -318,6 +354,7 @@ export class ImapServer {
     // UID is mandatory in a UID FETCH response even when not requested.
     if (atts.uid || uidMode) text(`UID ${msg.uid}`);
     if (atts.flags) text(`FLAGS (${[...msg.flags].join(' ')})`);
+    if (atts.internalDate) text(`INTERNALDATE "${formatImapDateTime(msg.internalDate)}"`);
     if (atts.size) text(`RFC822.SIZE ${msg.raw.length}`);
     if (atts.envelope) text(`ENVELOPE ${serializeEnvelope(buildEnvelope(parseMessage(msg.raw).headers))}`);
     // The legacy RFC822.* items — real Thunderbird fetches RFC822.HEADER for the list.
@@ -389,7 +426,7 @@ export class ImapServer {
           } else {
             // UIDPLUS (RFC 4315): tell the client the UID it just created, so it
             // needn't re-search for the message it filed (e.g. a Sent copy).
-            const uid = box.append(raw, pendingAppend.flags);
+            const uid = box.append(raw, pendingAppend.flags, pendingAppend.internalDate);
             write(sock, `${pendingAppend.tag} OK [APPENDUID ${box.uidValidity} ${uid}] APPEND completed`);
           }
           pendingAppend = null;
@@ -524,28 +561,32 @@ export class ImapServer {
           }
           case 'APPEND': {
             // APPEND "name" [(\Flags)] ["date"] {n} — the literal octets follow.
-            const m = /^APPEND\s+("[^"]*"|\S+)\s*(?:\(([^)]*)\))?\s*(?:"[^"]*")?\s*\{(\d+)(\+)?\}$/i.exec(line.slice(tag.length + 1));
+            const m = /^APPEND\s+("[^"]*"|\S+)\s*(?:\(([^)]*)\))?\s*(?:"([^"]*)")?\s*\{(\d+)(\+)?\}$/i.exec(line.slice(tag.length + 1));
             if (m === null) {
               write(sock, `${tag} BAD APPEND syntax`);
               break;
             }
             const flags = (m[2] ?? '').split(/\s+/).filter((f) => f.length > 0);
-            const size = Number(m[3]);
+            // RFC 9051 §6.3.12: use the client-supplied date-time as INTERNALDATE when
+            // present (mail restore/migration relies on it); otherwise stamp now.
+            const appendDate = m[3] !== undefined ? parseImapDateTime(m[3]) : null;
+            const internalDate = appendDate ?? Date.now();
+            const size = Number(m[4]);
             // Cap the literal so an APPEND can't make the server buffer an
             // unbounded blob (a one-command OOM). A synchronizing literal waits
             // for our "+", so refusing it means the client never sends the data;
             // a non-synchronizing literal is already streaming, so drop the link.
             if (size > MAX_APPEND_LITERAL) {
               write(sock, `${tag} NO [LIMIT] APPEND literal exceeds the ${MAX_APPEND_LITERAL}-octet limit`);
-              if (m[4] !== undefined) {
+              if (m[5] !== undefined) {
                 sock.end();
                 return;
               }
               break;
             }
-            pendingAppend = { tag, mailboxName: unquote(m[1]!), flags, size };
+            pendingAppend = { tag, mailboxName: unquote(m[1]!), flags, internalDate, size };
             // A synchronizing literal ({n}) waits for the go-ahead; {n+} does not.
-            if (m[4] === undefined) write(sock, '+ Ready for literal data');
+            if (m[5] === undefined) write(sock, '+ Ready for literal data');
             break;
           }
           case 'LOGIN': {
@@ -668,7 +709,8 @@ export class ImapServer {
             const dstUids: number[] = [];
             for (const { msg } of entries) {
               srcUids.push(msg.uid);
-              dstUids.push(target.append(msg.raw, [...msg.flags]));
+              // RFC 9051 §6.4.7: a copied message keeps its flags AND its internal date.
+              dstUids.push(target.append(msg.raw, [...msg.flags], msg.internalDate));
             }
             if (cmd === 'MOVE') {
               // Remove from the source, reporting EXPUNGE by descending sequence
