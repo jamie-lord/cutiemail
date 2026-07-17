@@ -69,6 +69,8 @@ export interface ServableMailbox {
   expunge(uid: number): void;
   storeFlags(uid: number, mode: 'add' | 'remove' | 'replace', flags: readonly string[]): void;
   expungeDeleted(): readonly number[];
+  /** UIDs expunged after `modseq` (RFC 7162 QRESYNC), optionally restricted to a set. */
+  expungedSince(modseq: number, restrictTo?: ReadonlySet<number>): number[];
 }
 
 /** A catalog of named mailboxes (MemoryCatalog / SqliteCatalog satisfy this). */
@@ -94,7 +96,7 @@ function inboxOnly(mailbox: ServableMailbox): ServableCatalog {
   };
 }
 
-const CAPABILITIES = 'IMAP4rev2 IDLE UIDPLUS SPECIAL-USE CONDSTORE AUTH=PLAIN';
+const CAPABILITIES = 'IMAP4rev2 IDLE UIDPLUS SPECIAL-USE CONDSTORE QRESYNC AUTH=PLAIN';
 
 /** Commands allowed before authentication (RFC 9051 §3, Not Authenticated state). */
 const PREAUTH_COMMANDS = new Set(['CAPABILITY', 'NOOP', 'LOGOUT', 'LOGIN', 'AUTHENTICATE', 'ID', 'STARTTLS']);
@@ -622,6 +624,9 @@ export class ImapServer {
     // ENABLE CONDSTORE/QRESYNC, or any command that uses MODSEQ/CHANGEDSINCE/
     // UNCHANGEDSINCE. Once enabled, every FETCH response carries MODSEQ.
     let condstore = false;
+    // QRESYNC (RFC 7162) — enabled by ENABLE QRESYNC. Unlocks SELECT (QRESYNC ...) fast
+    // reconnect and the VANISHED FETCH modifier. Implies CONDSTORE.
+    let qresync = false;
 
     /** A flag set in a canonical, order-independent form, for change detection. */
     const flagKey = (flags: Iterable<string>): string => [...flags].sort().join(' ');
@@ -1011,6 +1016,30 @@ export class ImapServer {
             // mod-sequence support without enabling; the MODSEQ FETCH items stay gated on
             // the session having actually enabled CONDSTORE).
             write(sock, `* OK [HIGHESTMODSEQ ${box.highestModseq}] Highest mod-sequence`);
+            // SELECT (QRESYNC (uidvalidity modseq [known-uids ...])) — RFC 7162 §3.2.5.1:
+            // a reconnecting client hands back the UIDVALIDITY and mod-sequence it last
+            // saw; the server replays what changed since, so the client resyncs in one
+            // round-trip instead of refetching the mailbox. We use uidvalidity + modseq
+            // (+ optional known-uid set); the seq-match optimisation is ignored.
+            const qm = /\(\s*QRESYNC\s*\(\s*(\d+)\s+(\d+)(?:\s+([\d:,*]+))?/i.exec(line);
+            if (qm !== null) {
+              condstore = true;
+              const clientValidity = Number(qm[1]);
+              const clientModseq = Number(qm[2]);
+              // Only replay if the client's UIDs are still valid; otherwise it must do a
+              // full resync (it will, on seeing the unchanged UIDVALIDITY it expected).
+              if (clientValidity === box.uidValidity) {
+                const knownSet = qm[3] !== undefined ? new Set(parseSequenceSet(qm[3], box.uidNext > 1 ? box.uidNext - 1 : 0)) : undefined;
+                const vanished = box.expungedSince(clientModseq, knownSet);
+                if (vanished.length > 0) write(sock, `* VANISHED (EARLIER) ${compressSequenceSet(vanished)}`);
+                // Flag changes since the client's mod-sequence, as untagged FETCH.
+                box.messages.forEach((m, i) => {
+                  if (m.modseq > clientModseq && (knownSet === undefined || knownSet.has(m.uid))) {
+                    write(sock, `* ${i + 1} FETCH (UID ${m.uid} FLAGS (${[...m.flags].join(' ')}) MODSEQ (${m.modseq}))`);
+                  }
+                });
+              }
+            }
             write(sock, `${tag} OK [${readOnly ? 'READ-ONLY' : 'READ-WRITE'}] ${cmd} completed`);
             break;
           }
@@ -1027,10 +1056,18 @@ export class ImapServer {
             // (CHANGEDSINCE n) (RFC 7162 §3.1.4.1): return only messages whose
             // mod-sequence exceeds n — a reconnecting client's "what changed?" query. It
             // both enables CONDSTORE and implies the MODSEQ data item.
-            const csMatch = /\(\s*CHANGEDSINCE\s+(\d+)\s*\)/i.exec(spec);
+            const csMatch = /\(\s*CHANGEDSINCE\s+(\d+)(?:\s+VANISHED)?\s*\)/i.exec(spec);
             const changedSince = csMatch ? Number(csMatch[1]) : null;
             if (changedSince !== null || atts.modseq) condstore = true;
             if (condstore) atts.modseq = true; // once enabled, every FETCH carries MODSEQ
+            // (CHANGEDSINCE n VANISHED) (RFC 7162 §3.2.5.2): also report, as one
+            // VANISHED (EARLIER), the UIDs in the set that were expunged since n — so a
+            // reconnecting client learns removals in the same round-trip. UID FETCH only.
+            if (uidMode && changedSince !== null && /\bVANISHED\b/i.test(spec)) {
+              const setUids = new Set(parseSequenceSet(set, selected.uidNext > 1 ? selected.uidNext - 1 : 0));
+              const vanished = selected.expungedSince(changedSince, setUids);
+              if (vanished.length > 0) write(sock, `* VANISHED (EARLIER) ${compressSequenceSet(vanished)}`);
+            }
             // RFC 9051 §6.4.5: a BODY[...] fetch WITHOUT .PEEK sets \Seen as a side
             // effect; BODY.PEEK[...] does not. A client relying on the implicit mark
             // (rather than an explicit STORE) needs this to see the message as read.
@@ -1344,9 +1381,10 @@ export class ImapServer {
             for (const a of qargs) {
               const u = a.toUpperCase();
               if (u === 'IMAP4REV2') enabled.push('IMAP4rev2');
-              // CONDSTORE (RFC 7162 §3.1.8) — QRESYNC also implies CONDSTORE, but we do
-              // not implement QRESYNC's VANISHED, so we only enable the CONDSTORE half.
               else if (u === 'CONDSTORE') { condstore = true; enabled.push('CONDSTORE'); }
+              // QRESYNC (RFC 7162 §3.2.4) implies CONDSTORE and unlocks SELECT (QRESYNC …)
+              // plus the VANISHED FETCH modifier.
+              else if (u === 'QRESYNC') { qresync = true; condstore = true; enabled.push('QRESYNC'); }
             }
             write(sock, `* ENABLED${enabled.length > 0 ? ' ' + enabled.join(' ') : ''}`);
             write(sock, `${tag} OK ENABLE completed`);
