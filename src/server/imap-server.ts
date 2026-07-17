@@ -22,6 +22,7 @@
 import net from 'node:net';
 import tls from 'node:tls';
 import { parseMessage } from '../message/parse.ts';
+import { bodyResponse, bodyStructureResponse, resolvePart } from '../message/body-structure.ts';
 import { buildEnvelope, serializeEnvelope } from '../imap/envelope.ts';
 import { matchesSearch, type SearchKey } from '../imap/search.ts';
 import { parseSequenceSet } from '../imap/sequence-set.ts';
@@ -310,6 +311,9 @@ interface FetchAtts {
   rfc822Header: boolean;
   rfc822Text: boolean;
   internalDate: boolean;
+  /** Bare BODY (non-extensible MIME structure) / BODYSTRUCTURE (extensible). */
+  body: boolean;
+  bodyStructure: boolean;
   bodySections: { section: string; partial?: { origin: number; count: number }; peek: boolean }[];
 }
 
@@ -324,6 +328,8 @@ function parseFetchAtts(spec: string): FetchAtts {
     rfc822Header: false,
     rfc822Text: false,
     internalDate: false,
+    body: false,
+    bodyStructure: false,
     bodySections: [],
   };
   // Pull out BODY[..] / BODY.PEEK[..] first — brackets may contain spaces — with
@@ -342,6 +348,10 @@ function parseFetchAtts(spec: string): FetchAtts {
     if (t === 'UID') atts.uid = true;
     else if (t === 'FLAGS') atts.flags = true;
     else if (t === 'INTERNALDATE') atts.internalDate = true;
+    // A bare BODY (the bracketed BODY[...] forms were already pulled out above) is the
+    // non-extensible MIME structure; BODYSTRUCTURE is the extensible form.
+    else if (t === 'BODY') atts.body = true;
+    else if (t === 'BODYSTRUCTURE') atts.bodyStructure = true;
     else if (t === 'RFC822.SIZE') atts.size = true;
     else if (t === 'ENVELOPE') atts.envelope = true;
     else if (t === 'RFC822.HEADER') atts.rfc822Header = true;
@@ -355,6 +365,7 @@ function parseFetchAtts(spec: string): FetchAtts {
       atts.internalDate = true;
       atts.size = true;
       if (t !== 'FAST') atts.envelope = true;
+      if (t === 'FULL') atts.body = true; // FULL = ALL + BODY (non-extensible)
     }
   }
   return atts;
@@ -494,6 +505,8 @@ export class ImapServer {
     if (atts.internalDate) text(`INTERNALDATE "${formatImapDateTime(msg.internalDate)}"`);
     if (atts.size) text(`RFC822.SIZE ${msg.raw.length}`);
     if (atts.envelope) text(`ENVELOPE ${serializeEnvelope(buildEnvelope(parseMessage(msg.raw).headers))}`);
+    if (atts.body) text(`BODY ${bodyResponse(msg.raw)}`);
+    if (atts.bodyStructure) text(`BODYSTRUCTURE ${bodyStructureResponse(msg.raw)}`);
     // The legacy RFC822.* items — real Thunderbird fetches RFC822.HEADER for the list.
     if (atts.rfc822Header) literal('RFC822.HEADER', headerBlock(msg.raw));
     if (atts.rfc822Text) literal('RFC822.TEXT', bodyBlock(msg.raw));
@@ -516,9 +529,19 @@ export class ImapServer {
       } else if (up === 'TEXT') {
         name = 'BODY[TEXT]';
         payload = bodyBlock(msg.raw);
+      } else if (/^\d/.test(up)) {
+        // A part specifier: "1", "2.1" (nested), "1.MIME"/"1.HEADER" (the part's
+        // headers), "1.TEXT" (its body). Navigate the MIME tree so a client can fetch
+        // one attachment (BODY[2]) rather than the whole message.
+        const parsed = /^([\d.]+?)(?:\.(MIME|HEADER|TEXT))?$/.exec(up);
+        const path = parsed ? parsed[1]!.split('.').map(Number) : [];
+        const spec = parsed?.[2];
+        const entity = path.length > 0 && !path.some(Number.isNaN) ? resolvePart(msg.raw, path) : null;
+        name = `BODY[${up}]`;
+        payload = entity === null ? Buffer.alloc(0) : spec === 'MIME' || spec === 'HEADER' ? headerBlock(entity) : bodyBlock(entity);
       } else {
-        // Unrecognised section (part numbers etc.) — serve the whole body
-        // rather than lie with an empty literal.
+        // Truly unrecognised section — serve the whole body rather than lie with an
+        // empty literal.
         name = 'BODY[]';
         payload = msg.raw;
       }
