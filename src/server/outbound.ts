@@ -148,13 +148,16 @@ export async function relayOutbound(msg: RelayableMessage, opts: OutboundOptions
       try {
         // family: 4 — Gmail 550s IPv6 connections without a matching v6 PTR;
         // our PTR is set for the v4 address, so relay over IPv4 only.
-        const r = await deliver(
-          { host, port, tls: 'none', family: 4 },
-          { from: msg.from, recipients: [recipient], data: msg.data, clientName: opts.clientName },
-          {},
-          undefined,
-          { startTls: true },
-        );
+        const target = { host, port, tls: 'none' as const, family: 4 as const };
+        const envelope = { from: msg.from, recipients: [recipient], data: msg.data, clientName: opts.clientName };
+        let r = await deliver(target, envelope, {}, undefined, { startTls: true });
+        // Opportunistic STARTTLS (RFC 3207): if the TLS handshake itself failed, the
+        // MX advertised TLS it cannot actually complete — retry the same host in
+        // plaintext rather than let a broken-TLS MX bounce the mail. (A cert we can't
+        // verify never reaches here — we pass rejectUnauthorized:false.)
+        if (!r.ok && r.failure === 'STARTTLS handshake failed') {
+          r = await deliver(target, envelope, {}, undefined, { startTls: false });
+        }
         if (r.ok) {
           results.push({ recipient, ok: true, classification: 'success', detail: `delivered via ${host}` });
           delivered = true;
