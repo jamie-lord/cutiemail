@@ -91,7 +91,7 @@ function inboxOnly(mailbox: ServableMailbox): ServableCatalog {
   };
 }
 
-const CAPABILITIES = 'IMAP4rev2 IDLE UIDPLUS AUTH=PLAIN';
+const CAPABILITIES = 'IMAP4rev2 IDLE UIDPLUS SPECIAL-USE AUTH=PLAIN';
 
 /** Commands allowed before authentication (RFC 9051 §3, Not Authenticated state). */
 const PREAUTH_COMMANDS = new Set(['CAPABILITY', 'NOOP', 'LOGOUT', 'LOGIN', 'AUTHENTICATE', 'ID', 'STARTTLS']);
@@ -781,12 +781,16 @@ export class ImapServer {
             let li = 0;
             const selectionOpts = (qargs[li] ?? '').startsWith('(') ? (qargs[li++] ?? '') : '';
             const wantSubscribed = selectionOpts.toUpperCase().includes('SUBSCRIBED');
+            // (SPECIAL-USE) selection (RFC 6154 §2): return only mailboxes that carry a
+            // special-use attribute (\Sent, \Drafts, \Trash, \Junk, \Archive).
+            const onlySpecialUse = selectionOpts.toUpperCase().includes('SPECIAL-USE');
             li += 1; // reference (flat namespace — unused)
             const pattern = qargs[li] ?? '';
             if (pattern === '') {
               write(sock, '* LIST (\\Noselect) "/" ""');
             } else {
               for (const name of matchNames(pattern, this.#catalog.listNames())) {
+                if (onlySpecialUse && SPECIAL_USE[name] === undefined) continue;
                 const attrs = wantSubscribed ? listAttributes(name).replace(/\)$/, ' \\Subscribed)') : listAttributes(name);
                 write(sock, `* LIST ${attrs} "/" ${name.includes(' ') ? `"${name}"` : name}`);
               }

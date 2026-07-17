@@ -140,6 +140,11 @@ export async function startServer(cfg: MailServerConfig): Promise<RunningServer>
   // (real Thunderbird's first act is CREATE "Trash"). Inbound mail lands in INBOX.
   const catalog = SqliteCatalog.open(db, 1);
   const mailbox = catalog.get('INBOX')!;
+  // Pre-provision the conventional special-use folders (RFC 6154) so a client
+  // discovers them via LIST/SPECIAL-USE and files Sent/Drafts/Trash there, instead
+  // of inventing its own "Sent Items"/"Deleted Messages" duplicates. Names match the
+  // SPECIAL_USE table in imap-server.ts, which tags them in LIST responses.
+  for (const name of ['Sent', 'Drafts', 'Trash', 'Junk', 'Archive']) catalog.create(name);
 
   const accounts = new AccountStore();
   for (const a of cfg.accounts) accounts.setPassword(a.user, a.pass, randomBytes(16), 4096, 'sha256');
