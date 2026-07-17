@@ -150,8 +150,13 @@ What the assembled daemon (`npm start`) does, all live-verified:
   `Authentication-Results:` (forged results bearing our authserv-id stripped first) — before a
   `Received:` trace stamp and store.
 - **Serve** — live IMAPS on 993 with the surface a real client uses (captured from Thunderbird):
-  multi-folder catalog (CREATE/APPEND/COPY/MOVE/STATUS, special-use), FETCH incl. RFC822.HEADER
-  and partial `<o.n>`, UID variants, STORE, SEARCH, EXPUNGE, **IDLE** (instant new mail), **UIDPLUS**.
+  multi-folder catalog (CREATE/APPEND/COPY/MOVE/STATUS), FETCH incl. RFC822.HEADER
+  and partial `<o.n>`, UID variants, STORE, SEARCH, EXPUNGE, **IDLE** (instant new mail), **UIDPLUS**,
+  and **SPECIAL-USE** (RFC 6154 — the Sent/Drafts/Trash/Junk/Archive folders are provisioned and
+  advertised, so a client files mail into them instead of inventing duplicates). **Multi-connection
+  sync** (RFC 9051 §7.4.1): two clients on one mailbox (a phone and a desktop) each learn what the
+  other did — expunges, new mail, and flag changes propagate as untagged EXPUNGE/EXISTS/FETCH at a
+  safe command boundary or live during IDLE. All live-verified against the box with two connections.
 - **Send** — submission on 587 (SASL PLAIN over TLS): RFC 6409 fix-up → `Received:` → **DKIM** sign
   → persistent SQLite **retry queue** → relay to the MX over opportunistic STARTTLS, IPv4-pinned.
   Full **SPF + DKIM + DMARC** trifecta published and aligned; Gmail accepts on the primary MX.
