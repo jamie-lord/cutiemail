@@ -48,7 +48,8 @@ class Reader {
 const plainToken = (u: string, p: string): string => Buffer.from(`\0${u}\0${p}`, 'latin1').toString('base64');
 
 test('two daemons: a submission to A is DKIM-signed, relayed, and lands in B, traced by both', async () => {
-  const { privateKey } = generateKeyPairSync('rsa', { modulusLength: 2048 });
+  const { privateKey, publicKey } = generateKeyPairSync('rsa', { modulusLength: 2048 });
+  const aPublicKeyDer = publicKey.export({ type: 'spki', format: 'der' }).toString('base64');
 
   // Server B (the recipient side) — start it first so we know its inbound port.
   const configB: MailServerConfig = {
@@ -60,6 +61,8 @@ test('two daemons: a submission to A is DKIM-signed, relayed, and lands in B, tr
     domain: 'b.example.test',
     accounts: [{ user: 'bob', pass: 'bobpass' }],
     tls: { key: TEST_KEY, cert: TEST_CERT },
+    // Inject A's public key so B verifies A's DKIM signature without live DNS.
+    dkimKeyResolver: async () => Buffer.from(`v=DKIM1; k=rsa; p=${aPublicKeyDer}`, 'latin1'),
   };
   const B = await startServer(configB);
 
@@ -114,6 +117,8 @@ test('two daemons: a submission to A is DKIM-signed, relayed, and lands in B, tr
 
     const arrived = B.mailbox.messages[0]!.raw.toString('latin1');
     assert.match(arrived, /^DKIM-Signature: v=1;.*d=a\.example\.test/ms, "A's DKIM signature is present");
+    // B verified A's signature end-to-end (A signed, B checked against A's key).
+    assert.match(arrived, /^Authentication-Results: b\.example\.test; dkim=pass header\.d=a\.example\.test/m, 'B verified the DKIM signature as pass');
     assert.match(arrived, /^Received: from .* by b\.example\.test with ESMTPS/m, "B stamped its own Received hop (over TLS)");
     assert.match(arrived, /^Message-ID: </m, "A's §6409 fix-up added a Message-ID");
     assert.ok(arrived.includes('from A to B'), 'the body survived the whole path');
