@@ -99,3 +99,24 @@ test('EXAMINE opens read-only: [READ-ONLY], no \\Seen on fetch, STORE/EXPUNGE re
     await server.close();
   }
 });
+
+test('ENABLE, CHECK and UNSELECT are supported (RFC 9051 §6.3.1/§6.4.1/§6.4.2)', async () => {
+  const cat = SqliteCatalog.open(new DatabaseSync(':memory:'));
+  cat.get('INBOX')!.append(Buffer.from('Subject: t\r\n\r\nb\r\n', 'latin1'));
+  const server = await ImapServer.start(cat, { authenticate: () => true });
+  const c = client(server.port);
+  try {
+    await new Promise<void>((r) => c.sock.once('connect', () => r()));
+    await c.run('a1', 'LOGIN u p');
+    const en = await c.run('a2', 'ENABLE IMAP4rev2');
+    assert.match(en, /\* ENABLED IMAP4rev2/, 'ENABLE echoes the enabled capability');
+    await c.run('a3', 'SELECT INBOX');
+    assert.match(await c.run('a4', 'CHECK'), /^a4 OK/m, 'CHECK is a no-op OK when selected');
+    // UNSELECT deselects WITHOUT expunging — a following CHECK has no mailbox.
+    assert.match(await c.run('a5', 'UNSELECT'), /^a5 OK/m, 'UNSELECT completes');
+    assert.match(await c.run('a6', 'CHECK'), /^a6 BAD/m, 'the mailbox was deselected by UNSELECT');
+  } finally {
+    c.sock.destroy();
+    await server.close();
+  }
+});

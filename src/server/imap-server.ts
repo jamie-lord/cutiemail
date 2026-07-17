@@ -1106,6 +1106,25 @@ export class ImapServer {
             readOnly = false;
             write(sock, `${tag} OK CLOSE completed`);
             break;
+          case 'UNSELECT':
+            // RFC 9051 §6.4.2: deselect WITHOUT expunging (the difference from CLOSE).
+            selected = null;
+            selectedName = null;
+            readOnly = false;
+            write(sock, `${tag} OK UNSELECT completed`);
+            break;
+          case 'CHECK':
+            // RFC 9051 §6.4.1: a mailbox checkpoint. We buffer nothing, so it is a no-op.
+            if (selected === null) write(sock, `${tag} BAD no mailbox selected`);
+            else write(sock, `${tag} OK CHECK completed`);
+            break;
+          case 'ENABLE': {
+            // RFC 9051 §6.3.1: echo back the requested capabilities we support.
+            const enabled = qargs.filter((a) => a.toUpperCase() === 'IMAP4REV2').map(() => 'IMAP4rev2');
+            write(sock, `* ENABLED${enabled.length > 0 ? ' ' + enabled.join(' ') : ''}`);
+            write(sock, `${tag} OK ENABLE completed`);
+            break;
+          }
           case 'LOGOUT':
             write(sock, '* BYE logging out');
             write(sock, `${tag} OK LOGOUT completed`);
