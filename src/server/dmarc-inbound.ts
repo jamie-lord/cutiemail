@@ -9,8 +9,9 @@
  *
  * The org-domain function uses the full embedded Public Suffix List (auth/public-suffix.ts),
  * so relaxed alignment is computed against the true registered domain even under multi-label
- * public suffixes. DMARC is informational: we record the verdict and the published policy,
- * never reject.
+ * public suffixes. This module only EVALUATES — it returns the verdict, the applicable
+ * published policy, and pct; the delivery path decides what to do with a failure (ADR 0010:
+ * quarantine a policy failure to Junk, never hard-reject).
  */
 
 import { parseDmarcRecord, checkAlignment } from '../auth/dmarc.ts';
@@ -33,6 +34,8 @@ export interface DmarcOutcome {
   readonly verdict: DmarcVerdict;
   readonly policy: string | null;
   readonly fromDomain: string | null;
+  /** The published `pct` (0–100): the share of failures the owner wants the policy applied to. */
+  readonly pct: number;
 }
 
 /**
@@ -76,8 +79,8 @@ export async function checkDmarc(input: DmarcInput): Promise<DmarcOutcome> {
   const { domain: fromDomain, count: fromCount } = fromHeaderInfo(input.rawMessage);
   // §3.6.1: exactly one From is required. More than one can't yield an unambiguous
   // aligned identity — treat it as a fail (a display-spoof), never a pass.
-  if (fromCount > 1) return { verdict: 'fail', policy: null, fromDomain };
-  if (fromDomain === null) return { verdict: 'none', policy: null, fromDomain: null };
+  if (fromCount > 1) return { verdict: 'fail', policy: null, fromDomain, pct: 100 };
+  if (fromDomain === null) return { verdict: 'none', policy: null, fromDomain: null, pct: 100 };
 
   let recordText: string | null;
   // Whether the record came from the organizational domain rather than the From domain
@@ -93,12 +96,12 @@ export async function checkDmarc(input: DmarcInput): Promise<DmarcOutcome> {
       }
     }
   } catch {
-    return { verdict: 'temperror', policy: null, fromDomain };
+    return { verdict: 'temperror', policy: null, fromDomain, pct: 100 };
   }
-  if (recordText === null) return { verdict: 'none', policy: null, fromDomain };
+  if (recordText === null) return { verdict: 'none', policy: null, fromDomain, pct: 100 };
 
   const record = parseDmarcRecord(Buffer.from(recordText, 'latin1'));
-  if (!record.valid) return { verdict: 'none', policy: null, fromDomain };
+  if (!record.valid) return { verdict: 'none', policy: null, fromDomain, pct: 100 };
 
   const dkimAligned = input.dkimPassedDomains.some((d) => checkAlignment(fromDomain, d, record.adkim, organizationalDomain));
   const spfAligned = input.spfResult === 'pass' && input.spfDomain !== '' && checkAlignment(fromDomain, input.spfDomain, record.aspf, organizationalDomain);
@@ -106,5 +109,5 @@ export async function checkDmarc(input: DmarcInput): Promise<DmarcOutcome> {
   // §6.6.3: a subdomain governed by the org-domain record uses sp= (when published),
   // falling back to p=. The applicable policy is what a downstream reader must see.
   const policy = viaOrgFallback && record.subdomainPolicy !== null ? record.subdomainPolicy : record.policy;
-  return { verdict: dkimAligned || spfAligned ? 'pass' : 'fail', policy, fromDomain };
+  return { verdict: dkimAligned || spfAligned ? 'pass' : 'fail', policy, fromDomain, pct: record.pct };
 }

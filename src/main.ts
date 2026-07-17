@@ -79,6 +79,12 @@ export interface MailServerConfig {
   readonly dkimKeyResolver?: DkimKeyResolver;
   /** DNS resolvers for inbound SPF evaluation (injected in tests). Default: real DNS. */
   readonly spfResolvers?: SpfResolvers;
+  /**
+   * Sampler for the DMARC `pct` decision, returning a value in [0,100): a policy failure is
+   * quarantined when the sample is below the record's pct. Default is `Math.random()*100`;
+   * tests inject a fixed value to make quarantine deterministic.
+   */
+  readonly dmarcPctSampler?: () => number;
 }
 
 /** Real-DNS resolvers for SPF: a missing record is [] (→ none), a real error throws (→ temperror). */
@@ -191,13 +197,17 @@ export async function startServer(cfg: MailServerConfig): Promise<RunningServer>
     const local = address.slice(0, at).toLowerCase();
     return registry.list().find((r) => r.login.toLowerCase() === local)?.login;
   };
-  // Append a message to a local user's INBOX and wake their idling connections.
-  const deliverTo = (login: string, data: Buffer, internalDate: number = Date.now()): void => {
+  // Append a message to a local user's mailbox (INBOX unless a DMARC failure quarantines it
+  // to Junk) and wake the connections idling on that mailbox.
+  const deliverTo = (login: string, data: Buffer, internalDate: number = Date.now(), mailbox: string = 'INBOX'): void => {
     const store = stores.get(login);
     if (store === undefined) return; // unknown/disabled — acceptRecipient already gated this
-    store.catalog.get('INBOX')!.append(data, [], internalDate);
-    store.notifier.notify('INBOX');
+    const box = store.catalog.get(mailbox) ?? store.catalog.get('INBOX')!;
+    box.append(data, [], internalDate);
+    store.notifier.notify(store.catalog.get(mailbox) !== undefined ? mailbox : 'INBOX');
   };
+  // DMARC pct sampler (deterministic in tests; random in production).
+  const dmarcSample = cfg.dmarcPctSampler ?? ((): number => Math.random() * 100);
 
   // Inbound (port 25): mail arriving for us — verify DKIM, stamp Authentication-Results
   // and a Received trace line (RFC 5321 §4.4 / RFC 8601), and store it.
@@ -227,7 +237,7 @@ export async function startServer(cfg: MailServerConfig): Promise<RunningServer>
       spf = 'temperror';
     }
     // DMARC ties it together: an aligned DKIM or SPF pass, keyed to the From domain.
-    let dmarc: { verdict: string; policy: string | null } = { verdict: 'none', policy: null };
+    let dmarc: { verdict: string; policy: string | null; fromDomain: string | null; pct: number } = { verdict: 'none', policy: null, fromDomain: null, pct: 100 };
     try {
       dmarc = await checkDmarc({
         rawMessage: m.data,
@@ -237,7 +247,7 @@ export async function startServer(cfg: MailServerConfig): Promise<RunningServer>
         resolveTxt: spfResolvers.txt,
       });
     } catch {
-      dmarc = { verdict: 'temperror', policy: null };
+      dmarc = { verdict: 'temperror', policy: null, fromDomain: null, pct: 100 };
     }
     // Only a hostname-shaped d= is echoed into the header (defense in depth — the DKIM
     // parser already constrains it, but the AR header must never carry AR delimiters).
@@ -259,12 +269,19 @@ export async function startServer(cfg: MailServerConfig): Promise<RunningServer>
       date: receivedAt,
     });
     const stamped = Buffer.concat([Buffer.from(`${authResults}\r\n`, 'latin1'), traced]);
+    // DMARC enforcement (ADR 0010): a message that FAILS DMARC where the owner published
+    // p=quarantine or p=reject is filed to Junk rather than the INBOX — never hard-rejected
+    // (we don't do ARC, so rejecting would lose legitimately-forwarded mail; Junk is
+    // recoverable). p=none stays informational. `pct` gates the share of failures acted on.
+    const enforce = dmarc.verdict === 'fail' && (dmarc.policy === 'quarantine' || dmarc.policy === 'reject') && dmarcSample() < dmarc.pct;
+    const targetMailbox = enforce ? 'Junk' : 'INBOX';
+    if (enforce) log(`DMARC ${dmarc.policy} failure (from ${dmarc.fromDomain ?? '?'}) filed to Junk`);
     // INTERNALDATE = the moment we accepted the message (RFC 9051 §2.3.3), the same
     // instant stamped into the Received trace line above. Deliver a copy to each of our
-    // local recipients' own INBOX (ADR 0009).
+    // local recipients' mailbox (ADR 0009).
     for (const rcpt of m.recipients) {
       const login = loginForLocalAddress(rcpt);
-      if (login !== undefined) deliverTo(login, stamped, receivedAt.getTime());
+      if (login !== undefined) deliverTo(login, stamped, receivedAt.getTime(), targetMailbox);
     }
   }, {
     domain: cfg.domain,
