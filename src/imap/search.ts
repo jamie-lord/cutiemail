@@ -101,7 +101,15 @@ function matchesKey(msg: SearchableMessage, key: SearchKey): boolean {
         const raw = headerValue(msg.headers, 'Date');
         const t = raw === null ? NaN : Date.parse(raw);
         if (Number.isNaN(t)) return false;
-        return compareDay(utcDay(t), key.op, key.day);
+        // RFC 9051 §6.4.4: SENTBEFORE/SENTON/SENTSINCE compare the Date header's date
+        // AS WRITTEN, disregarding the time and the timezone. Date.parse normalises to
+        // UTC, which moves the date across midnight for a message written in a non-UTC
+        // zone (e.g. "24 Mar 2007 01:00 +0200" is the 24th to its sender but the 23rd in
+        // UTC). Add the header's own numeric zone offset back so we reduce the sender's
+        // wall-clock date, not the UTC one.
+        const zm = /([+-])(\d{2})(\d{2})\s*$/.exec(raw!.trim());
+        const offsetMs = zm ? (zm[1] === '-' ? -1 : 1) * (Number(zm[2]) * 60 + Number(zm[3])) * 60_000 : 0;
+        return compareDay(utcDay(t + offsetMs), key.op, key.day);
       }
       return compareDay(utcDay(msg.internalDate), key.op, key.day);
     }

@@ -55,3 +55,29 @@ test('R-9051-6.4.4-a: multiple keys are ANDed (orSemantics caught)', () => {
   // Negative control: OR semantics wrongly matches the partial message.
   assert.ok(matchesSearch(partial, keys, { orSemantics: true }), 'orSemantics must be detectable');
 });
+
+test('SENT date search compares the Date header AS WRITTEN, disregarding time and zone (RFC 9051 §6.4.4)', () => {
+  const dated = (dateHeader: string): SearchableMessage => {
+    const raw = Buffer.from(`Date: ${dateHeader}${CRLF}Subject: x${CRLF}${CRLF}body`, 'latin1');
+    return { headers: parseMessage(raw).headers, flags: new Set(), internalDate: 0, raw, uid: 1, seq: 1, modseq: 1 };
+  };
+  const on = (y: number, m: number, d: number): SearchKey[] => [{ type: 'date', field: 'sent', op: 'on', day: Date.UTC(y, m, d) }];
+  const before = (y: number, m: number, d: number): SearchKey[] => [{ type: 'date', field: 'sent', op: 'before', day: Date.UTC(y, m, d) }];
+  const since = (y: number, m: number, d: number): SearchKey[] => [{ type: 'date', field: 'sent', op: 'since', day: Date.UTC(y, m, d) }];
+
+  // Early-morning message in a positive zone: the 24th to its sender, the 23rd in UTC.
+  // Reducing to UTC (the bug) would file it under the 23rd.
+  const early = dated('Sat, 24 Mar 2007 01:00:00 +0200');
+  assert.ok(matchesSearch(early, on(2007, 2, 24)), 'SENTON matches the written day');
+  assert.ok(!matchesSearch(early, on(2007, 2, 23)), 'not the UTC-shifted day');
+  assert.ok(!matchesSearch(early, before(2007, 2, 24)), 'SENTBEFORE its own day is false');
+  assert.ok(matchesSearch(early, since(2007, 2, 24)), 'SENTSINCE includes its own day');
+
+  // Late-evening message in a negative zone: the 24th to its sender, the 25th in UTC.
+  const late = dated('Sat, 24 Mar 2007 23:00:00 -0500');
+  assert.ok(matchesSearch(late, on(2007, 2, 24)), 'negative-zone written day, not the UTC next day');
+  assert.ok(!matchesSearch(late, on(2007, 2, 25)));
+
+  // A plain UTC message is unaffected.
+  assert.ok(matchesSearch(dated('Sat, 24 Mar 2007 12:00:00 +0000'), on(2007, 2, 24)));
+});

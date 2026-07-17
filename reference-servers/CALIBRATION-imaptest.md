@@ -125,10 +125,43 @@ vision — is now validated by an independent implementation, not just our own t
 exercises command sequences and concurrency our hand-written tests didn't, and it caught a
 real §7.4.1 violation the passing suite shared a blind spot with.
 
+### Residual scripted failures — triaged
+
+After the three fixes, the core scripted tests were re-run each against a *fresh*
+in-memory server. Nine now pass outright (multiappend, store, move, esearch, uidplus,
+fetch-bodystructure, search-size, nil, atoms). The rest were spot-triaged; the residual
+is **not** a pile of unexamined red:
+
+- **Deliberate IMAP4rev2 cuts.** `SEARCH NEW`/`OLD`/`RECENT` and the `\Recent` flag were
+  *removed* in RFC 9051, which we advertise — so rejecting them with `BAD` is conformant.
+  imaptest's scripts predate rev2 and test them; those failures are expected. (Verified
+  the server BADs them and stays healthy — no crash.)
+- **Unsupported extensions we never claimed:** SORT, THREAD (imaptest runs them regardless
+  of advertised capabilities).
+- **A minor nicety:** when a STORE introduces a new keyword, we don't re-advertise the
+  mailbox's `FLAGS` list; imaptest flags that.
+
+A fourth genuine bug fell out of this triage and **was fixed**:
+
+- **`SEARCH SENTBEFORE`/`SENTON`/`SENTSINCE` reduced the Date header to a UTC day.** The
+  `search-date` script (probing the EET +0200 → EEST +0300 boundary) showed our result set
+  off by a message at the day boundary. RFC 9051 §6.4.4 compares the Date header's date
+  *as written*, disregarding time and zone; we ran it through `Date.parse` (→ UTC), which
+  shifts the day across midnight for a non-UTC message (a `24 Mar 01:00 +0200` message is
+  the 24th to its sender but the 23rd in UTC). **Fixed** by adding the header's own numeric
+  zone offset back before reducing to a day — the `search-date` script now passes 0/29.
+  Regression test in `src/imap/search.test.ts`.
+
+One residual is **recorded for a focused follow-up** rather than rushed:
+
+- **Extended-LIST attribute exactness** (the `list` script). The wildcard *matching* is
+  now correct (fixed + live-verified), but a few `%`/`*` results differ in their
+  `\HasChildren`/`\HasNoChildren` attribute set and reference-name handling — attribute
+  detail, not the matching that broke hierarchy discovery.
+
 ## Still open
 
-- A deeper pass over the scripted tests run each against a *fresh* account (to remove the
-  persistent-store state-leak cascade) so any remaining real failures stand out.
+- Extended-LIST attribute exactness (above).
 - A larger concurrent-client / longer-duration soak.
 - imaptest links vanilla Dovecot 2.3.21; Ubuntu ships a patched 2.3.21, so the build uses the
   upstream source tree rather than the distro headers (recorded in the build steps above).
