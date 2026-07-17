@@ -94,9 +94,20 @@ function countLines(body: Buffer): number {
   return n;
 }
 
+/**
+ * Cap on MIME nesting depth. Real mail nests a handful of levels; a maliciously
+ * deep message (thousands of nested multiparts) would otherwise recurse the parser
+ * into a stack overflow — a DoS on FETCH BODYSTRUCTURE. Past the cap a part is
+ * reported as an opaque leaf rather than recursed into.
+ */
+const MAX_MIME_DEPTH = 100;
+
 /** Build the MIME part tree for a message or message part. */
-export function buildBodyStructure(raw: Buffer): BodyPart {
+export function buildBodyStructure(raw: Buffer, depth = 0): BodyPart {
   const { body } = parseMessage(raw);
+  if (depth >= MAX_MIME_DEPTH) {
+    return { multipart: false, type: 'APPLICATION', subtype: 'OCTET-STREAM', params: [], id: null, description: null, encoding: '7BIT', size: body.length, lines: null, disposition: null, children: [], rfc822: null };
+  }
   const ctRaw = header(raw, 'Content-Type') ?? 'text/plain';
   const { head: media, params } = parseParameterized(ctRaw);
   const slash = media.indexOf('/');
@@ -116,7 +127,7 @@ export function buildBodyStructure(raw: Buffer): BodyPart {
 
   if (type === 'multipart') {
     const boundary = params.find(([n]) => n === 'boundary')?.[1] ?? '';
-    const children = boundary === '' ? [] : parseMultipart(body, boundary).parts.map((p) => buildBodyStructure(p));
+    const children = boundary === '' ? [] : parseMultipart(body, boundary).parts.map((p) => buildBodyStructure(p, depth + 1));
     return { multipart: true, type: 'MULTIPART', subtype: subtype.toUpperCase(), params, id, description, encoding, size: body.length, lines: null, disposition, children, rfc822: null };
   }
 
@@ -125,7 +136,7 @@ export function buildBodyStructure(raw: Buffer): BodyPart {
   // structure so the client can show the forwarded message without downloading it.
   const rfc822 =
     type === 'message' && subtype === 'rfc822'
-      ? { envelope: serializeEnvelope(buildEnvelope(parseMessage(body).headers)), nested: buildBodyStructure(body) }
+      ? { envelope: serializeEnvelope(buildEnvelope(parseMessage(body).headers)), nested: buildBodyStructure(body, depth + 1) }
       : null;
   return { multipart: false, type: type.toUpperCase(), subtype: subtype.toUpperCase(), params, id, description, encoding, size: body.length, lines, disposition, children: [], rfc822 };
 }

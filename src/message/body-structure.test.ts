@@ -74,3 +74,14 @@ test('a message/rfc822 attachment carries the forwarded message envelope and str
   // The nested body structure follows the envelope.
   assert.match(bs, /"MESSAGE" "RFC822".*"forwarded subject".*"TEXT" "PLAIN"/s, 'the nested body structure follows the envelope');
 });
+
+test('a pathologically deep multipart is bounded, not a stack overflow (DoS guard)', () => {
+  let m = 'Content-Type: text/plain\r\n\r\nleaf\r\n';
+  for (let i = 0; i < 5000; i++) {
+    const b = `B${i}`;
+    m = `Content-Type: multipart/mixed; boundary=${b}\r\n\r\n--${b}\r\n${m}--${b}--\r\n`;
+  }
+  // Must return a value (bounded at the depth cap), never throw a RangeError.
+  const bs = bodyStructureResponse(Buffer.from(m, 'latin1'));
+  assert.ok(bs.length > 0 && bs.startsWith('('), 'a deeply nested message yields a bounded structure, not a crash');
+});
