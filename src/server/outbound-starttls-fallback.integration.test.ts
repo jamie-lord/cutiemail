@@ -50,3 +50,14 @@ test('a MX that fails the STARTTLS handshake still gets the mail via a plaintext
     await mx.close();
   }
 });
+
+test('a null-MX domain (RFC 7505) bounces immediately, not after the give-up window', async () => {
+  const { relayOutbound } = await import('./outbound.ts');
+  // resolveMxHosts maps a null MX ("MX 0 .") to the single host ".".
+  const results = await relayOutbound(
+    { from: 'a@us.test', recipients: ['b@accepts-no-mail.test'], data: Buffer.from('x', 'latin1') },
+    { clientName: 'us.test', resolveHosts: async () => ['.'] },
+  );
+  assert.equal(results[0]!.classification, 'permanent', 'a null MX is a permanent failure');
+  assert.match(results[0]!.detail, /null MX/, 'the reason names the null MX');
+});

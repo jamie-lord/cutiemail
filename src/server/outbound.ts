@@ -134,6 +134,13 @@ export async function relayOutbound(msg: RelayableMessage, opts: OutboundOptions
       results.push({ recipient, ok: false, classification: 'transient', detail: `MX lookup failed: ${String(e)}` });
       continue;
     }
+    if (hosts.length === 1 && hosts[0] === '.') {
+      // RFC 7505: a null MX ("MX 0 .") is an explicit statement that the domain
+      // accepts NO mail. Bounce immediately rather than retry to host "." until the
+      // give-up window — the sender should learn of the permanent failure now.
+      results.push({ recipient, ok: false, classification: 'permanent', detail: `${domain} accepts no mail (null MX, RFC 7505)` });
+      continue;
+    }
     if (hosts.length === 0) {
       // No MX/A right now — treat as transient (conservative: a temporary DNS
       // gap must not bounce mail; a truly dead domain bounces after give-up).
