@@ -592,6 +592,34 @@ export class ImapServer {
     let selectedName: string | null = null;
     let pendingAppend: PendingAppend | null = null;
     let idle: { tag: string; unsub: () => void } | null = null;
+    // This connection's view of the selected mailbox: the UIDs in sequence order the
+    // client has been told about. Comparing it to the live mailbox is how we detect
+    // messages another connection expunged or delivered, to notify this one.
+    let knownUids: number[] = [];
+
+    /**
+     * Bring the client's view in line with the mailbox: emit an untagged EXPUNGE for
+     * each message that disappeared (descending sequence, so earlier numbers stay
+     * valid — RFC 9051 §7.4.1) and a single EXISTS if new messages arrived. Only ever
+     * called between commands and never during a FETCH/STORE/SEARCH, where §7.4.1
+     * forbids renumbering.
+     */
+    const syncSelected = (): void => {
+      if (selected === null) return;
+      const current = selected.messages.map((m) => m.uid);
+      const present = new Set(current);
+      const removed: number[] = []; // 1-based positions in the client's current view
+      knownUids.forEach((uid, i) => {
+        if (!present.has(uid)) removed.push(i + 1);
+      });
+      for (const pos of removed.reverse()) write(sock, `* ${pos} EXPUNGE`);
+      knownUids = knownUids.filter((uid) => present.has(uid));
+      const knownSet = new Set(knownUids);
+      if (current.some((uid) => !knownSet.has(uid))) {
+        knownUids = current.slice();
+        write(sock, `* ${knownUids.length} EXISTS`);
+      }
+    };
     // IMAP has three states (RFC 9051 §3); everything except the pre-auth commands
     // requires Authenticated. Without this gate a client could SELECT and FETCH mail
     // with no LOGIN at all. `pendingAuth` holds the tag of an AUTHENTICATE PLAIN that
@@ -633,6 +661,9 @@ export class ImapServer {
             // needn't re-search for the message it filed (e.g. a Sent copy).
             const uid = box.append(raw, pendingAppend.flags, pendingAppend.internalDate);
             write(sock, `${pendingAppend.tag} OK [APPENDUID ${box.uidValidity} ${uid}] APPEND completed`);
+            // Wake connections idling on this mailbox (including this one, on its next
+            // command boundary via syncSelected) so the new message shows up.
+            this.#notifier?.notify(canonicalMailboxName(pendingAppend.mailboxName));
           }
           pendingAppend = null;
           continue;
@@ -895,6 +926,9 @@ export class ImapServer {
             }
             selected = box;
             selectedName = canonicalMailboxName(name);
+            // Snapshot the mailbox this connection now sees, so later NOOP/CHECK/IDLE
+            // can tell it what other connections expunged or delivered (RFC 9051 §7.4.1).
+            knownUids = box.messages.map((m) => m.uid);
             // EXAMINE opens read-only (RFC 9051 §6.3.2): no flag changes, no EXPUNGE.
             readOnly = cmd === 'EXAMINE';
             write(sock, `* ${box.messages.length} EXISTS`);
@@ -1028,7 +1062,8 @@ export class ImapServer {
               break;
             }
             const set = arg(1);
-            const target = this.#catalog.get(unquote(parts.slice(cmdIndex + 2).join(' ')));
+            const targetName = unquote(parts.slice(cmdIndex + 2).join(' '));
+            const target = this.#catalog.get(targetName);
             if (target === undefined) {
               write(sock, `${tag} NO [TRYCREATE] no such mailbox`);
               break;
@@ -1049,7 +1084,11 @@ export class ImapServer {
                 selected.expunge(msg.uid);
                 write(sock, `* ${seq} EXPUNGE`);
               }
+              knownUids = selected.messages.map((m) => m.uid);
+              if (selectedName !== null) this.#notifier?.notify(selectedName);
             }
+            // Wake connections idling on the destination (and, for MOVE, the source).
+            if (dstUids.length > 0) this.#notifier?.notify(canonicalMailboxName(targetName));
             const copyuid = srcUids.length > 0 ? `[COPYUID ${target.uidValidity} ${srcUids.join(',')} ${dstUids.join(',')}] ` : '';
             write(sock, `${tag} OK ${copyuid}${cmd} completed`);
             break;
@@ -1077,6 +1116,11 @@ export class ImapServer {
             // Report by descending sequence number so the client's numbering stays consistent.
             const seqs = before.map((m, i) => ({ uid: m.uid, seq: i + 1 })).filter((e) => removedUids.has(e.uid));
             for (const e of seqs.reverse()) write(sock, `* ${e.seq} EXPUNGE`);
+            // We just told this client about these removals; keep its view in step so a
+            // later NOOP/CHECK does not re-announce them as if another connection acted.
+            knownUids = selected.messages.map((m) => m.uid);
+            // Wake other connections idling on this mailbox so they drop the same messages.
+            if (removedUids.size > 0 && selectedName !== null) this.#notifier?.notify(selectedName);
             write(sock, `${tag} OK EXPUNGE completed`);
             break;
           }
@@ -1092,14 +1136,11 @@ export class ImapServer {
               break;
             }
             const name = selectedName;
-            let lastExists = selected.messages.length;
+            // While idling, any change another connection makes to this mailbox
+            // (delivery or expunge) reconciles this connection's view in real time,
+            // emitting untagged EXPUNGE/EXISTS just as at a command boundary.
             const unsub = this.#notifier.subscribe(name, () => {
-              const box = this.#catalog.get(name);
-              const n = box?.messages.length ?? 0;
-              if (n !== lastExists) {
-                write(sock, `* ${n} EXISTS`);
-                lastExists = n;
-              }
+              syncSelected();
             });
             idle = { tag, unsub };
             write(sock, '+ idling');
@@ -1122,9 +1163,13 @@ export class ImapServer {
             write(sock, `${tag} OK UNSELECT completed`);
             break;
           case 'CHECK':
-            // RFC 9051 §6.4.1: a mailbox checkpoint. We buffer nothing, so it is a no-op.
+            // RFC 9051 §6.4.1: a mailbox checkpoint. We buffer nothing, so it is a no-op
+            // beyond reconciling changes other connections made (a command boundary).
             if (selected === null) write(sock, `${tag} BAD no mailbox selected`);
-            else write(sock, `${tag} OK CHECK completed`);
+            else {
+              syncSelected();
+              write(sock, `${tag} OK CHECK completed`);
+            }
             break;
           case 'ENABLE': {
             // RFC 9051 §6.3.1: echo back the requested capabilities we support.
@@ -1139,6 +1184,9 @@ export class ImapServer {
             sock.end();
             return;
           case 'NOOP':
+            // The client's poll for news: reconcile anything other connections changed
+            // in the selected mailbox (RFC 9051 §6.4.1, §7.4.1 — a safe command boundary).
+            syncSelected();
             write(sock, `${tag} OK NOOP completed`);
             break;
           default:

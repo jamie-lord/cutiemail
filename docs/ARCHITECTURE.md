@@ -162,8 +162,14 @@ a null return-path, so bounces can't loop). `imap-server.ts` also serves the ful
 read side a real client needs — `BODYSTRUCTURE` and per-part `BODY[n]` fetch (so a
 client renders an attachment without downloading the whole message), the fetch
 macros, `INTERNALDATE`, extended `SEARCH`/`ESEARCH`, and `DELETE`/`RENAME`.
-`mailbox-notifier.ts` is the pub/sub that lets an inbound delivery wake an idling
-IMAP connection (IDLE). Each is thin and owns one concern.
+`mailbox-notifier.ts` is the pub/sub that lets one connection's change reach another:
+an inbound delivery, or an APPEND/EXPUNGE/MOVE on any connection, wakes every other
+connection selected on that mailbox. Each connection keeps its own view of the
+mailbox (the UIDs it has been told about) and reconciles it — emitting untagged
+`EXPUNGE` for what vanished and `EXISTS` for what arrived — only at a safe command
+boundary (`NOOP`/`CHECK`, or in real time while idling), never mid-`FETCH`, per
+RFC 9051 §7.4.1. That is what keeps a phone and a desktop on the same mailbox in
+agreement. Each module is thin and owns one concern.
 
 **`main.ts`** — the daemon. Opens the database, seeds accounts, and starts three
 listeners (inbound SMTP, submission-with-AUTH, IMAPS). Inbound mail is authenticated

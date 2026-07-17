@@ -39,6 +39,15 @@ export class MailboxNotifier {
   notify(mailbox: string): void {
     const set = this.#listeners.get(canonicalMailboxName(mailbox));
     if (set === undefined) return;
-    for (const fn of [...set]) fn();
+    // A subscriber now writes to *another* connection's socket, which can throw on a
+    // half-closed peer. Isolate each so one dead connection can neither break the
+    // others' notifications nor surface as an error on the connection that mutated.
+    for (const fn of [...set]) {
+      try {
+        fn();
+      } catch {
+        // A failed push is the dead peer's problem; its own I/O error path cleans it up.
+      }
+    }
   }
 }
