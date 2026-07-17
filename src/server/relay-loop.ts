@@ -21,9 +21,23 @@ export interface RelayFn {
   (msg: { from: string; recipients: readonly string[]; data: Buffer }): Promise<readonly RelayResult[]>;
 }
 
+/** A recipient the relay has permanently given up on. */
+export interface BouncedRecipient {
+  readonly recipient: string;
+  /** RFC 3463 status (5.x.x permanent, e.g. 5.0.0 rejected / 5.4.7 timed out). */
+  readonly status: string;
+  readonly detail: string;
+}
+
 export interface RelayLoopOptions {
   readonly log?: (line: string) => void;
   readonly defects?: QueueDefects;
+  /**
+   * Called when a message is permanently undeliverable to some recipients, so the
+   * sender can be sent a non-delivery report (RFC 5321 §6.1). Never called when the
+   * sender is empty — a null return-path message must not itself bounce.
+   */
+  readonly onBounce?: (info: { from: string; data: Buffer; failures: readonly BouncedRecipient[] }) => void;
 }
 
 export class RelayLoop {
@@ -31,6 +45,7 @@ export class RelayLoop {
   readonly #relay: RelayFn;
   readonly #log: (line: string) => void;
   readonly #defects: QueueDefects;
+  readonly #onBounce: RelayLoopOptions['onBounce'];
   #timer: ReturnType<typeof setInterval> | null = null;
   #ticking = false;
   /** A tick requested while one was running — its `now`, so the re-run isn't lost. */
@@ -41,6 +56,16 @@ export class RelayLoop {
     this.#relay = relay;
     this.#log = options.log ?? ((): void => {});
     this.#defects = options.defects ?? {};
+    this.#onBounce = options.onBounce;
+  }
+
+  /** Emit a bounce for permanently-failed recipients — unless the sender is null (§6.1). */
+  #bounce(from: string, data: Buffer, failures: readonly BouncedRecipient[]): void {
+    if (failures.length === 0) return;
+    // A null return-path (<>) message must never generate a bounce — that is how
+    // bounce loops start. Such failures are dropped (already logged).
+    if (from === '' || this.#onBounce === undefined) return;
+    this.#onBounce({ from, data, failures });
   }
 
   /**
@@ -76,10 +101,16 @@ export class RelayLoop {
     }
 
     const retryLater: string[] = [];
+    const permanentFailures: BouncedRecipient[] = [];
     for (const r of results) {
       if (r.classification === 'transient') retryLater.push(r.recipient);
-      else this.#log(`queue ${entry.id} ${r.recipient}: ${r.ok ? 'sent' : 'bounced'} — ${r.detail}`);
+      else {
+        this.#log(`queue ${entry.id} ${r.recipient}: ${r.ok ? 'sent' : 'bounced'} — ${r.detail}`);
+        if (!r.ok) permanentFailures.push({ recipient: r.recipient, status: '5.0.0', detail: r.detail });
+      }
     }
+    // A 5yz rejection is final — report it to the sender now.
+    this.#bounce(entry.from, entry.data, permanentFailures);
 
     const attempts = entry.attempts + 1;
     if (retryLater.length === 0) {
@@ -90,7 +121,13 @@ export class RelayLoop {
     if (decision === 'retry') {
       this.#queue.reschedule(entry.id, retryLater, attempts, nextAttempt);
     } else {
-      for (const rcpt of retryLater) this.#log(`queue ${entry.id} ${rcpt}: bounced (gave up after ${attempts} attempts)`);
+      const gaveUp: BouncedRecipient[] = [];
+      for (const rcpt of retryLater) {
+        this.#log(`queue ${entry.id} ${rcpt}: bounced (gave up after ${attempts} attempts)`);
+        gaveUp.push({ recipient: rcpt, status: '5.4.7', detail: `delivery time expired after ${attempts} attempts` });
+      }
+      // Past the give-up window, the transient failures become permanent — bounce them.
+      this.#bounce(entry.from, entry.data, gaveUp);
       this.#queue.remove(entry.id);
     }
   }

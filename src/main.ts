@@ -23,7 +23,8 @@ import { SmtpReceiver } from './server/smtp-receiver.ts';
 import type { DeliveredMessage } from './server/smtp-receiver.ts';
 import { ImapServer } from './server/imap-server.ts';
 import { relayOutbound, routeRecipients, type OutboundOptions } from './server/outbound.ts';
-import { ensureSubmissionHeaders } from './server/submission-fixup.ts';
+import { ensureSubmissionHeaders, formatDate } from './server/submission-fixup.ts';
+import { buildBounceMessage } from './server/bounce.ts';
 import { dkimSign, makeSigner } from './server/dkim-signer.ts';
 import { prependReceived, protocolFor } from './server/received.ts';
 import { MailboxNotifier } from './server/mailbox-notifier.ts';
@@ -148,7 +149,30 @@ export async function startServer(cfg: MailServerConfig): Promise<RunningServer>
 
   // The persistent outbound queue + the loop that drains it (survives restart).
   const queue = SqliteQueue.open(db);
-  const relayLoop = new RelayLoop(queue, (m) => relayOutbound(m, outboundOpts), { log });
+  const relayLoop = new RelayLoop(queue, (m) => relayOutbound(m, outboundOpts), {
+    log,
+    // RFC 5321 §6.1: notify the sender when we permanently give up. Build the bounce
+    // and deliver it — to the local mailbox if the sender is one of ours, otherwise
+    // relay it with a null return-path (which can never itself bounce).
+    onBounce: ({ from, data, failures }) => {
+      const bounce = buildBounceMessage({
+        reportingMta: cfg.domain,
+        originalSender: from,
+        originalData: data,
+        failures: failures.map((f) => ({ recipient: f.recipient, action: 'failed', status: f.status, detail: f.detail })),
+        date: formatDate(new Date()),
+        token: randomUUID(),
+      });
+      const at = from.lastIndexOf('@');
+      const senderDomain = at === -1 ? '' : from.slice(at + 1).toLowerCase();
+      if (senderDomain === cfg.domain.toLowerCase()) {
+        storeLocal(bounce); // the sender is local — the bounce lands in their INBOX
+      } else {
+        queue.enqueue('', [from], bounce, Date.now()); // null return-path, relayed onward
+      }
+      log(`bounce generated for <${from}> (${failures.length} recipient(s))`);
+    },
+  });
 
   const submissionHandler = (m: DeliveredMessage): void => {
     const { local, remote } = routeRecipients(m.recipients, cfg.domain);

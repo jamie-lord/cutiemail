@@ -55,6 +55,41 @@ test('a permanent failure bounces immediately, no retry', async () => {
   assert.equal(queue.size, 0, 'a 5yz recipient is bounced, not retried');
 });
 
+test('a permanent failure notifies the sender via onBounce (RFC 5321 §6.1)', async () => {
+  const queue = SqliteQueue.open(new DatabaseSync(':memory:'));
+  const relay = async (m: { recipients: readonly string[] }): Promise<readonly RelayResult[]> => m.recipients.map((rc) => r(rc, 'permanent'));
+  const bounces: Array<{ from: string; failures: readonly { recipient: string; status: string }[] }> = [];
+  const loop = new RelayLoop(queue, relay, { onBounce: (b) => bounces.push(b) });
+  queue.enqueue('sender@ours.test', ['bad@y.test'], Buffer.from('the message'), 0);
+  await loop.tick(0);
+  assert.equal(bounces.length, 1, 'the sender is notified');
+  assert.equal(bounces[0]!.from, 'sender@ours.test', 'the bounce is addressed to the original sender');
+  assert.equal(bounces[0]!.failures[0]!.recipient, 'bad@y.test', 'the failed recipient is reported');
+  assert.match(bounces[0]!.failures[0]!.status, /^5\./, 'the status is a permanent 5.x.x');
+});
+
+test('a message with a null return-path never bounces (no bounce loops, §6.1)', async () => {
+  const queue = SqliteQueue.open(new DatabaseSync(':memory:'));
+  const relay = async (m: { recipients: readonly string[] }): Promise<readonly RelayResult[]> => m.recipients.map((rc) => r(rc, 'permanent'));
+  const bounces: unknown[] = [];
+  const loop = new RelayLoop(queue, relay, { onBounce: (b) => bounces.push(b) });
+  queue.enqueue('', ['bad@y.test'], Buffer.from('a bounce itself'), 0); // null return-path
+  await loop.tick(0);
+  assert.equal(bounces.length, 0, 'a null-return-path failure produces no bounce');
+});
+
+test('past the give-up window, the still-failing recipients are bounced to the sender', async () => {
+  const queue = SqliteQueue.open(new DatabaseSync(':memory:'));
+  const relay = async (m: { recipients: readonly string[] }): Promise<readonly RelayResult[]> => m.recipients.map((rc) => r(rc, 'transient'));
+  const bounces: Array<{ failures: readonly { status: string }[] }> = [];
+  const loop = new RelayLoop(queue, relay, { onBounce: (b) => bounces.push(b) });
+  const t0 = 9_000_000;
+  queue.enqueue('sender@ours.test', ['slow@y.test'], Buffer.from('m'), t0);
+  await loop.tick(t0 + GIVE_UP_MS + 1);
+  assert.equal(bounces.length, 1, 'give-up produces a bounce');
+  assert.equal(bounces[0]!.failures[0]!.status, '5.4.7', 'the status is delivery-time-expired');
+});
+
 test('a partial delivery carries only the undelivered recipient forward', async () => {
   const queue = SqliteQueue.open(new DatabaseSync(':memory:'));
   const relay = async (m: { recipients: readonly string[] }): Promise<readonly RelayResult[]> =>
