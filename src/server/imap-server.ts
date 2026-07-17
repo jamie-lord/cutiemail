@@ -1179,20 +1179,29 @@ export class ImapServer {
             write(sock, '+ idling');
             break;
           }
-          case 'CLOSE':
+          case 'CLOSE': {
             // Expunge silently and deselect (RFC 9051 §6.4.2) — but a read-only
             // (EXAMINE) mailbox is never expunged, just deselected.
-            if (selected !== null && !readOnly) selected.expungeDeleted();
+            const closedName = selectedName;
+            const removed = selected !== null && !readOnly ? selected.expungeDeleted() : [];
+            // No EXPUNGE goes to us (we are deselecting), but peers on this mailbox must
+            // still learn the messages vanished.
+            if (removed.length > 0 && closedName !== null) this.#notifier?.notify(closedName);
             selected = null;
             selectedName = null;
             readOnly = false;
+            knownUids = [];
+            knownFlags = new Map();
             write(sock, `${tag} OK CLOSE completed`);
             break;
+          }
           case 'UNSELECT':
             // RFC 9051 §6.4.2: deselect WITHOUT expunging (the difference from CLOSE).
             selected = null;
             selectedName = null;
             readOnly = false;
+            knownUids = [];
+            knownFlags = new Map();
             write(sock, `${tag} OK UNSELECT completed`);
             break;
           case 'CHECK':

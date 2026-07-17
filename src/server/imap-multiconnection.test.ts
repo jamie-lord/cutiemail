@@ -197,6 +197,33 @@ test('a message another connection reads (\\Seen via BODY[] fetch) shows as read
   }
 });
 
+test('CLOSE expunges silently for the closer but still tells a peer the messages vanished', async () => {
+  const catalog = new MemoryCatalog();
+  const inbox = catalog.get('INBOX')!;
+  for (const subj of ['keep', 'drop']) inbox.append(Buffer.from(`Subject: ${subj}\r\n\r\nx\r\n`, 'latin1'));
+  const notifier = new MailboxNotifier();
+  const server = await ImapServer.start(catalog, { authenticate: () => true, notifier });
+  const a = await open(server.port);
+  const b = await open(server.port);
+  try {
+    b.send('b3 IDLE\r\n');
+    await b.waitFor('+ idling');
+    // A deletes message 2 and CLOSEs; CLOSE expunges without sending A any EXPUNGE...
+    a.send('c1 STORE 2 +FLAGS (\\Deleted)\r\nc2 CLOSE\r\n');
+    await a.waitFor('c2 OK');
+    const aSeen = a.seen.slice(a.seen.indexOf('c1 '));
+    assert.doesNotMatch(aSeen, /EXPUNGE/, 'CLOSE does not send the closer an EXPUNGE (RFC 9051 §6.4.2)');
+    // ...but the idling peer is told message 2 is gone.
+    await b.waitFor('* 2 EXPUNGE');
+    b.send('DONE\r\n');
+    await b.waitFor('b3 OK');
+  } finally {
+    a.sock.destroy();
+    b.sock.destroy();
+    await server.close();
+  }
+});
+
 test('EXPUNGE sequence numbers are descending so an earlier removal never invalidates a later one', async () => {
   // If a connection removes several messages, the peer must be able to apply the
   // EXPUNGEs top-to-bottom without recomputing: RFC 9051 §7.4.1 requires descending
