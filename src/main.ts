@@ -265,7 +265,7 @@ export async function startServer(cfg: MailServerConfig): Promise<RunningServer>
     const { local, remote } = routeRecipients(m.recipients, cfg.domain);
     // RFC 6409 fix-up (submission only, never on the inbound port): add Date /
     // Message-ID when the client omitted them — Gmail rejects messages without.
-    const fixed = ensureSubmissionHeaders(m.data, cfg.domain);
+    const fixed = ensureSubmissionHeaders(m.data, cfg.domain, m.from);
     // Stamp our Received trace line (§4.4), then sign — DKIM does not cover
     // Received, so the order is fix-up → Received → DKIM-Signature on top.
     const traced = prependReceived(fixed, {

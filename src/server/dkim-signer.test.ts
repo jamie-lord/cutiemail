@@ -58,6 +58,7 @@ test('a signed message verifies against its published key record (round trip)', 
       'latin1',
     ),
     'mailtest.example',
+    'test@mailtest.example',
   );
 
   const signed = dkimSign(raw, signer);

@@ -64,6 +64,19 @@ async function verifyOneSignature(rawValue: string, headers: ReturnType<typeof p
     return { verdict: 'permerror', domain: sig.domain };
   }
 
+  // RFC 6376 §5.4: the From header MUST be signed. A signature that omits it is
+  // meaningless — an attacker could sign an innocuous message and swap the From, and
+  // it would still "verify". Reject it (this is also what makes DKIM sound for DMARC).
+  if (!sig.signedHeaders.some((h) => h.trim().toLowerCase() === 'from')) {
+    return { verdict: 'permerror', domain: sig.domain };
+  }
+  // RFC 6376 §3.5: a signature whose expiration (x=, epoch seconds) has passed is
+  // stale — treat it as a failure so an old signed message cannot be replayed forever.
+  const xTag = sig.tags.get('x');
+  if (xTag !== undefined && /^\d+$/.test(xTag) && Math.floor(Date.now() / 1000) > Number(xTag)) {
+    return { verdict: 'fail', domain: sig.domain };
+  }
+
   const headerCanon: HeaderCanon = (sig.tags.get('c') ?? '').split('/')[0] === 'relaxed' ? 'relaxed' : 'simple';
   const algo = hashAlgoOf(sig);
   const lTag = sig.tags.get('l');

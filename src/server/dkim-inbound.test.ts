@@ -122,3 +122,16 @@ test('with multiple signatures, the message passes if ANY signature verifies (RF
   assert.equal(out.domain, 'example.com', 'the passing domain is reported');
   assert.deepEqual([...out.passedDomains], ['example.com'], 'passedDomains lists the aligned domain for DMARC');
 });
+
+test('a signature that does not cover the From header is rejected (RFC 6376 §5.4)', async () => {
+  const { generateKeyPairSync } = await import('node:crypto');
+  const k = generateKeyPairSync('rsa', { modulusLength: 2048 });
+  const der = k.publicKey.export({ type: 'spki', format: 'der' }).toString('base64');
+  const body = Buffer.from('body\r\n', 'latin1');
+  // Sign only Subject — leaving From unsigned and forgeable.
+  const signed = signMessage({ domain: 'example.com', selector: 's', headerCanon: 'relaxed', bodyCanon: 'relaxed', signedHeaders: [{ name: 'Subject', value: 'legit' }], body, privateKey: k.privateKey });
+  assert.ok(signed.ok);
+  const message = Buffer.from(`DKIM-Signature: ${(signed as { header: string }).header}\r\nFrom: forged@evil.test\r\nSubject: legit\r\n\r\n${body.toString('latin1')}`, 'latin1');
+  const out = await verifyDkim(message, async () => Buffer.from(`v=DKIM1; k=rsa; p=${der}`, 'latin1'));
+  assert.equal(out.verdict, 'permerror', 'an unsigned From makes the signature meaningless — not a pass');
+});

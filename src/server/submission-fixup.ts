@@ -38,19 +38,24 @@ export function formatDate(d: Date): string {
 }
 
 /**
- * Return `data` with Date and Message-ID headers guaranteed present. Untouched
- * (same Buffer) when both already exist.
+ * Return `data` with the From, Date and Message-ID headers guaranteed present
+ * (`sender` is the envelope MAIL FROM, used for a missing From). RFC 5322 requires
+ * From and receivers reject messages lacking Date/Message-ID; a From is also what our
+ * DKIM signature must cover (§5.4), so a From-less submission would otherwise be signed
+ * meaninglessly. Untouched (same Buffer) when all three already exist.
  */
-export function ensureSubmissionHeaders(data: Buffer, domain: string, clock: FixupClock = {}): Buffer {
+export function ensureSubmissionHeaders(data: Buffer, domain: string, sender: string, clock: FixupClock = {}): Buffer {
   const msg = parseMessage(data);
+  const needFrom = !hasHeader(msg, 'From') && sender !== '';
   const needDate = !hasHeader(msg, 'Date');
   const needId = !hasHeader(msg, 'Message-ID');
-  if (!needDate && !needId) return data;
+  if (!needFrom && !needDate && !needId) return data;
 
   const now = clock.now?.() ?? new Date();
   const unique = clock.unique?.() ?? randomBytes(9).toString('hex');
   const added: string[] = [];
   if (needId) added.push(`Message-ID: <${now.getTime()}.${unique}@${domain}>\r\n`);
   if (needDate) added.push(`Date: ${formatDate(now)}\r\n`);
+  if (needFrom) added.push(`From: <${sender}>\r\n`);
   return Buffer.concat([Buffer.from(added.join(''), 'latin1'), data]);
 }

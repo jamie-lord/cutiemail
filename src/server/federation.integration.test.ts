@@ -107,7 +107,7 @@ test('two daemons: a submission to A is DKIM-signed, relayed, and lands in B, tr
     await sr.line('2.1.5 Ok\r\n');
     secure.write('DATA\r\n');
     await sr.line('354');
-    secure.write('Subject: hello across servers\r\n\r\nfrom A to B\r\n.\r\n');
+    secure.write('From: Alice <alice@a.example.test>\r\nSubject: hello across servers\r\n\r\nfrom A to B\r\n.\r\n');
     await sr.line('message stored\r\n');
     secure.end();
 
