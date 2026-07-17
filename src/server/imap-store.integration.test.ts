@@ -200,3 +200,41 @@ test('non-silent STORE reports the accurate resulting flag set for add/remove/re
     db.close();
   }
 });
+
+test('system flags are case-insensitive: lowercase \\deleted stores as \\Deleted and EXPUNGE removes it (RFC 9051 §2.3.2)', async () => {
+  // Dovecot's imaptest (and some clients) send flags in lower case. A server that
+  // stored `\deleted` verbatim would never match it against `\Deleted` at EXPUNGE
+  // time, silently leaving the message. STORE and APPEND must canonicalise system
+  // flags.
+  const db = new DatabaseSync(':memory:');
+  const mailbox = SqliteMailbox.open(db);
+  for (const s of ['one', 'two', 'three']) mailbox.append(Buffer.from(`Subject: ${s}\r\n\r\nx\r\n`, 'latin1'));
+  const imap = await ImapServer.start(mailbox);
+  const c = new Client(imap.port);
+  try {
+    await c.expect('* OK');
+    c.send('a1 LOGIN user pass');
+    await c.expect('a1 OK');
+    c.send('a2 SELECT INBOX');
+    await c.expect('a2 OK');
+
+    // Lower-case store is echoed canonicalised and persisted canonicalised.
+    c.send('a3 STORE 2 FLAGS (\\deleted \\seen)');
+    const stored = await c.expect('a3 OK');
+    assert.match(stored, /\* 2 FETCH \(FLAGS \(\\Deleted \\Seen\)\)/, 'echoed in canonical case');
+    assert.deepEqual(new Set(mailbox.messages[1]!.flags), new Set(['\\Deleted', '\\Seen']), 'persisted canonical');
+
+    // EXPUNGE (which looks for \Deleted) now matches the lower-case-set flag.
+    c.send('a4 EXPUNGE');
+    const expunged = await c.expect('a4 OK');
+    assert.match(expunged, /\* 2 EXPUNGE/, 'the lower-case-\\deleted message is expunged');
+    assert.equal(mailbox.messages.length, 2, 'one message removed');
+    assert.ok(!mailbox.messages.some((m) => [...m.flags].some((f) => f.toLowerCase() === '\\deleted')), 'no \\Deleted survivor');
+
+    c.send('a5 LOGOUT');
+    c.end();
+  } finally {
+    await imap.close();
+    db.close();
+  }
+});

@@ -100,6 +100,15 @@ groups failed" — a number that needed triage, not a headline:
 - **Unsupported extensions.** imaptest reported "0 skipped due to missing capabilities" and
   ran the SORT / THREAD / CATENATE / URLAUTH / BINARY scripts anyway; we deliberately don't
   implement those (recorded cuts), so their failures are expected, not conformance gaps.
+- **Genuine bug: system flags were case-sensitive.** Running the core scripted tests
+  each against a *fresh* in-memory server (to strip the state-leak cascade) left a
+  uniform failure across almost all of them: an `expunge` that produced no `* EXPUNGE`.
+  Root cause — imaptest sends `store 2 flags \deleted` in **lower case**, and the server
+  stored `\deleted` verbatim; EXPUNGE / the \Seen fetch side-effect / SEARCH all look for
+  the capitalised `\Deleted` / `\Seen`, so the flag never matched and the message was
+  never expunged. RFC 9051 §2.3.2 makes system flags case-insensitive. **Fixed:** STORE
+  and APPEND now canonicalise system flags (`\deleted` → `\Deleted`, etc.); keywords stay
+  case-sensitive. Regression test in `src/server/imap-store.integration.test.ts`.
 - **One genuine bug: LIST wildcard matching.** `LIST "" *` listed everything, but *any*
   pattern with a literal prefix — `qbox*`, `INBOX/%`, `parent/%` — matched **nothing**.
   `matchNames` only handled a bare `*`/`%` and treated every other pattern as an exact

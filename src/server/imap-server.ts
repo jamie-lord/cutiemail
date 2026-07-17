@@ -325,6 +325,25 @@ function parseSearchKeys(tokens: readonly string[], ctx: SearchContext): SearchK
 }
 
 /**
+ * System flags (RFC 9051 §2.3.2) are case-insensitive: a client's `\deleted` is the
+ * same flag as `\Deleted`. Canonicalise so stored flags match the capitalised forms
+ * that EXPUNGE (`\Deleted`), the \Seen fetch side-effect, SEARCH, and PERMANENTFLAGS
+ * all use — otherwise a lowercase `\deleted` would be stored verbatim and never
+ * expunged. Keywords (no leading backslash) are case-sensitive and left as-is.
+ */
+const SYSTEM_FLAG_CANON = new Map<string, string>([
+  ['\\seen', '\\Seen'],
+  ['\\answered', '\\Answered'],
+  ['\\flagged', '\\Flagged'],
+  ['\\deleted', '\\Deleted'],
+  ['\\draft', '\\Draft'],
+  ['\\recent', '\\Recent'],
+]);
+function canonicalFlag(f: string): string {
+  return SYSTEM_FLAG_CANON.get(f.toLowerCase()) ?? f;
+}
+
+/**
  * Which catalog names a LIST/LSUB reference+pattern matches, per the IMAP wildcard
  * rules (RFC 9051 §6.3.9). The reference and pattern are concatenated; then `*`
  * matches any run of characters INCLUDING the hierarchy separator, `%` matches any
@@ -996,7 +1015,7 @@ export class ImapServer {
               write(sock, `${tag} BAD APPEND syntax`);
               break;
             }
-            const flags = (m[2] ?? '').split(/\s+/).filter((f) => f.length > 0);
+            const flags = (m[2] ?? '').split(/\s+/).filter((f) => f.length > 0).map(canonicalFlag);
             // RFC 9051 §6.3.12: use the client-supplied date-time as INTERNALDATE when
             // present (mail restore/migration relies on it); otherwise stamp now.
             const appendDate = m[3] !== undefined ? parseImapDateTime(m[3]) : null;
@@ -1281,7 +1300,7 @@ export class ImapServer {
             // $label1..$label5) and chars like . - _ — matching only \w drops the "$"
             // and silently mangles the flag, so a client's tag never round-trips.
             const flagsPart = storeBody.slice(opRaw.length);
-            const flags = (flagsPart.match(/\\?[\w$.-]+/g) ?? []).map((f) => (f.startsWith('\\') ? `\\${f.slice(1)}` : f));
+            const flags = (flagsPart.match(/\\?[\w$.-]+/g) ?? []).map((f) => canonicalFlag(f.startsWith('\\') ? `\\${f.slice(1)}` : f));
             // Only the three flag operations are defined (RFC 9051 §6.4.6). Anything else
             // — a typo'd op, or an empty set from malformed spacing — must be rejected, not
             // answered OK as if a store happened (silent-accept would lie to the client).
