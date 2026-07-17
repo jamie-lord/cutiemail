@@ -7,14 +7,15 @@
  * (parseDmarcRecord + checkAlignment) with a From-domain extractor, a DNS fetch (with
  * the §6.6.3 organizational-domain fallback), and an org-domain function.
  *
- * The org-domain function here is a heuristic (registered-domain = last two labels,
- * with a small multi-part-TLD table), NOT the full Public Suffix List — enough for the
- * common cases; a PSL is a later refinement. DMARC is informational: we record the
- * verdict and the published policy, never reject.
+ * The org-domain function uses the full embedded Public Suffix List (auth/public-suffix.ts),
+ * so relaxed alignment is computed against the true registered domain even under multi-label
+ * public suffixes. DMARC is informational: we record the verdict and the published policy,
+ * never reject.
  */
 
 import { parseDmarcRecord, checkAlignment } from '../auth/dmarc.ts';
 import { parseMessage } from '../message/parse.ts';
+import { registeredDomain } from '../auth/public-suffix.ts';
 
 export type DmarcVerdict = 'pass' | 'fail' | 'none' | 'temperror';
 
@@ -35,35 +36,13 @@ export interface DmarcOutcome {
 }
 
 /**
- * Common multi-part public suffixes, so the org-domain heuristic does not compute a
- * suffix that is TOO SHORT (e.g. treating "co.za" as the registered domain) — which
- * would wrongly align two unrelated domains under it and yield a false DMARC pass.
- * Not the full Public Suffix List (~10k entries), but covers the ccTLDs real mail uses.
+ * Registered ("organizational") domain via the full Public Suffix List. Unlike the raw
+ * `registeredDomain`, this never returns null: a From domain that is itself a bare public
+ * suffix (or otherwise has no registrable part) aligns only with itself, so we fall back to
+ * the domain as written — DMARC must always have some identifier to compare.
  */
-const MULTI_PART_TLDS = new Set([
-  // United Kingdom
-  'co.uk', 'org.uk', 'gov.uk', 'ac.uk', 'me.uk', 'net.uk', 'ltd.uk', 'plc.uk', 'sch.uk',
-  // Japan / Korea / China / Taiwan / Hong Kong / Singapore
-  'co.jp', 'ne.jp', 'or.jp', 'go.jp', 'co.kr', 'or.kr', 'com.cn', 'net.cn', 'org.cn', 'gov.cn', 'com.tw', 'com.hk', 'com.sg',
-  // Australia / New Zealand
-  'com.au', 'net.au', 'org.au', 'edu.au', 'gov.au', 'co.nz', 'net.nz', 'org.nz', 'govt.nz',
-  // Brazil / Argentina / Mexico
-  'com.br', 'net.br', 'org.br', 'gov.br', 'com.ar', 'com.mx',
-  // India / South Africa / Israel / Turkey / Ukraine / Poland / Russia
-  'co.in', 'net.in', 'org.in', 'gen.in', 'co.za', 'org.za', 'net.za', 'web.za', 'gov.za', 'co.il', 'com.tr', 'com.ua', 'com.pl', 'com.ru',
-  // Kenya / Indonesia / Nigeria / Thailand / Vietnam / Philippines — common registrar
-  // second-levels the earlier table omitted (a missing entry is the DANGEROUS direction:
-  // it makes the org-domain too short and aligns two unrelated registrants).
-  'co.ke', 'or.ke', 'ne.ke', 'go.ke', 'ac.ke', 'co.id', 'or.id', 'ac.id', 'web.id', 'go.id',
-  'com.ng', 'org.ng', 'co.th', 'in.th', 'com.vn', 'net.vn', 'com.ph',
-]);
-
-/** Registered ("organizational") domain: the last two labels, or three for a known multi-part TLD. */
 export function organizationalDomain(domain: string): string {
-  const labels = domain.toLowerCase().replace(/\.$/, '').split('.');
-  if (labels.length <= 2) return labels.join('.');
-  const lastTwo = labels.slice(-2).join('.');
-  return MULTI_PART_TLDS.has(lastTwo) ? labels.slice(-3).join('.') : lastTwo;
+  return registeredDomain(domain) ?? domain.toLowerCase().replace(/\.+$/, '');
 }
 
 /**
