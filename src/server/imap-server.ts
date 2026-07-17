@@ -766,6 +766,7 @@ export class ImapServer {
               else if (w === 'UIDVALIDITY') items.push(`UIDVALIDITY ${box.uidValidity}`);
               else if (w === 'UNSEEN') items.push(`UNSEEN ${box.messages.filter((m) => !m.flags.has('\\Seen')).length}`);
               else if (w === 'SIZE') items.push(`SIZE ${box.messages.reduce((n, m) => n + m.raw.length, 0)}`);
+              else if (w === 'DELETED') items.push(`DELETED ${box.messages.filter((m) => m.flags.has('\\Deleted')).length}`);
               else if (w === 'RECENT') items.push('RECENT 0');
             }
             write(sock, `* STATUS ${name.includes(' ') ? `"${name}"` : name} (${items.join(' ')})`);
