@@ -95,3 +95,30 @@ test('an Ed25519 (RFC 8463) signature verifies too', async () => {
   const tampered = Buffer.from(message.toString('latin1').replace('ed body', 'TAMPERED'), 'latin1');
   assert.equal((await verifyDkim(tampered, resolve)).verdict, 'fail');
 });
+
+test('with multiple signatures, the message passes if ANY signature verifies (RFC 6376 §6.1)', async () => {
+  const { generateKeyPairSync } = await import('node:crypto');
+  const good = generateKeyPairSync('rsa', { modulusLength: 2048 });
+  const headers: SignedField[] = [
+    { name: 'From', value: 'alice@example.com' },
+    { name: 'Subject', value: 'multi' },
+  ];
+  const body = Buffer.from('multi body\r\n', 'latin1');
+  const sigOther = signMessage({ domain: 'other.test', selector: 's', headerCanon: 'relaxed', bodyCanon: 'relaxed', signedHeaders: headers, body, privateKey: generateKeyPairSync('rsa', { modulusLength: 2048 }).privateKey });
+  const sigGood = signMessage({ domain: 'example.com', selector: 's', headerCanon: 'relaxed', bodyCanon: 'relaxed', signedHeaders: headers, body, privateKey: good.privateKey });
+  assert.ok(sigOther.ok && sigGood.ok);
+  // Two signatures stacked; the first (other.test) will be checked against a wrong key.
+  const message = Buffer.from(
+    `DKIM-Signature: ${(sigOther as { header: string }).header}\r\nDKIM-Signature: ${(sigGood as { header: string }).header}\r\n` +
+      headers.map((h) => `${h.name}: ${h.value}`).join('\r\n') +
+      '\r\n\r\n' +
+      body.toString('latin1'),
+    'latin1',
+  );
+  const wrong = generateKeyPairSync('rsa', { modulusLength: 2048 }).publicKey.export({ type: 'spki', format: 'der' }).toString('base64');
+  const right = good.publicKey.export({ type: 'spki', format: 'der' }).toString('base64');
+  const out = await verifyDkim(message, async (d) => Buffer.from(`v=DKIM1; k=rsa; p=${d === 'example.com' ? right : wrong}`, 'latin1'));
+  assert.equal(out.verdict, 'pass', 'the valid example.com signature wins');
+  assert.equal(out.domain, 'example.com', 'the passing domain is reported');
+  assert.deepEqual([...out.passedDomains], ['example.com'], 'passedDomains lists the aligned domain for DMARC');
+});

@@ -23,19 +23,42 @@ export type DkimVerdict = 'pass' | 'fail' | 'none' | 'temperror' | 'permerror';
 
 export interface DkimOutcome {
   readonly verdict: DkimVerdict;
+  /** The domain of a passing signature (for the AR header), or the first seen. */
   readonly domain: string | null;
+  /** Every d= whose signature PASSED — DMARC aligns against any of these. */
+  readonly passedDomains: readonly string[];
 }
 
 /** Resolve a DKIM public-key TXT record for (domain, selector); null if absent. */
 export type DkimKeyResolver = (domain: string, selector: string) => Promise<Buffer | null>;
 
+/**
+ * Verify every DKIM-Signature on the message (a message may carry several — a
+ * forwarder or a multi-key domain adds its own). RFC 6376 §6.1: the message is
+ * authenticated if ANY signature verifies, so the overall verdict is "pass" when any
+ * passes; the passing domains are returned so DMARC can align against any of them.
+ */
 export async function verifyDkim(raw: Buffer, resolveKey: DkimKeyResolver): Promise<DkimOutcome> {
   const { headers, body } = parseMessage(raw);
-  const sigHeader = headers.find((h) => h.name.toString('latin1').toLowerCase() === 'dkim-signature');
-  if (sigHeader === undefined) return { verdict: 'none', domain: null };
+  const sigHeaders = headers.filter((h) => h.name.toString('latin1').toLowerCase() === 'dkim-signature');
+  if (sigHeaders.length === 0) return { verdict: 'none', domain: null, passedDomains: [] };
 
+  const results: { verdict: DkimVerdict; domain: string | null }[] = [];
+  for (const sigHeader of sigHeaders) {
+    results.push(await verifyOneSignature(sigHeader.value.toString('latin1'), headers, body, resolveKey));
+  }
+  const passing = results.filter((r) => r.verdict === 'pass');
+  const passedDomains = passing.map((r) => r.domain).filter((d): d is string => d !== null);
+  // Prefer a pass; else surface the strongest negative signal in a stable order.
+  const order: DkimVerdict[] = ['pass', 'fail', 'temperror', 'permerror', 'none'];
+  const verdict = order.find((v) => results.some((r) => r.verdict === v)) ?? 'none';
+  const domain = passing[0]?.domain ?? results[0]?.domain ?? null;
+  return { verdict, domain, passedDomains };
+}
+
+async function verifyOneSignature(rawValue: string, headers: ReturnType<typeof parseMessage>['headers'], body: Buffer, resolveKey: DkimKeyResolver): Promise<{ verdict: DkimVerdict; domain: string | null }> {
   // Unfold the header value before parsing the tag list.
-  const sigValue = sigHeader.value.toString('latin1').replace(/\r\n(?=[ \t])/g, '').trim();
+  const sigValue = rawValue.replace(/\r\n(?=[ \t])/g, '').trim();
   const sig = parseDkimSignature(Buffer.from(sigValue, 'latin1'));
   if (!sig.valid || sig.domain === null || sig.selector === null || sig.signature === null || sig.bodyHash === null) {
     return { verdict: 'permerror', domain: sig.domain };

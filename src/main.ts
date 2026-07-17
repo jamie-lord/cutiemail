@@ -161,11 +161,11 @@ export async function startServer(cfg: MailServerConfig): Promise<RunningServer>
     const receivedAt = new Date();
     // Verify DKIM and SPF (informational — never a rejection; §6.1 leniency preserved).
     // Both go into the Authentication-Results header for the client / downstream.
-    let dkim: { verdict: string; domain: string | null } = { verdict: 'none', domain: null };
+    let dkim: { verdict: string; domain: string | null; passedDomains: readonly string[] } = { verdict: 'none', domain: null, passedDomains: [] };
     try {
       dkim = await verifyDkim(m.data, dkimResolver);
     } catch {
-      dkim = { verdict: 'temperror', domain: null };
+      dkim = { verdict: 'temperror', domain: null, passedDomains: [] };
     }
     // The SPF identity: the MAIL FROM domain, or the HELO name for a null return-path.
     const spfDomain = m.from.includes('@') ? (m.from.split('@').pop() ?? '') : m.helo;
@@ -180,8 +180,7 @@ export async function startServer(cfg: MailServerConfig): Promise<RunningServer>
     try {
       dmarc = await checkDmarc({
         rawMessage: m.data,
-        dkimResult: dkim.verdict,
-        dkimDomain: dkim.domain,
+        dkimPassedDomains: dkim.passedDomains,
         spfResult: spf,
         spfDomain,
         resolveTxt: spfResolvers.txt,

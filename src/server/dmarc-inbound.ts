@@ -20,8 +20,8 @@ export type DmarcVerdict = 'pass' | 'fail' | 'none' | 'temperror';
 
 export interface DmarcInput {
   readonly rawMessage: Buffer;
-  readonly dkimResult: string;
-  readonly dkimDomain: string | null;
+  /** Every d= whose DKIM signature passed (DMARC aligns against any of them). */
+  readonly dkimPassedDomains: readonly string[];
   readonly spfResult: string;
   readonly spfDomain: string;
   /** TXT lookup (each record joined); [] if none, throws on DNS error. */
@@ -83,8 +83,7 @@ export async function checkDmarc(input: DmarcInput): Promise<DmarcOutcome> {
   const record = parseDmarcRecord(Buffer.from(recordText, 'latin1'));
   if (!record.valid) return { verdict: 'none', policy: null, fromDomain };
 
-  const dkimAligned =
-    input.dkimResult === 'pass' && input.dkimDomain !== null && checkAlignment(fromDomain, input.dkimDomain, record.adkim, organizationalDomain);
+  const dkimAligned = input.dkimPassedDomains.some((d) => checkAlignment(fromDomain, d, record.adkim, organizationalDomain));
   const spfAligned = input.spfResult === 'pass' && input.spfDomain !== '' && checkAlignment(fromDomain, input.spfDomain, record.aspf, organizationalDomain);
 
   return { verdict: dkimAligned || spfAligned ? 'pass' : 'fail', policy: record.policy, fromDomain };
