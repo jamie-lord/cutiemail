@@ -35,6 +35,8 @@ export interface ServableMessage {
   /** INTERNALDATE as epoch-millis (0 = unknown). Set by the receiver / APPEND. */
   readonly internalDate: number;
   readonly raw: Buffer;
+  /** The per-message mod-sequence (RFC 7162 CONDSTORE); monotonic within a mailbox. */
+  readonly modseq: number;
 }
 
 const IMAP_MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'] as const;
@@ -61,6 +63,7 @@ function parseImapDateTime(s: string): number | null {
 export interface ServableMailbox {
   readonly uidValidity: number;
   readonly uidNext: number;
+  readonly highestModseq: number;
   readonly messages: readonly ServableMessage[];
   append(raw: Buffer, flags?: readonly string[], internalDate?: number): number;
   expunge(uid: number): void;
@@ -91,7 +94,7 @@ function inboxOnly(mailbox: ServableMailbox): ServableCatalog {
   };
 }
 
-const CAPABILITIES = 'IMAP4rev2 IDLE UIDPLUS SPECIAL-USE AUTH=PLAIN';
+const CAPABILITIES = 'IMAP4rev2 IDLE UIDPLUS SPECIAL-USE CONDSTORE AUTH=PLAIN';
 
 /** Commands allowed before authentication (RFC 9051 §3, Not Authenticated state). */
 const PREAUTH_COMMANDS = new Set(['CAPABILITY', 'NOOP', 'LOGOUT', 'LOGIN', 'AUTHENTICATE', 'ID', 'STARTTLS']);
@@ -333,6 +336,8 @@ interface FetchAtts {
   /** Bare BODY (non-extensible MIME structure) / BODYSTRUCTURE (extensible). */
   body: boolean;
   bodyStructure: boolean;
+  /** MODSEQ (RFC 7162) — the per-message mod-sequence. */
+  modseq: boolean;
   bodySections: { section: string; partial?: { origin: number; count: number }; peek: boolean }[];
 }
 
@@ -349,6 +354,7 @@ function parseFetchAtts(spec: string): FetchAtts {
     internalDate: false,
     body: false,
     bodyStructure: false,
+    modseq: false,
     bodySections: [],
   };
   // Pull out BODY[..] / BODY.PEEK[..] first — brackets may contain spaces — with
@@ -371,6 +377,7 @@ function parseFetchAtts(spec: string): FetchAtts {
     // non-extensible MIME structure; BODYSTRUCTURE is the extensible form.
     else if (t === 'BODY') atts.body = true;
     else if (t === 'BODYSTRUCTURE') atts.bodyStructure = true;
+    else if (t === 'MODSEQ') atts.modseq = true;
     else if (t === 'RFC822.SIZE') atts.size = true;
     else if (t === 'ENVELOPE') atts.envelope = true;
     else if (t === 'RFC822.HEADER') atts.rfc822Header = true;
@@ -528,6 +535,7 @@ export class ImapServer {
     if (atts.flags) text(`FLAGS (${[...msg.flags].join(' ')})`);
     if (atts.internalDate) text(`INTERNALDATE "${formatImapDateTime(msg.internalDate)}"`);
     if (atts.size) text(`RFC822.SIZE ${msg.raw.length}`);
+    if (atts.modseq) text(`MODSEQ (${msg.modseq})`);
     if (atts.envelope) text(`ENVELOPE ${serializeEnvelope(buildEnvelope(parseMessage(msg.raw).headers))}`);
     if (atts.body) text(`BODY ${bodyResponse(msg.raw)}`);
     if (atts.bodyStructure) text(`BODYSTRUCTURE ${bodyStructureResponse(msg.raw)}`);
@@ -598,6 +606,10 @@ export class ImapServer {
     // delivered, or re-flagged, to relay it to this one.
     let knownUids: number[] = [];
     let knownFlags = new Map<number, string>();
+    // CONDSTORE (RFC 7162) is enabled for the session by SELECT/EXAMINE (CONDSTORE),
+    // ENABLE CONDSTORE/QRESYNC, or any command that uses MODSEQ/CHANGEDSINCE/
+    // UNCHANGEDSINCE. Once enabled, every FETCH response carries MODSEQ.
+    let condstore = false;
 
     /** A flag set in a canonical, order-independent form, for change detection. */
     const flagKey = (flags: Iterable<string>): string => [...flags].sort().join(' ');
@@ -631,7 +643,8 @@ export class ImapServer {
         const cur = flagKey(m.flags);
         const prev = knownFlags.get(m.uid);
         if (prev !== undefined && prev !== cur) {
-          write(sock, `* ${i + 1} FETCH (FLAGS (${[...m.flags].join(' ')}) UID ${m.uid})`);
+          const mod = condstore ? `MODSEQ (${m.modseq}) ` : '';
+          write(sock, `* ${i + 1} FETCH (FLAGS (${[...m.flags].join(' ')}) ${mod}UID ${m.uid})`);
         }
         knownFlags.set(m.uid, cur);
       });
@@ -867,6 +880,7 @@ export class ImapServer {
               else if (w === 'UNSEEN') items.push(`UNSEEN ${box.messages.filter((m) => !m.flags.has('\\Seen')).length}`);
               else if (w === 'SIZE') items.push(`SIZE ${box.messages.reduce((n, m) => n + m.raw.length, 0)}`);
               else if (w === 'DELETED') items.push(`DELETED ${box.messages.filter((m) => m.flags.has('\\Deleted')).length}`);
+              else if (w === 'HIGHESTMODSEQ') items.push(`HIGHESTMODSEQ ${box.highestModseq}`); // RFC 7162 §3.1.2.1
               else if (w === 'RECENT') items.push('RECENT 0');
             }
             write(sock, `* STATUS ${name.includes(' ') ? `"${name}"` : name} (${items.join(' ')})`);
@@ -947,6 +961,9 @@ export class ImapServer {
             }
             selected = box;
             selectedName = canonicalMailboxName(name);
+            // SELECT/EXAMINE (CONDSTORE) enables CONDSTORE for the rest of the session
+            // (RFC 7162 §3.1.8). It stays enabled across later selects.
+            if (/\(\s*CONDSTORE\s*\)/i.test(line)) condstore = true;
             // Snapshot the mailbox this connection now sees, so later NOOP/CHECK/IDLE
             // can tell it what other connections expunged, delivered, or re-flagged
             // (RFC 9051 §7.4.1).
@@ -960,6 +977,8 @@ export class ImapServer {
             write(sock, `* OK [PERMANENTFLAGS (${readOnly ? '' : '\\Seen \\Answered \\Flagged \\Deleted \\Draft'})] flags stored`);
             write(sock, `* OK [UIDVALIDITY ${box.uidValidity}] UIDs valid`);
             write(sock, `* OK [UIDNEXT ${box.uidNext}] Predicted next UID`);
+            // RFC 7162 §3.1.2.2: report HIGHESTMODSEQ only once CONDSTORE is enabled.
+            if (condstore) write(sock, `* OK [HIGHESTMODSEQ ${box.highestModseq}] Highest mod-sequence`);
             write(sock, `${tag} OK [${readOnly ? 'READ-ONLY' : 'READ-WRITE'}] ${cmd} completed`);
             break;
           }
@@ -971,7 +990,15 @@ export class ImapServer {
             const set = arg(1);
             // Everything after the set is the att spec (may contain spaces).
             const specStart = line.indexOf(set, tag.length) + set.length;
-            const atts = parseFetchAtts(line.slice(specStart));
+            const spec = line.slice(specStart);
+            const atts = parseFetchAtts(spec);
+            // (CHANGEDSINCE n) (RFC 7162 §3.1.4.1): return only messages whose
+            // mod-sequence exceeds n — a reconnecting client's "what changed?" query. It
+            // both enables CONDSTORE and implies the MODSEQ data item.
+            const csMatch = /\(\s*CHANGEDSINCE\s+(\d+)\s*\)/i.exec(spec);
+            const changedSince = csMatch ? Number(csMatch[1]) : null;
+            if (changedSince !== null || atts.modseq) condstore = true;
+            if (condstore) atts.modseq = true; // once enabled, every FETCH carries MODSEQ
             // RFC 9051 §6.4.5: a BODY[...] fetch WITHOUT .PEEK sets \Seen as a side
             // effect; BODY.PEEK[...] does not. A client relying on the implicit mark
             // (rather than an explicit STORE) needs this to see the message as read.
@@ -979,6 +1006,7 @@ export class ImapServer {
             const marksSeen = !readOnly && atts.bodySections.some((s) => !s.peek);
             let markedSeen = false;
             for (const { seq, msg } of this.#resolveSet(selected, set, uidMode)) {
+              if (changedSince !== null && msg.modseq <= changedSince) continue;
               this.#emitFetch(sock, seq, msg, atts, uidMode);
               if (marksSeen && !msg.flags.has('\\Seen')) {
                 const newFlags = [...msg.flags, '\\Seen'];
@@ -987,7 +1015,11 @@ export class ImapServer {
                 // as our own change so syncSelected does not echo it back to us.
                 knownFlags.set(msg.uid, flagKey(newFlags));
                 markedSeen = true;
-                write(sock, `* ${seq} FETCH (FLAGS (${newFlags.join(' ')})${uidMode ? ` UID ${msg.uid}` : ''})`);
+                // After storeFlags, highestModseq is exactly this message's new mod-seq.
+                const parts = [`FLAGS (${newFlags.join(' ')})`];
+                if (condstore) parts.push(`MODSEQ (${selected.highestModseq})`);
+                if (uidMode) parts.push(`UID ${msg.uid}`);
+                write(sock, `* ${seq} FETCH (${parts.join(' ')})`);
               }
             }
             // Wake peers so \Seen set by this read propagates (a phone opening a message
@@ -1050,20 +1082,39 @@ export class ImapServer {
               break;
             }
             const set = arg(1);
-            const opRaw = arg(2).toUpperCase(); // +FLAGS[.SILENT] / -FLAGS[.SILENT] / FLAGS[.SILENT]
+            // Parse the command body after the seq-set so an optional (UNCHANGEDSINCE n)
+            // modifier — which sits BETWEEN the set and the +FLAGS op — doesn't shift the
+            // positional args (RFC 7162 §3.1.3).
+            const body = line.slice(line.indexOf(set, tag.length) + set.length).trim();
+            const usMatch = /^\(\s*UNCHANGEDSINCE\s+(\d+)\s*\)\s*/i.exec(body);
+            const unchangedSince = usMatch ? Number(usMatch[1]) : null;
+            if (unchangedSince !== null) condstore = true;
+            const storeBody = usMatch ? body.slice(usMatch[0].length) : body;
+            const opRaw = (storeBody.split(/\s+/)[0] ?? '').toUpperCase(); // +FLAGS[.SILENT] etc.
             const silent = opRaw.endsWith('.SILENT');
             const op = silent ? opRaw.slice(0, -'.SILENT'.length) : opRaw;
             // A flag is "\"system-flag or a keyword atom. Keyword atoms include the
             // "$" prefix clients use for tags ($Forwarded, $MDNSent, Thunderbird's
             // $label1..$label5) and chars like . - _ — matching only \w drops the "$"
             // and silently mangles the flag, so a client's tag never round-trips.
-            const flags = (parts.slice(cmdIndex + 3).join(' ').match(/\\?[\w$.-]+/g) ?? []).map((f) => (f.startsWith('\\') ? `\\${f.slice(1)}` : f));
+            const flagsPart = storeBody.slice(opRaw.length);
+            const flags = (flagsPart.match(/\\?[\w$.-]+/g) ?? []).map((f) => (f.startsWith('\\') ? `\\${f.slice(1)}` : f));
             let storeChanged = false;
+            const failed: number[] = []; // seq/uid of messages that failed UNCHANGEDSINCE
             if (op === '+FLAGS' || op === '-FLAGS' || op === 'FLAGS') {
               const mode = op === '+FLAGS' ? 'add' : op === '-FLAGS' ? 'remove' : 'replace';
               for (const { seq, msg } of this.#resolveSet(selected, set, uidMode)) {
+                // UNCHANGEDSINCE: a message modified since `unchangedSince` is left
+                // untouched and reported in the MODIFIED response (optimistic-concurrency
+                // guard against a change another client made first).
+                if (unchangedSince !== null && msg.modseq > unchangedSince) {
+                  failed.push(uidMode ? msg.uid : seq);
+                  continue;
+                }
                 selected.storeFlags(msg.uid, mode, flags);
                 storeChanged = true;
+                // After storeFlags, highestModseq is exactly this message's new mod-seq.
+                const newModseq = selected.highestModseq;
                 // Compute the resulting flag set from the pre-store snapshot rather
                 // than re-reading the store — a re-read per message is O(n) each, so a
                 // bulk STORE would be O(n²) and stall the single-threaded event loop for
@@ -1075,15 +1126,22 @@ export class ImapServer {
                 // Record our own change so syncSelected does not later echo it back to us
                 // as if a peer had made it.
                 knownFlags.set(msg.uid, flagKey(now));
-                if (!silent) {
-                  const uidPart = uidMode ? ` UID ${msg.uid}` : '';
-                  write(sock, `* ${seq} FETCH (FLAGS (${[...now].join(' ')})${uidPart})`);
+                // A conditional STORE echoes the FETCH even under .SILENT, so the client
+                // learns the new MODSEQ it needs for its next UNCHANGEDSINCE (RFC 7162
+                // §3.1.3); an unconditional .SILENT store stays silent.
+                if (!silent || unchangedSince !== null) {
+                  const parts2 = [`FLAGS (${[...now].join(' ')})`];
+                  if (condstore) parts2.push(`MODSEQ (${newModseq})`);
+                  if (uidMode) parts2.push(`UID ${msg.uid}`);
+                  write(sock, `* ${seq} FETCH (${parts2.join(' ')})`);
                 }
               }
             }
             // Wake other connections on this mailbox so they pick up the flag change.
             if (storeChanged && selectedName !== null) this.#notifier?.notify(selectedName);
-            write(sock, `${tag} OK STORE completed`);
+            // MODIFIED lists the messages left unchanged because they failed UNCHANGEDSINCE.
+            const modified = failed.length > 0 ? `[MODIFIED ${compressSequenceSet(failed)}] ` : '';
+            write(sock, `${tag} OK ${modified}STORE completed`);
             break;
           }
           case 'COPY':
@@ -1219,7 +1277,14 @@ export class ImapServer {
             break;
           case 'ENABLE': {
             // RFC 9051 §6.3.1: echo back the requested capabilities we support.
-            const enabled = qargs.filter((a) => a.toUpperCase() === 'IMAP4REV2').map(() => 'IMAP4rev2');
+            const enabled: string[] = [];
+            for (const a of qargs) {
+              const u = a.toUpperCase();
+              if (u === 'IMAP4REV2') enabled.push('IMAP4rev2');
+              // CONDSTORE (RFC 7162 §3.1.8) — QRESYNC also implies CONDSTORE, but we do
+              // not implement QRESYNC's VANISHED, so we only enable the CONDSTORE half.
+              else if (u === 'CONDSTORE') { condstore = true; enabled.push('CONDSTORE'); }
+            }
             write(sock, `* ENABLED${enabled.length > 0 ? ' ' + enabled.join(' ') : ''}`);
             write(sock, `${tag} OK ENABLE completed`);
             break;
