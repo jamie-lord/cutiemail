@@ -170,6 +170,15 @@ What the assembled daemon (`npm start`) does, all live-verified:
 - **Robustness** — the internet-facing parsers are fuzzed (deterministic harness, ~30k adversarial
   inputs) and the command dispatch is crash-guarded; three memory-exhaustion DoS vectors
   (sequence-set range, APPEND literal, unterminated command line) found and closed.
+- **Adversarial audit sweep** — every hostile-input subsystem (IMAP multi-connection sync, CONDSTORE/
+  QRESYNC, inbound SMTP + SPF/DKIM/DMARC, outbound relay/queue/bounce, and the RFC 5322/MIME parsers)
+  has had an independent adversarial correctness/security audit. Real bugs found and fixed with
+  reproduce-first regression tests, e.g.: an `Authentication-Results` method-injection via MAIL FROM
+  and two `stripOwnAuthResults` bypasses (forged auth verdicts under our authserv-id); a duplicate-`From`
+  DMARC display-spoof; a TLS-handshake hang that could wedge the whole outbound queue; an MX SSRF to
+  loopback/private targets; a cross-connection EXPUNGE-swallow desync; a quadratic FETCH-BODYSTRUCTURE
+  CPU DoS; and an unbounded-RCPT memory DoS. The pattern — a fresh adversarial reviewer per subsystem —
+  found defects that the passing suite and fuzzers had missed.
 - **Federation** — two daemons exchange a signed, dual-`Received`-traced message end to end.
 
 Still genuinely open (deliberately): the conformance test-bed roadmap's later items — fuzzing
