@@ -17,6 +17,7 @@ import { parseDkimSignature } from '../crypto/dkim-signature.ts';
 import { computeBodyHash, bodyCanonOf, hashAlgoOf } from '../crypto/dkim-bodyhash.ts';
 import { parseDkimKeyRecord } from '../crypto/dkim-keyrecord.ts';
 import { buildSigningInput, verifySignature, type SignedField, type HeaderCanon } from '../crypto/dkim-verify.ts';
+import { importEd25519PublicKey, verifyEd25519 } from '../crypto/dkim-ed25519.ts';
 
 export type DkimVerdict = 'pass' | 'fail' | 'none' | 'temperror' | 'permerror';
 
@@ -60,23 +61,28 @@ export async function verifyDkim(raw: Buffer, resolveKey: DkimKeyResolver): Prom
   if (keyBytes === null) return { verdict: 'permerror', domain: sig.domain };
   const keyRecord = parseDkimKeyRecord(keyBytes);
   if (!keyRecord.valid || keyRecord.publicKey === null) return { verdict: 'permerror', domain: sig.domain };
-  if (keyRecord.keyType === 'ed25519') return { verdict: 'permerror', domain: sig.domain }; // scope: RSA only
 
-  let publicKey;
-  try {
-    publicKey = createPublicKey({ key: Buffer.from(keyRecord.publicKey, 'base64'), format: 'der', type: 'spki' });
-  } catch {
-    return { verdict: 'permerror', domain: sig.domain };
-  }
-
-  // Step 3: verify the signature over the signed header fields.
+  // Step 3: build the header-hash input and verify the signature. RSA (rsa-sha256,
+  // most senders) and Ed25519 (ed25519-sha256, RFC 8463) share the input; only the
+  // public-key import and the verify primitive differ.
   const signedFields: SignedField[] = [];
   for (const name of sig.signedHeaders) {
     const lower = name.trim().toLowerCase();
     const h = headers.find((x) => x.name.toString('latin1').trim().toLowerCase() === lower);
     if (h !== undefined) signedFields.push({ name: h.name.toString('latin1').trim(), value: h.value.toString('latin1').trim() });
   }
-  const nodeAlgo = algo === 'sha1' ? 'RSA-SHA1' : 'RSA-SHA256';
-  const ok = verifySignature(buildSigningInput(signedFields, sigValue, headerCanon), sig.signature, publicKey, nodeAlgo);
+  const input = buildSigningInput(signedFields, sigValue, headerCanon);
+
+  let ok: boolean;
+  try {
+    if (keyRecord.keyType === 'ed25519') {
+      ok = verifyEd25519(input, sig.signature, importEd25519PublicKey(Buffer.from(keyRecord.publicKey, 'base64')));
+    } else {
+      const publicKey = createPublicKey({ key: Buffer.from(keyRecord.publicKey, 'base64'), format: 'der', type: 'spki' });
+      ok = verifySignature(input, sig.signature, publicKey, algo === 'sha1' ? 'RSA-SHA1' : 'RSA-SHA256');
+    }
+  } catch {
+    return { verdict: 'permerror', domain: sig.domain };
+  }
   return { verdict: ok ? 'pass' : 'fail', domain: sig.domain };
 }

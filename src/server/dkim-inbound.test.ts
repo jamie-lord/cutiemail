@@ -69,3 +69,29 @@ test('an unsigned message is "none"', async () => {
   const out = await verifyDkim(Buffer.from('Subject: hi\r\n\r\nno signature\r\n', 'latin1'), async () => null);
   assert.equal(out.verdict, 'none');
 });
+
+test('an Ed25519 (RFC 8463) signature verifies too', async () => {
+  const { generateKeyPairSync } = await import('node:crypto');
+  const { signEd25519, rawPublicKey } = await import('../crypto/dkim-ed25519.ts');
+  const { computeBodyHash } = await import('../crypto/dkim-bodyhash.ts');
+  const { buildSigningInput } = await import('../crypto/dkim-verify.ts');
+
+  const { privateKey, publicKey } = generateKeyPairSync('ed25519');
+  const signedHeaders = [
+    { name: 'From', value: 'alice@example.com' },
+    { name: 'Subject', value: 'ed25519' },
+  ];
+  const body = Buffer.from('ed body\r\n', 'latin1');
+  const bh = computeBodyHash(body, 'relaxed', 'sha256');
+  const h = signedHeaders.map((f) => f.name.toLowerCase()).join(':');
+  const sigValue = `v=1; a=ed25519-sha256; c=relaxed/relaxed; d=example.com; s=ed; h=${h}; bh=${bh}; b=`;
+  const b = signEd25519(buildSigningInput(signedHeaders, sigValue, 'relaxed'), privateKey);
+  const message = Buffer.from(
+    `DKIM-Signature: ${sigValue}${b}\r\n` + signedHeaders.map((f) => `${f.name}: ${f.value}`).join('\r\n') + '\r\n\r\n' + body.toString('latin1'),
+    'latin1',
+  );
+  const resolve = async (): Promise<Buffer> => Buffer.from(`v=DKIM1; k=ed25519; p=${rawPublicKey(publicKey)}`, 'latin1');
+  assert.equal((await verifyDkim(message, resolve)).verdict, 'pass');
+  const tampered = Buffer.from(message.toString('latin1').replace('ed body', 'TAMPERED'), 'latin1');
+  assert.equal((await verifyDkim(tampered, resolve)).verdict, 'fail');
+});
