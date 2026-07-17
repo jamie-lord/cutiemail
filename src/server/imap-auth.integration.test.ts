@@ -84,3 +84,31 @@ test('AUTHENTICATE PLAIN grants access — initial-response and continuation for
   }
   await server.close();
 });
+
+test('LOGIN accepts a quoted passphrase containing spaces', async () => {
+  const cat = new MemoryCatalog();
+  const server = await ImapServer.start(cat, { authenticate: (u, p) => u === 'alice' && p === 'correct horse battery staple' });
+  const c = connect(server.port);
+  try {
+    await new Promise<void>((r) => c.sock.once('connect', () => r()));
+    // A plain split(' ') would truncate the password at the first space.
+    assert.match(await c.run('a1 LOGIN alice "correct horse battery staple"\r\n', 'a1'), /^a1 OK/m, 'the spaced passphrase authenticates');
+    assert.match(await c.run('a2 SELECT INBOX\r\n', 'a2'), /^a2 OK/m, 'the session is authenticated');
+  } finally {
+    c.sock.destroy();
+    await server.close();
+  }
+});
+
+test('LOGIN with a wrong quoted passphrase is refused', async () => {
+  const cat = new MemoryCatalog();
+  const server = await ImapServer.start(cat, { authenticate: (u, p) => u === 'alice' && p === 'right pass phrase' });
+  const c = connect(server.port);
+  try {
+    await new Promise<void>((r) => c.sock.once('connect', () => r()));
+    assert.match(await c.run('a1 LOGIN alice "wrong pass phrase"\r\n', 'a1'), /^a1 NO/m, 'a wrong passphrase is refused');
+  } finally {
+    c.sock.destroy();
+    await server.close();
+  }
+});

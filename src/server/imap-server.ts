@@ -852,8 +852,10 @@ export class ImapServer {
             break;
           }
           case 'LOGIN': {
-            const user = unquote(arg(1));
-            const pass = unquote(arg(2));
+            // Quote-aware: a username or (commonly) a passphrase may be a quoted string
+            // containing spaces — a plain split(' ') would truncate the password.
+            const user = qarg(1);
+            const pass = qarg(2);
             if (this.#authenticate !== undefined && !this.#authenticate(user, pass)) {
               write(sock, `${tag} NO [AUTHENTICATIONFAILED] invalid credentials`);
             } else {
