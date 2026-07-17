@@ -94,6 +94,23 @@ function findEndOfData(buf: Buffer): number {
   return -1;
 }
 
+/**
+ * A bare LF (not preceded by CR) or bare CR (not followed by LF) in the DATA payload.
+ * RFC 5321 §2.3.8 permits CR and LF only as a paired <CRLF> line terminator. A message
+ * with bare newlines is the SMTP-smuggling vector (SEC Consult, 2023): our strict
+ * <CRLF>.<CRLF> end-of-data ignores a bare-LF "\n.\n", but a lenient downstream server we
+ * relay to may read it as end-of-data and execute the bytes after it as injected SMTP
+ * commands. Rejecting here (as modern Postfix/Exim/Sendmail do by default) stops us being
+ * a smuggling conduit and refuses malformed line endings outright.
+ */
+function hasBareNewline(buf: Buffer): boolean {
+  for (let i = 0; i < buf.length; i++) {
+    if (buf[i] === LF && buf[i - 1] !== CR) return true;
+    if (buf[i] === CR && buf[i + 1] !== LF) return true;
+  }
+  return false;
+}
+
 class Connection {
   #active: Duplex;
   #buf = Buffer.alloc(0);
@@ -152,6 +169,16 @@ class Connection {
         // stripped. eod is past the whole terminator, so eod-3 is the byte after that CRLF.
         // The bare-".<CRLF>" no-data case (eod===3) yields an empty message, as it should.
         const payload = this.#buf.subarray(0, eod - 3);
+        // SMTP-smuggling defence: reject bare CR/LF in the message body (RFC 5321 §2.3.8).
+        if (hasBareNewline(payload)) {
+          this.#write('550 5.6.0 bare CR or LF in message data (RFC 5321 §2.3.8); use CRLF line endings');
+          this.#from = '';
+          this.#recipients = [];
+          this.#inData = false;
+          this.#inTransaction = false;
+          this.#buf = this.#buf.subarray(eod);
+          continue;
+        }
         const unstuffed = unstuff(payload);
         // RFC 5321 §6.3: a message carrying too many Received hops is looping.
         const hops = this.#opts.maxReceivedHops;
