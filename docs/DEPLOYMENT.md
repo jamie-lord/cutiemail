@@ -150,8 +150,8 @@ Environment=MAIL_HOST=0.0.0.0
 Environment=MAIL_DB=/var/lib/mailserver/mail.db
 Environment=MAIL_SMTP_PORT=25 MAIL_SUBMISSION_PORT=587 MAIL_IMAP_PORT=993
 Environment=MAIL_USER=you MAIL_PASS=change-this-passphrase
-Environment=MAIL_TLS_CERT=/etc/letsencrypt/live/mail.example.com/fullchain.pem
-Environment=MAIL_TLS_KEY=/etc/letsencrypt/live/mail.example.com/privkey.pem
+Environment=MAIL_TLS_CERT=/var/lib/mailserver/tls/cert.pem
+Environment=MAIL_TLS_KEY=/var/lib/mailserver/tls/key.pem
 # Bind privileged ports without root:
 AmbientCapabilities=CAP_NET_BIND_SERVICE
 Restart=on-failure
@@ -164,6 +164,36 @@ WantedBy=multi-user.target
 — including the queue lines that report each relay attempt, its result, and any
 retry or give-up. A transient failure is retried on a backoff from the persistent
 SQLite queue (below); a `5xx` bounces at once.
+
+### TLS: getting the certificate to the daemon, and keeping it fresh
+
+The daemon runs as `mail` and cannot read root-only `/etc/letsencrypt/live/` —
+point it at a copy instead (that's why the unit above uses
+`/var/lib/mailserver/tls/`). Issue with the standalone authenticator (port 80
+must be open in the firewall; nothing else binds it), copy, and — the part that
+prevents a silent outage two renewals later — install a **deploy hook** so every
+renewal propagates the new cert and restarts the daemon:
+
+```sh
+certbot certonly --standalone -d mail.example.com
+install -o mail -g mail -m 600 /etc/letsencrypt/live/mail.example.com/fullchain.pem /var/lib/mailserver/tls/cert.pem
+install -o mail -g mail -m 600 /etc/letsencrypt/live/mail.example.com/privkey.pem  /var/lib/mailserver/tls/key.pem
+
+cat > /etc/letsencrypt/renewal-hooks/deploy/mailserver-tls.sh <<'EOF'
+#!/bin/sh
+set -eu
+case "${RENEWED_LINEAGE:-}" in */mail.example.com) ;; *) exit 0 ;; esac
+install -o mail -g mail -m 600 "$RENEWED_LINEAGE/fullchain.pem" /var/lib/mailserver/tls/cert.pem
+install -o mail -g mail -m 600 "$RENEWED_LINEAGE/privkey.pem"  /var/lib/mailserver/tls/key.pem
+systemctl restart mailserver
+EOF
+chmod +x /etc/letsencrypt/renewal-hooks/deploy/mailserver-tls.sh
+certbot renew --dry-run   # proves the renewal path works
+```
+
+Serve `fullchain.pem` (not `cert.pem`) — clients need the intermediate. Without
+the hook, certbot renews into `/etc/letsencrypt` while the daemon keeps serving
+the stale copy until it expires ~30 days later.
 
 ## Pointing your mail client at it
 
