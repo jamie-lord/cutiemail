@@ -209,4 +209,55 @@ export class SqliteCatalog {
     this.#db.prepare('INSERT INTO mailbox (id, uid_validity, uid_next, name) VALUES (?, ?, 1, ?)').run(Number(next.id), uidValidity, canon);
     return SqliteMailbox.open(this.#db, uidValidity, Number(next.id));
   }
+
+  /** Delete a mailbox and its messages/flags. False if absent or INBOX (RFC 9051 §6.3.4). */
+  delete(name: string): boolean {
+    const canon = canonicalMailboxName(name);
+    if (canon === 'INBOX') return false;
+    const row = this.#db.prepare('SELECT id FROM mailbox WHERE name = ?').get(canon) as { id: number } | undefined;
+    if (row === undefined) return false;
+    const id = Number(row.id);
+    this.#db.exec('BEGIN IMMEDIATE');
+    try {
+      this.#db.prepare('DELETE FROM flag WHERE mailbox_id = ?').run(id);
+      this.#db.prepare('DELETE FROM message WHERE mailbox_id = ?').run(id);
+      this.#db.prepare('DELETE FROM mailbox WHERE id = ?').run(id);
+      this.#db.exec('COMMIT');
+    } catch (e) {
+      this.#db.exec('ROLLBACK');
+      throw e;
+    }
+    return true;
+  }
+
+  /**
+   * Rename a mailbox (RFC 9051 §6.3.5). Renaming INBOX is special: its messages move
+   * into a newly created target and INBOX itself stays (now empty) — INBOX is never
+   * deleted. A plain mailbox is renamed in place.
+   */
+  rename(from: string, to: string): 'ok' | 'notfound' | 'exists' {
+    const cf = canonicalMailboxName(from);
+    const ct = canonicalMailboxName(to);
+    const src = this.#db.prepare('SELECT id FROM mailbox WHERE name = ?').get(cf) as { id: number } | undefined;
+    if (src === undefined) return 'notfound';
+    if (this.#db.prepare('SELECT 1 FROM mailbox WHERE name = ?').get(ct) !== undefined) return 'exists';
+    this.#db.exec('BEGIN IMMEDIATE');
+    try {
+      if (cf === 'INBOX') {
+        // Move INBOX's rows to a fresh mailbox, keeping their UIDs; leave INBOX empty.
+        const nextId = Number((this.#db.prepare('SELECT COALESCE(MAX(id), 0) + 1 AS id FROM mailbox').get() as { id: number }).id);
+        const inboxUidNext = Number((this.#db.prepare('SELECT uid_next FROM mailbox WHERE id = ?').get(Number(src.id)) as { uid_next: number }).uid_next);
+        this.#db.prepare('INSERT INTO mailbox (id, uid_validity, uid_next, name) VALUES (?, 1, ?, ?)').run(nextId, inboxUidNext, ct);
+        this.#db.prepare('UPDATE message SET mailbox_id = ? WHERE mailbox_id = ?').run(nextId, Number(src.id));
+        this.#db.prepare('UPDATE flag SET mailbox_id = ? WHERE mailbox_id = ?').run(nextId, Number(src.id));
+      } else {
+        this.#db.prepare('UPDATE mailbox SET name = ? WHERE id = ?').run(ct, Number(src.id));
+      }
+      this.#db.exec('COMMIT');
+    } catch (e) {
+      this.#db.exec('ROLLBACK');
+      throw e;
+    }
+    return 'ok';
+  }
 }

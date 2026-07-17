@@ -73,6 +73,10 @@ export interface ServableCatalog {
   get(name: string): ServableMailbox | undefined;
   /** Create a mailbox; undefined if the name already exists. */
   create(name: string): ServableMailbox | undefined;
+  /** Delete a mailbox and its messages. False if it is absent or is INBOX (RFC 9051 §6.3.4). */
+  delete?(name: string): boolean;
+  /** Rename a mailbox (RFC 9051 §6.3.5). 'notfound' if source absent, 'exists' if target taken. */
+  rename?(from: string, to: string): 'ok' | 'notfound' | 'exists';
 }
 
 /** Wrap a bare mailbox as an INBOX-only catalog (the single-mailbox test shape). */
@@ -81,6 +85,8 @@ function inboxOnly(mailbox: ServableMailbox): ServableCatalog {
     listNames: () => ['INBOX'],
     get: (name) => (canonicalMailboxName(name) === 'INBOX' ? mailbox : undefined),
     create: () => undefined,
+    delete: () => false,
+    rename: () => 'notfound',
   };
 }
 
@@ -704,6 +710,30 @@ export class ImapServer {
             } else {
               write(sock, `${tag} OK CREATE completed`);
             }
+            break;
+          }
+          case 'DELETE': {
+            // RFC 9051 §6.3.4. INBOX cannot be deleted; a deleted mailbox must not be
+            // the selected one silently — but we keep it simple and let a client that
+            // deleted its selected mailbox carry on (SELECT elsewhere).
+            const name = qarg(1);
+            if (this.#catalog.delete === undefined || !this.#catalog.delete(name)) {
+              write(sock, `${tag} NO cannot delete mailbox (absent, or it is INBOX)`);
+            } else {
+              if (selectedName === canonicalMailboxName(name)) {
+                selected = null;
+                selectedName = null;
+              }
+              write(sock, `${tag} OK DELETE completed`);
+            }
+            break;
+          }
+          case 'RENAME': {
+            // RFC 9051 §6.3.5. qarg(1)=existing name, qarg(2)=new name (quote-aware).
+            const outcome = this.#catalog.rename === undefined ? 'notfound' : this.#catalog.rename(qarg(1), qarg(2));
+            if (outcome === 'ok') write(sock, `${tag} OK RENAME completed`);
+            else if (outcome === 'exists') write(sock, `${tag} NO target mailbox already exists`);
+            else write(sock, `${tag} NO no such mailbox`);
             break;
           }
           case 'STATUS': {
