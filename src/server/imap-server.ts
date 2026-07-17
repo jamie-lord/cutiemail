@@ -161,7 +161,7 @@ interface FetchAtts {
   rfc822: boolean;
   rfc822Header: boolean;
   rfc822Text: boolean;
-  bodySections: { section: string; partial?: { origin: number; count: number } }[];
+  bodySections: { section: string; partial?: { origin: number; count: number }; peek: boolean }[];
 }
 
 /** Parse the text after the sequence-set of a FETCH into the requested atts. */
@@ -178,11 +178,12 @@ function parseFetchAtts(spec: string): FetchAtts {
   };
   // Pull out BODY[..] / BODY.PEEK[..] first — brackets may contain spaces — with
   // an optional <origin.count> partial specifier (TB: BODY.PEEK[TEXT]<0.2048>).
-  const rest = spec.replace(/BODY(?:\.PEEK)?\[([^\]]*)\](?:<(\d+)\.(\d+)>)?/gi, (_m, section: string, origin?: string, count?: string) => {
+  const rest = spec.replace(/BODY(\.PEEK)?\[([^\]]*)\](?:<(\d+)\.(\d+)>)?/gi, (_m, peek: string | undefined, section: string, origin?: string, count?: string) => {
+    const isPeek = peek !== undefined;
     atts.bodySections.push(
       origin !== undefined && count !== undefined
-        ? { section: section.trim(), partial: { origin: Number(origin), count: Number(count) } }
-        : { section: section.trim() },
+        ? { section: section.trim(), partial: { origin: Number(origin), count: Number(count) }, peek: isPeek }
+        : { section: section.trim(), peek: isPeek },
     );
     return ' ';
   });
@@ -584,8 +585,18 @@ export class ImapServer {
             // Everything after the set is the att spec (may contain spaces).
             const specStart = line.indexOf(set, tag.length) + set.length;
             const atts = parseFetchAtts(line.slice(specStart));
+            // RFC 9051 §6.4.5: a BODY[...] fetch WITHOUT .PEEK sets \Seen as a side
+            // effect; BODY.PEEK[...] does not. A client relying on the implicit mark
+            // (rather than an explicit STORE) needs this to see the message as read.
+            const marksSeen = atts.bodySections.some((s) => !s.peek);
             for (const { seq, msg } of this.#resolveSet(selected, set, uidMode)) {
               this.#emitFetch(sock, seq, msg, atts, uidMode);
+              if (marksSeen && !msg.flags.has('\\Seen')) {
+                const newFlags = [...msg.flags, '\\Seen'];
+                selected.storeFlags(msg.uid, 'add', ['\\Seen']);
+                // Tell the client about the flag its fetch just triggered.
+                write(sock, `* ${seq} FETCH (FLAGS (${newFlags.join(' ')})${uidMode ? ` UID ${msg.uid}` : ''})`);
+              }
             }
             write(sock, `${tag} OK FETCH completed`);
             break;
