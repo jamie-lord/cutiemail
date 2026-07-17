@@ -77,3 +77,50 @@ test('a DKIM-signed inbound message is verified and stamped Authentication-Resul
     await server.close();
   }
 });
+
+test('the daemon evaluates inbound SPF and records it in Authentication-Results', async () => {
+  const config: MailServerConfig = {
+    dbPath: ':memory:',
+    host: '127.0.0.1',
+    smtpPort: 0,
+    submissionPort: 0,
+    imapPort: 0,
+    domain: 'mail.example.test',
+    accounts: [{ user: 'test', pass: 'pw' }],
+    tls: { key: TEST_KEY, cert: TEST_CERT },
+    // The sender domain's SPF authorises the loopback address the test connects from.
+    spfResolvers: {
+      txt: async (n) => (n === 'sender.test' ? ['v=spf1 ip4:127.0.0.1/32 -all'] : []),
+      a: async () => [],
+      mx: async () => [],
+    },
+  };
+  const server = await startServer(config);
+  try {
+    // A plain (unsigned) message from a MAIL FROM at sender.test.
+    const s = net.connect(server.inbound.port, '127.0.0.1');
+    s.on('error', () => {});
+    await new Promise<void>((r) => s.once('connect', () => r()));
+    const step = (str: string): Promise<void> =>
+      new Promise((r) => {
+        s.write(Buffer.from(str, 'latin1'));
+        setTimeout(r, 40);
+      });
+    await delay(40);
+    await step('EHLO sender.test\r\n');
+    await step('MAIL FROM:<bob@sender.test>\r\n');
+    await step('RCPT TO:<test@mail.example.test>\r\n');
+    await step('DATA\r\n');
+    await step('Subject: spf check\r\n\r\nhello\r\n.\r\n');
+    await step('QUIT\r\n');
+    s.destroy();
+
+    for (let i = 0; i < 200 && server.mailbox.messages.length === 0; i++) await delay(20);
+    assert.equal(server.mailbox.messages.length, 1);
+    const stored = server.mailbox.messages[0]!.raw.toString('latin1');
+    assert.match(stored, /Authentication-Results:.*spf=pass smtp\.mailfrom=sender\.test/, 'SPF pass is recorded for the authorised loopback sender');
+    assert.match(stored, /dkim=none/, 'an unsigned message is dkim=none');
+  } finally {
+    await server.close();
+  }
+});

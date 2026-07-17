@@ -63,6 +63,8 @@ test('two daemons: a submission to A is DKIM-signed, relayed, and lands in B, tr
     tls: { key: TEST_KEY, cert: TEST_CERT },
     // Inject A's public key so B verifies A's DKIM signature without live DNS.
     dkimKeyResolver: async () => Buffer.from(`v=DKIM1; k=rsa; p=${aPublicKeyDer}`, 'latin1'),
+    // No live DNS for SPF either — A relays from loopback, so there is nothing to authorise.
+    spfResolvers: { txt: async () => [], a: async () => [], mx: async () => [] },
   };
   const B = await startServer(configB);
 

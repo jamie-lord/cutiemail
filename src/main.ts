@@ -26,7 +26,8 @@ import { relayOutbound, routeRecipients, type OutboundOptions } from './server/o
 import { ensureSubmissionHeaders, formatDate } from './server/submission-fixup.ts';
 import { buildBounceMessage } from './server/bounce.ts';
 import { verifyDkim, type DkimKeyResolver } from './server/dkim-inbound.ts';
-import { resolveTxt } from 'node:dns/promises';
+import { checkSpf, type SpfResolvers } from './auth/spf-check.ts';
+import { resolveTxt, resolve4, resolve6, resolveMx } from 'node:dns/promises';
 import { dkimSign, makeSigner } from './server/dkim-signer.ts';
 import { prependReceived, protocolFor } from './server/received.ts';
 import { MailboxNotifier } from './server/mailbox-notifier.ts';
@@ -67,7 +68,34 @@ export interface MailServerConfig {
   readonly maxReceivedHops?: number;
   /** Resolve DKIM public keys for inbound verification (injected in tests). Default: DNS. */
   readonly dkimKeyResolver?: DkimKeyResolver;
+  /** DNS resolvers for inbound SPF evaluation (injected in tests). Default: real DNS. */
+  readonly spfResolvers?: SpfResolvers;
 }
+
+/** Real-DNS resolvers for SPF: a missing record is [] (→ none), a real error throws (→ temperror). */
+const dnsSpfResolvers: SpfResolvers = {
+  txt: async (name) => {
+    try {
+      return (await resolveTxt(name)).map((chunks) => chunks.join(''));
+    } catch (e) {
+      const code = (e as { code?: string }).code;
+      if (code === 'ENOTFOUND' || code === 'ENODATA') return [];
+      throw e;
+    }
+  },
+  a: async (name) => {
+    const out: string[] = [];
+    await Promise.all([resolve4(name).then((r) => out.push(...r)).catch(() => {}), resolve6(name).then((r) => out.push(...r)).catch(() => {})]);
+    return out;
+  },
+  mx: async (name) => {
+    try {
+      return (await resolveMx(name)).map((r) => r.exchange);
+    } catch {
+      return [];
+    }
+  },
+};
 
 /**
  * Fetch a DKIM public-key record from DNS at "<selector>._domainkey.<domain>".
@@ -127,17 +155,28 @@ export async function startServer(cfg: MailServerConfig): Promise<RunningServer>
   // Inbound (port 25): mail arriving for us — verify DKIM, stamp Authentication-Results
   // and a Received trace line (RFC 5321 §4.4 / RFC 8601), and store it.
   const dkimResolver: DkimKeyResolver = cfg.dkimKeyResolver ?? resolveDkimKeyViaDns;
+  const spfResolvers: SpfResolvers = cfg.spfResolvers ?? dnsSpfResolvers;
   const inbound = await SmtpReceiver.start(async (m) => {
     const receivedAt = new Date();
-    // Verify the sender's DKIM signature (informational — never a rejection; §6.1
-    // leniency preserved). The verdict is recorded in Authentication-Results.
+    // Verify DKIM and SPF (informational — never a rejection; §6.1 leniency preserved).
+    // Both go into the Authentication-Results header for the client / downstream.
     let dkim: { verdict: string; domain: string | null } = { verdict: 'none', domain: null };
     try {
       dkim = await verifyDkim(m.data, dkimResolver);
     } catch {
       dkim = { verdict: 'temperror', domain: null };
     }
-    const authResults = `Authentication-Results: ${cfg.domain}; dkim=${dkim.verdict}${dkim.domain !== null ? ` header.d=${dkim.domain}` : ''}`;
+    // The SPF identity: the MAIL FROM domain, or the HELO name for a null return-path.
+    const spfDomain = m.from.includes('@') ? (m.from.split('@').pop() ?? '') : m.helo;
+    let spf = 'none';
+    try {
+      spf = m.remoteAddress === '' ? 'none' : await checkSpf(m.remoteAddress, spfDomain, spfResolvers);
+    } catch {
+      spf = 'temperror';
+    }
+    const authResults =
+      `Authentication-Results: ${cfg.domain}; dkim=${dkim.verdict}${dkim.domain !== null ? ` header.d=${dkim.domain}` : ''}` +
+      `; spf=${spf}${spfDomain !== '' ? ` smtp.mailfrom=${spfDomain}` : ''}`;
     const traced = prependReceived(m.data, {
       helo: m.helo,
       remoteAddress: m.remoteAddress,
