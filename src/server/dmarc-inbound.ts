@@ -50,7 +50,12 @@ const MULTI_PART_TLDS = new Set([
   // Brazil / Argentina / Mexico
   'com.br', 'net.br', 'org.br', 'gov.br', 'com.ar', 'com.mx',
   // India / South Africa / Israel / Turkey / Ukraine / Poland / Russia
-  'co.in', 'net.in', 'org.in', 'gen.in', 'co.za', 'org.za', 'co.il', 'com.tr', 'com.ua', 'com.pl', 'com.ru',
+  'co.in', 'net.in', 'org.in', 'gen.in', 'co.za', 'org.za', 'net.za', 'web.za', 'gov.za', 'co.il', 'com.tr', 'com.ua', 'com.pl', 'com.ru',
+  // Kenya / Indonesia / Nigeria / Thailand / Vietnam / Philippines — common registrar
+  // second-levels the earlier table omitted (a missing entry is the DANGEROUS direction:
+  // it makes the org-domain too short and aligns two unrelated registrants).
+  'co.ke', 'or.ke', 'ne.ke', 'go.ke', 'ac.ke', 'co.id', 'or.id', 'ac.id', 'web.id', 'go.id',
+  'com.ng', 'org.ng', 'co.th', 'in.th', 'com.vn', 'net.vn', 'com.ph',
 ]);
 
 /** Registered ("organizational") domain: the last two labels, or three for a known multi-part TLD. */

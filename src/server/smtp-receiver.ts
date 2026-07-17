@@ -77,6 +77,9 @@ const NUL = String.fromCharCode(0);
 /** Idle-connection timeout (RFC 5321 §4.5.3.2 server timeouts are ~5 min per step). */
 const IDLE_TIMEOUT_MS = 300_000;
 
+/** Max recipients per transaction (RFC 5321 §4.5.3.1.10 sets the floor at 100). */
+const MAX_RECIPIENTS = 100;
+
 function unstuff(payload: Buffer): Buffer {
   const out: Buffer[] = [];
   let start = 0;
@@ -99,8 +102,12 @@ function unstuff(payload: Buffer): Buffer {
   return Buffer.concat(out);
 }
 
-function findEndOfData(buf: Buffer): number {
-  for (let i = 0; i + 4 < buf.length; i++) {
+function findEndOfData(buf: Buffer, from = 0): number {
+  // Resume from `from` (minus the 4-byte terminator overlap so a <CRLF>.<CRLF> split
+  // across a chunk boundary is still caught) instead of rescanning from 0 each chunk —
+  // that rescan is O(n²) over a message delivered in many small segments (CPU DoS).
+  const start = Math.max(0, from - 4);
+  for (let i = start; i + 4 < buf.length; i++) {
     if (buf[i] === CR && buf[i + 1] === LF && buf[i + 2] === DOT && buf[i + 3] === CR && buf[i + 4] === LF) return i + 5;
   }
   if (buf.length >= 3 && buf[0] === DOT && buf[1] === CR && buf[2] === LF) return 3;
@@ -130,6 +137,7 @@ class Connection {
   #from = '';
   #recipients: string[] = [];
   #inData = false;
+  #dataScanned = 0; // bytes of #buf already scanned for the DATA terminator (resume point)
   #inTransaction = false; // a reverse-path buffer exists (MAIL accepted, not yet reset)
   #tls = false;
   #authed = false;
@@ -196,8 +204,11 @@ class Connection {
           this.#active.end();
           return;
         }
-        const eod = findEndOfData(this.#buf);
-        if (eod === -1) break;
+        const eod = findEndOfData(this.#buf, this.#dataScanned);
+        if (eod === -1) {
+          this.#dataScanned = this.#buf.length; // scanned this far without a terminator
+          break;
+        }
         // The terminating sequence is <CRLF>.<CRLF>, but RFC 5321 §4.1.1.4 is explicit
         // that its first <CRLF> "is also the <CRLF> that ends the final line of the data".
         // So the message keeps that final CRLF; only the ".<CRLF>" indicator (3 bytes) is
@@ -358,6 +369,13 @@ class Connection {
             this.#write('550 5.7.1 relaying denied — recipient not hosted here');
             break;
           }
+          // Cap recipients per transaction (RFC 5321 §4.5.3.1.10 permits ≥100). Without
+          // it, an attacker streams unbounded RCPT lines — each resetting the idle timer
+          // — and grows the array without ever sending DATA, a memory-exhaustion DoS.
+          if (this.#recipients.length >= MAX_RECIPIENTS) {
+            this.#write('452 4.5.3 too many recipients');
+            break;
+          }
           this.#recipients.push(rcpt);
           this.#write('250 2.1.5 Ok');
         }
@@ -368,6 +386,7 @@ class Connection {
           break;
         }
         this.#inData = true;
+        this.#dataScanned = 0; // fresh DATA payload — scan from the start of #buf
         this.#write('354 End data with <CR><LF>.<CR><LF>');
         break;
       case 'RSET':

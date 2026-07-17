@@ -97,3 +97,85 @@ test('e2e: the dot-stuffing round-trip is transparent (a leading-dot line surviv
     db.close();
   }
 });
+
+const delay = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
+
+/** A raw line-based SMTP client for adversarial cases the reference client won't send. */
+class RawSmtp {
+  #acc = Buffer.alloc(0);
+  readonly sock: net.Socket;
+  constructor(port: number) {
+    this.sock = net.connect(port, '127.0.0.1');
+    this.sock.on('data', (d) => (this.#acc = Buffer.concat([this.#acc, Buffer.from(d)])));
+    this.sock.on('error', () => {});
+  }
+  write(s: string): void {
+    this.sock.write(Buffer.from(s, 'latin1'));
+  }
+  async expect(code: string): Promise<string> {
+    for (let i = 0; i < 400; i++) {
+      const s = this.#acc.toString('latin1');
+      // Match a reply line starting with the code (most recent occurrence).
+      const idx = s.lastIndexOf(`\n${code}`);
+      if (s.startsWith(code) || idx >= 0) return s;
+      await delay(5);
+    }
+    throw new Error(`timed out waiting for ${code} in ${JSON.stringify(this.#acc.toString('latin1'))}`);
+  }
+}
+
+test('the receiver caps recipients per transaction (452), resisting unbounded RCPT DoS', async () => {
+  const receiver = await SmtpReceiver.start(() => {});
+  const c = new RawSmtp(receiver.port);
+  try {
+    await c.expect('220');
+    c.write('EHLO probe\r\n');
+    await c.expect('250');
+    c.write('MAIL FROM:<a@b.test>\r\n');
+    await c.expect('250');
+    // 100 recipients are accepted...
+    for (let i = 0; i < 100; i++) {
+      c.write(`RCPT TO:<u${i}@x.test>\r\n`);
+      await c.expect('250');
+    }
+    // ...the 101st is refused with a transient 452, and the connection survives.
+    c.write('RCPT TO:<overflow@x.test>\r\n');
+    const resp = await c.expect('452');
+    assert.match(resp, /452/, 'the recipient over the cap is rejected with 452');
+    c.write('QUIT\r\n');
+  } finally {
+    c.sock.destroy();
+    await receiver.close();
+  }
+});
+
+test('a DATA terminator split across many tiny chunks is still detected (resume-offset scan)', async () => {
+  let stored: Buffer | null = null;
+  const receiver = await SmtpReceiver.start((msg) => { stored = Buffer.from(msg.data); });
+  const c = new RawSmtp(receiver.port);
+  try {
+    await c.expect('220');
+    c.write('EHLO probe\r\n');
+    await c.expect('250');
+    c.write('MAIL FROM:<a@b.test>\r\n');
+    await c.expect('250');
+    c.write('RCPT TO:<u@x.test>\r\n');
+    await c.expect('250');
+    c.write('DATA\r\n');
+    await c.expect('354');
+    // Stream the whole DATA — including the CRLF.CRLF terminator — one byte per chunk,
+    // so the terminator straddles chunk boundaries and the resume offset must overlap.
+    const payload = 'Subject: split\r\n\r\nline one\r\nline two\r\n.\r\n';
+    for (const ch of payload) {
+      c.write(ch);
+      await delay(1);
+    }
+    await c.expect('250');
+    assert.ok(stored !== null, 'the message was stored despite the byte-at-a-time terminator');
+    assert.equal((stored as unknown as Buffer).toString('latin1'), 'Subject: split\r\n\r\nline one\r\nline two\r\n', 'stored byte-exact, terminator stripped');
+    c.write('QUIT\r\n');
+  } finally {
+    c.sock.destroy();
+    await receiver.close();
+  }
+});

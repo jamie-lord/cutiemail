@@ -173,7 +173,12 @@ export async function startServer(cfg: MailServerConfig): Promise<RunningServer>
       dkim = { verdict: 'temperror', domain: null, passedDomains: [] };
     }
     // The SPF identity: the MAIL FROM domain, or the HELO name for a null return-path.
-    const spfDomain = m.from.includes('@') ? (m.from.split('@').pop() ?? '') : m.helo;
+    // Both are attacker-controlled and get spliced into Authentication-Results, which
+    // clients parse to make trust decisions — a value carrying the AR delimiters (";",
+    // "=", space) would forge a method result under our own authserv-id (RFC 8601 §5).
+    // Only a hostname-shaped token is a usable identity; anything else yields none.
+    const rawSpfDomain = m.from.includes('@') ? (m.from.split('@').pop() ?? '') : m.helo;
+    const spfDomain = /^[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?$/.test(rawSpfDomain) ? rawSpfDomain : '';
     let spf = 'none';
     try {
       spf = m.remoteAddress === '' ? 'none' : await checkSpf(m.remoteAddress, spfDomain, spfResolvers);
@@ -193,8 +198,11 @@ export async function startServer(cfg: MailServerConfig): Promise<RunningServer>
     } catch {
       dmarc = { verdict: 'temperror', policy: null };
     }
+    // Only a hostname-shaped d= is echoed into the header (defense in depth — the DKIM
+    // parser already constrains it, but the AR header must never carry AR delimiters).
+    const dkimDomain = dkim.domain !== null && /^[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?$/.test(dkim.domain) ? dkim.domain : null;
     const authResults =
-      `Authentication-Results: ${cfg.domain}; dkim=${dkim.verdict}${dkim.domain !== null ? ` header.d=${dkim.domain}` : ''}` +
+      `Authentication-Results: ${cfg.domain}; dkim=${dkim.verdict}${dkimDomain !== null ? ` header.d=${dkimDomain}` : ''}` +
       `; spf=${spf}${spfDomain !== '' ? ` smtp.mailfrom=${spfDomain}` : ''}` +
       `; dmarc=${dmarc.verdict}${dmarc.policy !== null ? ` (p=${dmarc.policy})` : ''}`;
     // Strip any forged Authentication-Results claiming our authserv-id before adding

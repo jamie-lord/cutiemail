@@ -7,7 +7,7 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { receivedHeader, prependReceived, protocolFor, countReceived } from './received.ts';
+import { receivedHeader, prependReceived, protocolFor, countReceived, stripOwnAuthResults } from './received.ts';
 
 const AT = new Date(Date.UTC(2026, 6, 16, 20, 15, 0));
 
@@ -61,4 +61,24 @@ test('prependReceived puts the trace line above the existing headers, byte-exact
   const s = out.toString('latin1');
   assert.ok(s.startsWith('Received: from c '), 'trace line first');
   assert.ok(out.subarray(out.indexOf(Buffer.from('Subject:'))).equals(msg), 'original message untouched below the trace line');
+});
+
+const strip = (s: string): string => stripOwnAuthResults(Buffer.from(s, 'latin1'), 'us.example').toString('latin1');
+
+test('stripOwnAuthResults removes a forged AR bearing our id but keeps a legitimate upstream one', () => {
+  const out = strip('Authentication-Results: us.example; dkim=pass header.d=bank.test\r\nAuthentication-Results: upstream.net; spf=pass\r\nSubject: x\r\n\r\nbody\r\n');
+  assert.doesNotMatch(out, /us\.example; dkim=pass/, 'the forgery under our id is stripped');
+  assert.match(out, /upstream\.net; spf=pass/, 'a different authserv-id is preserved');
+});
+
+test('stripOwnAuthResults strips a forged AR even when the message has no body separator', () => {
+  // No CRLFCRLF anywhere — the header block is the whole message.
+  const out = strip('From: attacker@evil.test\r\nAuthentication-Results: us.example; dkim=pass\r\n');
+  assert.doesNotMatch(out, /dkim=pass/, 'the forgery is stripped despite the missing blank line');
+  assert.match(out, /From: attacker@evil\.test/, 'other headers survive');
+});
+
+test('stripOwnAuthResults strips a forged AR whose authserv-id is folded onto a continuation line', () => {
+  const out = strip('Authentication-Results:\r\n us.example; dkim=pass\r\nSubject: x\r\n\r\nbody\r\n');
+  assert.doesNotMatch(out, /dkim=pass/, 'a folded authserv-id does not evade the strip');
 });

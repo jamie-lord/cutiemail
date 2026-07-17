@@ -59,19 +59,25 @@ export function prependReceived(data: Buffer, info: ReceivedInfo): Buffer {
  */
 export function stripOwnAuthResults(data: Buffer, authservId: string): Buffer {
   const sep = data.indexOf(Buffer.from('\r\n\r\n', 'latin1'));
-  if (sep === -1) return data;
-  const lines = data.subarray(0, sep).toString('latin1').split('\r\n');
+  // A message with no blank line is all headers (a malformed body-less message); still
+  // strip a forged AR from it rather than passing the whole thing through unfiltered.
+  const headerEnd = sep === -1 ? data.length : sep;
+  const trailer = sep === -1 ? Buffer.alloc(0) : data.subarray(sep);
+  const lines = data.subarray(0, headerEnd).toString('latin1').split('\r\n');
   const kept: string[] = [];
   const want = authservId.toLowerCase();
   for (let i = 0; i < lines.length; ) {
     let header = lines[i]!;
     let j = i + 1;
     while (j < lines.length && /^[ \t]/.test(lines[j]!)) header += `\r\n${lines[j++]}`; // gather folded continuations
-    const m = /^Authentication-Results:[ \t]*([^;\s]+)/i.exec(header);
+    // Match the authserv-id on the UNFOLDED header: RFC 5322 CFWS lets the id wrap onto
+    // a continuation line, and a forgery that folds it would otherwise slip past.
+    const unfolded = header.replace(/\r\n[ \t]+/g, ' ');
+    const m = /^Authentication-Results:[ \t]*([^;\s]+)/i.exec(unfolded);
     if (!(m !== null && m[1]!.toLowerCase() === want)) kept.push(header);
     i = j;
   }
-  return Buffer.concat([Buffer.from(kept.join('\r\n'), 'latin1'), data.subarray(sep)]);
+  return Buffer.concat([Buffer.from(kept.join('\r\n'), 'latin1'), trailer]);
 }
 
 /**
