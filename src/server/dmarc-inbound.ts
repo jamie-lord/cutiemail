@@ -70,7 +70,10 @@ function fromHeaderDomain(raw: Buffer): string | null {
   const angle = /<([^>]*)>/.exec(value);
   const addr = (angle ? angle[1]! : value).trim();
   const at = addr.lastIndexOf('@');
-  return at === -1 ? null : addr.slice(at + 1).trim().toLowerCase() || null;
+  if (at === -1) return null;
+  // Strip a root-anchoring trailing dot so it aligns with a dot-less DKIM d=/SPF domain.
+  const domain = addr.slice(at + 1).trim().toLowerCase().replace(/\.$/, '');
+  return domain || null;
 }
 
 async function fetchDmarc(domain: string, resolveTxt: DmarcInput['resolveTxt']): Promise<string | null> {

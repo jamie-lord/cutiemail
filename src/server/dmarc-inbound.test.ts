@@ -90,3 +90,16 @@ test('a subdomain governed by the org record reports the subdomain policy sp= (R
   const org = await checkDmarc({ rawMessage: msg('example.com'), dkimPassedDomains: ['example.com'], spfResult: 'none', spfDomain: '', resolveTxt: rec2 });
   assert.equal(org.policy, 'reject', 'the org domain itself uses p=');
 });
+
+test('From extraction uses the angle-addr (not a spoofed display name) and strips a trailing dot', async () => {
+  const rec = dmarcAt({ '_dmarc.example.com': 'v=DMARC1; p=reject; adkim=s' });
+  // A fake domain in the display name must not be used — the real angle-addr wins.
+  const spoof = Buffer.from('From: "billing@paypal.com" <alice@example.com>\r\nSubject: x\r\n\r\nb\r\n', 'latin1');
+  const s = await checkDmarc({ rawMessage: spoof, dkimPassedDomains: ['example.com'], spfResult: 'none', spfDomain: '', resolveTxt: rec });
+  assert.equal(s.fromDomain, 'example.com', 'the angle-addr domain is authoritative, not the display name');
+  // A root-anchoring trailing dot aligns strictly with a dot-less d=.
+  const dotted = Buffer.from('From: alice@example.com.\r\nSubject: x\r\n\r\nb\r\n', 'latin1');
+  const d = await checkDmarc({ rawMessage: dotted, dkimPassedDomains: ['example.com'], spfResult: 'none', spfDomain: '', resolveTxt: rec });
+  assert.equal(d.fromDomain, 'example.com', 'the trailing dot is stripped');
+  assert.equal(d.verdict, 'pass', 'strict alignment holds despite the trailing dot');
+});
