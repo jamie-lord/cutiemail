@@ -114,3 +114,20 @@ test('a literal LIST pattern matches exactly one mailbox', async () => {
     await server.close();
   }
 });
+
+test('a trailing hierarchy separator on CREATE is ignored (RFC 9051 §6.3.4)', async () => {
+  const { server, s } = await openServer();
+  try {
+    // `CREATE foo/` is only a "will have children" hint; the mailbox is named `foo`.
+    await s.run('t', 't CREATE trail/kid/');
+    const listed = listedNames(await s.run('u', 'u LIST "" trail/*'));
+    assert.ok(listed.includes('trail/kid'), 'stored without the trailing separator');
+    assert.ok(!listed.some((n) => n.endsWith('/')), `no name carries a trailing separator: ${listed}`);
+    // The trailing-separator spelling names the same mailbox: it is now selectable.
+    const sel = await s.run('w', 'w SELECT trail/kid/');
+    assert.ok(sel.some((l) => /EXISTS/.test(l)), 'trailing-separator name resolves to the created mailbox');
+  } finally {
+    s.sock.destroy();
+    await server.close();
+  }
+});

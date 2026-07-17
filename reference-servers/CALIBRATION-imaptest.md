@@ -152,16 +152,26 @@ A fourth genuine bug fell out of this triage and **was fixed**:
   zone offset back before reducing to a day — the `search-date` script now passes 0/29.
   Regression test in `src/imap/search.test.ts`.
 
-One residual is **recorded for a focused follow-up** rather than rushed:
+A fifth concrete bug from the `list` script **was fixed**:
 
-- **Extended-LIST attribute exactness** (the `list` script). The wildcard *matching* is
-  now correct (fixed + live-verified), but a few `%`/`*` results differ in their
-  `\HasChildren`/`\HasNoChildren` attribute set and reference-name handling — attribute
-  detail, not the matching that broke hierarchy discovery.
+- **A trailing hierarchy separator on CREATE was stored literally.** `CREATE foo/` made a
+  mailbox actually named `foo/`. RFC 9051 §6.3.4: a trailing separator is only a
+  "this name will have children" declaration, and a server that doesn't require it MUST
+  ignore it. **Fixed** in `canonicalMailboxName` (the single point every command resolves
+  names through), so `foo/` and `foo` are the same mailbox across CREATE/SELECT/DELETE/LIST.
+  Regression test in `src/server/imap-list.integration.test.ts`.
+
+**Deliberate scope cut (recorded).** The remainder of the `list` script asserts Dovecot's
+specific hierarchy model — trailing-separator CREATEs producing `\Noselect` *intermediary*
+nodes that are then excluded from `*` listings, and ancestor-only nodes appearing in `%`
+results. cutie-mail models mailboxes as a flat catalog of slash-named names with correct
+wildcard matching; it does **not** synthesise `\Noselect` placeholder nodes for missing
+ancestors. Real modern clients (Thunderbird, Apple Mail) create ordinary mailboxes and do
+not depend on this, so — per the project's opinionated-and-modern scope — it is intentionally
+not implemented rather than a gap to close.
 
 ## Still open
 
-- Extended-LIST attribute exactness (above).
 - A larger concurrent-client / longer-duration soak.
 - imaptest links vanilla Dovecot 2.3.21; Ubuntu ships a patched 2.3.21, so the build uses the
   upstream source tree rather than the distro headers (recorded in the build steps above).

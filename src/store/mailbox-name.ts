@@ -11,10 +11,20 @@ export interface MailboxNameDefects {
   readonly caseSensitiveInbox?: boolean;
 }
 
-/** Canonicalise a mailbox name: any-case INBOX becomes "INBOX"; other names are unchanged. */
+/**
+ * Canonicalise a mailbox name: a trailing hierarchy separator is stripped, then any-case
+ * INBOX becomes "INBOX"; other names are otherwise unchanged.
+ *
+ * A trailing separator on CREATE is only a "this name will have children" declaration, and
+ * a server that doesn't require it MUST ignore it (RFC 9051 §6.3.4) — so `Sent/` names the
+ * same mailbox as `Sent`. Stripping it here (the single point every command resolves names
+ * through) keeps CREATE/SELECT/DELETE/LIST in agreement. The separator is "/" throughout.
+ */
 export function canonicalMailboxName(name: string, defects: MailboxNameDefects = {}): string {
-  if (defects.caseSensitiveInbox !== true && name.toUpperCase() === 'INBOX') return 'INBOX';
-  return name;
+  let n = name;
+  while (n.length > 1 && n.endsWith('/')) n = n.slice(0, -1);
+  if (defects.caseSensitiveInbox !== true && n.toUpperCase() === 'INBOX') return 'INBOX';
+  return n;
 }
 
 /** Do two names refer to the same mailbox (INBOX case-insensitive, others exact)? */
