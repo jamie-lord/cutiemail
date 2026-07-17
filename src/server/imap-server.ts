@@ -89,6 +89,9 @@ const CAPABILITIES = 'IMAP4rev2 IDLE UIDPLUS';
 /** Cap on an APPEND literal's declared size (octets) — bounds server memory. */
 const MAX_APPEND_LITERAL = 26_214_400; // 25 MiB, matching the SMTP SIZE default
 
+/** Inactivity autologout (RFC 9051 §5.4 requires a timer of at least 30 minutes). */
+const AUTOLOGOUT_MS = 1_800_000;
+
 /** Special-use attributes by conventional folder name (RFC 6154 / 9051 §7.3.1). */
 const SPECIAL_USE: Record<string, string> = {
   Trash: '\\Trash',
@@ -389,13 +392,15 @@ export class ImapServer {
   readonly #sockets = new Set<net.Socket>();
   readonly #authenticate: ((user: string, pass: string) => boolean) | undefined;
   readonly #notifier: MailboxNotifier | undefined;
+  readonly #autologoutMs: number;
 
-  private constructor(server: net.Server, port: number, catalog: ServableCatalog, authenticate?: (user: string, pass: string) => boolean, notifier?: MailboxNotifier) {
+  private constructor(server: net.Server, port: number, catalog: ServableCatalog, authenticate?: (user: string, pass: string) => boolean, notifier?: MailboxNotifier, autologoutMs = AUTOLOGOUT_MS) {
     this.#server = server;
     this.port = port;
     this.#catalog = catalog;
     this.#authenticate = authenticate;
     this.#notifier = notifier;
+    this.#autologoutMs = autologoutMs;
   }
 
   /**
@@ -406,7 +411,7 @@ export class ImapServer {
    */
   static start(
     target: ServableMailbox | ServableCatalog,
-    options: { tls?: { key: string; cert: string }; host?: string; port?: number; authenticate?: (user: string, pass: string) => boolean; notifier?: MailboxNotifier } = {},
+    options: { tls?: { key: string; cert: string }; host?: string; port?: number; authenticate?: (user: string, pass: string) => boolean; notifier?: MailboxNotifier; autologoutMs?: number } = {},
   ): Promise<ImapServer> {
     const catalog: ServableCatalog = 'listNames' in target ? target : inboxOnly(target);
     const server = options.tls !== undefined ? tls.createServer({ key: options.tls.key, cert: options.tls.cert }) : net.createServer();
@@ -414,7 +419,7 @@ export class ImapServer {
       server.listen(options.port ?? 0, options.host ?? '127.0.0.1', () => {
         const addr = server.address();
         const port = typeof addr === 'object' && addr !== null ? addr.port : 0;
-        const imap = new ImapServer(server, port, catalog, options.authenticate, options.notifier);
+        const imap = new ImapServer(server, port, catalog, options.authenticate, options.notifier, options.autologoutMs);
         const event = options.tls !== undefined ? 'secureConnection' : 'connection';
         server.on(event, (sock: net.Socket) => {
           imap.#sockets.add(sock);
@@ -522,6 +527,19 @@ export class ImapServer {
     let idle: { tag: string; unsub: () => void } | null = null;
     sock.on('error', () => {});
     sock.on('close', () => idle?.unsub());
+    // RFC 9051 §5.4: autologout an inactive connection (timer ≥ 30 min). An IDLE
+    // client re-issues within ~29 min, so this fires only on genuine inactivity and
+    // stops idle/slowloris connections holding resources forever.
+    sock.setTimeout(this.#autologoutMs);
+    sock.on('timeout', () => {
+      idle?.unsub();
+      try {
+        write(sock, '* BYE autologout; idle for too long');
+      } catch {
+        // best-effort
+      }
+      sock.destroy();
+    });
     write(sock, `* OK [CAPABILITY ${CAPABILITIES}] server ready`);
 
     sock.on('data', (chunk: Buffer) => {

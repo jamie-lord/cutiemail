@@ -121,3 +121,32 @@ test('SMTP survives malformed commands and still completes a valid transaction',
     await server.close();
   }
 });
+
+test('an idle SMTP connection is timed out (421) rather than held open forever', async () => {
+  const server = await SmtpReceiver.start(() => {}, { domain: 'mx.example.test', idleTimeoutMs: 150 });
+  const c = new Conn(net.connect(server.port, '127.0.0.1'));
+  try {
+    await c.waitFor('ESMTP');
+    // Send nothing — a slowloris. The server must close the idle connection itself.
+    await c.waitFor('421');
+    await delay(50);
+    assert.ok(c.sock.destroyed || c.sock.readyState !== 'open', 'the idle connection was closed by the server');
+  } finally {
+    c.sock.destroy();
+    await server.close();
+  }
+});
+
+test('an idle IMAP connection is autologged out (* BYE) rather than held open forever', async () => {
+  const cat = new MemoryCatalog();
+  const server = await ImapServer.start(cat, { authenticate: () => true, autologoutMs: 150 });
+  const c = new Conn(net.connect(server.port, '127.0.0.1'));
+  try {
+    await c.waitFor('* OK');
+    // Send nothing — the autologout timer must fire and close the connection.
+    await c.waitFor('* BYE');
+  } finally {
+    c.sock.destroy();
+    await server.close();
+  }
+});

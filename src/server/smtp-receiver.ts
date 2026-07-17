@@ -59,6 +59,8 @@ export interface ReceiverOptions {
   readonly requireAuth?: boolean;
   /** Verify a SASL PLAIN (username, password); wired to the account store by the caller. */
   readonly authenticate?: (username: string, password: string) => boolean;
+  /** Idle-connection timeout in ms (default 5 min). Tests set it short. */
+  readonly idleTimeoutMs?: number;
   /**
    * Decide whether to accept a recipient at RCPT time. Returns false to reject it.
    * The inbound (port 25) path uses this to accept only local mailboxes — otherwise
@@ -71,6 +73,9 @@ export interface ReceiverOptions {
 
 const addrOf = (line: string): string => /<([^>]*)>/.exec(line)?.[1] ?? '';
 const NUL = String.fromCharCode(0);
+
+/** Idle-connection timeout (RFC 5321 §4.5.3.2 server timeouts are ~5 min per step). */
+const IDLE_TIMEOUT_MS = 300_000;
 
 function unstuff(payload: Buffer): Buffer {
   const out: Buffer[] = [];
@@ -141,6 +146,21 @@ class Connection {
     this.#opts = opts;
     this.#active = sock;
     this.#remoteAddress = sock.remoteAddress ?? '';
+    // RFC 5321 §4.5.3.2: time out an idle connection so a client that opens a socket
+    // and then stalls (slowloris) can't hold resources indefinitely. The timer resets
+    // on every received chunk, so a slow-but-progressing transfer is fine; only true
+    // inactivity trips it. Set on the raw socket, so it also covers the post-STARTTLS
+    // phase (TLS traffic still flows through it).
+    sock.setTimeout(opts.idleTimeoutMs ?? IDLE_TIMEOUT_MS);
+    sock.on('timeout', () => {
+      try {
+        this.#write('421 4.4.2 idle timeout, closing connection');
+      } catch {
+        // best-effort; the socket may already be gone
+      }
+      this.#active.end();
+      sock.destroy();
+    });
     this.#bind(sock);
     this.#write(`220 ${domain} ESMTP`);
   }
