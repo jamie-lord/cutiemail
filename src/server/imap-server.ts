@@ -503,14 +503,24 @@ export class ImapServer {
   readonly #sockets = new Set<net.Socket>();
   readonly #authenticate: ((user: string, pass: string) => boolean) | undefined;
   readonly #notifier: MailboxNotifier | undefined;
+  readonly #resolveAccount: ((login: string) => { catalog: ServableCatalog; notifier?: MailboxNotifier } | undefined) | undefined;
   readonly #autologoutMs: number;
 
-  private constructor(server: net.Server, port: number, catalog: ServableCatalog, authenticate?: (user: string, pass: string) => boolean, notifier?: MailboxNotifier, autologoutMs = AUTOLOGOUT_MS) {
+  private constructor(
+    server: net.Server,
+    port: number,
+    catalog: ServableCatalog,
+    authenticate?: (user: string, pass: string) => boolean,
+    notifier?: MailboxNotifier,
+    autologoutMs = AUTOLOGOUT_MS,
+    resolveAccount?: (login: string) => { catalog: ServableCatalog; notifier?: MailboxNotifier } | undefined,
+  ) {
     this.#server = server;
     this.port = port;
     this.#catalog = catalog;
     this.#authenticate = authenticate;
     this.#notifier = notifier;
+    this.#resolveAccount = resolveAccount;
     this.#autologoutMs = autologoutMs;
   }
 
@@ -519,10 +529,23 @@ export class ImapServer {
    * catalog of named mailboxes. With `options.tls` it serves implicit TLS
    * (IMAPS, port 993 in production); otherwise plaintext. With
    * `options.authenticate`, LOGIN is verified against it (else any LOGIN succeeds).
+   *
+   * `options.resolveAccount` turns on multi-account mode (ADR 0009): after a successful
+   * auth the returned `{catalog, notifier}` for that login is bound to the connection, so
+   * each user is served their own store. Without it, the single `target` catalog serves
+   * every session — the shape every existing test and single-account deploy uses.
    */
   static start(
     target: ServableMailbox | ServableCatalog,
-    options: { tls?: { key: string; cert: string }; host?: string; port?: number; authenticate?: (user: string, pass: string) => boolean; notifier?: MailboxNotifier; autologoutMs?: number } = {},
+    options: {
+      tls?: { key: string; cert: string };
+      host?: string;
+      port?: number;
+      authenticate?: (user: string, pass: string) => boolean;
+      notifier?: MailboxNotifier;
+      autologoutMs?: number;
+      resolveAccount?: (login: string) => { catalog: ServableCatalog; notifier?: MailboxNotifier } | undefined;
+    } = {},
   ): Promise<ImapServer> {
     const catalog: ServableCatalog = 'listNames' in target ? target : inboxOnly(target);
     const server = options.tls !== undefined ? tls.createServer({ key: options.tls.key, cert: options.tls.cert }) : net.createServer();
@@ -530,7 +553,7 @@ export class ImapServer {
       server.listen(options.port ?? 0, options.host ?? '127.0.0.1', () => {
         const addr = server.address();
         const port = typeof addr === 'object' && addr !== null ? addr.port : 0;
-        const imap = new ImapServer(server, port, catalog, options.authenticate, options.notifier, options.autologoutMs);
+        const imap = new ImapServer(server, port, catalog, options.authenticate, options.notifier, options.autologoutMs, options.resolveAccount);
         const event = options.tls !== undefined ? 'secureConnection' : 'connection';
         server.on(event, (sock: net.Socket) => {
           imap.#sockets.add(sock);
@@ -565,14 +588,18 @@ export class ImapServer {
   }
 
   /** Emit one message's FETCH response for the requested atts. */
-  /** Verify a SASL PLAIN token ("[authzid]\0authcid\0password", base64). */
-  #verifySaslPlain(b64: string): boolean {
+  /**
+   * Verify a SASL PLAIN token ("[authzid]\0authcid\0password", base64) and return the
+   * authenticated username on success, or null on failure — the username is needed to
+   * resolve the account in multi-account mode.
+   */
+  #saslPlainUser(b64: string): string | null {
     const parts = Buffer.from(b64, 'base64').toString('latin1').split('\0');
     const user = parts[1] ?? '';
     const pass = parts[2] ?? '';
     // No authenticate callback configured = permissive (test servers); still requires
     // the client to actually authenticate, just accepts any credentials.
-    return this.#authenticate === undefined || this.#authenticate(user, pass);
+    return this.#authenticate === undefined || this.#authenticate(user, pass) ? user : null;
   }
 
   #emitFetch(sock: net.Socket, seq: number, msg: ServableMessage, atts: FetchAtts, uidMode: boolean): void {
@@ -776,6 +803,20 @@ export class ImapServer {
     let authenticated = false;
     let pendingAuth: string | null = null;
     let readOnly = false; // set when the mailbox was opened with EXAMINE, not SELECT
+    // The catalog + notifier THIS connection serves. Without a resolver they stay the
+    // server's shared instances (single-account mode); with one (ADR 0009), a successful
+    // auth rebinds them to the authenticated user's own store, so every mailbox command
+    // below runs against that user's data and never another user's.
+    let connCatalog = this.#catalog;
+    let connNotifier = this.#notifier;
+    const bindAccount = (login: string): boolean => {
+      if (this.#resolveAccount === undefined) return true; // single-account mode: nothing to rebind
+      const acct = this.#resolveAccount(login);
+      if (acct === undefined) return false; // credentials verified but account unknown/disabled
+      connCatalog = acct.catalog;
+      connNotifier = acct.notifier;
+      return true;
+    };
     sock.on('error', () => {});
     sock.on('close', () => idle?.unsub());
     // RFC 9051 §5.4: autologout an inactive connection (timer ≥ 30 min). An IDLE
@@ -802,7 +843,7 @@ export class ImapServer {
           const raw = Buffer.from(buf.subarray(0, pendingAppend.size));
           // The command's terminating CRLF follows the literal octets.
           buf = buf.subarray(pendingAppend.size + 2);
-          const box = this.#catalog.get(pendingAppend.mailboxName);
+          const box = connCatalog.get(pendingAppend.mailboxName);
           if (box === undefined) {
             write(sock, `${pendingAppend.tag} NO [TRYCREATE] no such mailbox`);
           } else {
@@ -819,7 +860,7 @@ export class ImapServer {
             if (selected !== null && selectedName !== null && canonicalMailboxName(pendingAppend.mailboxName) === selectedName) syncSelected();
             write(sock, `${pendingAppend.tag} OK [APPENDUID ${box.uidValidity} ${uid}] APPEND completed`);
             // Wake connections idling on this mailbox so the new message shows up.
-            this.#notifier?.notify(canonicalMailboxName(pendingAppend.mailboxName));
+            connNotifier?.notify(canonicalMailboxName(pendingAppend.mailboxName));
           }
           pendingAppend = null;
           continue;
@@ -855,11 +896,14 @@ export class ImapServer {
           pendingAuth = null;
           if (line.trim() === '*') {
             write(sock, `${authTag} BAD authentication cancelled`);
-          } else if (this.#verifySaslPlain(line.trim())) {
-            authenticated = true;
-            write(sock, `${authTag} OK [CAPABILITY ${CAPABILITIES}] authenticated`);
           } else {
-            write(sock, `${authTag} NO [AUTHENTICATIONFAILED] invalid credentials`);
+            const authedUser = this.#saslPlainUser(line.trim());
+            if (authedUser !== null && bindAccount(authedUser)) {
+              authenticated = true;
+              write(sock, `${authTag} OK [CAPABILITY ${CAPABILITIES}] authenticated`);
+            } else {
+              write(sock, `${authTag} NO [AUTHENTICATIONFAILED] invalid credentials`);
+            }
           }
           continue;
         }
@@ -930,7 +974,7 @@ export class ImapServer {
               // A bare-root probe: the reference IS a valid mailbox reference.
               write(sock, '* LIST (\\Noselect) "/" ""');
             } else {
-              const allNames = this.#catalog.listNames();
+              const allNames = connCatalog.listNames();
               for (const name of matchNames(reference, pattern, allNames)) {
                 if (onlySpecialUse && SPECIAL_USE[name] === undefined) continue;
                 const attrs = wantSubscribed ? listAttributes(name, allNames).replace(/\)$/, ' \\Subscribed)') : listAttributes(name, allNames);
@@ -943,7 +987,7 @@ export class ImapServer {
           case 'LSUB': {
             // rev2 dropped LSUB; answered like LIST as a deliberate concession to
             // clients that still probe with it during setup.
-            for (const name of matchNames(qarg(1), qarg(2), this.#catalog.listNames())) {
+            for (const name of matchNames(qarg(1), qarg(2), connCatalog.listNames())) {
               write(sock, `* LSUB () "/" ${name.includes(' ') ? `"${name}"` : name}`);
             }
             write(sock, `${tag} OK LSUB completed`);
@@ -958,7 +1002,7 @@ export class ImapServer {
             const name = qarg(1);
             if (canonicalMailboxName(name) === 'INBOX') {
               write(sock, `${tag} NO INBOX already exists`);
-            } else if (this.#catalog.create(name) === undefined) {
+            } else if (connCatalog.create(name) === undefined) {
               write(sock, `${tag} NO mailbox already exists`);
             } else {
               write(sock, `${tag} OK CREATE completed`);
@@ -970,7 +1014,7 @@ export class ImapServer {
             // the selected one silently — but we keep it simple and let a client that
             // deleted its selected mailbox carry on (SELECT elsewhere).
             const name = qarg(1);
-            if (this.#catalog.delete === undefined || !this.#catalog.delete(name)) {
+            if (connCatalog.delete === undefined || !connCatalog.delete(name)) {
               write(sock, `${tag} NO cannot delete mailbox (absent, or it is INBOX)`);
             } else {
               if (selectedName === canonicalMailboxName(name)) {
@@ -983,7 +1027,7 @@ export class ImapServer {
           }
           case 'RENAME': {
             // RFC 9051 §6.3.5. qarg(1)=existing name, qarg(2)=new name (quote-aware).
-            const outcome = this.#catalog.rename === undefined ? 'notfound' : this.#catalog.rename(qarg(1), qarg(2));
+            const outcome = connCatalog.rename === undefined ? 'notfound' : connCatalog.rename(qarg(1), qarg(2));
             if (outcome === 'ok') write(sock, `${tag} OK RENAME completed`);
             else if (outcome === 'exists') write(sock, `${tag} NO target mailbox already exists`);
             else write(sock, `${tag} NO no such mailbox`);
@@ -991,7 +1035,7 @@ export class ImapServer {
           }
           case 'STATUS': {
             const name = qarg(1);
-            const box = this.#catalog.get(name);
+            const box = connCatalog.get(name);
             if (box === undefined) {
               write(sock, `${tag} NO no such mailbox`);
               break;
@@ -1053,6 +1097,9 @@ export class ImapServer {
             const pass = qarg(2);
             if (this.#authenticate !== undefined && !this.#authenticate(user, pass)) {
               write(sock, `${tag} NO [AUTHENTICATIONFAILED] invalid credentials`);
+            } else if (!bindAccount(user)) {
+              // Credentials verified but the account is unknown or disabled (multi-account mode).
+              write(sock, `${tag} NO [AUTHENTICATIONFAILED] invalid credentials`);
             } else {
               authenticated = true;
               write(sock, `${tag} OK [CAPABILITY ${CAPABILITIES}] LOGIN completed`);
@@ -1072,11 +1119,14 @@ export class ImapServer {
             if (ir === '') {
               pendingAuth = tag;
               write(sock, '+ ');
-            } else if (this.#verifySaslPlain(ir)) {
-              authenticated = true;
-              write(sock, `${tag} OK [CAPABILITY ${CAPABILITIES}] authenticated`);
             } else {
-              write(sock, `${tag} NO [AUTHENTICATIONFAILED] invalid credentials`);
+              const authedUser = this.#saslPlainUser(ir);
+              if (authedUser !== null && bindAccount(authedUser)) {
+                authenticated = true;
+                write(sock, `${tag} OK [CAPABILITY ${CAPABILITIES}] authenticated`);
+              } else {
+                write(sock, `${tag} NO [AUTHENTICATIONFAILED] invalid credentials`);
+              }
             }
             break;
           }
@@ -1089,7 +1139,7 @@ export class ImapServer {
               break;
             }
             const name = qarg(1) || 'INBOX';
-            const box = this.#catalog.get(name);
+            const box = connCatalog.get(name);
             if (box === undefined) {
               // RFC 9051 §6.3.2: a failed SELECT/EXAMINE deselects — the client is left
               // with NO mailbox selected, not still holding the previous one.
@@ -1210,7 +1260,7 @@ export class ImapServer {
             }
             // Wake peers so \Seen set by this read propagates (a phone opening a message
             // marks it read on the desktop). Fired after the FETCH, never mid-response.
-            if (markedSeen && selectedName !== null) this.#notifier?.notify(selectedName);
+            if (markedSeen && selectedName !== null) connNotifier?.notify(selectedName);
             write(sock, `${tag} OK FETCH completed`);
             break;
           }
@@ -1355,7 +1405,7 @@ export class ImapServer {
               }
             }
             // Wake other connections on this mailbox so they pick up the flag change.
-            if (storeChanged && selectedName !== null) this.#notifier?.notify(selectedName);
+            if (storeChanged && selectedName !== null) connNotifier?.notify(selectedName);
             // MODIFIED lists the messages left unchanged because they failed UNCHANGEDSINCE.
             const modified = failed.length > 0 ? `[MODIFIED ${compressSequenceSet(failed)}] ` : '';
             write(sock, `${tag} OK ${modified}STORE completed`);
@@ -1375,7 +1425,7 @@ export class ImapServer {
             }
             const set = arg(1);
             const targetName = unquote(parts.slice(cmdIndex + 2).join(' '));
-            const target = this.#catalog.get(targetName);
+            const target = connCatalog.get(targetName);
             if (target === undefined) {
               write(sock, `${tag} NO [TRYCREATE] no such mailbox`);
               break;
@@ -1400,10 +1450,10 @@ export class ImapServer {
               for (const { msg } of descending) selected.expunge(msg.uid);
               emitExpunged(srcUids, descending.map((e) => e.seq));
               knownUids = selected.messages.map((m) => m.uid);
-              if (selectedName !== null) this.#notifier?.notify(selectedName);
+              if (selectedName !== null) connNotifier?.notify(selectedName);
             }
             // Wake connections idling on the destination (and, for MOVE, the source).
-            if (dstUids.length > 0) this.#notifier?.notify(canonicalMailboxName(targetName));
+            if (dstUids.length > 0) connNotifier?.notify(canonicalMailboxName(targetName));
             const copyuid = srcUids.length > 0 ? `[COPYUID ${target.uidValidity} ${srcUids.join(',')} ${dstUids.join(',')}] ` : '';
             write(sock, `${tag} OK ${copyuid}${cmd} completed`);
             break;
@@ -1440,7 +1490,7 @@ export class ImapServer {
             // later NOOP/CHECK does not re-announce them as if another connection acted.
             knownUids = selected.messages.map((m) => m.uid);
             // Wake other connections idling on this mailbox so they drop the same messages.
-            if (removedUids.size > 0 && selectedName !== null) this.#notifier?.notify(selectedName);
+            if (removedUids.size > 0 && selectedName !== null) connNotifier?.notify(selectedName);
             write(sock, `${tag} OK EXPUNGE completed`);
             break;
           }
@@ -1451,7 +1501,7 @@ export class ImapServer {
               write(sock, `${tag} BAD no mailbox selected`);
               break;
             }
-            if (this.#notifier === undefined) {
+            if (connNotifier === undefined) {
               write(sock, `${tag} NO IDLE unavailable`);
               break;
             }
@@ -1459,7 +1509,7 @@ export class ImapServer {
             // While idling, any change another connection makes to this mailbox
             // (delivery or expunge) reconciles this connection's view in real time,
             // emitting untagged EXPUNGE/EXISTS just as at a command boundary.
-            const unsub = this.#notifier.subscribe(name, () => {
+            const unsub = connNotifier.subscribe(name, () => {
               syncSelected();
             });
             idle = { tag, unsub };
@@ -1473,7 +1523,7 @@ export class ImapServer {
             const removed = selected !== null && !readOnly ? selected.expungeDeleted() : [];
             // No EXPUNGE goes to us (we are deselecting), but peers on this mailbox must
             // still learn the messages vanished.
-            if (removed.length > 0 && closedName !== null) this.#notifier?.notify(closedName);
+            if (removed.length > 0 && closedName !== null) connNotifier?.notify(closedName);
             selected = null;
             selectedName = null;
             readOnly = false;

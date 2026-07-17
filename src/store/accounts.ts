@@ -17,6 +17,17 @@ function serverKeyOf(saltedPassword: Buffer, hash: ScramHash): Buffer {
   return createHmac(hash, saltedPassword).update('Server Key').digest();
 }
 
+/**
+ * Derive the SCRAM keys a store persists — StoredKey and ServerKey — from a password
+ * and its salt/iterations/hash. The single point that turns a password into stored
+ * material, so the in-memory `AccountStore` and the SQLite `AccountRegistry` can never
+ * disagree about what a credential is. Returns no copy of the password.
+ */
+export function deriveCredential(password: string, salt: Buffer, iterations: number, hash: ScramHash): { storedKey: Buffer; serverKey: Buffer } {
+  const salted = hi(password, salt, iterations, hash);
+  return { storedKey: storedKey(salted, hash), serverKey: serverKeyOf(salted, hash) };
+}
+
 export interface StoredCredential {
   readonly salt: Buffer;
   readonly iterations: number;
@@ -37,13 +48,13 @@ export class AccountStore {
 
   /** Set a user's password, deriving and storing only the SCRAM keys (not the password). */
   setPassword(username: string, password: string, salt: Buffer, iterations: number, hash: ScramHash, defects: AccountDefects = {}): void {
-    const salted = hi(password, salt, iterations, hash);
+    const { storedKey: sk, serverKey: svk } = deriveCredential(password, salt, iterations, hash);
     const cred: StoredCredential = {
       salt,
       iterations,
       hash,
-      storedKey: storedKey(salted, hash),
-      serverKey: serverKeyOf(salted, hash),
+      storedKey: sk,
+      serverKey: svk,
       ...(defects.storePlaintextPassword === true ? { password } : {}),
     };
     this.#creds.set(username, cred);
