@@ -77,3 +77,10 @@ test('a null domain or an unparseable IP is "none"', async () => {
   assert.equal(await checkSpf('192.0.2.5', '', resolvers({})), 'none', 'empty domain');
   assert.equal(await checkSpf('not-an-ip', 'ex.test', resolvers({ 'ex.test': ['v=spf1 -all'] })), 'none', 'bad IP');
 });
+
+test('an IPv4-mapped IPv6 peer (::ffff:x) matches an ip4: mechanism', async () => {
+  const r = resolvers({ 'ex.test': ['v=spf1 ip4:192.0.2.0/24 -all'] });
+  // On a dual-stack socket an IPv4 sender appears as ::ffff:192.0.2.5.
+  assert.equal(await checkSpf('::ffff:192.0.2.5', 'ex.test', r), 'pass', 'the mapped address is treated as IPv4');
+  assert.equal(await checkSpf('::ffff:198.51.100.1', 'ex.test', r), 'fail', 'and still fails when out of range');
+});

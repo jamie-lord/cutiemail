@@ -210,7 +210,11 @@ async function matchMechanism(term: SpfTerm, state: EvalState, depth: number, cu
  * Authentication-Results.
  */
 export async function checkSpf(ip: string, domain: string, resolvers: SpfResolvers): Promise<SpfResult> {
-  if (domain === '' || ipToBig(ip) === null) return 'none';
-  const state: EvalState = { lookups: 0, resolvers, ip };
+  // On a dual-stack socket an IPv4 peer appears as an IPv4-mapped IPv6 address
+  // (::ffff:1.2.3.4); treat it as the IPv4 address so ip4: mechanisms match.
+  const mapped = /^::ffff:(\d+\.\d+\.\d+\.\d+)$/i.exec(ip);
+  const normalized = mapped !== null && net.isIPv4(mapped[1]!) ? mapped[1]! : ip;
+  if (domain === '' || ipToBig(normalized) === null) return 'none';
+  const state: EvalState = { lookups: 0, resolvers, ip: normalized };
   return evalDomain(domain, state, 0);
 }
