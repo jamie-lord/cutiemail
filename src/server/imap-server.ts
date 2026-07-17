@@ -174,6 +174,25 @@ interface SearchContext {
   readonly count: number;
 }
 
+/** Compress a sorted ascending list of numbers to an IMAP sequence-set: "1,3:5,8". */
+function compressSequenceSet(nums: readonly number[]): string {
+  const ranges: string[] = [];
+  let start = nums[0]!;
+  let prev = start;
+  for (let i = 1; i < nums.length; i++) {
+    const n = nums[i]!;
+    if (n === prev + 1) {
+      prev = n;
+      continue;
+    }
+    ranges.push(start === prev ? `${start}` : `${start}:${prev}`);
+    start = n;
+    prev = n;
+  }
+  ranges.push(start === prev ? `${start}` : `${start}:${prev}`);
+  return ranges.join(',');
+}
+
 /**
  * Parse SEARCH criteria into a key tree, returning null on any unsupported or
  * malformed key. Returning null (→ the caller answers BAD) is the whole point:
@@ -910,12 +929,19 @@ export class ImapServer {
               write(sock, `${tag} BAD no mailbox selected`);
               break;
             }
-            // Tokenise the raw criteria (after the SEARCH verb) respecting quotes,
-            // so a quoted multi-word value stays whole.
-            const critAt = line.toUpperCase().indexOf('SEARCH') + 'SEARCH'.length;
+            // Extended SEARCH (RFC 9051 §6.4.4): an optional "RETURN (options)" before
+            // the criteria switches the reply to an ESEARCH aggregate (MIN/MAX/ALL/COUNT).
+            let criteria = line.slice(line.toUpperCase().indexOf('SEARCH') + 'SEARCH'.length).trim();
+            const rm = /^RETURN\s*\(([^)]*)\)\s*/i.exec(criteria);
+            let returnOpts: string[] | null = null;
+            if (rm !== null) {
+              returnOpts = (rm[1] ?? '').trim().split(/\s+/).filter((x) => x.length > 0).map((s) => s.toUpperCase());
+              if (returnOpts.length === 0) returnOpts = ['ALL']; // RETURN () defaults to ALL
+              criteria = criteria.slice(rm[0].length);
+            }
             const msgs = selected.messages;
             const largestUid = msgs.length > 0 ? msgs[msgs.length - 1]!.uid : 0;
-            const keys = parseSearchKeys(imapTokens(line.slice(critAt)), { largestUid, count: msgs.length });
+            const keys = parseSearchKeys(imapTokens(criteria), { largestUid, count: msgs.length });
             if (keys === null) {
               // An unsupported/malformed key: answer BAD rather than run a partial
               // search that would return wrong (or inverted) results.
@@ -927,7 +953,18 @@ export class ImapServer {
               const searchable = { headers: parseMessage(m.raw).headers, flags: m.flags, internalDate: m.internalDate, raw: m.raw, uid: m.uid, seq: i + 1 };
               if (matchesSearch(searchable, keys)) hits.push(uidMode ? m.uid : i + 1);
             });
-            write(sock, `* SEARCH${hits.length > 0 ? ' ' + hits.join(' ') : ''}`);
+            if (returnOpts !== null) {
+              // ESEARCH aggregate reply (RFC 9051 §7.3.4).
+              const parts: string[] = [`(TAG "${tag}")`];
+              if (uidMode) parts.push('UID');
+              if (returnOpts.includes('MIN') && hits.length > 0) parts.push(`MIN ${hits[0]}`);
+              if (returnOpts.includes('MAX') && hits.length > 0) parts.push(`MAX ${hits[hits.length - 1]}`);
+              if (returnOpts.includes('ALL') && hits.length > 0) parts.push(`ALL ${compressSequenceSet(hits)}`);
+              if (returnOpts.includes('COUNT')) parts.push(`COUNT ${hits.length}`);
+              write(sock, `* ESEARCH ${parts.join(' ')}`);
+            } else {
+              write(sock, `* SEARCH${hits.length > 0 ? ' ' + hits.join(' ') : ''}`);
+            }
             write(sock, `${tag} OK SEARCH completed`);
             break;
           }

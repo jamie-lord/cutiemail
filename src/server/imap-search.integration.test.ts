@@ -127,6 +127,35 @@ test('SEARCH with an unsupported key is rejected with BAD, not answered with wro
   }
 });
 
+test('extended SEARCH RETURN yields an ESEARCH aggregate (RFC 9051 §7.3.4)', async () => {
+  const cat = new MemoryCatalog();
+  const inbox = cat.get('INBOX')!;
+  for (let i = 0; i < 6; i++) inbox.append(Buffer.from(`Subject: m${i}\r\n\r\nb\r\n`, 'latin1'));
+  inbox.storeFlags(2, 'add', ['\\Seen']);
+  inbox.storeFlags(3, 'add', ['\\Seen']);
+  inbox.storeFlags(4, 'add', ['\\Seen']); // SEEN = 2,3,4 ; UNSEEN = 1,5,6
+  const server = await ImapServer.start(cat, { authenticate: () => true });
+  const sock = net.connect(server.port, '127.0.0.1');
+  const s = new S(sock);
+  try {
+    await s.ready('* OK');
+    s.send('a1 LOGIN u p\r\na2 SELECT INBOX\r\n');
+    await s.ready('a2 OK');
+    s.send('a3 SEARCH RETURN (MIN MAX COUNT) SEEN\r\n');
+    await s.ready('a3 OK');
+    assert.match(s.snapshot(), /\* ESEARCH \(TAG "a3"\) MIN 2 MAX 4 COUNT 3/, 'aggregates over the SEEN set');
+    s.send('a4 SEARCH RETURN (ALL) UNSEEN\r\n');
+    await s.ready('a4 OK');
+    assert.match(s.snapshot(), /\* ESEARCH \(TAG "a4"\) ALL 1,5:6/, 'ALL is a compressed sequence-set');
+    s.send('a5 UID SEARCH RETURN (COUNT) UNSEEN\r\n');
+    await s.ready('a5 OK');
+    assert.match(s.snapshot(), /\* ESEARCH \(TAG "a5"\) UID COUNT 3/, 'UID mode is flagged in the ESEARCH reply');
+  } finally {
+    sock.destroy();
+    await server.close();
+  }
+});
+
 test('mailbox names with spaces (Outlook-style) work through CREATE/SELECT/STATUS/LIST', async () => {
   const cat = new MemoryCatalog();
   const server = await ImapServer.start(cat, { authenticate: () => true });
