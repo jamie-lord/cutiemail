@@ -17,6 +17,7 @@
 import { DatabaseSync } from 'node:sqlite';
 import { randomUUID } from 'node:crypto';
 import { readFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
 import { SqliteCatalog } from './store/sqlite-mailbox.ts';
 import { AccountRegistry } from './store/account-registry.ts';
 import { MailStores } from './store/mail-stores.ts';
@@ -155,7 +156,9 @@ export async function startServer(cfg: MailServerConfig): Promise<RunningServer>
   // mail-database path (default `mail-<user>.db` beside the control DB, or `:memory:`
   // when the control DB is in-memory, or an explicit per-account override).
   const registry = AccountRegistry.open(controlDb);
-  const mailDbPathFor = (user: string, explicit?: string): string => explicit ?? (inMemory ? ':memory:' : `mail-${user}.db`);
+  // A user's mail DB defaults to `mail-<user>.db` in the SAME directory as the control
+  // DB (so a production deploy keeps all databases together), or `:memory:` in-memory.
+  const mailDbPathFor = (user: string, explicit?: string): string => explicit ?? (inMemory ? ':memory:' : join(dirname(cfg.dbPath), `mail-${user}.db`));
   for (const a of cfg.accounts) registry.upsert(a.user, a.pass, mailDbPathFor(a.user, a.mailDbPath));
   const verify = (user: string, pass: string): boolean => registry.verifyPassword(user, pass);
 
@@ -416,7 +419,17 @@ function configFromEnv(): MailServerConfig & { usingDevCert: boolean } {
     submissionPort: Number(process.env.MAIL_SUBMISSION_PORT ?? 5587),
     imapPort: Number(process.env.MAIL_IMAP_PORT ?? 5993),
     domain: process.env.MAIL_DOMAIN ?? 'mail.example.com',
-    accounts: [{ user: process.env.MAIL_USER ?? 'demo', pass: process.env.MAIL_PASS ?? 'demo', mailDbPath: process.env.MAIL_DB ?? 'mail.db' }],
+    // The primary account keeps its existing mail database (MAIL_DB) for a clean
+    // migration; additional accounts come from MAIL_ACCOUNTS ("user:pass,user2:pass2")
+    // and default their mail DB to mail-<user>.db beside the control DB.
+    accounts: [
+      { user: process.env.MAIL_USER ?? 'demo', pass: process.env.MAIL_PASS ?? 'demo', mailDbPath: process.env.MAIL_DB ?? 'mail.db' },
+      ...(process.env.MAIL_ACCOUNTS ?? '')
+        .split(',')
+        .map((s) => s.trim())
+        .filter((s) => s.includes(':'))
+        .map((pair) => ({ user: pair.slice(0, pair.indexOf(':')), pass: pair.slice(pair.indexOf(':') + 1) })),
+    ],
     tls: dev,
     ...(dkim !== undefined ? { dkim } : {}),
     maxMessageSize: Number(process.env.MAIL_MAX_SIZE ?? 26_214_400), // 25 MiB default
