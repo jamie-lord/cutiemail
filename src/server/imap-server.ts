@@ -324,17 +324,36 @@ function parseSearchKeys(tokens: readonly string[], ctx: SearchContext): SearchK
   return keys;
 }
 
-/** Which catalog names a LIST/LSUB pattern matches ("*" / "%" match all at our single level). */
-function matchNames(pattern: string, names: readonly string[]): readonly string[] {
-  const p = unquote(pattern);
-  if (p === '*' || p === '%') return names;
-  return names.filter((n) => canonicalMailboxName(p) === n);
+/**
+ * Which catalog names a LIST/LSUB reference+pattern matches, per the IMAP wildcard
+ * rules (RFC 9051 §6.3.9). The reference and pattern are concatenated; then `*`
+ * matches any run of characters INCLUDING the hierarchy separator, `%` matches any
+ * run NOT crossing the separator (so it stays within one level), and every other
+ * character is a literal. The old implementation only handled a bare `*`/`%` and
+ * treated everything else as an exact name — so `INBOX/%`, `qbox*`, and every other
+ * real pattern a client uses to walk the hierarchy matched nothing.
+ */
+function matchNames(reference: string, pattern: string, names: readonly string[]): readonly string[] {
+  const pat = unquote(reference) + unquote(pattern);
+  let rx = '';
+  for (const ch of pat) {
+    if (ch === '*') rx += '.*';
+    else if (ch === '%') rx += '[^/]*';
+    else rx += ch.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  }
+  const re = new RegExp(`^${rx}$`);
+  return names.filter((n) => re.test(n));
 }
 
-/** The LIST attribute list for a mailbox name (special-use where conventional). */
-function listAttributes(name: string): string {
+/**
+ * The LIST attribute list for a mailbox name: special-use where conventional, and
+ * \HasChildren / \HasNoChildren (RFC 9051 §7.3.1) computed from whether any other
+ * name sits under it — so a client shows an expand affordance for a parent folder.
+ */
+function listAttributes(name: string, allNames: readonly string[]): string {
   const use = SPECIAL_USE[name];
-  return use === undefined ? '(\\HasNoChildren)' : `(\\HasNoChildren ${use})`;
+  const child = allNames.some((n) => n.startsWith(`${name}/`)) ? '\\HasChildren' : '\\HasNoChildren';
+  return use === undefined ? `(${child})` : `(${child} ${use})`;
 }
 
 interface FetchAtts {
@@ -877,14 +896,17 @@ export class ImapServer {
             // (SPECIAL-USE) selection (RFC 6154 §2): return only mailboxes that carry a
             // special-use attribute (\Sent, \Drafts, \Trash, \Junk, \Archive).
             const onlySpecialUse = selectionOpts.toUpperCase().includes('SPECIAL-USE');
-            li += 1; // reference (flat namespace — unused)
+            const reference = qargs[li] ?? '';
+            li += 1;
             const pattern = qargs[li] ?? '';
             if (pattern === '') {
+              // A bare-root probe: the reference IS a valid mailbox reference.
               write(sock, '* LIST (\\Noselect) "/" ""');
             } else {
-              for (const name of matchNames(pattern, this.#catalog.listNames())) {
+              const allNames = this.#catalog.listNames();
+              for (const name of matchNames(reference, pattern, allNames)) {
                 if (onlySpecialUse && SPECIAL_USE[name] === undefined) continue;
-                const attrs = wantSubscribed ? listAttributes(name).replace(/\)$/, ' \\Subscribed)') : listAttributes(name);
+                const attrs = wantSubscribed ? listAttributes(name, allNames).replace(/\)$/, ' \\Subscribed)') : listAttributes(name, allNames);
                 write(sock, `* LIST ${attrs} "/" ${name.includes(' ') ? `"${name}"` : name}`);
               }
             }
@@ -894,7 +916,7 @@ export class ImapServer {
           case 'LSUB': {
             // rev2 dropped LSUB; answered like LIST as a deliberate concession to
             // clients that still probe with it during setup.
-            for (const name of matchNames(qarg(2), this.#catalog.listNames())) {
+            for (const name of matchNames(qarg(1), qarg(2), this.#catalog.listNames())) {
               write(sock, `* LSUB () "/" ${name.includes(' ') ? `"${name}"` : name}`);
             }
             write(sock, `${tag} OK LSUB completed`);

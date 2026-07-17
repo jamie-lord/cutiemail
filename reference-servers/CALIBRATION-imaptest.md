@@ -85,6 +85,30 @@ mutations** (measured from the throwaway DB's `uid_next` / expunge log / `highes
 with **zero errors**, and the server never crashed. The instrument that found the bug now
 passes the server clean under concurrency.
 
+## Scripted conformance mode (`test=`) — a second real bug
+
+imaptest also ships ~70 scripted protocol tests (`src/tests/`: fetch, search, store,
+copy, expunge, esearch, uidplus, list, …). Run against our server they reported "29
+groups failed" — a number that needed triage, not a headline:
+
+- **State-leak cascade (most of it).** The scripts assume a fresh account and reuse one
+  work mailbox (`imaptest`) across groups; our storage is *persistent*, so a mailbox from
+  an earlier group made a later `CREATE imaptest` return `NO ... already exists`, failing
+  the group's setup and everything after it. Verified not a bug: `CREATE foo` → `DELETE
+  foo` → `CREATE foo` all succeed, and SUBSCRIBE/LSUB/LIST (SUBSCRIBED) all work — the
+  failures were leftover state, not defective commands.
+- **Unsupported extensions.** imaptest reported "0 skipped due to missing capabilities" and
+  ran the SORT / THREAD / CATENATE / URLAUTH / BINARY scripts anyway; we deliberately don't
+  implement those (recorded cuts), so their failures are expected, not conformance gaps.
+- **One genuine bug: LIST wildcard matching.** `LIST "" *` listed everything, but *any*
+  pattern with a literal prefix — `qbox*`, `INBOX/%`, `parent/%` — matched **nothing**.
+  `matchNames` only handled a bare `*`/`%` and treated every other pattern as an exact
+  name (a stale "flat namespace" assumption), so a client walking the hierarchy with
+  `LIST "" "INBOX/%"` got an empty tree. Also every folder reported `\HasNoChildren` even
+  when it had children. **Fixed:** proper IMAP wildcard→regex matching (`*` crosses the
+  hierarchy separator, `%` does not, literals escaped) plus a real `\HasChildren`
+  computation. Regression tests in `src/server/imap-list.integration.test.ts`.
+
 ## What this de-risks
 
 The IMAP server's multi-connection behaviour — the phone-plus-desktop case central to the
@@ -94,7 +118,8 @@ real §7.4.1 violation the passing suite shared a blind spot with.
 
 ## Still open
 
-- Single-run scripted conformance (`imaptest test=<dir>`) beyond the stress profile.
+- A deeper pass over the scripted tests run each against a *fresh* account (to remove the
+  persistent-store state-leak cascade) so any remaining real failures stand out.
 - A larger concurrent-client / longer-duration soak.
 - imaptest links vanilla Dovecot 2.3.21; Ubuntu ships a patched 2.3.21, so the build uses the
   upstream source tree rather than the distro headers (recorded in the build steps above).
