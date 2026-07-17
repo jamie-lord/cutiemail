@@ -60,6 +60,48 @@ strings" rule (`src/wire/bytes.ts` explains why the wire DSL has no default line
 terminator), and it is what lets the round-trip be byte-exact instead of
 approximately-exact.
 
+## What the receiver does before it stores
+
+The trace above is the happy path; a message off the open internet is not
+trusted. Between "read the bytes" and "append to SQLite", `main.ts`'s inbound
+handler authenticates the sender and records the result — informational, never a
+rejection (we are a mail server, not a spam filter; that stays a recorded cut).
+Because a DKIM key and the SPF/DMARC records are DNS lookups, the delivery handler
+is `async`, and `smtp-receiver.ts` serialises chunk processing through a promise
+chain so a pipelined sender can't re-enter it and corrupt the receive buffer.
+
+```mermaid
+flowchart TB
+    raw["received bytes"] --> dkim["verifyDkim<br/>server/dkim-inbound.ts"]
+    raw --> spf["checkSpf<br/>auth/spf-check.ts"]
+    raw --> dmarc["checkDmarc<br/>server/dmarc-inbound.ts"]
+    dns[("DNS<br/>TXT · A · MX")] --> dkim & spf & dmarc
+    dkim -->|"pass domains"| dmarc
+    spf -->|"result + mailfrom"| dmarc
+    dkim & spf & dmarc --> ar["Authentication-Results:<br/>dkim=… spf=… dmarc=… (p=…)"]
+    raw -->|"strip a forged AR<br/>bearing our authserv-id"| clean["cleaned message"]
+    ar --> stamp["prepend AR + Received"]
+    clean --> stamp
+    stamp --> store[("SqliteMailbox")]
+```
+
+- **DKIM** (`dkim-inbound.ts`) verifies *every* signature (a message may carry
+  several) over RSA or Ed25519, requiring `From` in `h=` (§5.4) and honouring
+  expiry — it returns the set of passing `d=` domains so DMARC can align against
+  any. It composes the vector-pinned `crypto/dkim-*` primitives; DNS key retrieval
+  is the only new part.
+- **SPF** (`auth/spf-check.ts`) is an async recursive evaluator over the sending
+  domain's policy — `a`/`mx`/`include`/`redirect` resolved live, IPv4/IPv6 CIDR
+  matched against the peer, and the RFC 7208 ten-lookup limit enforced so a hostile
+  record can't fan the resolver into a DoS.
+- **DMARC** (`dmarc-inbound.ts`) ties the two to the `From` domain: it passes only
+  when an *aligned* DKIM or SPF identifier passed (relaxed = same organizational
+  domain, via a public-suffix heuristic; strict = exact).
+
+The composition glue is fuzzed (`server/auth-fuzz.test.ts`): 1500 malformed
+records and headers, all returning a verdict without throwing. Both this and the
+outbound signer are the same "compose the tested crypto, don't reinvent it" move.
+
 ## The running server, bottom up
 
 Each layer depends only on the ones above it in this list. You can read them in
@@ -110,18 +152,27 @@ queue) sit alongside.
 **`server/` + `client/`** — the live network layer. `smtp-receiver.ts` and
 `imap-server.ts` are real `net`/`tls` servers; `client/deliver.ts` is the sending
 half and `client/mx.ts` resolves MX hosts. The send pipeline is a chain of small,
-separately-tested transforms — `submission-fixup.ts` (add Date/Message-ID),
-`received.ts` (stamp the trace hop), `dkim-signer.ts` (sign), then `sqlite-queue.ts`
-+ `relay-loop.ts` (persist and retry) and `outbound.ts` (resolve MX, deliver over
-STARTTLS). `mailbox-notifier.ts` is the pub/sub that lets an inbound delivery wake
-an idling IMAP connection (IDLE). Each is thin and owns one concern.
+separately-tested transforms — `submission-fixup.ts` (add a missing From from the
+envelope sender, plus Date/Message-ID), `received.ts` (stamp the trace hop),
+`dkim-signer.ts` (sign), then `sqlite-queue.ts` + `relay-loop.ts` (persist and
+retry) and `outbound.ts` (resolve MX, deliver with opportunistic STARTTLS and a
+plaintext fallback). When the relay finally gives up, `bounce.ts` assembles a
+`multipart/report` non-delivery report and delivers it back to the sender (never to
+a null return-path, so bounces can't loop). `imap-server.ts` also serves the full
+read side a real client needs — `BODYSTRUCTURE` and per-part `BODY[n]` fetch (so a
+client renders an attachment without downloading the whole message), the fetch
+macros, `INTERNALDATE`, extended `SEARCH`/`ESEARCH`, and `DELETE`/`RENAME`.
+`mailbox-notifier.ts` is the pub/sub that lets an inbound delivery wake an idling
+IMAP connection (IDLE). Each is thin and owns one concern.
 
 **`main.ts`** — the daemon. Opens the database, seeds accounts, and starts three
-listeners (inbound SMTP, submission-with-AUTH, IMAPS). Inbound mail is trace-stamped
-and stored; submitted mail is split by `routeRecipients` — local recipients into a
-folder, remote ones through the send pipeline above. `startServer()` is factored
-out from `main()` so the whole assembly is itself under test. If you want to know
-what "the server" *is*, it is this file and the modules it wires.
+listeners (inbound SMTP, submission-with-AUTH, IMAPS). Inbound mail is authenticated
+(the section above), trace-stamped, and stored — and only for recipients we host, so
+we never accept mail we can't deliver. Submitted mail is split by `routeRecipients` —
+local recipients into a folder, remote ones through the send pipeline above.
+`startServer()` is factored out from `main()` so the whole assembly is itself under
+test. If you want to know what "the server" *is*, it is this file and the modules it
+wires.
 
 ## The test bed, and why it can be trusted
 
