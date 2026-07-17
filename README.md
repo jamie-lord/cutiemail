@@ -1,8 +1,8 @@
 # A mail server, built from the byte up
 
-A small, opinionated, self-contained mail server in TypeScript. It sends and receives real
-internet mail and speaks the protocols existing clients (Thunderbird, Apple Mail — desktop and
-phone) drive, storing everything in SQLite. No mail libraries: the SMTP and IMAP engines, the
+**cutie-mail** is a small, opinionated, self-contained mail server in TypeScript. It sends and
+receives real internet mail and speaks the protocols existing clients (Thunderbird, Apple Mail —
+desktop and phone) drive, storing everything in SQLite. No mail libraries: the SMTP and IMAP engines, the
 MIME parser, and the DKIM/SPF/DMARC crypto are all hand-built on the byte layer. **Zero runtime dependencies** —
 Node runs the TypeScript directly, and the only thing in `node_modules` is the type-checker.
 

@@ -1,9 +1,9 @@
 {
-  "name": "smtp-conformance",
+  "name": "cutie-mail",
   "version": "0.0.0",
   "private": true,
   "type": "module",
-  "description": "A conformance test suite for SMTP receivers, asserting against RFC 5321.",
+  "description": "A small, self-contained mail server in TypeScript — SMTP send + receive, IMAP4rev2, SPF/DKIM/DMARC, SQLite storage, zero runtime dependencies. Ships an RFC 5321 conformance suite as a component.",
   "engines": {
     "node": ">=22.18.0"
   },
@@ -17,7 +17,7 @@
     "library-coverage": "node -e \"import('./src/report/library-coverage.ts').then(m => console.log(m.renderLibraryCoverage(m.libraryCoverage())))\""
   },
   "bin": {
-    "smtp-conformance": "src/cli.ts"
+    "cutie-mail-conformance": "src/cli.ts"
   },
   "devDependencies": {
     "@types/node": "^22.20.1",
