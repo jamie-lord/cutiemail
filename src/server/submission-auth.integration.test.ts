@@ -94,3 +94,43 @@ test('submission: MAIL is refused until AUTH succeeds over TLS; wrong creds and 
     await receiver.close();
   }
 });
+
+test('submission: AUTH PLAIN two-step continuation form (RFC 4954) is supported', async () => {
+  const accounts = new AccountStore();
+  accounts.setPassword('alice', 'correct horse', Buffer.from('saltsalt'), 4096, 'sha256');
+  const delivered: DeliveredMessage[] = [];
+  const receiver = await SmtpReceiver.start((m) => delivered.push(m), {
+    tls: { key: TEST_KEY, cert: TEST_CERT },
+    requireAuth: true,
+    authenticate: (u, p) => accounts.verifyPassword(u, p),
+  });
+  try {
+    const raw = net.connect(receiver.port, '127.0.0.1');
+    raw.on('error', () => {});
+    const rr = new Reader(raw);
+    await rr.line('ESMTP\r\n');
+    raw.write('EHLO client\r\n');
+    await rr.line('250 STARTTLS\r\n');
+    raw.write('STARTTLS\r\n');
+    await rr.line('Ready to start TLS\r\n');
+    const secure = tls.connect({ socket: raw, rejectUnauthorized: false });
+    secure.on('error', () => {});
+    await new Promise<void>((r) => secure.once('secureConnect', () => r()));
+    const sr = new Reader(secure);
+    secure.write('EHLO client\r\n');
+    await sr.line('250 AUTH PLAIN\r\n');
+
+    // Two-step: AUTH PLAIN with no initial response -> 334 challenge -> credentials.
+    secure.write('AUTH PLAIN\r\n');
+    await sr.line('334');
+    secure.write(plainToken('alice', 'correct horse') + '\r\n');
+    await sr.line('235');
+
+    // Authenticated: MAIL is now accepted.
+    secure.write('MAIL FROM:<alice@example.com>\r\n');
+    await sr.line('2.1.0 Ok\r\n');
+    secure.end();
+  } finally {
+    await receiver.close();
+  }
+});

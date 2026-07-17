@@ -103,6 +103,7 @@ class Connection {
   #inTransaction = false; // a reverse-path buffer exists (MAIL accepted, not yet reset)
   #tls = false;
   #authed = false;
+  #awaitingAuth = false; // AUTH PLAIN issued without an initial response; next line is the SASL data
   #helo = '';
   readonly #remoteAddress: string;
   readonly #handler: DeliveryHandler;
@@ -192,6 +193,15 @@ class Connection {
       const lineBytes = this.#buf.subarray(0, nl);
       const line = lineBytes.toString('latin1');
       this.#buf = this.#buf.subarray(nl + 2);
+      // A SASL continuation response (after "AUTH PLAIN" with no initial response)
+      // is the base64 credentials — never a command; consume it here and redact.
+      if (this.#awaitingAuth) {
+        if (DEBUG) process.stderr.write('[smtp<] <SASL continuation redacted>\n');
+        this.#awaitingAuth = false;
+        if (line.trim() === '*') this.#write('501 5.7.0 authentication cancelled');
+        else this.#verifySaslPlain(line.trim());
+        continue;
+      }
       if (DEBUG) process.stderr.write(`[smtp<] ${line.replace(/^(AUTH\s+\S+\s+).*/i, '$1***')}\n`);
       // RFC 5321 §4.1.2: a command carrying an ASCII control octet (the CRLF
       // terminator is already stripped) is invalid — reject 501, never execute it.
@@ -328,12 +338,26 @@ class Connection {
       return;
     }
     const parts = line.split(/\s+/);
-    if ((parts[1] ?? '').toUpperCase() !== 'PLAIN' || parts[2] === undefined) {
+    if ((parts[1] ?? '').toUpperCase() !== 'PLAIN') {
       this.#write('504 5.5.4 unsupported AUTH mechanism');
       return;
     }
-    // SASL PLAIN payload: authzid NUL authcid NUL passwd.
-    const decoded = Buffer.from(parts[2], 'base64').toString('latin1').split(NUL);
+    if (parts[2] === undefined) {
+      // RFC 4954 continuation form: no initial response — ask for the SASL data.
+      this.#awaitingAuth = true;
+      this.#write('334 ');
+      return;
+    }
+    this.#verifySaslPlain(parts[2]);
+  }
+
+  /** Verify a base64 SASL PLAIN payload (authzid NUL authcid NUL passwd). */
+  #verifySaslPlain(b64: string): void {
+    if (this.#opts.authenticate === undefined) {
+      this.#write('504 5.5.4 AUTH not supported');
+      return;
+    }
+    const decoded = Buffer.from(b64, 'base64').toString('latin1').split(NUL);
     const username = decoded[1] ?? '';
     const password = decoded[2] ?? '';
     if (this.#opts.authenticate(username, password)) {
