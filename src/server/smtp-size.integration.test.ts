@@ -77,11 +77,13 @@ test('EHLO advertises 8BITMIME and an 8-bit body is stored byte-exact', async ()
     r.send('EHLO client\r\n');
     assert.match(await r.line('250'), /8BITMIME/, '8BITMIME is advertised');
     // A body with real 8-bit octets (UTF-8 "café" = 0xc3 0xa9), declared BODY=8BITMIME.
-    // No trailing CRLF: the <CRLF> before the terminating dot is the EOD marker, not content.
-    const body = Buffer.from('Subject: 8bit\r\n\r\ncafé — naïve', 'utf8');
+    // A well-formed message ends its final line with CRLF; that CRLF is the same one the
+    // terminating "<CRLF>.<CRLF>" reuses (RFC 5321 §4.1.1.4), so the terminator on the
+    // wire is just ".<CRLF>" and the final CRLF stays part of the stored message.
+    const body = Buffer.from('Subject: 8bit\r\n\r\ncafé — naïve\r\n', 'utf8');
     r.send('MAIL FROM:<a@b.test> BODY=8BITMIME\r\nRCPT TO:<c@mx.example.test>\r\nDATA\r\n');
     await r.line('354');
-    r.sock.write(Buffer.concat([body, Buffer.from('\r\n.\r\n', 'latin1')]));
+    r.sock.write(Buffer.concat([body, Buffer.from('.\r\n', 'latin1')]));
     await r.line('message stored');
     assert.equal(delivered.length, 1);
     assert.deepEqual(delivered[0]!.data, body, 'the 8-bit content was preserved byte-exact');

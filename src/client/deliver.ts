@@ -21,7 +21,7 @@ import { Wire } from '../wire/transport.ts';
 import type { WireOptions } from '../wire/transport.ts';
 import { replyFramer, frameReplyAtEof } from '../wire/reply.ts';
 import type { Reply } from '../wire/reply.ts';
-import { LF, CRLF, EOD, dotStuff } from '../wire/bytes.ts';
+import { CR, LF, DOT, CRLF, EOD, dotStuff } from '../wire/bytes.ts';
 
 export interface DeliveryRequest {
   /** Envelope reverse-path (may be empty for a bounce, i.e. MAIL FROM:<>). */
@@ -275,9 +275,19 @@ async function transmitData(wire: Wire, req: DeliveryRequest, defects: ClientDef
   const body = defects.skipDotStuffing === true ? req.data : dotStuff(req.data);
   await wire.send(body);
   if (defects.skipTerminatingDot !== true) {
-    // EOD is <CRLF>.<CRLF>; under the bare-LF defect send the <LF>.<LF> form so
-    // the (lenient) peer can still recognise it and the transaction completes.
-    await wire.send(defects.emitBareLf === true ? Buffer.from([LF, 0x2e, LF]) : EOD);
+    if (defects.emitBareLf === true) {
+      // Bare-LF defect: send the <LF>.<LF> form so the (lenient) peer still
+      // recognises end-of-data and the transaction completes.
+      await wire.send(Buffer.from([LF, DOT, LF]));
+    } else {
+      // The terminator is <CRLF>.<CRLF>, and RFC 5321 §4.1.1.4 makes its leading
+      // <CRLF> the same one that ends the message's final line. So when the message
+      // already ends in CRLF (every well-formed RFC 5322 message does), append only
+      // ".<CRLF>"; appending the full 5-byte EOD would inject a spurious blank line
+      // into the delivered message. Supply the CRLF only if the message lacks one.
+      const endsCrlf = body.length >= 2 && body[body.length - 2] === CR && body[body.length - 1] === LF;
+      await wire.send(endsCrlf ? Buffer.from([DOT, CR, LF]) : EOD);
+    }
   }
   return true;
 }

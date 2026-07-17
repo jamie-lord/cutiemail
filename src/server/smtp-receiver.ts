@@ -146,7 +146,12 @@ class Connection {
         }
         const eod = findEndOfData(this.#buf);
         if (eod === -1) break;
-        const payload = eod >= 5 ? this.#buf.subarray(0, eod - 5) : Buffer.alloc(0);
+        // The terminating sequence is <CRLF>.<CRLF>, but RFC 5321 §4.1.1.4 is explicit
+        // that its first <CRLF> "is also the <CRLF> that ends the final line of the data".
+        // So the message keeps that final CRLF; only the ".<CRLF>" indicator (3 bytes) is
+        // stripped. eod is past the whole terminator, so eod-3 is the byte after that CRLF.
+        // The bare-".<CRLF>" no-data case (eod===3) yields an empty message, as it should.
+        const payload = this.#buf.subarray(0, eod - 3);
         const unstuffed = unstuff(payload);
         // RFC 5321 §6.3: a message carrying too many Received hops is looping.
         const hops = this.#opts.maxReceivedHops;

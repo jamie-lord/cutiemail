@@ -129,8 +129,10 @@ export class ClientPeer {
         if (inData) {
           const eod = findEndOfData(buf);
           if (eod === -1) break;
-          // Trim the terminating sequence (5 octets for CRLF.CRLF, 3 for LF.LF).
-          const termLen = buf[eod - 5] === CR ? 5 : 3;
+          // Trim only the ".<CRLF>" / ".<LF>" indicator, not its leading line
+          // terminator — that CRLF ends the message's final line (RFC 5321 §4.1.1.4),
+          // so it stays with the payload. Matches SmtpReceiver's un-stuffing boundary.
+          const termLen = buf[eod - 2] === CR ? 3 : 2; // CRLF.CRLF -> 3 (.CRLF); LF.LF -> 2 (.LF)
           const payload = eod >= termLen ? buf.subarray(0, eod - termLen) : Buffer.alloc(0);
           this.#deliveries.push({ from, recipients: [...recipients], rawData: Buffer.from(payload) });
           from = '';

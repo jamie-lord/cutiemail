@@ -121,6 +121,29 @@ test('R-5321-4.5.2-a: the client dot-stuffs a leading period on transmit (skipDo
   });
 });
 
+test('R-5321-3.3-u: the terminator reuses the final line CRLF — no spurious blank line is delivered', async () => {
+  cites('R-5321-3.3-u');
+  // A well-formed message ending in CRLF. The terminating <CRLF>.<CRLF> shares that
+  // final CRLF, so the client must put ".<CRLF>" on the wire — not a whole extra
+  // <CRLF>.<CRLF>, which would append a blank line to the delivered message.
+  const ends = { ...REQUEST, data: Buffer.from('Subject: exact\r\n\r\nlast line\r\n', 'latin1') };
+  await withPeer({}, async (peer) => {
+    await deliver(connectTo(peer.port), ends);
+    const wire = peer.received.toString('latin1');
+    assert.ok(wire.endsWith('last line\r\n.\r\n'), `expected a bare ".CRLF" terminator, got ${JSON.stringify(wire.slice(-24))}`);
+    assert.ok(!wire.includes('last line\r\n\r\n.\r\n'), 'the client must not double the final CRLF');
+    // The peer stores exactly what was sent — byte-exact, one trailing CRLF.
+    assert.deepEqual(peer.deliveries[0]!.rawData, ends.data, 'the delivered message is byte-identical, no blank line added');
+  });
+  // A message NOT already ending in CRLF: the client supplies one, so the peer still
+  // sees a proper final line (the message is normalised, not truncated).
+  const noEnd = { ...REQUEST, data: Buffer.from('Subject: exact\r\n\r\nno newline', 'latin1') };
+  await withPeer({}, async (peer) => {
+    await deliver(connectTo(peer.port), noEnd);
+    assert.deepEqual(peer.deliveries[0]!.rawData, Buffer.from('Subject: exact\r\n\r\nno newline\r\n', 'latin1'), 'a missing final CRLF is supplied');
+  });
+});
+
 test('R-5321-2.1-h: the client is lock-step — no command sent before the prior reply (pipeline caught)', async () => {
   cites('R-5321-2.1-h');
   // The peer withholds the MAIL reply and snapshots what it has received at reply
