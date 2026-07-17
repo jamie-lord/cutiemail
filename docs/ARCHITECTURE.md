@@ -162,9 +162,11 @@ a null return-path, so bounces can't loop). `imap-server.ts` also serves the ful
 read side a real client needs — `BODYSTRUCTURE` and per-part `BODY[n]` fetch (so a
 client renders an attachment without downloading the whole message), the fetch
 macros, `INTERNALDATE`, extended `SEARCH`/`ESEARCH`, `DELETE`/`RENAME`, the
-`SPECIAL-USE` folders, and `CONDSTORE` (RFC 7162) — a persisted per-message
+`SPECIAL-USE` folders, `CONDSTORE` (RFC 7162) — a persisted per-message
 mod-sequence so a reconnecting client resyncs only the delta (`FETCH CHANGEDSINCE`)
-and guards a flag edit against a racing client (`STORE UNCHANGEDSINCE`).
+and guards a flag edit against a racing client (`STORE UNCHANGEDSINCE`) — and
+`QRESYNC`, which uses a persisted expunge log to replay vanished UIDs and changed
+flags in one `SELECT (QRESYNC …)` round-trip (the fast reconnect a phone uses).
 `mailbox-notifier.ts` is the pub/sub that lets one connection's change reach another:
 an inbound delivery, or an APPEND/EXPUNGE/MOVE on any connection, wakes every other
 connection selected on that mailbox. Each connection keeps its own view of the

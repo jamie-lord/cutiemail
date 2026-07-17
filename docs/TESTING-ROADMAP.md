@@ -155,8 +155,10 @@ What the assembled daemon (`npm start`) does, all live-verified:
   and **SPECIAL-USE** (RFC 6154 — the Sent/Drafts/Trash/Junk/Archive folders are provisioned and
   advertised, so a client files mail into them instead of inventing duplicates), plus **CONDSTORE**
   (RFC 7162 — a persisted per-message mod-sequence, HIGHESTMODSEQ on SELECT/STATUS, FETCH
-  MODSEQ/CHANGEDSINCE, and STORE UNCHANGEDSINCE with the MODIFIED response for optimistic-concurrency
-  flag edits). **Multi-connection sync** (RFC 9051 §7.4.1): two clients on one mailbox (a phone and a
+  MODSEQ/CHANGEDSINCE, SEARCH MODSEQ, and STORE UNCHANGEDSINCE with the MODIFIED response for
+  optimistic-concurrency flag edits) and **QRESYNC** (RFC 7162 §3.2 — a persisted expunge log lets
+  SELECT (QRESYNC …) and UID FETCH VANISHED replay vanished UIDs + changed flags in one round-trip,
+  the phone fast-reconnect). **Multi-connection sync** (RFC 9051 §7.4.1): two clients on one mailbox (a phone and a
   desktop) each learn what the other did — expunges, new mail, and flag changes propagate as untagged
   EXPUNGE/EXISTS/FETCH at a safe command boundary or live during IDLE. All live-verified against the
   box with two connections.
