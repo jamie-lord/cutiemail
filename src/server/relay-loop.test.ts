@@ -162,3 +162,44 @@ test('a queued message survives a restart (fresh loop, same database)', async ()
   assert.equal(queue.size, 0, 'recovered and delivered after restart');
   assert.equal((relayed as Buffer | null)?.toString(), 'recover me', 'the exact queued bytes are relayed');
 });
+
+test('a relay that throws advances the schedule (backoff, then give-up), not a stuck row', async () => {
+  const queue = SqliteQueue.open(new DatabaseSync(':memory:'));
+  let calls = 0;
+  const relay = async (): Promise<readonly RelayResult[]> => {
+    calls++;
+    throw new Error('boom'); // relayOutbound is designed not to, but defend against it
+  };
+  const loop = new RelayLoop(queue, relay);
+  const t0 = 2_000_000;
+  queue.enqueue('me@x.test', ['friend@y.test'], Buffer.from('msg'), t0);
+
+  await loop.tick(t0);
+  // The throw must NOT leave the row due immediately (which would spin every tick); it
+  // is rescheduled on the backoff like any transient failure.
+  assert.equal(queue.size, 1, 'still queued after the throw');
+  assert.equal(queue.due(t0).length, 0, 'not due again immediately — it advanced its schedule');
+  assert.equal(queue.due(t0 + MIN_RETRY_MS).length, 1, 'due again only after the backoff');
+
+  // Past the give-up window, a persistently-throwing relay bounces and is removed —
+  // it does not retry forever.
+  await loop.tick(t0 + GIVE_UP_MS + MIN_RETRY_MS);
+  assert.equal(queue.size, 0, 'eventually gives up and removes the row');
+  assert.ok(calls >= 2, 'it did keep attempting on the backoff, not spin');
+});
+
+test('a corrupt queue row does not halt due(): the rest of the queue still drains', async () => {
+  const db = new DatabaseSync(':memory:');
+  const queue = SqliteQueue.open(db);
+  // A well-formed message...
+  queue.enqueue('me@x.test', ['good@y.test'], Buffer.from('ok'), 1000);
+  // ...and a poisoned row whose recipients column is not valid JSON (external tampering;
+  // we always write it via JSON.stringify). Inserted directly to simulate corruption.
+  db.prepare('INSERT INTO outbound_queue (id, from_addr, recipients, data, first_queued, attempts, next_attempt) VALUES (?, ?, ?, ?, ?, 0, ?)')
+    .run('poison', 'me@x.test', '{not json', Buffer.from('x'), 500, 500);
+
+  // due() must return the good row and silently skip the poison one — not throw.
+  const due = queue.due(2000);
+  assert.equal(due.length, 1, 'only the parseable row is returned');
+  assert.equal(due[0]!.recipients[0], 'good@y.test', 'and it is the good one');
+});

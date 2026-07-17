@@ -267,3 +267,26 @@ test('transcript timings are monotonic and start near zero', async () => {
     },
   );
 });
+
+test('startTls rejects (does not hang) when the peer stalls the handshake', async () => {
+  // A malicious/broken MX that accepts the socket but never completes the TLS
+  // handshake must not hang the caller — one such peer would otherwise wedge the whole
+  // single-flight relay loop. The handshake is bounded by a timeout.
+  await withServer(
+    async () => {
+      // Accept the connection and do nothing — never speak TLS.
+      await new Promise((r) => setTimeout(r, 1000));
+    },
+    async (port) => {
+      const wire = await Wire.connect({ host: '127.0.0.1', port });
+      const started = Date.now();
+      await assert.rejects(
+        wire.startTls({ rejectUnauthorized: false }, 200),
+        /timed out/i,
+        'a stalled TLS handshake rejects with a timeout',
+      );
+      assert.ok(Date.now() - started < 1000, 'it rejected on the timeout, well before the stall would end');
+      await wire.close();
+    },
+  );
+});

@@ -15,9 +15,39 @@
  * next increment, not an oversight. See docs/DEPLOYMENT.md.
  */
 
+import net from 'node:net';
 import { resolveMx, resolve4, resolve6 } from 'node:dns/promises';
 import { deliver } from '../client/deliver.ts';
 import { resolveMxHosts, type DnsResolver, type MxRecord } from '../client/mx.ts';
+
+/** An IPv4/IPv6 literal in loopback, private, link-local, or unspecified space. */
+function isPrivateOrLoopback(ip: string): boolean {
+  const fam = net.isIP(ip);
+  if (fam === 4) {
+    const p = ip.split('.').map(Number);
+    const [a, b] = [p[0] ?? 0, p[1] ?? 0];
+    return a === 0 || a === 127 || a === 10 || (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168) || (a === 169 && b === 254) || a >= 224;
+  }
+  if (fam === 6) {
+    const low = ip.toLowerCase().replace(/^\[|\]$/g, '');
+    return low === '::1' || low === '::' || low.startsWith('fe80') || low.startsWith('fc') || low.startsWith('fd');
+  }
+  return false;
+}
+
+/**
+ * A MX target we must refuse to relay to (SSRF guard). An attacker who controls a
+ * recipient domain's DNS can publish "MX 0 127.0.0.1" (or a private/link-local address,
+ * or "localhost") to make us open a port-25 connection to an internal host. A public
+ * domain's MX is never legitimately loopback/private, so refuse those outright. NOTE: a
+ * hostname that *resolves* to a private IP is not caught here (would need a pre-connect
+ * lookup) — a recorded residual; the literal-IP and localhost forms are the direct attack.
+ */
+export function isUnsafeMxTarget(host: string): boolean {
+  const h = host.toLowerCase().replace(/\.$/, '');
+  if (h === 'localhost' || h.endsWith('.localhost')) return true;
+  return net.isIP(host) !== 0 && isPrivateOrLoopback(host);
+}
 
 /** The envelope + bytes to relay — the subset of a delivered message relay needs. */
 export interface RelayableMessage {
@@ -116,6 +146,10 @@ async function realDnsHosts(domain: string): Promise<readonly string[]> {
 export async function relayOutbound(msg: RelayableMessage, opts: OutboundOptions): Promise<readonly RelayResult[]> {
   const resolveHosts = opts.resolveHosts ?? realDnsHosts;
   const port = opts.port ?? 25;
+  // The SSRF guard applies to targets that came from untrusted DNS (the real resolver).
+  // A caller that injects its own resolveHosts (tests, or a trusted internal resolver)
+  // is responsible for its own targets, so the guard steps aside for it.
+  const guardTargets = opts.resolveHosts === undefined;
   const results: RelayResult[] = [];
 
   for (const recipient of msg.recipients) {
@@ -152,6 +186,13 @@ export async function relayOutbound(msg: RelayableMessage, opts: OutboundOptions
     let lastError = '';
     let lastClass: 'transient' | 'permanent' = 'transient';
     for (const host of hosts) {
+      // SSRF guard: never open a relay connection to a loopback/private MX target that
+      // a hostile recipient-domain DNS could have pointed us at.
+      if (guardTargets && isUnsafeMxTarget(host)) {
+        lastError = `refusing to relay to non-public MX target ${host}`;
+        lastClass = 'permanent';
+        continue;
+      }
       try {
         // family: 4 — Gmail 550s IPv6 connections without a matching v6 PTR;
         // our PTR is set for the v4 address, so relay over IPv4 only.

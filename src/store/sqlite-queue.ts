@@ -69,15 +69,28 @@ export class SqliteQueue {
     const rows = this.#db
       .prepare('SELECT id, from_addr, recipients, data, first_queued, attempts, next_attempt FROM outbound_queue WHERE next_attempt <= ? ORDER BY first_queued')
       .all(now) as Array<{ id: string; from_addr: string; recipients: string; data: Uint8Array; first_queued: number; attempts: number; next_attempt: number }>;
-    return rows.map((r) => ({
-      id: r.id,
-      from: r.from_addr,
-      recipients: JSON.parse(r.recipients) as string[],
-      data: Buffer.from(r.data),
-      firstQueued: Number(r.first_queued),
-      attempts: Number(r.attempts),
-      nextAttempt: Number(r.next_attempt),
-    }));
+    // Parse each row in isolation: a single corrupt `recipients` value (external DB
+    // tampering — we always write it via JSON.stringify) must not throw out of due() and
+    // halt the WHOLE queue every tick. A bad row is skipped, not fatal.
+    const entries: QueueEntry[] = [];
+    for (const r of rows) {
+      let recipients: string[];
+      try {
+        recipients = JSON.parse(r.recipients) as string[];
+      } catch {
+        continue; // skip the poisoned row; the rest of the queue still drains
+      }
+      entries.push({
+        id: r.id,
+        from: r.from_addr,
+        recipients,
+        data: Buffer.from(r.data),
+        firstQueued: Number(r.first_queued),
+        attempts: Number(r.attempts),
+        nextAttempt: Number(r.next_attempt),
+      });
+    }
+    return entries;
   }
 
   /** Reschedule an entry: update the remaining recipients, attempt count, and due time. */

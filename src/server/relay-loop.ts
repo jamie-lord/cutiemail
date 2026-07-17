@@ -97,7 +97,10 @@ export class RelayLoop {
       results = await this.#relay({ from: entry.from, recipients: entry.recipients, data: entry.data });
     } catch (e) {
       this.#log(`queue ${entry.id}: relay error — ${String(e)}`);
-      return; // leave it queued; next tick retries
+      // relayOutbound is designed not to throw, but if it ever does (bug, OOM), treat it
+      // as transient for every recipient so the entry ADVANCES its schedule — backoff and
+      // eventually give-up + bounce — instead of retrying every tick forever (a stuck row).
+      results = entry.recipients.map((recipient) => ({ recipient, ok: false, classification: 'transient' as const, detail: String(e) }));
     }
 
     const retryLater: string[] = [];

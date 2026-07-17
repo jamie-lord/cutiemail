@@ -105,6 +105,8 @@ export interface WireOptions {
 }
 
 const DEFAULT_CONNECT_TIMEOUT_MS = 30_000;
+/** TLS handshake deadline — a peer that 220s STARTTLS then stalls must not hang us. */
+const DEFAULT_TLS_HANDSHAKE_TIMEOUT_MS = 30_000;
 
 export class Wire {
   #socket: net.Socket | tls.TLSSocket;
@@ -344,7 +346,7 @@ export class Wire {
    * sends before the handshake completes is vulnerable to command injection
    * (the CVE-2011-0411 class).
    */
-  startTls(opts?: tls.ConnectionOptions): Promise<void> {
+  startTls(opts?: tls.ConnectionOptions, timeoutMs = DEFAULT_TLS_HANDSHAKE_TIMEOUT_MS): Promise<void> {
     return new Promise<void>((resolve, reject) => {
       const pending = this.#buffer.length;
       const plain = this.#socket;
@@ -354,7 +356,24 @@ export class Wire {
       plain.removeAllListeners('error');
 
       const secure = tls.connect({ socket: plain, ...opts });
+      let settled = false;
+      // A remote that replies 220 to STARTTLS then stalls the handshake would otherwise
+      // hang this await forever — and since the relay loop awaits delivery under a
+      // single-flight guard, one such peer wedges the WHOLE outbound queue. Bound it.
+      const timer = setTimeout(() => {
+        if (settled) return;
+        settled = true;
+        secure.removeListener('secureConnect', onSecure);
+        secure.removeListener('error', onError);
+        this.#record({ kind: 'tls-failed', at: this.#now(), error: 'TLS handshake timed out' });
+        secure.destroy();
+        reject(new Error('TLS handshake timed out'));
+      }, timeoutMs);
+      timer.unref();
       const onSecure = (): void => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
         secure.removeListener('error', onError);
         this.#socket = secure;
         this.#attach(secure);
@@ -375,6 +394,9 @@ export class Wire {
         resolve();
       };
       const onError = (err: Error): void => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
         this.#record({ kind: 'tls-failed', at: this.#now(), error: err.message });
         reject(err);
       };
