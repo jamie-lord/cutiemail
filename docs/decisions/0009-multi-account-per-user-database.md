@@ -127,3 +127,28 @@ live Apple Mail client.**
 - The single-catalog `ImapServer.start(catalog, …)` signature is retained — the resolver
   is purely additive — so this is not a rewrite of the IMAP server, only a new seam.
 - Revisitable, like every ADR, with a stated reason.
+
+## Outcome (2026-07-17)
+
+Built, tested, deployed, and live-verified. The pressure tests above landed as:
+
+1. **Isolation** — `imap-multiaccount.integration.test.ts` (resolver level, with a negative
+   control proving a mis-wired resolver leaks) and `daemon-multiaccount.integration.test.ts`
+   (end-to-end through the real SQLite stores). **Live:** on the box, a second account
+   `alice` was provisioned beside `test`; `test`→`alice` and `alice`→`test` submissions each
+   landed only in the recipient's mailbox, invisible to the other.
+2. **Concurrency** — a same-user two-connection sync test (a phone and desktop on one
+   account see each other's changes via the shared cached store), plus two live accounts
+   served concurrently by the deployed daemon.
+3. **Crash consistency** — **deliberately not given a new test.** Each per-user DB is the
+   *identical* `SqliteCatalog` + WAL already proven to survive `kill -9` by
+   `sqlite-crash.integration.test.ts`; the multi-account layer changes no storage internals,
+   so a multi-DB crash test would pass for a reason already covered (against the project's
+   "no test that passes for the wrong reason" rule). The control DB's registry durability is
+   proven by `account-registry.test.ts`'s close/reopen test. Recorded as a reasoned omission.
+4. **Differential** — the per-user catalog is the unchanged `SqliteCatalog`, still covered by
+   the existing reference-vs-SQLite differential harness.
+5. **Live migration** — the box's existing `mail.db` became user `test`'s store with **zero
+   data loss** (all 25 messages + custom folders preserved) and **no re-sync for Apple Mail**,
+   which reconnected transparently. `control.db` (registry + queue) and `mail-alice.db` are
+   separate files, as designed. Unknown local recipients are rejected `550` at RCPT.
