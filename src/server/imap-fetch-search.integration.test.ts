@@ -88,3 +88,29 @@ test('FETCH ENVELOPE and SEARCH answer from stored messages over the wire', asyn
     db.close();
   }
 });
+
+test('FETCH BODY[HEADER.FIELDS.NOT (...)] excludes the named fields (RFC 9051 §6.4.5)', async () => {
+  const db = new DatabaseSync(':memory:');
+  const mailbox = SqliteMailbox.open(db);
+  mailbox.append(Buffer.from('From: a@x.test\r\nSubject: hi\r\nReceived: from somewhere\r\nDate: today\r\n\r\nbody\r\n', 'latin1'));
+  const imap = await ImapServer.start(mailbox);
+  const c = new Client(imap.port);
+  try {
+    await c.expect('* OK');
+    c.send('a1 LOGIN u p');
+    await c.expect('a1 OK');
+    c.send('a2 SELECT INBOX');
+    await c.expect('a2 OK');
+    // Read the literal that follows the HEADER.FIELDS.NOT response.
+    c.send('a3 UID FETCH 1 (BODY.PEEK[HEADER.FIELDS.NOT (RECEIVED)])');
+    const resp = await c.expect('a3 OK');
+    assert.ok(resp.includes('From: a@x.test'), 'From is present (not excluded)');
+    assert.ok(resp.includes('Subject: hi') && resp.includes('Date: today'), 'Subject and Date are present');
+    assert.ok(!resp.includes('Received: from somewhere'), 'Received is excluded by .NOT');
+    c.send('a4 LOGOUT');
+    c.end();
+  } finally {
+    await imap.close();
+    db.close();
+  }
+});

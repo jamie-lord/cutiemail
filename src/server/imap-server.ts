@@ -402,12 +402,17 @@ function bodyBlock(raw: Buffer): Buffer {
   return end === -1 ? Buffer.alloc(0) : raw.subarray(end + 4);
 }
 
-/** Extract the named header fields of a message as bytes, per HEADER.FIELDS. */
-function headerFields(raw: Buffer, names: readonly string[]): Buffer {
-  const want = new Set(names.map((n) => n.toLowerCase()));
+/**
+ * Extract header fields as bytes: HEADER.FIELDS returns the listed fields;
+ * HEADER.FIELDS.NOT (`exclude`) returns every field EXCEPT the listed ones. Getting
+ * the sense wrong hands the client the opposite set of headers.
+ */
+function headerFields(raw: Buffer, names: readonly string[], exclude = false): Buffer {
+  const named = new Set(names.map((n) => n.toLowerCase()));
   const lines: Buffer[] = [];
   for (const h of parseMessage(raw).headers) {
-    if (want.has(h.name.toString('latin1').trim().toLowerCase())) {
+    const isNamed = named.has(h.name.toString('latin1').trim().toLowerCase());
+    if (isNamed !== exclude) {
       lines.push(Buffer.from(`${h.name.toString('latin1').trim()}: ${h.value.toString('latin1').trim()}\r\n`, 'latin1'));
     }
   }
@@ -538,10 +543,11 @@ export class ImapServer {
         name = 'BODY[]';
         payload = msg.raw;
       } else if (up.startsWith('HEADER.FIELDS')) {
+        const isNot = up.startsWith('HEADER.FIELDS.NOT');
         const fields = /\(([^)]*)\)/.exec(section)?.[1] ?? '';
         const names = fields.split(/\s+/).filter((f) => f.length > 0);
-        name = `BODY[HEADER.FIELDS (${names.map((n) => n.toUpperCase()).join(' ')})]`;
-        payload = headerFields(msg.raw, names);
+        name = `BODY[HEADER.FIELDS${isNot ? '.NOT' : ''} (${names.map((n) => n.toUpperCase()).join(' ')})]`;
+        payload = headerFields(msg.raw, names, isNot);
       } else if (up === 'HEADER') {
         name = 'BODY[HEADER]';
         payload = headerBlock(msg.raw);
