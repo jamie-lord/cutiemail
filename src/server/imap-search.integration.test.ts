@@ -50,6 +50,9 @@ class S {
     }
     throw new Error(`timed out on ${needle}`);
   }
+  snapshot(): string {
+    return this.#acc;
+  }
 }
 
 test('SEARCH SUBJECT with a quoted multi-word phrase matches the whole phrase', async () => {
@@ -141,6 +144,36 @@ test('mailbox names with spaces (Outlook-style) work through CREATE/SELECT/STATU
     await s.ready('a3 OK');
     s.send('a4 STATUS "Sent Items" (MESSAGES)\r\n');
     await s.ready('* STATUS "Sent Items" (MESSAGES 0)');
+  } finally {
+    sock.destroy();
+    await server.close();
+  }
+});
+
+test('extended LIST forms (RFC 9051 §6.3.9): (SUBSCRIBED) selection and RETURN options', async () => {
+  const cat = new MemoryCatalog();
+  cat.create('Sent');
+  const server = await ImapServer.start(cat, { authenticate: () => true });
+  const sock = net.connect(server.port, '127.0.0.1');
+  const s = new S(sock);
+  try {
+    await s.ready('* OK');
+    s.send('a1 LOGIN u p\r\n');
+    await s.ready('a1 OK');
+    // The regression: a leading (SUBSCRIBED) must not swallow the pattern — folders
+    // must still be listed (with \Subscribed), not just the delimiter line.
+    s.send('a2 LIST (SUBSCRIBED) "" *\r\n');
+    await s.ready('a2 OK');
+    const sub = s.snapshot();
+    assert.match(sub, /\* LIST \([^)]*\\Subscribed\) "\/" INBOX/, '(SUBSCRIBED) lists INBOX with the \\Subscribed attribute');
+    assert.match(sub, /\* LIST \([^)]*\\Subscribed\) "\/" Sent/, '(SUBSCRIBED) lists Sent too — the pattern was not swallowed');
+
+    s.send('a3 LIST "" * RETURN (SPECIAL-USE)\r\n');
+    await s.ready('a3 OK');
+    // The RETURN clause is ignored; the plain folder list still comes back.
+    const ret = s.snapshot();
+    assert.match(ret, /a3 OK/, 'RETURN options are accepted');
+    assert.ok(ret.includes('"/" Sent'), 'the pattern still matched with a RETURN clause present');
   } finally {
     sock.destroy();
     await server.close();

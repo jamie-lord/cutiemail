@@ -675,14 +675,24 @@ export class ImapServer {
             write(sock, `${tag} OK NAMESPACE completed`);
             break;
           case 'LIST': {
-            // LIST "" "" asks for the hierarchy delimiter (RFC 9051 §6.3.9.2).
-            // qarg(1)=reference, qarg(2)=pattern — quote-aware so a spaced pattern is whole.
-            const pattern = qarg(2);
+            // Extended LIST (RFC 9051 §6.3.9): [ (selection-options) ] reference pattern
+            // [ RETURN (options) ]. A leading "(...)" selection group shifts the
+            // reference/pattern positions — parsing them positionally (qarg(2)) turned
+            // "LIST (SUBSCRIBED) \"\" *" into an empty pattern and returned no folders.
+            // We don't track subscriptions, so SUBSCRIBED lists everything (auto-
+            // subscribed) and each match carries \Subscribed. RETURN options are ignored
+            // (we always send the attributes anyway).
+            let li = 0;
+            const selectionOpts = (qargs[li] ?? '').startsWith('(') ? (qargs[li++] ?? '') : '';
+            const wantSubscribed = selectionOpts.toUpperCase().includes('SUBSCRIBED');
+            li += 1; // reference (flat namespace — unused)
+            const pattern = qargs[li] ?? '';
             if (pattern === '') {
               write(sock, '* LIST (\\Noselect) "/" ""');
             } else {
               for (const name of matchNames(pattern, this.#catalog.listNames())) {
-                write(sock, `* LIST ${listAttributes(name)} "/" ${name.includes(' ') ? `"${name}"` : name}`);
+                const attrs = wantSubscribed ? listAttributes(name).replace(/\)$/, ' \\Subscribed)') : listAttributes(name);
+                write(sock, `* LIST ${attrs} "/" ${name.includes(' ') ? `"${name}"` : name}`);
               }
             }
             write(sock, `${tag} OK LIST completed`);
