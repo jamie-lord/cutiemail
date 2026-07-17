@@ -84,12 +84,17 @@ export async function checkDmarc(input: DmarcInput): Promise<DmarcOutcome> {
   if (fromDomain === null) return { verdict: 'none', policy: null, fromDomain: null };
 
   let recordText: string | null;
+  // Whether the record came from the organizational domain rather than the From domain
+  // itself — in that case the subdomain policy (sp=) governs the From (§6.6.3).
+  let viaOrgFallback = false;
   try {
-    // Look up the From domain, then fall back to its organizational domain (§6.6.3).
     recordText = await fetchDmarc(fromDomain, input.resolveTxt);
     if (recordText === null) {
       const org = organizationalDomain(fromDomain);
-      if (org !== fromDomain) recordText = await fetchDmarc(org, input.resolveTxt);
+      if (org !== fromDomain) {
+        recordText = await fetchDmarc(org, input.resolveTxt);
+        viaOrgFallback = recordText !== null;
+      }
     }
   } catch {
     return { verdict: 'temperror', policy: null, fromDomain };
@@ -102,5 +107,8 @@ export async function checkDmarc(input: DmarcInput): Promise<DmarcOutcome> {
   const dkimAligned = input.dkimPassedDomains.some((d) => checkAlignment(fromDomain, d, record.adkim, organizationalDomain));
   const spfAligned = input.spfResult === 'pass' && input.spfDomain !== '' && checkAlignment(fromDomain, input.spfDomain, record.aspf, organizationalDomain);
 
-  return { verdict: dkimAligned || spfAligned ? 'pass' : 'fail', policy: record.policy, fromDomain };
+  // §6.6.3: a subdomain governed by the org-domain record uses sp= (when published),
+  // falling back to p=. The applicable policy is what a downstream reader must see.
+  const policy = viaOrgFallback && record.subdomainPolicy !== null ? record.subdomainPolicy : record.policy;
+  return { verdict: dkimAligned || spfAligned ? 'pass' : 'fail', policy, fromDomain };
 }

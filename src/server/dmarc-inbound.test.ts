@@ -79,3 +79,14 @@ test('the expanded suffix list prevents FALSE alignment under a multi-part ccTLD
   const out = await checkDmarc({ rawMessage: msg('victim.co.za'), dkimPassedDomains: ['attacker.co.za'], spfResult: 'none', spfDomain: '', resolveTxt: rec });
   assert.equal(out.verdict, 'fail', 'a different registrant under the same ccTLD is not aligned');
 });
+
+test('a subdomain governed by the org record reports the subdomain policy sp= (RFC 7489 §6.6.3)', async () => {
+  // From mail.example.com has no own record; example.com publishes p=none; sp=quarantine.
+  const rec = dmarcAt({ '_dmarc.example.com': 'v=DMARC1; p=none; sp=quarantine' });
+  const sub = await checkDmarc({ rawMessage: msg('mail.example.com'), dkimPassedDomains: ['example.com'], spfResult: 'none', spfDomain: '', resolveTxt: rec });
+  assert.equal(sub.policy, 'quarantine', 'the subdomain policy applies to a subdomain From');
+  // The org domain itself uses p=, not sp=.
+  const rec2 = dmarcAt({ '_dmarc.example.com': 'v=DMARC1; p=reject; sp=quarantine' });
+  const org = await checkDmarc({ rawMessage: msg('example.com'), dkimPassedDomains: ['example.com'], spfResult: 'none', spfDomain: '', resolveTxt: rec2 });
+  assert.equal(org.policy, 'reject', 'the org domain itself uses p=');
+});
