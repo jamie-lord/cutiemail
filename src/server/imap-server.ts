@@ -871,7 +871,11 @@ export class ImapServer {
             const opRaw = arg(2).toUpperCase(); // +FLAGS[.SILENT] / -FLAGS[.SILENT] / FLAGS[.SILENT]
             const silent = opRaw.endsWith('.SILENT');
             const op = silent ? opRaw.slice(0, -'.SILENT'.length) : opRaw;
-            const flags = (parts.slice(cmdIndex + 3).join(' ').match(/\\?\w+/g) ?? []).map((f) => (f.startsWith('\\') ? `\\${f.slice(1)}` : f));
+            // A flag is "\"system-flag or a keyword atom. Keyword atoms include the
+            // "$" prefix clients use for tags ($Forwarded, $MDNSent, Thunderbird's
+            // $label1..$label5) and chars like . - _ — matching only \w drops the "$"
+            // and silently mangles the flag, so a client's tag never round-trips.
+            const flags = (parts.slice(cmdIndex + 3).join(' ').match(/\\?[\w$.-]+/g) ?? []).map((f) => (f.startsWith('\\') ? `\\${f.slice(1)}` : f));
             if (op === '+FLAGS' || op === '-FLAGS' || op === 'FLAGS') {
               const mode = op === '+FLAGS' ? 'add' : op === '-FLAGS' ? 'remove' : 'replace';
               for (const { seq, msg } of this.#resolveSet(selected, set, uidMode)) {

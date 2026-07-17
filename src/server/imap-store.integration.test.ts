@@ -83,6 +83,31 @@ test('IMAP STORE marks flags and EXPUNGE removes \\Deleted messages', async () =
   }
 });
 
+test('STORE preserves "$" keyword flags ($label1, $Forwarded) — clients tag with these', async () => {
+  const db = new DatabaseSync(':memory:');
+  const mailbox = SqliteMailbox.open(db);
+  mailbox.append(Buffer.from('Subject: m\r\n\r\nbody\r\n', 'latin1'));
+  const imap = await ImapServer.start(mailbox);
+  const c = new Client(imap.port);
+  try {
+    await c.expect('* OK');
+    c.send('a1 LOGIN user pass');
+    await c.expect('a1 OK');
+    c.send('a2 SELECT INBOX');
+    await c.expect('a2 OK');
+    // Thunderbird tags and standard keywords carry a "$" prefix that must survive.
+    c.send('a3 STORE 1 +FLAGS (\\Seen $Forwarded $label1)');
+    const stored = await c.expect('a3 OK');
+    assert.match(stored, /\$Forwarded/, 'the $ prefix is not stripped in the response');
+    assert.match(stored, /\$label1/, 'a $labelN tag survives');
+    const flags = new Set(mailbox.messages[0]!.flags);
+    assert.ok(flags.has('$Forwarded') && flags.has('$label1') && flags.has('\\Seen'), 'all three are persisted verbatim');
+  } finally {
+    await imap.close();
+    db.close();
+  }
+});
+
 test('non-silent STORE reports the accurate resulting flag set for add/remove/replace', async () => {
   const db = new DatabaseSync(':memory:');
   const mailbox = SqliteMailbox.open(db);
