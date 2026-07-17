@@ -459,8 +459,9 @@ export class ImapServer {
             break;
           case 'LIST': {
             // LIST "" "" asks for the hierarchy delimiter (RFC 9051 §6.3.9.2).
-            const pattern = arg(2);
-            if (unquote(pattern) === '') {
+            // qarg(1)=reference, qarg(2)=pattern — quote-aware so a spaced pattern is whole.
+            const pattern = qarg(2);
+            if (pattern === '') {
               write(sock, '* LIST (\\Noselect) "/" ""');
             } else {
               for (const name of matchNames(pattern, this.#catalog.listNames())) {
@@ -473,7 +474,7 @@ export class ImapServer {
           case 'LSUB': {
             // rev2 dropped LSUB; answered like LIST as a deliberate concession to
             // clients that still probe with it during setup.
-            for (const name of matchNames(arg(2), this.#catalog.listNames())) {
+            for (const name of matchNames(qarg(2), this.#catalog.listNames())) {
               write(sock, `* LSUB () "/" ${name.includes(' ') ? `"${name}"` : name}`);
             }
             write(sock, `${tag} OK LSUB completed`);
