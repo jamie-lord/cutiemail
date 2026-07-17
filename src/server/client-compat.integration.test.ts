@@ -75,11 +75,16 @@ test('the Thunderbird account-setup sequence completes against the server', asyn
   const sock = net.connect(server.port, '127.0.0.1');
   const s = new Session(sock);
   try {
-    assert.match(await s.greeting(), /\* OK \[CAPABILITY IMAP4rev2 IDLE UIDPLUS SPECIAL-USE CONDSTORE QRESYNC AUTH=PLAIN\]/);
+    assert.match(await s.greeting(), /\* OK \[CAPABILITY IMAP4rev1 IMAP4rev2 IDLE UIDPLUS SPECIAL-USE CONDSTORE QRESYNC AUTH=PLAIN\]/);
 
     const cap = await s.run('t1', 'CAPABILITY');
-    assert.match(cap, /^\* CAPABILITY IMAP4rev2 IDLE UIDPLUS SPECIAL-USE CONDSTORE QRESYNC AUTH=PLAIN\r$/m, 'CAPABILITY answers as a command');
+    assert.match(cap, /^\* CAPABILITY IMAP4rev1 IMAP4rev2 IDLE UIDPLUS SPECIAL-USE CONDSTORE QRESYNC AUTH=PLAIN\r$/m, 'CAPABILITY answers as a command');
     assert.match(cap, /^t1 OK/m);
+    // Both base-protocol atoms are advertised (RFC 9051 §6.1.1). rev2 is what the server
+    // speaks; the rev1 atom is a compatibility signal for clients/tooling that gate the
+    // connection on it (Python imaplib refuses a server without IMAP4rev1/IMAP4). See ADR 0007.
+    assert.match(cap, /\bIMAP4rev1\b/, 'rev1 atom advertised for strict-rev1 clients');
+    assert.match(cap, /\bIMAP4rev2\b/, 'rev2 atom advertised — the semantics the server actually implements');
 
     assert.match(await s.run('t2', 'LOGIN test pw'), /^t2 OK/m);
     assert.match(await s.run('t3', 'CAPABILITY'), /^t3 OK/m);

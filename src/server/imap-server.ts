@@ -96,7 +96,15 @@ function inboxOnly(mailbox: ServableMailbox): ServableCatalog {
   };
 }
 
-const CAPABILITIES = 'IMAP4rev2 IDLE UIDPLUS SPECIAL-USE CONDSTORE QRESYNC AUTH=PLAIN';
+// We advertise IMAP4rev1 *and* IMAP4rev2 (RFC 9051 §6.1.1 permits, and real rev2
+// servers do, advertising both). The server always speaks rev2 — we do not build a
+// separate rev1 downgrade mode; rev2 is a near-superset and modern clients (Apple
+// Mail, Thunderbird) drive it fine without the rev1 atom. The atom is a compatibility
+// SIGNAL for clients/tooling that gate connection on seeing "IMAP4rev1"/"IMAP4" in
+// CAPABILITY (e.g. Python's imaplib refuses a server that lacks it outright). The rev1
+// features rev2 removed — \Recent/RECENT, SEARCH RECENT/NEW/OLD — stay intentionally
+// unimplemented (ADR 0007); no real client depends on them. See ADR 0007 for the record.
+const CAPABILITIES = 'IMAP4rev1 IMAP4rev2 IDLE UIDPLUS SPECIAL-USE CONDSTORE QRESYNC AUTH=PLAIN';
 
 /** Commands allowed before authentication (RFC 9051 §3, Not Authenticated state). */
 const PREAUTH_COMMANDS = new Set(['CAPABILITY', 'NOOP', 'LOGOUT', 'LOGIN', 'AUTHENTICATE', 'ID', 'STARTTLS']);

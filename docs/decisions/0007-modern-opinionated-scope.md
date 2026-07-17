@@ -30,6 +30,22 @@ The server — and therefore the test bed that must cover it — makes these cut
    CONDSTORE, SPECIAL-USE). The legacy IMAP4rev1 extension long tail is refused.
    This is the single largest scope lever in the project; IMAP's surface is vast
    and most of it serves clients we do not target.
+
+   > **Amendment (2026-07-17):** the CAPABILITY response now advertises **both**
+   > `IMAP4rev1` and `IMAP4rev2` (RFC 9051 §6.1.1 permits, and real rev2 servers do,
+   > advertising both). This does **not** reverse the scope cut: the server still
+   > implements only rev2 semantics — there is no separate rev1 behaviour mode, and the
+   > rev1 features rev2 removed (`\Recent`/`RECENT`, `SEARCH RECENT`/`NEW`/`OLD`) stay
+   > intentionally unimplemented. The `IMAP4rev1` atom is a **compatibility signal**:
+   > some clients and tooling gate the connection on seeing `IMAP4rev1`/`IMAP4` in
+   > CAPABILITY and refuse the server outright without it (verified: Python's `imaplib`
+   > raises "server not IMAP4 compliant" against a rev2-only advertisement). rev2 is a
+   > near-superset, so those clients then speak a command subset the server serves
+   > correctly. Real modern MUAs (Apple Mail, Thunderbird) need no such signal — Apple
+   > Mail was driven end-to-end against the rev2-only server before this change — so this
+   > is purely a lower-bound-compatibility widening at no behavioural cost. The residual
+   > divergence (a rev1 client issuing a removed `SEARCH` key gets `BAD`; no `\Recent`)
+   > is the recorded, accepted gap.
 3. **MTA-STS (RFC 8461), not DANE (RFC 7672),** for outbound TLS policy. DANE
    needs a validating DNSSEC stub resolver, which Node does not provide (no TLSA,
    no AD-bit access — see `project_mail_server` memory). MTA-STS achieves the
