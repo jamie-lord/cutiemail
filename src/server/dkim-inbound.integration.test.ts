@@ -124,3 +124,54 @@ test('the daemon evaluates inbound SPF and records it in Authentication-Results'
     await server.close();
   }
 });
+
+test('the daemon evaluates DMARC (aligned SPF pass) and stamps dmarc=pass', async () => {
+  const config: MailServerConfig = {
+    dbPath: ':memory:',
+    host: '127.0.0.1',
+    smtpPort: 0,
+    submissionPort: 0,
+    imapPort: 0,
+    domain: 'mail.example.test',
+    accounts: [{ user: 'test', pass: 'pw' }],
+    tls: { key: TEST_KEY, cert: TEST_CERT },
+    // sender.test authorises the loopback IP AND publishes a DMARC policy.
+    spfResolvers: {
+      txt: async (n) => {
+        if (n === 'sender.test') return ['v=spf1 ip4:127.0.0.1/32 -all'];
+        if (n === '_dmarc.sender.test') return ['v=DMARC1; p=reject'];
+        return [];
+      },
+      a: async () => [],
+      mx: async () => [],
+    },
+  };
+  const server = await startServer(config);
+  try {
+    const s = net.connect(server.inbound.port, '127.0.0.1');
+    s.on('error', () => {});
+    await new Promise<void>((r) => s.once('connect', () => r()));
+    const step = (str: string): Promise<void> =>
+      new Promise((r) => {
+        s.write(Buffer.from(str, 'latin1'));
+        setTimeout(r, 40);
+      });
+    await delay(40);
+    await step('EHLO sender.test\r\n');
+    await step('MAIL FROM:<bob@sender.test>\r\n');
+    await step('RCPT TO:<test@mail.example.test>\r\n');
+    await step('DATA\r\n');
+    // The From header domain aligns with the SPF (MAIL FROM) domain.
+    await step('From: Bob <bob@sender.test>\r\nSubject: dmarc check\r\n\r\nhello\r\n.\r\n');
+    await step('QUIT\r\n');
+    s.destroy();
+
+    for (let i = 0; i < 200 && server.mailbox.messages.length === 0; i++) await delay(20);
+    assert.equal(server.mailbox.messages.length, 1);
+    const stored = server.mailbox.messages[0]!.raw.toString('latin1');
+    assert.match(stored, /spf=pass smtp\.mailfrom=sender\.test/, 'SPF passes for the authorised sender');
+    assert.match(stored, /dmarc=pass \(p=reject\)/, 'DMARC passes (aligned SPF) and reports the policy');
+  } finally {
+    await server.close();
+  }
+});

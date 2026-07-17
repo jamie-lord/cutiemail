@@ -27,6 +27,7 @@ import { ensureSubmissionHeaders, formatDate } from './server/submission-fixup.t
 import { buildBounceMessage } from './server/bounce.ts';
 import { verifyDkim, type DkimKeyResolver } from './server/dkim-inbound.ts';
 import { checkSpf, type SpfResolvers } from './auth/spf-check.ts';
+import { checkDmarc } from './server/dmarc-inbound.ts';
 import { resolveTxt, resolve4, resolve6, resolveMx } from 'node:dns/promises';
 import { dkimSign, makeSigner } from './server/dkim-signer.ts';
 import { prependReceived, protocolFor } from './server/received.ts';
@@ -174,9 +175,24 @@ export async function startServer(cfg: MailServerConfig): Promise<RunningServer>
     } catch {
       spf = 'temperror';
     }
+    // DMARC ties it together: an aligned DKIM or SPF pass, keyed to the From domain.
+    let dmarc: { verdict: string; policy: string | null } = { verdict: 'none', policy: null };
+    try {
+      dmarc = await checkDmarc({
+        rawMessage: m.data,
+        dkimResult: dkim.verdict,
+        dkimDomain: dkim.domain,
+        spfResult: spf,
+        spfDomain,
+        resolveTxt: spfResolvers.txt,
+      });
+    } catch {
+      dmarc = { verdict: 'temperror', policy: null };
+    }
     const authResults =
       `Authentication-Results: ${cfg.domain}; dkim=${dkim.verdict}${dkim.domain !== null ? ` header.d=${dkim.domain}` : ''}` +
-      `; spf=${spf}${spfDomain !== '' ? ` smtp.mailfrom=${spfDomain}` : ''}`;
+      `; spf=${spf}${spfDomain !== '' ? ` smtp.mailfrom=${spfDomain}` : ''}` +
+      `; dmarc=${dmarc.verdict}${dmarc.policy !== null ? ` (p=${dmarc.policy})` : ''}`;
     const traced = prependReceived(m.data, {
       helo: m.helo,
       remoteAddress: m.remoteAddress,
