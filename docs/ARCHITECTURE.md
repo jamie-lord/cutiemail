@@ -176,6 +176,26 @@ boundary (`NOOP`/`CHECK`, or in real time while idling), never mid-`FETCH`, per
 RFC 9051 §7.4.1. That is what keeps a phone and a desktop on the same mailbox in
 agreement. Each module is thin and owns one concern.
 
+A client that was offline resyncs in one round-trip with `QRESYNC`: it hands back
+the `UIDVALIDITY` and mod-sequence it last saw, and the server replays what changed
+from the persisted expunge log and mod-sequences, rather than making the client
+refetch the mailbox.
+
+```mermaid
+sequenceDiagram
+    participant P as Phone (was offline)
+    participant S as Server
+    Note over P,S: earlier: synced at MODSEQ 4, cached UIDs 1..5
+    P->>S: ENABLE QRESYNC
+    P->>S: SELECT INBOX (QRESYNC (uidvalidity 4))
+    Note over S: expunge log: UID 3 removed at MODSEQ 5<br/>messages: UID 1 re-flagged at MODSEQ 6
+    S-->>P: * VANISHED (EARLIER) 3
+    S-->>P: * 1 FETCH (UID 1 FLAGS (\Seen) MODSEQ 6)
+    S-->>P: OK [HIGHESTMODSEQ 6] SELECT completed
+    Note over P: caught up — no full refetch
+    S-->>P: (later, live) * VANISHED 4
+```
+
 **`main.ts`** — the daemon. Opens the database, seeds accounts, and starts three
 listeners (inbound SMTP, submission-with-AUTH, IMAPS). Inbound mail is authenticated
 (the section above), trace-stamped, and stored — and only for recipients we host, so
