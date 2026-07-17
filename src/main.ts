@@ -27,6 +27,7 @@ import type { DeliveredMessage } from './server/smtp-receiver.ts';
 import { ImapServer } from './server/imap-server.ts';
 import type { ServableMailbox } from './server/imap-server.ts';
 import { relayOutbound, routeRecipients, type OutboundOptions } from './server/outbound.ts';
+import { StsCache, httpsFetchPolicy } from './server/mta-sts-resolve.ts';
 import { ensureSubmissionHeaders, formatDate } from './server/submission-fixup.ts';
 import { buildBounceMessage } from './server/bounce.ts';
 import { verifyDkim, type DkimKeyResolver } from './server/dkim-inbound.ts';
@@ -299,10 +300,15 @@ export async function startServer(cfg: MailServerConfig): Promise<RunningServer>
 
   // Submission (port 587, authenticated): our user sending out. Local recipients
   // land in the mailbox; remote ones are relayed to their MX (best-effort, logged).
+  // MTA-STS (RFC 8461): only in production (real DNS + HTTPS). When a test injects its own
+  // resolveHosts (delivery pointed at a capture server), MTA-STS stays off so no real
+  // network lookup happens during tests.
+  const stsCache = new StsCache();
+  const stsDeps = { resolveTxt: spfResolvers.txt, fetchPolicy: httpsFetchPolicy(), now: (): number => Date.now() };
   const outboundOpts: OutboundOptions = {
     clientName: cfg.domain,
     log,
-    ...(cfg.outbound?.resolveHosts ? { resolveHosts: cfg.outbound.resolveHosts } : {}),
+    ...(cfg.outbound?.resolveHosts ? { resolveHosts: cfg.outbound.resolveHosts } : { resolveStsPolicy: (domain: string) => stsCache.resolve(domain, stsDeps) }),
     ...(cfg.outbound?.port !== undefined ? { port: cfg.outbound.port } : {}),
   };
   // DKIM signer, if a key is configured. Signing moves outbound from spam to inbox.

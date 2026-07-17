@@ -99,6 +99,13 @@ export interface DeliveryOptions {
    * fails to negotiate falls back to plaintext rather than dropping the mail.
    */
   readonly startTls?: boolean;
+  /**
+   * MTA-STS enforce (RFC 8461): require STARTTLS *and* a certificate that validates for
+   * the MX hostname. STARTTLS not offered, a failed handshake, or an invalid/mismatched
+   * certificate becomes a hard failure for this host with NO plaintext fallback — an
+   * active downgrade must never result in delivery. Implies `startTls`.
+   */
+  readonly requireValidCert?: boolean;
 }
 
 export async function deliver(
@@ -151,24 +158,29 @@ export async function deliver(
         const helo = await readReply(wire, timeoutMs);
         if (!is2yz(helo)) return { ...base, greetingCode, openingVerb, failure: 'HELO fallback refused' };
         heloFellBack = true;
-      } else if (options.startTls === true && advertisesStartTls(ehlo!)) {
-        // Opportunistic STARTTLS (RFC 3207): upgrade, then re-EHLO over TLS.
+      } else if ((options.startTls === true || options.requireValidCert === true) && advertisesStartTls(ehlo!)) {
+        // Opportunistic STARTTLS (RFC 3207): upgrade, then re-EHLO over TLS. Under MTA-STS
+        // enforce the certificate is validated for the MX hostname (rejectUnauthorized).
         await wire.send(command('STARTTLS', defects));
         const ready = await readReply(wire, timeoutMs);
         if (is2yz(ready)) {
           try {
-            await wire.startTls({ rejectUnauthorized: false, servername: connect.host });
+            await wire.startTls({ rejectUnauthorized: options.requireValidCert === true, servername: connect.host });
             await wire.send(command(`EHLO ${req.clientName}`, defects));
             const reEhlo = await readReply(wire, timeoutMs);
             if (!is2yz(reEhlo)) return { ...base, greetingCode, openingVerb, failure: 'EHLO after STARTTLS refused' };
           } catch {
-            // Handshake failed — the connection is unusable now; give up this
-            // attempt so the queue retries (plaintext fallback needs a fresh
-            // connection, which the retry provides).
-            return { ...base, greetingCode, openingVerb, failure: 'STARTTLS handshake failed' };
+            // Handshake or certificate validation failed. Under enforce this is terminal
+            // (never downgrade); otherwise the queue retries and may fall back to plaintext.
+            return { ...base, greetingCode, openingVerb, failure: options.requireValidCert === true ? 'STARTTLS required: handshake or certificate validation failed' : 'STARTTLS handshake failed' };
           }
+        } else if (options.requireValidCert === true) {
+          return { ...base, greetingCode, openingVerb, failure: 'STARTTLS required (MTA-STS enforce) but refused' };
         }
-        // A refused STARTTLS (non-2yz) just continues in plaintext.
+        // A refused STARTTLS (non-2yz) without enforce just continues in plaintext.
+      } else if (options.requireValidCert === true) {
+        // MTA-STS enforce but the MX does not offer STARTTLS — refuse to send in the clear.
+        return { ...base, greetingCode, openingVerb, failure: 'STARTTLS required (MTA-STS enforce) but not offered' };
       }
     }
 
