@@ -31,11 +31,23 @@ export interface EnvelopeDefects {
   readonly nilAbsentSender?: boolean;
 }
 
-/** Case-insensitive first header value, or null. */
+/**
+ * Unfold a header value (RFC 5322 §2.2.3): a folded header wraps across lines, each
+ * continuation starting with WSP, and unfolding removes the CRLF that precedes the
+ * WSP. This MUST happen before the value goes into an ENVELOPE — an IMAP quoted
+ * string cannot contain CR or LF, so emitting a folded Subject verbatim produces a
+ * malformed response that desyncs the client's parser. Any stray bare CR/LF is
+ * collapsed to a space as a belt-and-braces guard.
+ */
+function unfold(value: string): string {
+  return value.replace(/\r\n(?=[ \t])/g, '').replace(/[\r\n]+/g, ' ');
+}
+
+/** Case-insensitive first header value (unfolded), or null. */
 function headerValue(headers: readonly Header[], name: string): string | null {
   const lower = name.toLowerCase();
   for (const h of headers) {
-    if (h.name.toString('latin1').toLowerCase() === lower) return h.value.toString('latin1').trim();
+    if (h.name.toString('latin1').toLowerCase() === lower) return unfold(h.value.toString('latin1')).trim();
   }
   return null;
 }
@@ -128,9 +140,10 @@ export function buildEnvelope(headers: readonly Header[], defects: EnvelopeDefec
   return { fields: ordered };
 }
 
-/** IMAP quoted-string, or NIL for null. */
+/** IMAP quoted-string, or NIL for null. CR/LF can't appear in a quoted string, so
+ * any that survived unfolding are collapsed to a space — never emitted raw. */
 function imapString(s: string | null): string {
-  return s === null ? 'NIL' : `"${s.replace(/([\\"])/g, '\\$1')}"`;
+  return s === null ? 'NIL' : `"${s.replace(/[\r\n]+/g, ' ').replace(/([\\"])/g, '\\$1')}"`;
 }
 
 /** An ENVELOPE address structure: (name adl mailbox host); adl is unused (NIL). */

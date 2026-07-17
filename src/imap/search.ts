@@ -44,7 +44,9 @@ export interface SearchDefects {
 function headerValue(headers: readonly Header[], name: string): string | null {
   const lower = name.toLowerCase();
   for (const h of headers) {
-    if (h.name.toString('latin1').toLowerCase() === lower) return h.value.toString('latin1');
+    // Unfold (RFC 5322 §2.2.3) so a substring search matches across a folded header
+    // — "annual report" still matches when the sender wrapped it as "annual\r\n report".
+    if (h.name.toString('latin1').toLowerCase() === lower) return h.value.toString('latin1').replace(/\r\n(?=[ \t])/g, '');
   }
   return null;
 }

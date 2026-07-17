@@ -7,7 +7,7 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { buildEnvelope } from './envelope.ts';
+import { buildEnvelope, serializeEnvelope } from './envelope.ts';
 import { parseMessage } from '../message/parse.ts';
 import { imapRequirement } from '../register/imap/index.ts';
 import type { ImapRequirementId } from '../register/imap/index.ts';
@@ -35,6 +35,18 @@ test('sanity: ENVELOPE fields are built from the parsed headers', () => {
   const from = byName.get('from') as { name: string | null; mailbox: string; host: string }[];
   assert.deepEqual(from[0], { name: 'Alice', mailbox: 'alice', host: 'example.com' });
   assert.equal(byName.get('cc'), null, 'an absent Cc is NIL');
+});
+
+test('a folded Subject is unfolded so the ENVELOPE has no embedded CR/LF', () => {
+  // Real senders fold long headers (RFC 5322 §2.2.3). An IMAP quoted string cannot
+  // contain CR/LF, so a folded value emitted verbatim would desync the client parser.
+  const folded = parseMessage(
+    Buffer.from(`Subject: A long subject the sender${CRLF} folded across two lines${CRLF}From: a@x.test${CRLF}${CRLF}body`, 'latin1'),
+  ).headers;
+  const byName = new Map(buildEnvelope(folded).fields.map((f) => [f.name, f.value]));
+  assert.equal(byName.get('subject'), 'A long subject the sender folded across two lines', 'the fold is removed, not left as a raw CRLF');
+  const wire = serializeEnvelope(buildEnvelope(folded));
+  assert.doesNotMatch(wire, /[\r\n]/, 'the serialized ENVELOPE contains no CR or LF');
 });
 
 test('R-9051-7.5.2-a: the ten fields are in the defined order (wrongFieldOrder caught)', () => {
