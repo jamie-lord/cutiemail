@@ -639,15 +639,13 @@ export class ImapServer {
      * boundaries — NOOP/CHECK/IDLE and the start of EXPUNGE/COPY/MOVE — never during a
      * FETCH/STORE/SEARCH response, where §7.4.1 forbids renumbering.
      *
-     * KNOWN LIMITATION (RFC 2180 §4.1, deliberately scoped): between a peer's EXPUNGE
-     * and this connection's next such boundary, sequence-numbered FETCH/STORE/SEARCH
-     * still resolve against the live mailbox, so a bare-sequence command in that window
-     * can address a renumbered message. We cannot close it by notifying earlier — §7.4.1
-     * bars EXPUNGE during exactly those commands. Real clients avoid it by using UID
-     * commands (immune — addressed by UID, not position) and by polling NOOP/IDLE
-     * frequently; a full fix (a per-session sequence snapshot that keeps expunged
-     * messages referenceable until the client acknowledges) is a larger rearchitecture
-     * left as a recorded decision.
+     * The companion to this is `resolveForConn`: between a peer's EXPUNGE and this
+     * connection's next boundary, sequence-numbered FETCH/STORE/SEARCH resolve against
+     * this same client view (`knownUids`), NOT the live mailbox — so a bare-sequence
+     * command in that window cannot be silently renumbered onto a different message
+     * (RFC 9051 §7.4.1). §7.4.1 bars sending the EXPUNGE earlier (during those exact
+     * commands), so we hold the client's numbering stable until it reaches a boundary
+     * here. Verified against Dovecot's imaptest (see reference-servers/CALIBRATION-imaptest.md).
      */
     // Report removed messages: once QRESYNC is enabled the server MUST use a single
     // VANISHED (no EARLIER) instead of per-message EXPUNGE (RFC 7162 §3.2.10); otherwise
@@ -692,6 +690,39 @@ export class ImapServer {
       });
       for (const uid of [...knownFlags.keys()]) if (!present.has(uid)) knownFlags.delete(uid);
     };
+
+    /**
+     * Resolve a sequence-set against THIS connection's view of the mailbox, not the
+     * live message list. Sequence numbers address the numbering the client last saw
+     * (`knownUids`), so a peer's EXPUNGE cannot silently renumber a bare-sequence
+     * FETCH/STORE/SEARCH before this connection has been sent the EXPUNGE — the
+     * RFC 9051 §7.4.1 rule that #resolveSet (which reads the live list) violated. A
+     * message the client still knows about that a peer expunged (gone from storage,
+     * not yet acknowledged here) is OMITTED, never replaced by whatever message slid
+     * into its position. UID mode still addresses by UID (immune to renumbering) but
+     * reports each message at its client-view sequence number for the same reason;
+     * a message not yet in the client's view (e.g. one it just APPENDed) keeps its
+     * live position so a self-append-then-fetch still works.
+     */
+    const resolveForConn = (set: string, uidMode: boolean): { seq: number; msg: ServableMessage }[] => {
+      if (selected === null) return [];
+      const live = selected.messages;
+      if (uidMode) {
+        if (live.length === 0) return [];
+        const largest = live[live.length - 1]!.uid;
+        const wanted = new Set(parseSequenceSet(set, largest));
+        const viewIndex = new Map(knownUids.map((uid, i) => [uid, i + 1]));
+        return live.map((msg, i) => ({ seq: viewIndex.get(msg.uid) ?? i + 1, msg })).filter((e) => wanted.has(e.msg.uid));
+      }
+      const byUid = new Map(live.map((m) => [m.uid, m]));
+      const out: { seq: number; msg: ServableMessage }[] = [];
+      for (const s of parseSequenceSet(set, knownUids.length)) {
+        if (s < 1 || s > knownUids.length) continue;
+        const msg = byUid.get(knownUids[s - 1]!);
+        if (msg !== undefined) out.push({ seq: s, msg });
+      }
+      return out;
+    };
     // IMAP has three states (RFC 9051 §3); everything except the pre-auth commands
     // requires Authenticated. Without this gate a client could SELECT and FETCH mail
     // with no LOGIN at all. `pendingAuth` holds the tag of an AUTHENTICATE PLAIN that
@@ -732,9 +763,16 @@ export class ImapServer {
             // UIDPLUS (RFC 4315): tell the client the UID it just created, so it
             // needn't re-search for the message it filed (e.g. a Sent copy).
             const uid = box.append(raw, pendingAppend.flags, pendingAppend.internalDate);
+            // If we appended to our OWN selected mailbox, bring this connection's view
+            // in step now (untagged EXISTS + knownUids update) so a following
+            // sequence-number command can address the message the client just filed —
+            // a server SHOULD send EXISTS after such an APPEND (RFC 9051 §6.3.12).
+            // Without this, sequence resolution (which now honours the client's view,
+            // not the live list) would omit the just-appended message until the next
+            // boundary.
+            if (selected !== null && selectedName !== null && canonicalMailboxName(pendingAppend.mailboxName) === selectedName) syncSelected();
             write(sock, `${pendingAppend.tag} OK [APPENDUID ${box.uidValidity} ${uid}] APPEND completed`);
-            // Wake connections idling on this mailbox (including this one, on its next
-            // command boundary via syncSelected) so the new message shows up.
+            // Wake connections idling on this mailbox so the new message shows up.
             this.#notifier?.notify(canonicalMailboxName(pendingAppend.mailboxName));
           }
           pendingAppend = null;
@@ -1104,7 +1142,7 @@ export class ImapServer {
             // A read-only (EXAMINE) mailbox never has its flags changed by a fetch.
             const marksSeen = !readOnly && atts.bodySections.some((s) => !s.peek);
             let markedSeen = false;
-            for (const { seq, msg } of this.#resolveSet(selected, set, uidMode)) {
+            for (const { seq, msg } of resolveForConn(set, uidMode)) {
               if (changedSince !== null && msg.modseq <= changedSince) continue;
               this.#emitFetch(sock, seq, msg, atts, uidMode);
               if (marksSeen && !msg.flags.has('\\Seen')) {
@@ -1144,7 +1182,7 @@ export class ImapServer {
             }
             const msgs = selected.messages;
             const largestUid = msgs.length > 0 ? msgs[msgs.length - 1]!.uid : 0;
-            const keys = parseSearchKeys(imapTokens(criteria), { largestUid, count: msgs.length });
+            const keys = parseSearchKeys(imapTokens(criteria), { largestUid, count: knownUids.length });
             if (keys === null) {
               // An unsupported/malformed key: answer BAD rather than run a partial
               // search that would return wrong (or inverted) results.
@@ -1162,7 +1200,15 @@ export class ImapServer {
             if (usesModseq) condstore = true;
             const hits: number[] = [];
             let highestHitModseq = 0;
-            msgs.forEach((m, i) => {
+            // Search the client's known view, so a reported sequence number is the
+            // position the client holds — a peer's not-yet-acknowledged EXPUNGE must
+            // not renumber results (RFC 9051 §7.4.1). A known message a peer expunged
+            // is skipped; a live message the client hasn't been told about yet is not
+            // searched until the next boundary announces it.
+            const byUidSearch = new Map(msgs.map((m) => [m.uid, m]));
+            knownUids.forEach((uid, i) => {
+              const m = byUidSearch.get(uid);
+              if (m === undefined) return;
               const searchable = { headers: parseMessage(m.raw).headers, flags: m.flags, internalDate: m.internalDate, raw: m.raw, uid: m.uid, seq: i + 1, modseq: m.modseq };
               if (matchesSearch(searchable, keys)) {
                 hits.push(uidMode ? m.uid : i + 1);
@@ -1225,7 +1271,7 @@ export class ImapServer {
             const failed: number[] = []; // seq/uid of messages that failed UNCHANGEDSINCE
             {
               const mode = op === '+FLAGS' ? 'add' : op === '-FLAGS' ? 'remove' : 'replace';
-              for (const { seq, msg } of this.#resolveSet(selected, set, uidMode)) {
+              for (const { seq, msg } of resolveForConn(set, uidMode)) {
                 // UNCHANGEDSINCE: a message modified since `unchangedSince` is left
                 // untouched and reported in the MODIFIED response (optimistic-concurrency
                 // guard against a change another client made first).

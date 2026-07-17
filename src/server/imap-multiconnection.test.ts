@@ -324,3 +324,78 @@ test('EXPUNGE sequence numbers are descending so an earlier removal never invali
     await server.close();
   }
 });
+
+test('a peer expunge does not renumber a bare-sequence FETCH before the client is told (RFC 9051 §7.4.1)', async () => {
+  // The violation Dovecot's imaptest caught: connection B, which selected five
+  // messages, must keep seeing sequence N -> the SAME message until it is sent the
+  // EXPUNGE — even if a peer expunged something. Before the fix, B's `FETCH 2` after
+  // A expunged UID 2 returned UID 3 (silently renumbered), so a sequence-based client
+  // would read/modify the wrong message under concurrency.
+  const catalog = new MemoryCatalog();
+  const inbox = catalog.get('INBOX')!;
+  for (let i = 1; i <= 5; i++) inbox.append(Buffer.from(`Subject: m${i}\r\n\r\nbody ${i}\r\n`, 'latin1')); // UIDs 1..5
+  const notifier = new MailboxNotifier();
+  const server = await ImapServer.start(catalog, { authenticate: () => true, notifier });
+  const a = await open(server.port);
+  const b = await open(server.port);
+  try {
+    // A expunges UID 2 (sequence 2).
+    a.send('c1 STORE 2 +FLAGS (\\Deleted)\r\nc2 EXPUNGE\r\n');
+    await a.waitFor('c2 OK');
+
+    // B, with no intervening boundary, fetches its whole known range by sequence.
+    // Its numbering must be unchanged: seq 1->UID1, seq 3->UID3, seq 4->UID4,
+    // seq 5->UID5, and seq 2 (the message it knew there, now peer-expunged) is
+    // OMITTED — never answered with UID 3.
+    b.send('d1 FETCH 1:5 (UID)\r\n');
+    await b.waitFor('d1 OK');
+    // B's stream from its SELECT to the FETCH's tagged OK holds only this FETCH's
+    // untagged responses (SELECT emits no FETCH; A's store was on another connection).
+    const fetchWin = b.seen.slice(b.seen.indexOf('a2 OK'), b.seen.indexOf('d1 OK'));
+    assert.doesNotMatch(fetchWin, /EXPUNGE/, 'no EXPUNGE is sent during the FETCH (§7.4.1)');
+    assert.match(fetchWin, /\* 1 FETCH \(UID 1\)/, 'seq 1 stays UID 1');
+    assert.match(fetchWin, /\* 3 FETCH \(UID 3\)/, 'seq 3 stays UID 3 (not shifted down to 2)');
+    assert.match(fetchWin, /\* 4 FETCH \(UID 4\)/, 'seq 4 stays UID 4');
+    assert.match(fetchWin, /\* 5 FETCH \(UID 5\)/, 'seq 5 is still present (not lost to renumbering)');
+    assert.doesNotMatch(fetchWin, /\* 2 FETCH/, 'seq 2 (peer-expunged) is omitted, never renumbered to another UID');
+
+    // The expunge surfaces only at the next boundary, and only then does B renumber.
+    b.send('d2 NOOP\r\n');
+    await b.waitFor('d2 OK');
+    assert.match(b.seen.slice(b.seen.indexOf('d1 OK')), /\* 2 EXPUNGE/, 'the EXPUNGE lands at the NOOP boundary');
+    b.send('d3 FETCH 1:* (UID)\r\n');
+    await b.waitFor('d3 OK');
+    const after = b.seen.slice(b.seen.indexOf('d2 OK'));
+    assert.match(after, /\* 2 FETCH \(UID 3\)/, 'after acknowledging the expunge, seq 2 is now UID 3');
+  } finally {
+    a.sock.destroy();
+    b.sock.destroy();
+    await server.close();
+  }
+});
+
+test('a peer expunge does not renumber SEARCH results before the client is told (RFC 9051 §7.4.1)', async () => {
+  // The SEARCH sibling of the FETCH renumbering bug: sequence numbers SEARCH returns
+  // must be the client's known numbering, not the live post-expunge numbering.
+  const catalog = new MemoryCatalog();
+  const inbox = catalog.get('INBOX')!;
+  for (let i = 1; i <= 5; i++) inbox.append(Buffer.from(`Subject: m${i}\r\n\r\nx\r\n`, 'latin1'));
+  const notifier = new MailboxNotifier();
+  const server = await ImapServer.start(catalog, { authenticate: () => true, notifier });
+  const a = await open(server.port);
+  const b = await open(server.port);
+  try {
+    a.send('c1 STORE 2 +FLAGS (\\Deleted)\r\nc2 EXPUNGE\r\n');
+    await a.waitFor('c2 OK');
+    // B searches everything; results are its known sequence numbers 1,3,4,5 (seq 2
+    // omitted), NOT the live 1,2,3,4 that a renumbering server would report.
+    b.send('d1 SEARCH ALL\r\n');
+    await b.waitFor('d1 OK');
+    const line = b.seen.slice(b.seen.indexOf('a2 OK')).split('\r\n').find((l) => l.startsWith('* SEARCH')) ?? '';
+    assert.equal(line.trim(), '* SEARCH 1 3 4 5', 'SEARCH reports the client-view sequence numbers');
+  } finally {
+    a.sock.destroy();
+    b.sock.destroy();
+    await server.close();
+  }
+});
