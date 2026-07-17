@@ -30,7 +30,7 @@ import { checkSpf, type SpfResolvers } from './auth/spf-check.ts';
 import { checkDmarc } from './server/dmarc-inbound.ts';
 import { resolveTxt, resolve4, resolve6, resolveMx } from 'node:dns/promises';
 import { dkimSign, makeSigner } from './server/dkim-signer.ts';
-import { prependReceived, protocolFor } from './server/received.ts';
+import { prependReceived, protocolFor, stripOwnAuthResults } from './server/received.ts';
 import { MailboxNotifier } from './server/mailbox-notifier.ts';
 import { SqliteQueue } from './store/sqlite-queue.ts';
 import { RelayLoop } from './server/relay-loop.ts';
@@ -192,7 +192,10 @@ export async function startServer(cfg: MailServerConfig): Promise<RunningServer>
       `Authentication-Results: ${cfg.domain}; dkim=${dkim.verdict}${dkim.domain !== null ? ` header.d=${dkim.domain}` : ''}` +
       `; spf=${spf}${spfDomain !== '' ? ` smtp.mailfrom=${spfDomain}` : ''}` +
       `; dmarc=${dmarc.verdict}${dmarc.policy !== null ? ` (p=${dmarc.policy})` : ''}`;
-    const traced = prependReceived(m.data, {
+    // Strip any forged Authentication-Results claiming our authserv-id before adding
+    // our own (RFC 8601 §5) — otherwise a client cannot tell ours from the attacker's.
+    const cleaned = stripOwnAuthResults(m.data, cfg.domain);
+    const traced = prependReceived(cleaned, {
       helo: m.helo,
       remoteAddress: m.remoteAddress,
       by: cfg.domain,

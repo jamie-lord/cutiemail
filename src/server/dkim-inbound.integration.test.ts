@@ -175,3 +175,48 @@ test('the daemon evaluates DMARC (aligned SPF pass) and stamps dmarc=pass', asyn
     await server.close();
   }
 });
+
+test('a forged Authentication-Results with our authserv-id is stripped (RFC 8601 §5)', async () => {
+  const config: MailServerConfig = {
+    dbPath: ':memory:',
+    host: '127.0.0.1',
+    smtpPort: 0,
+    submissionPort: 0,
+    imapPort: 0,
+    domain: 'mail.example.test',
+    accounts: [{ user: 'test', pass: 'pw' }],
+    tls: { key: TEST_KEY, cert: TEST_CERT },
+    spfResolvers: { txt: async () => [], a: async () => [], mx: async () => [] },
+  };
+  const server = await startServer(config);
+  try {
+    const s = net.connect(server.inbound.port, '127.0.0.1');
+    s.on('error', () => {});
+    await new Promise<void>((r) => s.once('connect', () => r()));
+    const step = (str: string): Promise<void> =>
+      new Promise((r) => {
+        s.write(Buffer.from(str, 'latin1'));
+        setTimeout(r, 40);
+      });
+    await delay(40);
+    await step('EHLO evil\r\n');
+    await step('MAIL FROM:<attacker@evil.test>\r\n');
+    await step('RCPT TO:<test@mail.example.test>\r\n');
+    await step('DATA\r\n');
+    // A forged AR claiming OUR id, plus a legitimate upstream AR (different id).
+    await step(
+      'Authentication-Results: mail.example.test; dkim=pass header.d=trusted-bank.test\r\n' +
+        'Authentication-Results: upstream.relay.test; spf=pass\r\n' +
+        'From: attacker@evil.test\r\nSubject: forged\r\n\r\nphishing\r\n.\r\n',
+    );
+    await step('QUIT\r\n');
+    s.destroy();
+    for (let i = 0; i < 200 && server.mailbox.messages.length === 0; i++) await delay(20);
+    const stored = server.mailbox.messages[0]!.raw.toString('latin1');
+    assert.doesNotMatch(stored, /dkim=pass header\.d=trusted-bank\.test/, 'the forged our-id result is removed');
+    assert.match(stored, /Authentication-Results: upstream\.relay\.test; spf=pass/, 'a different authserv-id is left intact');
+    assert.match(stored, /Authentication-Results: mail\.example\.test; dkim=none/, 'our own verified result is stamped');
+  } finally {
+    await server.close();
+  }
+});

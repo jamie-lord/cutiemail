@@ -50,6 +50,31 @@ export function prependReceived(data: Buffer, info: ReceivedInfo): Buffer {
 }
 
 /**
+ * Remove any Authentication-Results header bearing OUR authserv-id (RFC 8601 §5). An
+ * attacker can put a forged "Authentication-Results: <us>; dkim=pass ..." in the message
+ * they send; if we leave it, a client cannot tell it from the one we add and may trust
+ * the forgery. We strip those (matching the authserv-id, the first token of the value)
+ * before stamping our own. Other authserv-ids (a legitimate upstream) are left intact.
+ * Other headers are preserved byte-for-byte, including their folding.
+ */
+export function stripOwnAuthResults(data: Buffer, authservId: string): Buffer {
+  const sep = data.indexOf(Buffer.from('\r\n\r\n', 'latin1'));
+  if (sep === -1) return data;
+  const lines = data.subarray(0, sep).toString('latin1').split('\r\n');
+  const kept: string[] = [];
+  const want = authservId.toLowerCase();
+  for (let i = 0; i < lines.length; ) {
+    let header = lines[i]!;
+    let j = i + 1;
+    while (j < lines.length && /^[ \t]/.test(lines[j]!)) header += `\r\n${lines[j++]}`; // gather folded continuations
+    const m = /^Authentication-Results:[ \t]*([^;\s]+)/i.exec(header);
+    if (!(m !== null && m[1]!.toLowerCase() === want)) kept.push(header);
+    i = j;
+  }
+  return Buffer.concat([Buffer.from(kept.join('\r\n'), 'latin1'), data.subarray(sep)]);
+}
+
+/**
  * Count the Received: header fields in a message (RFC 5321 §6.3 loop detection).
  * Only field starts count — continuation (folded) lines begin with whitespace and
  * are skipped. Counting the trace hops is how a mail loop is caught and broken.
