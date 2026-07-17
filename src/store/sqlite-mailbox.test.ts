@@ -25,7 +25,8 @@ const b = (s: string): Buffer => Buffer.from(s, 'latin1');
 interface MailboxLike {
   readonly uidNext: number;
   readonly uidValidity: number;
-  readonly messages: ReadonlyArray<{ uid: number; flags: ReadonlySet<string>; raw: Buffer }>;
+  readonly highestModseq: number;
+  readonly messages: ReadonlyArray<{ uid: number; flags: ReadonlySet<string>; raw: Buffer; modseq: number }>;
   append(raw: Buffer, flags?: readonly string[], internalDate?: number): number;
   expunge(uid: number): void;
   storeFlags(uid: number, mode: 'add' | 'remove' | 'replace', flags: readonly string[]): void;
@@ -36,11 +37,16 @@ interface MailboxLike {
 
 /** A fixed sequence of operations whose observable results characterise the mailbox. */
 function exercise(mb: MailboxLike): unknown {
+  const emptyModseq = mb.highestModseq; // nonzero even with no messages (RFC 7162)
   const uids = [mb.append(b('a')), mb.append(b('b')), mb.append(b('c'))];
+  const modseqOfB = mb.messages.find((m) => m.uid === uids[1])?.modseq ?? 0;
   mb.expunge(uids[0]!);
   const afterExpunge = mb.append(b('d')); // must NOT reuse uids[0]
+  const highestAfterAppends = mb.highestModseq;
   mb.storeFlags(uids[1]!, 'add', ['\\Seen']);
   const seenSet = mb.messages.find((m) => m.uid === uids[1])?.flags.has('\\Seen') ?? false;
+  // A flag change assigns a new, higher mod-sequence to that message.
+  const modseqOfBAfterStore = mb.messages.find((m) => m.uid === uids[1])?.modseq ?? 0;
   const seqOfLast = mb.sequenceNumber(afterExpunge);
   mb.storeFlags(uids[2]!, 'add', [DELETED]);
   const expunged = [...mb.expungeDeleted()];
@@ -56,6 +62,14 @@ function exercise(mb: MailboxLike): unknown {
     invalidateOk,
     invalidateRejected,
     countAfterInvalidate: mb.messages.length,
+    // CONDSTORE mod-sequence observables — identical numeric progression on both.
+    emptyModseqNonzero: emptyModseq >= 1,
+    modseqOfB,
+    highestAfterAppends,
+    modseqOfBAfterStore,
+    storeBumpedModseq: modseqOfBAfterStore > modseqOfB,
+    highestTracksLastChange: modseqOfBAfterStore <= highestAfterAppends + 2,
+    highestAfterInvalidate: mb.highestModseq,
   };
 }
 
@@ -83,6 +97,12 @@ test('the SQLite mailbox survives a close and reopen (persistence)', () => {
     assert.equal(reopened.messages.length, 1);
     assert.equal(reopened.messages[0]!.raw.toString('latin1'), 'persist me');
     assert.ok(reopened.messages[0]!.flags.has('\\Flagged'), 'flags persisted');
+    // The mod-sequence must survive a restart — that is the whole point of CONDSTORE
+    // (a reconnecting client resyncs against a value the server still recognises).
+    const modseqBefore = reopened.messages[0]!.modseq;
+    assert.ok(modseqBefore >= 1 && reopened.highestModseq >= modseqBefore, 'HIGHESTMODSEQ persisted and is nonzero');
+    reopened.storeFlags(uid, 'add', ['\\Seen']);
+    assert.ok(reopened.messages[0]!.modseq > modseqBefore, 'a post-reopen flag change advances the mod-sequence, not resets it');
     second.close();
   } finally {
     rmSync(path, { force: true });

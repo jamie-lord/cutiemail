@@ -46,6 +46,22 @@ function migrateNameColumn(db: DatabaseSync): void {
   db.exec('CREATE UNIQUE INDEX IF NOT EXISTS mailbox_name ON mailbox (name)');
 }
 
+/**
+ * Add the CONDSTORE mod-sequence columns to databases created before it existed
+ * (RFC 7162). Both default to 1 — a valid nonzero starting state where every
+ * pre-existing message shares mod-sequence 1 and the next change bumps to 2.
+ */
+function migrateModseqColumns(db: DatabaseSync): void {
+  const mcols = db.prepare("SELECT name FROM pragma_table_info('mailbox')").all() as Array<{ name: string }>;
+  if (!mcols.some((c) => c.name === 'highest_modseq')) {
+    db.exec('ALTER TABLE mailbox ADD COLUMN highest_modseq INTEGER NOT NULL DEFAULT 1');
+  }
+  const gcols = db.prepare("SELECT name FROM pragma_table_info('message')").all() as Array<{ name: string }>;
+  if (!gcols.some((c) => c.name === 'mod_seq')) {
+    db.exec('ALTER TABLE message ADD COLUMN mod_seq INTEGER NOT NULL DEFAULT 1');
+  }
+}
+
 export class SqliteMailbox {
   readonly #db: DatabaseSync;
   readonly #id: number;
@@ -59,6 +75,7 @@ export class SqliteMailbox {
   static open(db: DatabaseSync, uidValidity = 1, id = 1): SqliteMailbox {
     db.exec(SCHEMA);
     migrateNameColumn(db);
+    migrateModseqColumns(db);
     const existing = db.prepare('SELECT id FROM mailbox WHERE id = ?').get(id);
     if (existing === undefined) {
       // id 1 is INBOX by convention; other bare opens get a synthetic unique name.
@@ -75,13 +92,25 @@ export class SqliteMailbox {
     return Number((this.#db.prepare('SELECT uid_next FROM mailbox WHERE id = ?').get(this.#id) as { uid_next: number }).uid_next);
   }
 
+  /** The highest mod-sequence in the mailbox (RFC 7162) — always nonzero. */
+  get highestModseq(): number {
+    return Number((this.#db.prepare('SELECT highest_modseq FROM mailbox WHERE id = ?').get(this.#id) as { highest_modseq: number }).highest_modseq);
+  }
+
+  /** Advance and return the next mod-sequence. Must run inside a #tx (caller wraps). */
+  #nextModseq(): number {
+    this.#db.prepare('UPDATE mailbox SET highest_modseq = highest_modseq + 1 WHERE id = ?').run(this.#id);
+    return this.highestModseq;
+  }
+
   get messages(): readonly StoredMessage[] {
-    const rows = this.#db.prepare('SELECT uid, internal_date, raw FROM message WHERE mailbox_id = ? ORDER BY uid').all(this.#id) as Array<{ uid: number; internal_date: number; raw: Uint8Array }>;
+    const rows = this.#db.prepare('SELECT uid, internal_date, raw, mod_seq FROM message WHERE mailbox_id = ? ORDER BY uid').all(this.#id) as Array<{ uid: number; internal_date: number; raw: Uint8Array; mod_seq: number }>;
     const flagStmt = this.#db.prepare('SELECT flag FROM flag WHERE mailbox_id = ? AND uid = ?');
     return rows.map((r) => ({
       uid: Number(r.uid),
       internalDate: Number(r.internal_date),
       raw: Buffer.from(r.raw),
+      modseq: Number(r.mod_seq),
       flags: new Set((flagStmt.all(this.#id, r.uid) as Array<{ flag: string }>).map((f) => f.flag)),
     }));
   }
@@ -117,7 +146,8 @@ export class SqliteMailbox {
     return this.#tx(() => {
       const uid = this.uidNext;
       this.#db.prepare('UPDATE mailbox SET uid_next = ? WHERE id = ?').run(uid + 1, this.#id);
-      this.#db.prepare('INSERT INTO message (mailbox_id, uid, internal_date, raw) VALUES (?, ?, ?, ?)').run(this.#id, uid, internalDate, raw);
+      const modseq = this.#nextModseq();
+      this.#db.prepare('INSERT INTO message (mailbox_id, uid, internal_date, raw, mod_seq) VALUES (?, ?, ?, ?, ?)').run(this.#id, uid, internalDate, raw, modseq);
       const ins = this.#db.prepare('INSERT OR IGNORE INTO flag (mailbox_id, uid, flag) VALUES (?, ?, ?)');
       for (const f of flags) ins.run(this.#id, uid, f);
       return uid;
@@ -135,10 +165,12 @@ export class SqliteMailbox {
       if (mode === 'remove') {
         const del = this.#db.prepare('DELETE FROM flag WHERE mailbox_id = ? AND uid = ? AND flag = ?');
         for (const f of flags) del.run(this.#id, uid, f);
-        return;
+      } else {
+        const ins = this.#db.prepare('INSERT OR IGNORE INTO flag (mailbox_id, uid, flag) VALUES (?, ?, ?)');
+        for (const f of flags) ins.run(this.#id, uid, f);
       }
-      const ins = this.#db.prepare('INSERT OR IGNORE INTO flag (mailbox_id, uid, flag) VALUES (?, ?, ?)');
-      for (const f of flags) ins.run(this.#id, uid, f);
+      // A flag change bumps the message's mod-sequence (RFC 7162 §3.1.2.1).
+      this.#db.prepare('UPDATE message SET mod_seq = ? WHERE mailbox_id = ? AND uid = ?').run(this.#nextModseq(), this.#id, uid);
     });
   }
 
@@ -163,7 +195,7 @@ export class SqliteMailbox {
     this.#tx(() => {
       this.#db.prepare('DELETE FROM message WHERE mailbox_id = ?').run(this.#id);
       this.#db.prepare('DELETE FROM flag WHERE mailbox_id = ?').run(this.#id);
-      this.#db.prepare('UPDATE mailbox SET uid_validity = ?, uid_next = 1 WHERE id = ?').run(newValidity, this.#id);
+      this.#db.prepare('UPDATE mailbox SET uid_validity = ?, uid_next = 1, highest_modseq = 1 WHERE id = ?').run(newValidity, this.#id);
     });
     return true;
   }
@@ -185,6 +217,7 @@ export class SqliteCatalog {
   static open(db: DatabaseSync, uidValidity = 1): SqliteCatalog {
     db.exec(SCHEMA);
     migrateNameColumn(db);
+    migrateModseqColumns(db);
     const cat = new SqliteCatalog(db);
     if (cat.get('INBOX') === undefined) cat.create('INBOX', uidValidity);
     return cat;

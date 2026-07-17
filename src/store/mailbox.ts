@@ -17,6 +17,12 @@ export interface StoredMessage {
   /** INTERNALDATE as an epoch-millis value (a timestamp, supplied by the caller). */
   readonly internalDate: number;
   readonly raw: Buffer;
+  /**
+   * The per-message modification sequence (RFC 7162 CONDSTORE). Bumped to a new,
+   * higher value on every flag change and set at append; monotonic within a mailbox.
+   * Lets a reconnecting client fetch only what changed since it last synced.
+   */
+  readonly modseq: number;
 }
 
 /** The system flag marking a message for removal by EXPUNGE. */
@@ -47,6 +53,8 @@ export class Mailbox {
   #messages: StoredMessage[] = [];
   /** UIDs expunged but still counted for sequence numbers (staleSeqNumsAfterExpunge only). */
   #staleUids: number[] = [];
+  /** The mailbox's highest mod-sequence (RFC 7162). Nonzero even when empty. */
+  #highestModseq = 1;
   readonly #defects: MailboxDefects;
 
   constructor(uidValidity = 1, defects: MailboxDefects = {}) {
@@ -72,12 +80,24 @@ export class Mailbox {
     this.#messages = [];
     this.#uidNext = 1;
     this.#staleUids = [];
+    this.#highestModseq = 1;
     return true;
   }
 
   /** The predicted UID of the next appended message. Never decreases (conformant). */
   get uidNext(): number {
     return this.#uidNext;
+  }
+
+  /** The highest mod-sequence in the mailbox (RFC 7162 §3.1.2.2) — always nonzero. */
+  get highestModseq(): number {
+    return this.#highestModseq;
+  }
+
+  /** Advance and return the next mod-sequence — a strictly higher value each call. */
+  #nextModseq(): number {
+    this.#highestModseq += 1;
+    return this.#highestModseq;
   }
 
   /** The messages currently in the mailbox, in arrival order. */
@@ -91,7 +111,7 @@ export class Mailbox {
     // Conformant: advance the counter so this UID is never handed out again. The
     // nonAscendingUid defect leaves it, so the next append reuses `uid`.
     if (this.#defects.nonAscendingUid !== true) this.#uidNext = uid + 1;
-    this.#messages.push({ uid, flags: new Set(flags), internalDate, raw: Buffer.from(raw) });
+    this.#messages.push({ uid, flags: new Set(flags), internalDate, raw: Buffer.from(raw), modseq: this.#nextModseq() });
     return uid;
   }
 
@@ -133,14 +153,14 @@ export class Mailbox {
     if (idx === -1) return;
     const current = new Set(this.#messages[idx]!.flags);
     if (mode === 'replace') {
-      this.#messages[idx] = { ...this.#messages[idx]!, flags: new Set(flags) };
+      this.#messages[idx] = { ...this.#messages[idx]!, flags: new Set(flags), modseq: this.#nextModseq() };
       return;
     }
     for (const f of flags) {
       if (mode === 'add') current.add(f);
       else if (this.#defects.removeDoesntClear !== true) current.delete(f);
     }
-    this.#messages[idx] = { ...this.#messages[idx]!, flags: current };
+    this.#messages[idx] = { ...this.#messages[idx]!, flags: current, modseq: this.#nextModseq() };
   }
 
   /** Remove every message flagged \Deleted (R-9051-2.3.2-b). Returns the removed UIDs. */
