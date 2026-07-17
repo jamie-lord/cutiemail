@@ -140,10 +140,13 @@ export function buildEnvelope(headers: readonly Header[], defects: EnvelopeDefec
   return { fields: ordered };
 }
 
-/** IMAP quoted-string, or NIL for null. CR/LF can't appear in a quoted string, so
- * any that survived unfolding are collapsed to a space — never emitted raw. */
+/** IMAP quoted-string, or NIL for null. CR/LF/NUL and other C0 control octets can't
+ * appear in a quoted string (RFC 9051); any that survived unfolding — including a raw
+ * NUL from a crafted header — are collapsed to a space, never emitted raw (a NUL would
+ * desync a strict client's FETCH parse). */
 function imapString(s: string | null): string {
-  return s === null ? 'NIL' : `"${s.replace(/[\r\n]+/g, ' ').replace(/([\\"])/g, '\\$1')}"`;
+  // eslint-disable-next-line no-control-regex
+  return s === null ? 'NIL' : `"${s.replace(/[\x00-\x1f]+/g, ' ').replace(/([\\"])/g, '\\$1')}"`;
 }
 
 /** An ENVELOPE address structure: (name adl mailbox host); adl is unused (NIL). */

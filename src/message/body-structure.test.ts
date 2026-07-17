@@ -75,6 +75,23 @@ test('a message/rfc822 attachment carries the forwarded message envelope and str
   assert.match(bs, /"MESSAGE" "RFC822".*"forwarded subject".*"TEXT" "PLAIN"/s, 'the nested body structure follows the envelope');
 });
 
+test('a multipart whose boundary matches no parts yields a valid leaf, not an empty multipart', () => {
+  // RFC 9051 body-type-mpart requires >= 1 nested body; "("MIXED" ...)" (no leading
+  // nested body) desyncs a strict client's FETCH parse. A boundary that matches nothing
+  // must degrade to a single leaf.
+  const bs = bodyStructureResponse(msg('Content-Type: multipart/mixed; boundary=NOPE\n\njust text, no boundary here\n'));
+  assert.ok(bs.startsWith('("TEXT" "PLAIN"'), 'the empty multipart is reported as a text leaf, a valid structure');
+  assert.doesNotMatch(bs, /^\(\s*"MIXED"/, 'never an empty multipart with a string where a nested body is required');
+});
+
+test('a NUL or control octet in a header/filename is not emitted raw in a quoted string', () => {
+  // A raw NUL is illegal in an IMAP quoted string and desyncs a strict FETCH parser.
+  const raw = msg('Content-Type: application/octet-stream; name="ev\x00il.exe"\nContent-Transfer-Encoding: base64\n\nAAAA\n');
+  const bs = bodyStructureResponse(raw);
+  assert.ok(!bs.includes('\x00'), 'no raw NUL survives into the BODYSTRUCTURE');
+  assert.match(bs, /"ev il\.exe"/, 'the control octet was collapsed to a space');
+});
+
 test('a pathologically deep multipart is bounded, not a stack overflow (DoS guard)', () => {
   let m = 'Content-Type: text/plain\r\n\r\nleaf\r\n';
   for (let i = 0; i < 5000; i++) {

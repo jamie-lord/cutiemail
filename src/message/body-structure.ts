@@ -76,13 +76,17 @@ function parseParameterized(value: string): { head: string; params: Array<readon
 }
 
 /** Unfolded first value of a header (case-insensitive), or null. */
-function header(raw: Buffer, name: string): string | null {
-  const { headers } = parseMessage(raw);
+/** Look up a header value in an ALREADY-parsed header list (unfolded, trimmed). */
+function findHeader(headers: ReturnType<typeof parseMessage>['headers'], name: string): string | null {
   const lower = name.toLowerCase();
   for (const h of headers) {
     if (h.name.toString('latin1').toLowerCase() === lower) return h.value.toString('latin1').replace(/\r\n(?=[ \t])/g, '').trim();
   }
   return null;
+}
+
+function header(raw: Buffer, name: string): string | null {
+  return findHeader(parseMessage(raw).headers, name);
 }
 
 /** Count CRLF-terminated lines; a final unterminated line still counts. */
@@ -104,19 +108,22 @@ const MAX_MIME_DEPTH = 100;
 
 /** Build the MIME part tree for a message or message part. */
 export function buildBodyStructure(raw: Buffer, depth = 0): BodyPart {
-  const { body } = parseMessage(raw);
+  // Parse ONCE per node and read every header from that result — calling header(raw,…)
+  // per field re-parsed the whole entity ~6× at every level, which on a deeply nested
+  // message is a quadratic FETCH-BODYSTRUCTURE CPU DoS.
+  const { headers, body } = parseMessage(raw);
   if (depth >= MAX_MIME_DEPTH) {
     return { multipart: false, type: 'APPLICATION', subtype: 'OCTET-STREAM', params: [], id: null, description: null, encoding: '7BIT', size: body.length, lines: null, disposition: null, children: [], rfc822: null };
   }
-  const ctRaw = header(raw, 'Content-Type') ?? 'text/plain';
+  const ctRaw = findHeader(headers, 'Content-Type') ?? 'text/plain';
   const { head: media, params } = parseParameterized(ctRaw);
   const slash = media.indexOf('/');
   const type = (slash === -1 ? 'text' : media.slice(0, slash)).toLowerCase();
   const subtype = (slash === -1 ? 'plain' : media.slice(slash + 1)).toLowerCase();
-  const id = header(raw, 'Content-ID');
-  const description = header(raw, 'Content-Description');
-  const encoding = (header(raw, 'Content-Transfer-Encoding') ?? '7bit').toUpperCase();
-  const dispRaw = header(raw, 'Content-Disposition');
+  const id = findHeader(headers, 'Content-ID');
+  const description = findHeader(headers, 'Content-Description');
+  const encoding = (findHeader(headers, 'Content-Transfer-Encoding') ?? '7bit').toUpperCase();
+  const dispRaw = findHeader(headers, 'Content-Disposition');
   const disposition =
     dispRaw === null
       ? null
@@ -128,7 +135,15 @@ export function buildBodyStructure(raw: Buffer, depth = 0): BodyPart {
   if (type === 'multipart') {
     const boundary = params.find(([n]) => n === 'boundary')?.[1] ?? '';
     const children = boundary === '' ? [] : parseMultipart(body, boundary).parts.map((p) => buildBodyStructure(p, depth + 1));
-    return { multipart: true, type: 'MULTIPART', subtype: subtype.toUpperCase(), params, id, description, encoding, size: body.length, lines: null, disposition, children, rfc822: null };
+    // A multipart whose boundary matched no parts is malformed. Emitting it as an empty
+    // multipart yields `("MIXED" …)` — a string where RFC 9051 body-type-mpart requires a
+    // leading nested body — which desyncs a strict client's FETCH parse. Fall through and
+    // report the raw content as a single text/plain leaf instead (a valid structure the
+    // client can still BODY[]-fetch).
+    if (children.length > 0) {
+      return { multipart: true, type: 'MULTIPART', subtype: subtype.toUpperCase(), params, id, description, encoding, size: body.length, lines: null, disposition, children, rfc822: null };
+    }
+    return { multipart: false, type: 'TEXT', subtype: 'PLAIN', params, id, description, encoding, size: body.length, lines: countLines(body), disposition, children: [], rfc822: null };
   }
 
   const lines = type === 'text' || (type === 'message' && subtype === 'rfc822') ? countLines(body) : null;
@@ -141,9 +156,14 @@ export function buildBodyStructure(raw: Buffer, depth = 0): BodyPart {
   return { multipart: false, type: type.toUpperCase(), subtype: subtype.toUpperCase(), params, id, description, encoding, size: body.length, lines, disposition, children: [], rfc822 };
 }
 
-/** An IMAP quoted string, or NIL. CR/LF are stripped (they cannot appear in one). */
+/**
+ * An IMAP quoted string, or NIL. Strips CR/LF/NUL and other C0 control octets — none may
+ * appear in a quoted string (RFC 9051), and a raw NUL from a crafted header/filename
+ * would otherwise desync a strict client's FETCH parse — then escapes `\` and `"`.
+ */
 function qstr(s: string | null): string {
-  return s === null ? 'NIL' : `"${s.replace(/[\r\n]+/g, ' ').replace(/([\\"])/g, '\\$1')}"`;
+  // eslint-disable-next-line no-control-regex
+  return s === null ? 'NIL' : `"${s.replace(/[\x00-\x1f]+/g, ' ').replace(/([\\"])/g, '\\$1')}"`;
 }
 
 /** A parenthesised parameter list "(n v n v)", or NIL when empty. */

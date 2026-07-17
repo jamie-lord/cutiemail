@@ -29,6 +29,24 @@ test('DMARC passes when an aligned DKIM or SPF identifier passed', async () => {
   assert.equal(viaSpf.verdict, 'pass');
 });
 
+test('a message with TWO From headers cannot pass DMARC (display-spoof defence, RFC 5322 §3.6.1)', async () => {
+  const rec = dmarcAt({ '_dmarc.evil.test': 'v=DMARC1; p=reject' });
+  // The attacker aligns the FIRST From (their own domain) while a lenient MUA may show
+  // the SECOND (the victim's). DMARC must refuse to pass this rather than bless it.
+  const two = Buffer.from('From: attacker@evil.test\r\nFrom: ceo@bank.test\r\nSubject: hi\r\n\r\nbody\r\n', 'latin1');
+  const out = await checkDmarc({ rawMessage: two, dkimPassedDomains: ['evil.test'], spfResult: 'pass', spfDomain: 'evil.test', resolveTxt: rec });
+  assert.equal(out.verdict, 'fail', 'a duplicate-From message is a DMARC fail, never a pass');
+});
+
+test('a From with illegal whitespace before the colon is still seen (not hidden from DMARC)', async () => {
+  // "From :" is malformed but a lenient MUA reads it as From; DMARC must see it too, so
+  // the header name is trimmed before matching. Here the aligned identity makes it pass.
+  const rec = dmarcAt({ '_dmarc.example.com': 'v=DMARC1; p=none' });
+  const weird = Buffer.from('From : Alice <alice@example.com>\r\nSubject: hi\r\n\r\nbody\r\n', 'latin1');
+  const out = await checkDmarc({ rawMessage: weird, dkimPassedDomains: ['example.com'], spfResult: 'none', spfDomain: '', resolveTxt: rec });
+  assert.equal(out.verdict, 'pass', 'the From is recognized despite the WSP before the colon');
+});
+
 test('a passing but UNALIGNED identifier does not satisfy DMARC', async () => {
   const rec = dmarcAt({ '_dmarc.example.com': 'v=DMARC1; p=quarantine' });
   // DKIM passed but for a different domain; SPF failed. DMARC fails.

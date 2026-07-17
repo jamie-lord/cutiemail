@@ -66,19 +66,25 @@ export function organizationalDomain(domain: string): string {
   return MULTI_PART_TLDS.has(lastTwo) ? labels.slice(-3).join('.') : lastTwo;
 }
 
-/** The domain of the RFC 5322 From header, or null. */
-function fromHeaderDomain(raw: Buffer): string | null {
+/**
+ * The From domain and how many From headers the message carries. RFC 5322 §3.6.1
+ * requires exactly one; a message with more than one is the canonical DMARC display
+ * spoof (auth aligns the first, the MUA may show the last), so the caller must not let
+ * it pass. The name is trimmed before comparison so `From :` (illegal WSP before the
+ * colon, which a lenient MUA still reads as From) can't hide the header from us.
+ */
+function fromHeaderInfo(raw: Buffer): { domain: string | null; count: number } {
   const { headers } = parseMessage(raw);
-  const from = headers.find((h) => h.name.toString('latin1').toLowerCase() === 'from');
-  if (from === undefined) return null;
-  const value = from.value.toString('latin1');
+  const froms = headers.filter((h) => h.name.toString('latin1').trim().toLowerCase() === 'from');
+  if (froms.length === 0) return { domain: null, count: 0 };
+  const value = froms[0]!.value.toString('latin1');
   const angle = /<([^>]*)>/.exec(value);
   const addr = (angle ? angle[1]! : value).trim();
   const at = addr.lastIndexOf('@');
-  if (at === -1) return null;
+  if (at === -1) return { domain: null, count: froms.length };
   // Strip a root-anchoring trailing dot so it aligns with a dot-less DKIM d=/SPF domain.
   const domain = addr.slice(at + 1).trim().toLowerCase().replace(/\.$/, '');
-  return domain || null;
+  return { domain: domain || null, count: froms.length };
 }
 
 async function fetchDmarc(domain: string, resolveTxt: DmarcInput['resolveTxt']): Promise<string | null> {
@@ -88,7 +94,10 @@ async function fetchDmarc(domain: string, resolveTxt: DmarcInput['resolveTxt']):
 }
 
 export async function checkDmarc(input: DmarcInput): Promise<DmarcOutcome> {
-  const fromDomain = fromHeaderDomain(input.rawMessage);
+  const { domain: fromDomain, count: fromCount } = fromHeaderInfo(input.rawMessage);
+  // §3.6.1: exactly one From is required. More than one can't yield an unambiguous
+  // aligned identity — treat it as a fail (a display-spoof), never a pass.
+  if (fromCount > 1) return { verdict: 'fail', policy: null, fromDomain };
   if (fromDomain === null) return { verdict: 'none', policy: null, fromDomain: null };
 
   let recordText: string | null;
