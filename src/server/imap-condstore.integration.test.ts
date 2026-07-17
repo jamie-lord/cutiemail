@@ -178,6 +178,26 @@ test('a CONDSTORE-enabled connection sees MODSEQ in a peer flag change pushed du
   }
 });
 
+test('UID STORE (UNCHANGEDSINCE n) parses correctly and reports MODIFIED by UID', async () => {
+  // Real clients address STORE by UID, and the UID prefix shifts the positional args —
+  // the (UNCHANGEDSINCE n) modifier must still be found and MODIFIED must list UIDs.
+  const server = await ImapServer.start(catalogWith(1), { authenticate: () => true });
+  const s = await login(server.port);
+  try {
+    await s.run('a2', 'SELECT INBOX (CONDSTORE)'); // message UID 1, modseq 2
+    // Succeeds and echoes the new MODSEQ, keyed by UID.
+    const ok = await s.run('a3', 'UID STORE 1 (UNCHANGEDSINCE 2) +FLAGS (\\Seen)');
+    assert.match(ok, /\* 1 FETCH \(.*MODSEQ \(\d+\).*UID 1\)/, 'the UID STORE echoes FLAGS+MODSEQ+UID');
+    assert.doesNotMatch(ok, /MODIFIED/, 'the fresh guard succeeds');
+    // Now stale: the guard at 2 fails and MODIFIED must name the UID (1), not a seq.
+    const rejected = await s.run('a4', 'UID STORE 1 (UNCHANGEDSINCE 2) +FLAGS (\\Answered)');
+    assert.match(rejected, /a4 OK \[MODIFIED 1\]/, 'MODIFIED lists the UID of the unchanged-guard failure');
+  } finally {
+    s.sock.destroy();
+    await server.close();
+  }
+});
+
 test('STATUS HIGHESTMODSEQ reports the mailbox mod-sequence and it advances on a flag change', async () => {
   const catalog = catalogWith(1);
   const server = await ImapServer.start(catalog, { authenticate: () => true, notifier: new MailboxNotifier() });
