@@ -233,6 +233,42 @@ test('a peer expunge is not swallowed when this connection then runs its own EXP
   }
 });
 
+test('a peer expunge is not swallowed when this connection then runs its own MOVE', async () => {
+  // The MOVE branch of the same fix: MOVE resets the connection's view after removing
+  // the moved messages, so it too must reconcile the peer's removal first.
+  const catalog = new MemoryCatalog();
+  const inbox = catalog.get('INBOX')!;
+  for (const subj of ['one', 'two', 'three']) inbox.append(Buffer.from(`Subject: ${subj}\r\n\r\nx\r\n`, 'latin1'));
+  catalog.create('Archive');
+  const notifier = new MailboxNotifier();
+  const server = await ImapServer.start(catalog, { authenticate: () => true, notifier });
+  const a = await open(server.port);
+  const b = await open(server.port);
+  try {
+    // B removes message 1 (UID 1); A is not idling.
+    b.send('c1 STORE 1 +FLAGS (\\Deleted)\r\nc2 EXPUNGE\r\n');
+    await b.waitFor('c2 OK');
+
+    // A moves its own message by UID (unambiguous), then must still learn UID 1 vanished.
+    const mark = a.seen.length;
+    a.send('d1 UID MOVE 3 Archive\r\n');
+    await a.waitFor('d1 OK');
+    const news = a.seen.slice(mark);
+    assert.match(news, /\* 1 EXPUNGE/, 'the peer removal is announced before/around the MOVE, not swallowed');
+
+    // A now agrees INBOX has one message left (UID 2), and Archive received UID 3.
+    a.send('d2 NOOP\r\nd3 FETCH 1:* (UID)\r\n');
+    await a.waitFor('d3 OK');
+    const view = a.seen.slice(a.seen.indexOf('d1 OK'));
+    assert.doesNotMatch(view, /\* 2 FETCH/, "A's INBOX view is a single message, no phantom");
+    assert.equal(catalog.get('Archive')!.messages.length, 1, 'the moved message landed in Archive');
+  } finally {
+    a.sock.destroy();
+    b.sock.destroy();
+    await server.close();
+  }
+});
+
 test('CLOSE expunges silently for the closer but still tells a peer the messages vanished', async () => {
   const catalog = new MemoryCatalog();
   const inbox = catalog.get('INBOX')!;
