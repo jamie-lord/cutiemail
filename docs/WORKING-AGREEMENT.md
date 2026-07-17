@@ -39,8 +39,12 @@ a silent gap — say what you did NOT do and why. When you change something mean
 prove it: run the suite, and for internet-facing behaviour verify it live against the
 box and report what you observed. Favour the adversarial loop that works — build a
 defensible increment, have an independent reviewer try to break it, reproduce every
-real finding, fix, live-verify. Commit real increments straight to main as
-Jamie Lord (no Claude attribution); committing is authorised, pushing and
+real finding, fix, live-verify. Keep the core docs true as you go: when a change makes
+a statement in the README, ARCHITECTURE, DEPLOYMENT, or TESTING-ROADMAP wrong, stale,
+or newly-relevant, correcting that doc is part of the same increment, not a later
+clean-up — and correct means fit for purpose (restructure so the doc still leads with
+what matters), not just appending a paragraph. Commit real increments straight to main
+as Jamie Lord (no Claude attribution); committing is authorised, pushing and
 destructive or outward-facing actions are not.
 
 DON'T MANUFACTURE WORK. If you catch yourself doing something to look busy —
@@ -66,6 +70,12 @@ I'd rather you do one carefully-reasoned, well-verified thing than five hurried 
   sentence rooted in the vision doesn't happen.
 - **Out-of-scope is named explicitly** (POP3, JMAP, Sieve, ARC, full PSL) so
   "adjacent" ideas can't pass themselves off as progress.
+- **Docs are part of the increment, not a separate chore.** The core docs drifted
+  once (the README led with the test suite while claiming DKIM and the retry queue
+  didn't exist yet) precisely because doc upkeep was treated as optional follow-up.
+  Making it part of "done" for any meaningful change is what stops that recurring —
+  and "fit for purpose" is the bar, so a doc that now buries its own headline gets
+  restructured, not just topped up.
 
 See also: [TESTING-ROADMAP.md](TESTING-ROADMAP.md) for what's done vs. deliberately
 open, and [ARCHITECTURE.md](ARCHITECTURE.md) for how the pieces fit.
