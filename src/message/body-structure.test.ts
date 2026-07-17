@@ -55,3 +55,22 @@ test('a nested multipart/alternative inside multipart/mixed recurses', () => {
   assert.match(bs, /"IMAGE" "PNG" \("name" "pic\.png"\)/, 'the sibling image part is present');
   assert.match(bs, /"MIXED"/, 'the outer container is multipart/mixed');
 });
+
+test('a message/rfc822 attachment carries the forwarded message envelope and structure', () => {
+  const inner = 'From: orig@sender.test\r\nTo: me@x.test\r\nSubject: forwarded subject\r\nDate: Wed, 01 Jan 2025 10:00:00 +0000\r\n\r\nforwarded body\r\n';
+  const raw = Buffer.from(
+    'Content-Type: multipart/mixed; boundary=B\r\n\r\n' +
+      '--B\r\nContent-Type: text/plain\r\n\r\nsee forwarded\r\n' +
+      '--B\r\nContent-Type: message/rfc822\r\nContent-Disposition: attachment\r\n\r\n' +
+      inner +
+      '--B--\r\n',
+    'latin1',
+  );
+  const bs = bodyStructureResponse(raw);
+  assert.match(bs, /"MESSAGE" "RFC822"/, 'the forwarded part is message/rfc822');
+  // The nested ENVELOPE exposes the forwarded subject/sender without a download.
+  assert.match(bs, /"forwarded subject"/, "the forwarded message's subject is in the nested envelope");
+  assert.match(bs, /"orig" "sender\.test"/, 'the forwarded sender is present');
+  // The nested body structure follows the envelope.
+  assert.match(bs, /"MESSAGE" "RFC822".*"forwarded subject".*"TEXT" "PLAIN"/s, 'the nested body structure follows the envelope');
+});

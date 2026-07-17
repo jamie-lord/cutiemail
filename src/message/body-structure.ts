@@ -16,6 +16,7 @@
 
 import { parseMessage } from './parse.ts';
 import { parseMultipart } from './multipart.ts';
+import { buildEnvelope, serializeEnvelope } from '../imap/envelope.ts';
 
 interface BodyPart {
   readonly multipart: boolean;
@@ -29,6 +30,11 @@ interface BodyPart {
   readonly lines: number | null;
   readonly disposition: { readonly type: string; readonly params: ReadonlyArray<readonly [string, string]> } | null;
   readonly children: readonly BodyPart[];
+  /**
+   * For a message/rfc822 part: the encapsulated message's ENVELOPE and body structure
+   * (RFC 9051 §7.5.2 body-type-msg), so a client can preview a forwarded message.
+   */
+  readonly rfc822: { readonly envelope: string; readonly nested: BodyPart } | null;
 }
 
 /** Split a structured header value on top-level ';', ignoring ';' inside quotes. */
@@ -111,11 +117,17 @@ export function buildBodyStructure(raw: Buffer): BodyPart {
   if (type === 'multipart') {
     const boundary = params.find(([n]) => n === 'boundary')?.[1] ?? '';
     const children = boundary === '' ? [] : parseMultipart(body, boundary).parts.map((p) => buildBodyStructure(p));
-    return { multipart: true, type: 'MULTIPART', subtype: subtype.toUpperCase(), params, id, description, encoding, size: body.length, lines: null, disposition, children };
+    return { multipart: true, type: 'MULTIPART', subtype: subtype.toUpperCase(), params, id, description, encoding, size: body.length, lines: null, disposition, children, rfc822: null };
   }
 
   const lines = type === 'text' || (type === 'message' && subtype === 'rfc822') ? countLines(body) : null;
-  return { multipart: false, type: type.toUpperCase(), subtype: subtype.toUpperCase(), params, id, description, encoding, size: body.length, lines, disposition, children: [] };
+  // A message/rfc822 part encapsulates a whole message: carry its ENVELOPE and nested
+  // structure so the client can show the forwarded message without downloading it.
+  const rfc822 =
+    type === 'message' && subtype === 'rfc822'
+      ? { envelope: serializeEnvelope(buildEnvelope(parseMessage(body).headers)), nested: buildBodyStructure(body) }
+      : null;
+  return { multipart: false, type: type.toUpperCase(), subtype: subtype.toUpperCase(), params, id, description, encoding, size: body.length, lines, disposition, children: [], rfc822 };
 }
 
 /** An IMAP quoted string, or NIL. CR/LF are stripped (they cannot appear in one). */
@@ -146,10 +158,13 @@ function serialize(part: BodyPart, extended: boolean): string {
     return `(${kids} ${qstr(part.subtype)} ${paramList(part.params)} ${serializeDisposition(part.disposition)} NIL NIL)`;
   }
   const base = `${qstr(part.type)} ${qstr(part.subtype)} ${paramList(part.params)} ${qstr(part.id)} ${qstr(part.description)} ${qstr(part.encoding)} ${part.size}`;
-  const withLines = part.lines !== null ? `${base} ${part.lines}` : base;
-  if (!extended) return `(${withLines})`;
+  // message/rfc822 body-type (§7.5.2): after the basic fields come the encapsulated
+  // ENVELOPE, its BODYSTRUCTURE, and its line count.
+  const core =
+    part.rfc822 !== null ? `${base} ${part.rfc822.envelope} ${serialize(part.rfc822.nested, extended)} ${part.lines ?? 0}` : part.lines !== null ? `${base} ${part.lines}` : base;
+  if (!extended) return `(${core})`;
   // BODYSTRUCTURE leaf: append md5, disposition, language, location.
-  return `(${withLines} NIL ${serializeDisposition(part.disposition)} NIL NIL)`;
+  return `(${core} NIL ${serializeDisposition(part.disposition)} NIL NIL)`;
 }
 
 /**
