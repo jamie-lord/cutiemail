@@ -294,6 +294,18 @@ function parseSearchKeys(tokens: readonly string[], ctx: SearchContext): SearchK
         const set = tokens[i++];
         return set === undefined ? null : { type: 'uid', uids: new Set(parseSequenceSet(set, ctx.largestUid)) };
       }
+      case 'MODSEQ': {
+        // RFC 7162 §3.1.5: MODSEQ [<entry-name> <entry-type>] <modseq>. We match on the
+        // message mod-sequence and skip the optional per-flag entry-name/type (a
+        // quoted "/flags/..." plus all|priv|shared) that clients almost never send.
+        let val = tokens[i++];
+        if (val !== undefined && !Number.isFinite(Number(val))) {
+          i++; // entry-type (all|priv|shared)
+          val = tokens[i++]; // the actual mod-sequence
+        }
+        const n = Number(val);
+        return Number.isFinite(n) ? { type: 'modseq', value: n } : null;
+      }
       default:
         // A bare sequence-set is a message-set key (e.g. "1,3:5" or "1:*").
         if (/^(\d+|\*)([,:](\d+|\*))*$/.test(raw)) return { type: 'seq', seqs: new Set(parseSequenceSet(raw, ctx.count)) };
@@ -618,9 +630,19 @@ export class ImapServer {
      * Bring the client's view in line with the mailbox: an untagged EXPUNGE for each
      * message that disappeared (descending sequence, so earlier numbers stay valid),
      * a single EXISTS if new messages arrived, and an untagged FETCH for any surviving
-     * message whose flags another connection changed (RFC 9051 §7.4.1). Only ever
-     * called between commands, never during a FETCH/STORE/SEARCH where §7.4.1 forbids
-     * renumbering.
+     * message whose flags another connection changed (RFC 9051 §7.4.1). Called at safe
+     * boundaries — NOOP/CHECK/IDLE and the start of EXPUNGE/COPY/MOVE — never during a
+     * FETCH/STORE/SEARCH response, where §7.4.1 forbids renumbering.
+     *
+     * KNOWN LIMITATION (RFC 2180 §4.1, deliberately scoped): between a peer's EXPUNGE
+     * and this connection's next such boundary, sequence-numbered FETCH/STORE/SEARCH
+     * still resolve against the live mailbox, so a bare-sequence command in that window
+     * can address a renumbered message. We cannot close it by notifying earlier — §7.4.1
+     * bars EXPUNGE during exactly those commands. Real clients avoid it by using UID
+     * commands (immune — addressed by UID, not position) and by polling NOOP/IDLE
+     * frequently; a full fix (a per-session sequence snapshot that keeps expunged
+     * messages referenceable until the client acknowledges) is a larger rearchitecture
+     * left as a recorded decision.
      */
     const syncSelected = (): void => {
       if (selected === null) return;
@@ -956,6 +978,13 @@ export class ImapServer {
             const name = qarg(1) || 'INBOX';
             const box = this.#catalog.get(name);
             if (box === undefined) {
+              // RFC 9051 §6.3.2: a failed SELECT/EXAMINE deselects — the client is left
+              // with NO mailbox selected, not still holding the previous one.
+              selected = null;
+              selectedName = null;
+              readOnly = false;
+              knownUids = [];
+              knownFlags = new Map();
               write(sock, `${tag} NO no such mailbox`);
               break;
             }
@@ -977,8 +1006,11 @@ export class ImapServer {
             write(sock, `* OK [PERMANENTFLAGS (${readOnly ? '' : '\\Seen \\Answered \\Flagged \\Deleted \\Draft'})] flags stored`);
             write(sock, `* OK [UIDVALIDITY ${box.uidValidity}] UIDs valid`);
             write(sock, `* OK [UIDNEXT ${box.uidNext}] Predicted next UID`);
-            // RFC 7162 §3.1.2.2: report HIGHESTMODSEQ only once CONDSTORE is enabled.
-            if (condstore) write(sock, `* OK [HIGHESTMODSEQ ${box.highestModseq}] Highest mod-sequence`);
+            // RFC 7162 §3.1.2.2: a CONDSTORE server MUST send HIGHESTMODSEQ on EVERY
+            // successful SELECT/EXAMINE (it is informational — it lets a client discover
+            // mod-sequence support without enabling; the MODSEQ FETCH items stay gated on
+            // the session having actually enabled CONDSTORE).
+            write(sock, `* OK [HIGHESTMODSEQ ${box.highestModseq}] Highest mod-sequence`);
             write(sock, `${tag} OK [${readOnly ? 'READ-ONLY' : 'READ-WRITE'}] ${cmd} completed`);
             break;
           }
@@ -1052,10 +1084,23 @@ export class ImapServer {
               write(sock, `${tag} BAD SEARCH: unsupported or malformed search criteria`);
               break;
             }
+            // Whether the criteria use the CONDSTORE MODSEQ key — it enables CONDSTORE
+            // and makes the reply carry the highest mod-sequence among the matches
+            // (RFC 7162 §3.1.5).
+            const usesModseq = ((): boolean => {
+              const chk = (k: SearchKey): boolean =>
+                k.type === 'modseq' || (k.type === 'not' && chk(k.key)) || (k.type === 'or' && (chk(k.a) || chk(k.b)));
+              return keys.some(chk);
+            })();
+            if (usesModseq) condstore = true;
             const hits: number[] = [];
+            let highestHitModseq = 0;
             msgs.forEach((m, i) => {
-              const searchable = { headers: parseMessage(m.raw).headers, flags: m.flags, internalDate: m.internalDate, raw: m.raw, uid: m.uid, seq: i + 1 };
-              if (matchesSearch(searchable, keys)) hits.push(uidMode ? m.uid : i + 1);
+              const searchable = { headers: parseMessage(m.raw).headers, flags: m.flags, internalDate: m.internalDate, raw: m.raw, uid: m.uid, seq: i + 1, modseq: m.modseq };
+              if (matchesSearch(searchable, keys)) {
+                hits.push(uidMode ? m.uid : i + 1);
+                if (m.modseq > highestHitModseq) highestHitModseq = m.modseq;
+              }
             });
             if (returnOpts !== null) {
               // ESEARCH aggregate reply (RFC 9051 §7.3.4).
@@ -1065,9 +1110,12 @@ export class ImapServer {
               if (returnOpts.includes('MAX') && hits.length > 0) parts.push(`MAX ${hits[hits.length - 1]}`);
               if (returnOpts.includes('ALL') && hits.length > 0) parts.push(`ALL ${compressSequenceSet(hits)}`);
               if (returnOpts.includes('COUNT')) parts.push(`COUNT ${hits.length}`);
+              // RFC 7162 §3.1.5: a MODSEQ search returns the highest mod-seq among matches.
+              if (usesModseq && hits.length > 0) parts.push(`MODSEQ ${highestHitModseq}`);
               write(sock, `* ESEARCH ${parts.join(' ')}`);
             } else {
-              write(sock, `* SEARCH${hits.length > 0 ? ' ' + hits.join(' ') : ''}`);
+              const modseqSuffix = usesModseq && hits.length > 0 ? ` (MODSEQ ${highestHitModseq})` : '';
+              write(sock, `* SEARCH${hits.length > 0 ? ' ' + hits.join(' ') : ''}${modseqSuffix}`);
             }
             write(sock, `${tag} OK SEARCH completed`);
             break;
@@ -1099,9 +1147,16 @@ export class ImapServer {
             // and silently mangles the flag, so a client's tag never round-trips.
             const flagsPart = storeBody.slice(opRaw.length);
             const flags = (flagsPart.match(/\\?[\w$.-]+/g) ?? []).map((f) => (f.startsWith('\\') ? `\\${f.slice(1)}` : f));
+            // Only the three flag operations are defined (RFC 9051 §6.4.6). Anything else
+            // — a typo'd op, or an empty set from malformed spacing — must be rejected, not
+            // answered OK as if a store happened (silent-accept would lie to the client).
+            if (op !== '+FLAGS' && op !== '-FLAGS' && op !== 'FLAGS') {
+              write(sock, `${tag} BAD STORE: expected +FLAGS, -FLAGS, or FLAGS`);
+              break;
+            }
             let storeChanged = false;
             const failed: number[] = []; // seq/uid of messages that failed UNCHANGEDSINCE
-            if (op === '+FLAGS' || op === '-FLAGS' || op === 'FLAGS') {
+            {
               const mode = op === '+FLAGS' ? 'add' : op === '-FLAGS' ? 'remove' : 'replace';
               for (const { seq, msg } of this.#resolveSet(selected, set, uidMode)) {
                 // UNCHANGEDSINCE: a message modified since `unchangedSince` is left
@@ -1163,6 +1218,10 @@ export class ImapServer {
               write(sock, `${tag} NO [TRYCREATE] no such mailbox`);
               break;
             }
+            // Reconcile peer changes first (EXPUNGE is permitted during COPY/MOVE, RFC
+            // 9051 §7.4.1) so the set resolves against, and MOVE's own EXPUNGE numbers
+            // match, a view the client agrees with — and no peer removal is swallowed.
+            syncSelected();
             const entries = this.#resolveSet(selected, set, uidMode);
             // UIDPLUS COPYUID: report the source and destination UIDs, in order.
             const srcUids: number[] = [];
@@ -1197,6 +1256,10 @@ export class ImapServer {
               write(sock, `${tag} NO mailbox is read-only (opened with EXAMINE)`);
               break;
             }
+            // Reconcile any peer changes FIRST (EXPUNGE responses are permitted during an
+            // EXPUNGE command, RFC 9051 §7.4.1), so our own sequence numbers are computed
+            // against a view the client agrees with and no peer removal is swallowed.
+            syncSelected();
             const before = selected.messages.map((m) => ({ uid: m.uid, deleted: m.flags.has('\\Deleted') }));
             // UID EXPUNGE <set> (RFC 4315): restrict to \Deleted messages within
             // the set; plain EXPUNGE removes every \Deleted message.

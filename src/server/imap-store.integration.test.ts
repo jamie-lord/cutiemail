@@ -83,6 +83,56 @@ test('IMAP STORE marks flags and EXPUNGE removes \\Deleted messages', async () =
   }
 });
 
+test('an unrecognized STORE operation is rejected with BAD, not answered OK', async () => {
+  const db = new DatabaseSync(':memory:');
+  const mailbox = SqliteMailbox.open(db);
+  mailbox.append(Buffer.from('Subject: one\r\n\r\nx\r\n', 'latin1'));
+  const imap = await ImapServer.start(mailbox);
+  const c = new Client(imap.port);
+  try {
+    await c.expect('* OK');
+    c.send('a1 LOGIN u p');
+    await c.expect('a1 OK');
+    c.send('a2 SELECT INBOX');
+    await c.expect('a2 OK');
+    // A typo'd operator must not be silently accepted as a successful no-op store.
+    c.send('a3 STORE 1 XFLAGS (\\Seen)');
+    const resp = await c.expect('a3 BAD');
+    assert.match(resp, /a3 BAD/, 'a bogus STORE op is a protocol error, not OK');
+    assert.ok(!mailbox.messages[0]!.flags.has('\\Seen'), 'nothing was stored');
+    // The connection is still usable after the rejection.
+    c.send('a4 NOOP');
+    await c.expect('a4 OK');
+  } finally {
+    await imap.close();
+    db.close();
+  }
+});
+
+test('a failed SELECT deselects — a subsequent EXPUNGE reports no mailbox selected (RFC 9051 §6.3.2)', async () => {
+  const db = new DatabaseSync(':memory:');
+  const mailbox = SqliteMailbox.open(db);
+  mailbox.append(Buffer.from('Subject: one\r\n\r\nx\r\n', 'latin1'));
+  const imap = await ImapServer.start(mailbox);
+  const c = new Client(imap.port);
+  try {
+    await c.expect('* OK');
+    c.send('a1 LOGIN u p');
+    await c.expect('a1 OK');
+    c.send('a2 SELECT INBOX');
+    await c.expect('a2 OK');
+    // A failed SELECT must leave NO mailbox selected, not the previous one.
+    c.send('a3 SELECT "No Such Box"');
+    await c.expect('a3 NO');
+    c.send('a4 EXPUNGE');
+    const resp = await c.expect('a4 BAD no mailbox selected');
+    assert.match(resp, /a4 BAD no mailbox selected/, 'after a failed SELECT the session holds no mailbox');
+  } finally {
+    await imap.close();
+    db.close();
+  }
+});
+
 test('STORE preserves "$" keyword flags ($label1, $Forwarded) — clients tag with these', async () => {
   const db = new DatabaseSync(':memory:');
   const mailbox = SqliteMailbox.open(db);

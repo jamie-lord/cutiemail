@@ -79,14 +79,22 @@ test('CAPABILITY advertises CONDSTORE', async () => {
   }
 });
 
-test('SELECT (CONDSTORE) reports HIGHESTMODSEQ; a plain SELECT does not', async () => {
+test('every SELECT reports HIGHESTMODSEQ (RFC 7162 §3.1.2.2), but MODSEQ in FETCH stays gated on enabling', async () => {
   const server = await ImapServer.start(catalogWith(2), { authenticate: () => true });
   const s = await login(server.port);
   try {
+    // A CONDSTORE server MUST send HIGHESTMODSEQ on a plain SELECT too — it is how a
+    // client discovers mod-sequence support without enabling.
     const plain = await s.run('a2', 'SELECT INBOX');
-    assert.doesNotMatch(plain, /HIGHESTMODSEQ/, 'a non-CONDSTORE SELECT omits HIGHESTMODSEQ');
-    const cond = await s.run('a3', 'SELECT INBOX (CONDSTORE)');
+    assert.match(plain, /\* OK \[HIGHESTMODSEQ \d+\]/, 'a plain SELECT still reports HIGHESTMODSEQ');
+    // But until CONDSTORE is enabled, a FETCH must NOT carry MODSEQ.
+    const f = await s.run('a3', 'FETCH 1 (FLAGS)');
+    assert.doesNotMatch(f, /MODSEQ/, 'MODSEQ is not sent to a session that has not enabled CONDSTORE');
+    // SELECT (CONDSTORE) also reports it, and enables MODSEQ for subsequent FETCH.
+    const cond = await s.run('a4', 'SELECT INBOX (CONDSTORE)');
     assert.match(cond, /\* OK \[HIGHESTMODSEQ \d+\]/, 'SELECT (CONDSTORE) reports HIGHESTMODSEQ');
+    const f2 = await s.run('a5', 'FETCH 1 (FLAGS)');
+    assert.match(f2, /MODSEQ \(\d+\)/, 'once enabled, FETCH carries MODSEQ');
   } finally {
     s.sock.destroy();
     await server.close();
@@ -174,6 +182,29 @@ test('a CONDSTORE-enabled connection sees MODSEQ in a peer flag change pushed du
   } finally {
     a.sock.destroy();
     b.sock.destroy();
+    await server.close();
+  }
+});
+
+test('SEARCH MODSEQ n returns messages at or above n and reports the highest match', async () => {
+  const server = await ImapServer.start(catalogWith(2), { authenticate: () => true });
+  const s = await login(server.port);
+  try {
+    await s.run('a2', 'SELECT INBOX (CONDSTORE)'); // msg1 modseq 2, msg2 modseq 3
+    await s.run('a3', 'STORE 1 +FLAGS (\\Seen)'); // msg1 now modseq 4 (highest)
+    const base = s.mark();
+    const res = await s.run('a4', 'SEARCH MODSEQ 4');
+    const body = s.seen.slice(base);
+    // Only message 1 (modseq 4) is >= 4; the SEARCH line carries the highest match modseq.
+    assert.match(body, /\* SEARCH 1 \(MODSEQ 4\)/, 'SEARCH MODSEQ returns the match and the highest mod-sequence');
+    assert.match(res, /a4 OK/, 'the search completes');
+    // A MODSEQ search with no matches returns a bare SEARCH line with no MODSEQ element.
+    const base2 = s.mark();
+    await s.run('a5', 'SEARCH MODSEQ 9999');
+    const empty = s.seen.slice(base2);
+    assert.match(empty, /\* SEARCH\r\n/, 'no matches → a bare SEARCH line, no MODSEQ element');
+  } finally {
+    s.sock.destroy();
     await server.close();
   }
 });

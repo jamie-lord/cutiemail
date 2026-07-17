@@ -197,6 +197,42 @@ test('a message another connection reads (\\Seen via BODY[] fetch) shows as read
   }
 });
 
+test('a peer expunge is not swallowed when this connection then runs its own EXPUNGE', async () => {
+  // Regression: the EXPUNGE handler used to reset its view to the live mailbox, erasing
+  // an as-yet-unannounced peer removal — desyncing the client permanently. The peer's
+  // removal must be announced (EXPUNGE responses are allowed during an EXPUNGE command).
+  const catalog = new MemoryCatalog();
+  const inbox = catalog.get('INBOX')!;
+  for (const subj of ['one', 'two', 'three']) inbox.append(Buffer.from(`Subject: ${subj}\r\n\r\nx\r\n`, 'latin1'));
+  const notifier = new MailboxNotifier();
+  const server = await ImapServer.start(catalog, { authenticate: () => true, notifier });
+  const a = await open(server.port);
+  const b = await open(server.port);
+  try {
+    // B removes message 1; A is not idling, so it has not heard about it yet.
+    b.send('c1 STORE 1 +FLAGS (\\Deleted)\r\nc2 EXPUNGE\r\n');
+    await b.waitFor('c2 OK');
+
+    // A runs its own EXPUNGE (nothing of A's is \Deleted). A must still be told that
+    // message 1 vanished — either here or at the following NOOP — never silently dropped.
+    const mark = a.seen.length;
+    a.send('d1 EXPUNGE\r\nd2 NOOP\r\n');
+    await a.waitFor('d2 OK');
+    const news = a.seen.slice(mark);
+    assert.match(news, /\* 1 EXPUNGE/, 'A learns message 1 was expunged by the peer');
+
+    // And A now agrees there are two messages, not three.
+    a.send('d3 FETCH 1:* (UID)\r\n');
+    await a.waitFor('d3 OK');
+    const fetched = a.seen.slice(a.seen.indexOf('d2 OK'));
+    assert.doesNotMatch(fetched, /\* 3 FETCH/, "A's view is two messages, not a phantom third");
+  } finally {
+    a.sock.destroy();
+    b.sock.destroy();
+    await server.close();
+  }
+});
+
 test('CLOSE expunges silently for the closer but still tells a peer the messages vanished', async () => {
   const catalog = new MemoryCatalog();
   const inbox = catalog.get('INBOX')!;

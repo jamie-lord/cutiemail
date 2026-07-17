@@ -21,6 +21,7 @@ export type SearchKey =
   | { readonly type: 'size'; readonly op: 'larger' | 'smaller'; readonly value: number }
   | { readonly type: 'uid'; readonly uids: ReadonlySet<number> }
   | { readonly type: 'seq'; readonly seqs: ReadonlySet<number> }
+  | { readonly type: 'modseq'; readonly value: number }
   | { readonly type: 'not'; readonly key: SearchKey }
   | { readonly type: 'or'; readonly a: SearchKey; readonly b: SearchKey };
 
@@ -34,6 +35,8 @@ export interface SearchableMessage {
   /** This message's UID and 1-based sequence number, for UID/sequence-set keys. */
   readonly uid: number;
   readonly seq: number;
+  /** The message's mod-sequence, for the CONDSTORE MODSEQ search key (RFC 7162 §3.1.5). */
+  readonly modseq: number;
 }
 
 export interface SearchDefects {
@@ -82,6 +85,9 @@ function matchesKey(msg: SearchableMessage, key: SearchKey): boolean {
       return msg.flags.has(key.flag) === key.present;
     case 'size':
       return key.op === 'larger' ? msg.raw.length > key.value : msg.raw.length < key.value;
+    case 'modseq':
+      // RFC 7162 §3.1.5: MODSEQ n matches messages with mod-sequence >= n.
+      return msg.modseq >= key.value;
     case 'uid':
       return key.uids.has(msg.uid);
     case 'seq':

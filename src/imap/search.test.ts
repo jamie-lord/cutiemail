@@ -17,7 +17,7 @@ const CRLF = '\r\n';
 
 const msg = (from: string, subject: string, flags: string[]): SearchableMessage => {
   const raw = Buffer.from(`From: ${from}${CRLF}Subject: ${subject}${CRLF}${CRLF}body`, 'latin1');
-  return { headers: parseMessage(raw).headers, flags: new Set(flags), internalDate: 0, raw, uid: 1, seq: 1 };
+  return { headers: parseMessage(raw).headers, flags: new Set(flags), internalDate: 0, raw, uid: 1, seq: 1, modseq: 1 };
 };
 
 const header = (name: string, value: string): SearchKey => ({ type: 'header', name, value });
