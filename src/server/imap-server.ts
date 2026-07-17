@@ -593,16 +593,22 @@ export class ImapServer {
     let pendingAppend: PendingAppend | null = null;
     let idle: { tag: string; unsub: () => void } | null = null;
     // This connection's view of the selected mailbox: the UIDs in sequence order the
-    // client has been told about. Comparing it to the live mailbox is how we detect
-    // messages another connection expunged or delivered, to notify this one.
+    // client has been told about, and the flag set last reported for each. Comparing
+    // them to the live mailbox is how we detect what another connection expunged,
+    // delivered, or re-flagged, to relay it to this one.
     let knownUids: number[] = [];
+    let knownFlags = new Map<number, string>();
+
+    /** A flag set in a canonical, order-independent form, for change detection. */
+    const flagKey = (flags: Iterable<string>): string => [...flags].sort().join(' ');
 
     /**
-     * Bring the client's view in line with the mailbox: emit an untagged EXPUNGE for
-     * each message that disappeared (descending sequence, so earlier numbers stay
-     * valid — RFC 9051 §7.4.1) and a single EXISTS if new messages arrived. Only ever
-     * called between commands and never during a FETCH/STORE/SEARCH, where §7.4.1
-     * forbids renumbering.
+     * Bring the client's view in line with the mailbox: an untagged EXPUNGE for each
+     * message that disappeared (descending sequence, so earlier numbers stay valid),
+     * a single EXISTS if new messages arrived, and an untagged FETCH for any surviving
+     * message whose flags another connection changed (RFC 9051 §7.4.1). Only ever
+     * called between commands, never during a FETCH/STORE/SEARCH where §7.4.1 forbids
+     * renumbering.
      */
     const syncSelected = (): void => {
       if (selected === null) return;
@@ -619,6 +625,17 @@ export class ImapServer {
         knownUids = current.slice();
         write(sock, `* ${knownUids.length} EXISTS`);
       }
+      // Flag changes made elsewhere. Sequence numbers are the client's post-EXPUNGE
+      // view, which now matches selected.messages order (append-only + in-place remove).
+      selected.messages.forEach((m, i) => {
+        const cur = flagKey(m.flags);
+        const prev = knownFlags.get(m.uid);
+        if (prev !== undefined && prev !== cur) {
+          write(sock, `* ${i + 1} FETCH (FLAGS (${[...m.flags].join(' ')}) UID ${m.uid})`);
+        }
+        knownFlags.set(m.uid, cur);
+      });
+      for (const uid of [...knownFlags.keys()]) if (!present.has(uid)) knownFlags.delete(uid);
     };
     // IMAP has three states (RFC 9051 §3); everything except the pre-auth commands
     // requires Authenticated. Without this gate a client could SELECT and FETCH mail
@@ -927,8 +944,10 @@ export class ImapServer {
             selected = box;
             selectedName = canonicalMailboxName(name);
             // Snapshot the mailbox this connection now sees, so later NOOP/CHECK/IDLE
-            // can tell it what other connections expunged or delivered (RFC 9051 §7.4.1).
+            // can tell it what other connections expunged, delivered, or re-flagged
+            // (RFC 9051 §7.4.1).
             knownUids = box.messages.map((m) => m.uid);
+            knownFlags = new Map(box.messages.map((m) => [m.uid, flagKey(m.flags)]));
             // EXAMINE opens read-only (RFC 9051 §6.3.2): no flag changes, no EXPUNGE.
             readOnly = cmd === 'EXAMINE';
             write(sock, `* ${box.messages.length} EXISTS`);
@@ -954,15 +973,22 @@ export class ImapServer {
             // (rather than an explicit STORE) needs this to see the message as read.
             // A read-only (EXAMINE) mailbox never has its flags changed by a fetch.
             const marksSeen = !readOnly && atts.bodySections.some((s) => !s.peek);
+            let markedSeen = false;
             for (const { seq, msg } of this.#resolveSet(selected, set, uidMode)) {
               this.#emitFetch(sock, seq, msg, atts, uidMode);
               if (marksSeen && !msg.flags.has('\\Seen')) {
                 const newFlags = [...msg.flags, '\\Seen'];
                 selected.storeFlags(msg.uid, 'add', ['\\Seen']);
-                // Tell the client about the flag its fetch just triggered.
+                // Tell the client about the flag its fetch just triggered, and record it
+                // as our own change so syncSelected does not echo it back to us.
+                knownFlags.set(msg.uid, flagKey(newFlags));
+                markedSeen = true;
                 write(sock, `* ${seq} FETCH (FLAGS (${newFlags.join(' ')})${uidMode ? ` UID ${msg.uid}` : ''})`);
               }
             }
+            // Wake peers so \Seen set by this read propagates (a phone opening a message
+            // marks it read on the desktop). Fired after the FETCH, never mid-response.
+            if (markedSeen && selectedName !== null) this.#notifier?.notify(selectedName);
             write(sock, `${tag} OK FETCH completed`);
             break;
           }
@@ -1028,24 +1054,31 @@ export class ImapServer {
             // $label1..$label5) and chars like . - _ — matching only \w drops the "$"
             // and silently mangles the flag, so a client's tag never round-trips.
             const flags = (parts.slice(cmdIndex + 3).join(' ').match(/\\?[\w$.-]+/g) ?? []).map((f) => (f.startsWith('\\') ? `\\${f.slice(1)}` : f));
+            let storeChanged = false;
             if (op === '+FLAGS' || op === '-FLAGS' || op === 'FLAGS') {
               const mode = op === '+FLAGS' ? 'add' : op === '-FLAGS' ? 'remove' : 'replace';
               for (const { seq, msg } of this.#resolveSet(selected, set, uidMode)) {
                 selected.storeFlags(msg.uid, mode, flags);
+                storeChanged = true;
+                // Compute the resulting flag set from the pre-store snapshot rather
+                // than re-reading the store — a re-read per message is O(n) each, so a
+                // bulk STORE would be O(n²) and stall the single-threaded event loop for
+                // seconds. storeFlags stores flags verbatim (dedup only), so this mirrors
+                // the persisted result exactly.
+                const now = new Set(mode === 'replace' ? [] : msg.flags);
+                if (mode === 'remove') for (const f of flags) now.delete(f);
+                else for (const f of flags) now.add(f);
+                // Record our own change so syncSelected does not later echo it back to us
+                // as if a peer had made it.
+                knownFlags.set(msg.uid, flagKey(now));
                 if (!silent) {
-                  // Compute the resulting flag set from the pre-store snapshot rather
-                  // than re-reading the store — a re-read per message is O(n) each, so a
-                  // bulk non-silent STORE would be O(n²) and stall the single-threaded
-                  // event loop for seconds. storeFlags stores flags verbatim (dedup only),
-                  // so this mirrors the persisted result exactly.
-                  const now = new Set(mode === 'replace' ? [] : msg.flags);
-                  if (mode === 'remove') for (const f of flags) now.delete(f);
-                  else for (const f of flags) now.add(f);
                   const uidPart = uidMode ? ` UID ${msg.uid}` : '';
                   write(sock, `* ${seq} FETCH (FLAGS (${[...now].join(' ')})${uidPart})`);
                 }
               }
             }
+            // Wake other connections on this mailbox so they pick up the flag change.
+            if (storeChanged && selectedName !== null) this.#notifier?.notify(selectedName);
             write(sock, `${tag} OK STORE completed`);
             break;
           }
