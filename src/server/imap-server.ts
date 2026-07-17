@@ -84,7 +84,10 @@ function inboxOnly(mailbox: ServableMailbox): ServableCatalog {
   };
 }
 
-const CAPABILITIES = 'IMAP4rev2 IDLE UIDPLUS';
+const CAPABILITIES = 'IMAP4rev2 IDLE UIDPLUS AUTH=PLAIN';
+
+/** Commands allowed before authentication (RFC 9051 §3, Not Authenticated state). */
+const PREAUTH_COMMANDS = new Set(['CAPABILITY', 'NOOP', 'LOGOUT', 'LOGIN', 'AUTHENTICATE', 'ID', 'STARTTLS']);
 
 /** Cap on an APPEND literal's declared size (octets) — bounds server memory. */
 const MAX_APPEND_LITERAL = 26_214_400; // 25 MiB, matching the SMTP SIZE default
@@ -454,6 +457,16 @@ export class ImapServer {
   }
 
   /** Emit one message's FETCH response for the requested atts. */
+  /** Verify a SASL PLAIN token ("[authzid]\0authcid\0password", base64). */
+  #verifySaslPlain(b64: string): boolean {
+    const parts = Buffer.from(b64, 'base64').toString('latin1').split('\0');
+    const user = parts[1] ?? '';
+    const pass = parts[2] ?? '';
+    // No authenticate callback configured = permissive (test servers); still requires
+    // the client to actually authenticate, just accepts any credentials.
+    return this.#authenticate === undefined || this.#authenticate(user, pass);
+  }
+
   #emitFetch(sock: net.Socket, seq: number, msg: ServableMessage, atts: FetchAtts, uidMode: boolean): void {
     const out: Buffer[] = [];
     let first = true;
@@ -525,6 +538,12 @@ export class ImapServer {
     let selectedName: string | null = null;
     let pendingAppend: PendingAppend | null = null;
     let idle: { tag: string; unsub: () => void } | null = null;
+    // IMAP has three states (RFC 9051 §3); everything except the pre-auth commands
+    // requires Authenticated. Without this gate a client could SELECT and FETCH mail
+    // with no LOGIN at all. `pendingAuth` holds the tag of an AUTHENTICATE PLAIN that
+    // is awaiting its base64 SASL response on the next line.
+    let authenticated = false;
+    let pendingAuth: string | null = null;
     sock.on('error', () => {});
     sock.on('close', () => idle?.unsub());
     // RFC 9051 §5.4: autologout an inactive connection (timer ≥ 30 min). An IDLE
@@ -588,6 +607,21 @@ export class ImapServer {
           continue; // ignore any other stray input during IDLE
         }
 
+        // The base64 response line of an AUTHENTICATE PLAIN continuation.
+        if (pendingAuth !== null) {
+          const authTag = pendingAuth;
+          pendingAuth = null;
+          if (line.trim() === '*') {
+            write(sock, `${authTag} BAD authentication cancelled`);
+          } else if (this.#verifySaslPlain(line.trim())) {
+            authenticated = true;
+            write(sock, `${authTag} OK [CAPABILITY ${CAPABILITIES}] authenticated`);
+          } else {
+            write(sock, `${authTag} NO [AUTHENTICATIONFAILED] invalid credentials`);
+          }
+          continue;
+        }
+
         const parts = line.split(' ');
         const tag = parts[0] ?? '';
 
@@ -607,6 +641,13 @@ export class ImapServer {
         const afterUid = uidMode ? afterTag.replace(/^\S+\s+/, '') : afterTag;
         const qargs = imapTokens(afterUid.slice(cmd.length).trimStart());
         const qarg = (n: number): string => qargs[n - 1] ?? '';
+
+        // RFC 9051 §3: reject any command that needs Authenticated state before LOGIN
+        // succeeds. This is the gate that stops unauthenticated mailbox access.
+        if (!authenticated && !PREAUTH_COMMANDS.has(cmd)) {
+          write(sock, `${tag} NO not authenticated — LOGIN or AUTHENTICATE first`);
+          continue;
+        }
 
         // Never let a malformed command crash the connection or the process —
         // an internet-facing parser must degrade to a protocol error, not throw.
@@ -726,7 +767,29 @@ export class ImapServer {
             if (this.#authenticate !== undefined && !this.#authenticate(user, pass)) {
               write(sock, `${tag} NO [AUTHENTICATIONFAILED] invalid credentials`);
             } else {
+              authenticated = true;
               write(sock, `${tag} OK [CAPABILITY ${CAPABILITIES}] LOGIN completed`);
+            }
+            break;
+          }
+          case 'AUTHENTICATE': {
+            // SASL (RFC 9051 §6.2.2). We offer PLAIN only, and only sensibly over TLS
+            // — which production is (IMAPS). PLAIN carries an optional initial response
+            // (RFC 4959): "AUTHENTICATE PLAIN <base64>"; otherwise we send a "+"
+            // challenge and read the base64 on the next line.
+            if (arg(1).toUpperCase() !== 'PLAIN') {
+              write(sock, `${tag} NO [CANNOT] unsupported SASL mechanism`);
+              break;
+            }
+            const ir = arg(2);
+            if (ir === '') {
+              pendingAuth = tag;
+              write(sock, '+ ');
+            } else if (this.#verifySaslPlain(ir)) {
+              authenticated = true;
+              write(sock, `${tag} OK [CAPABILITY ${CAPABILITIES}] authenticated`);
+            } else {
+              write(sock, `${tag} NO [AUTHENTICATIONFAILED] invalid credentials`);
             }
             break;
           }
