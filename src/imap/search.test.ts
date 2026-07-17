@@ -15,23 +15,37 @@ import type { ImapRequirementId } from '../register/imap/index.ts';
 const cites = (id: ImapRequirementId): void => assert.ok(imapRequirement(id).id === id);
 const CRLF = '\r\n';
 
-const msg = (from: string, subject: string, flags: string[]): SearchableMessage => ({
-  headers: parseMessage(Buffer.from(`From: ${from}${CRLF}Subject: ${subject}${CRLF}${CRLF}body`, 'latin1')).headers,
-  flags: new Set(flags),
-});
+const msg = (from: string, subject: string, flags: string[]): SearchableMessage => {
+  const raw = Buffer.from(`From: ${from}${CRLF}Subject: ${subject}${CRLF}${CRLF}body`, 'latin1');
+  return { headers: parseMessage(raw).headers, flags: new Set(flags), internalDate: 0, raw, uid: 1, seq: 1 };
+};
+
+const header = (name: string, value: string): SearchKey => ({ type: 'header', name, value });
 
 test('sanity: individual keys match', () => {
   const m = msg('smith@example.com', 'Quarterly report', ['\\Seen']);
-  assert.ok(matchesSearch(m, [{ type: 'from', value: 'smith' }]));
-  assert.ok(matchesSearch(m, [{ type: 'subject', value: 'report' }]));
-  assert.ok(matchesSearch(m, [{ type: 'seen' }]));
-  assert.ok(!matchesSearch(m, [{ type: 'unseen' }]));
+  assert.ok(matchesSearch(m, [header('from', 'smith')]));
+  assert.ok(matchesSearch(m, [header('subject', 'report')]));
+  assert.ok(matchesSearch(m, [{ type: 'flag', flag: '\\Seen', present: true }]));
+  assert.ok(!matchesSearch(m, [{ type: 'flag', flag: '\\Seen', present: false }]));
+});
+
+test('NOT inverts and OR unions (the keys the old parser silently dropped)', () => {
+  const seen = msg('a@example.com', 'hi', ['\\Seen']);
+  const unseen = msg('b@example.com', 'hi', []);
+  // NOT SEEN matches the unseen message, not the seen one.
+  assert.ok(matchesSearch(unseen, [{ type: 'not', key: { type: 'flag', flag: '\\Seen', present: true } }]));
+  assert.ok(!matchesSearch(seen, [{ type: 'not', key: { type: 'flag', flag: '\\Seen', present: true } }]));
+  // OR FROM a FROM b matches either sender.
+  const or: SearchKey = { type: 'or', a: header('from', 'a@example.com'), b: header('from', 'zzz') };
+  assert.ok(matchesSearch(seen, [or]));
+  assert.ok(!matchesSearch(unseen, [or]));
 });
 
 test('R-9051-6.4.4-a: multiple keys are ANDed (orSemantics caught)', () => {
   cites('R-9051-6.4.4-a');
   const m = msg('smith@example.com', 'Quarterly report', ['\\Seen']);
-  const keys: SearchKey[] = [{ type: 'from', value: 'smith' }, { type: 'subject', value: 'report' }];
+  const keys: SearchKey[] = [header('from', 'smith'), header('subject', 'report')];
   assert.ok(matchesSearch(m, keys), 'a message matching both keys matches');
 
   // A message matching only ONE key must NOT match under AND.

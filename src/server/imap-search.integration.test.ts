@@ -77,6 +77,53 @@ test('SEARCH SUBJECT with a quoted multi-word phrase matches the whole phrase', 
   }
 });
 
+test('SEARCH NOT / dates / size / OR are executed, not silently dropped', async () => {
+  const cat = new MemoryCatalog();
+  const inbox = cat.get('INBOX')!;
+  inbox.append(Buffer.from('From: alice@x.test\r\nSubject: old note\r\n\r\nhello world\r\n', 'latin1'), [], Date.UTC(2024, 0, 1)); // 1: unseen, old, small
+  inbox.append(Buffer.from(`From: bob@y.test\r\nSubject: big recent\r\n\r\n${'x'.repeat(5000)}\r\n`, 'latin1'), ['\\Seen'], Date.UTC(2026, 5, 1)); // 2: seen, recent, large
+
+  const server = await ImapServer.start(cat, { authenticate: () => true });
+  const sock = net.connect(server.port, '127.0.0.1');
+  const s = new S(sock);
+  try {
+    await s.ready('* OK');
+    s.send('a1 LOGIN u p\r\na2 SELECT INBOX\r\n');
+    await s.ready('a2 OK');
+
+    // The regression: NOT must invert, not be dropped (which returned the SEEN message).
+    assert.deepEqual(await s.search('a3', 'NOT SEEN'), [1], 'NOT SEEN matches only the unseen message');
+    assert.deepEqual(await s.search('a4', 'SINCE 1-Jan-2025'), [2], 'SINCE filters by internal date');
+    assert.deepEqual(await s.search('a5', 'BEFORE 1-Jan-2025'), [1], 'BEFORE filters by internal date');
+    assert.deepEqual(await s.search('a6', 'LARGER 1000'), [2], 'LARGER filters by size');
+    assert.deepEqual(await s.search('a7', 'SMALLER 1000'), [1], 'SMALLER filters by size');
+    assert.deepEqual(await s.search('a8', 'BODY "hello"'), [1], 'BODY searches the body text');
+    assert.deepEqual(await s.search('a9', 'OR FROM alice FROM bob'), [1, 2], 'OR unions the two senders');
+    assert.deepEqual(await s.search('b1', 'SEEN LARGER 1000'), [2], 'compound keys are ANDed');
+  } finally {
+    sock.destroy();
+    await server.close();
+  }
+});
+
+test('SEARCH with an unsupported key is rejected with BAD, not answered with wrong results', async () => {
+  const cat = new MemoryCatalog();
+  cat.get('INBOX')!.append(Buffer.from('Subject: x\r\n\r\nb\r\n', 'latin1'));
+  const server = await ImapServer.start(cat, { authenticate: () => true });
+  const sock = net.connect(server.port, '127.0.0.1');
+  const s = new S(sock);
+  try {
+    await s.ready('* OK');
+    s.send('a1 LOGIN u p\r\na2 SELECT INBOX\r\n');
+    await s.ready('a2 OK');
+    s.send('a3 SEARCH FROBNICATE something\r\n');
+    await s.ready('a3 BAD');
+  } finally {
+    sock.destroy();
+    await server.close();
+  }
+});
+
 test('mailbox names with spaces (Outlook-style) work through CREATE/SELECT/STATUS/LIST', async () => {
   const cat = new MemoryCatalog();
   const server = await ImapServer.start(cat, { authenticate: () => true });

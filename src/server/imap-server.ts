@@ -148,16 +148,129 @@ function imapTokens(s: string): string[] {
   return tokens;
 }
 
-/** Parse SEARCH criteria tokens into typed search keys (the common subset). */
-function parseSearchKeys(tokens: readonly string[]): SearchKey[] {
-  const keys: SearchKey[] = [];
-  for (let i = 0; i < tokens.length; i++) {
-    const k = (tokens[i] ?? '').toUpperCase();
-    if (k === 'FROM' || k === 'TO' || k === 'SUBJECT') {
-      keys.push({ type: k.toLowerCase() as 'from' | 'to' | 'subject', value: unquote(tokens[++i] ?? '') });
-    } else if (k === 'SEEN' || k === 'UNSEEN' || k === 'DELETED' || k === 'UNDELETED') {
-      keys.push({ type: k.toLowerCase() as 'seen' | 'unseen' | 'deleted' | 'undeleted' });
+/** A date-only IMAP search date ("1-Jan-2025") to the UTC-day epoch-millis, or null. */
+function parseImapDate(s: string): number | null {
+  const m = /^(\d{1,2})-([A-Za-z]{3})-(\d{4})$/.exec(s);
+  if (m === null) return null;
+  const month = IMAP_MONTHS.findIndex((mon) => mon.toLowerCase() === m[2]!.toLowerCase());
+  return month === -1 ? null : Date.UTC(Number(m[3]), month, Number(m[1]));
+}
+
+interface SearchContext {
+  readonly largestUid: number;
+  readonly count: number;
+}
+
+/**
+ * Parse SEARCH criteria into a key tree, returning null on any unsupported or
+ * malformed key. Returning null (→ the caller answers BAD) is the whole point:
+ * silently dropping an unknown key produces WRONG results — "NOT SEEN" with NOT
+ * dropped returns the seen messages, the exact inverse. A bare token that is a
+ * sequence-set is a message-set key; anything else unrecognised is rejected.
+ */
+function parseSearchKeys(tokens: readonly string[], ctx: SearchContext): SearchKey[] | null {
+  let i = 0;
+  // An optional leading "CHARSET <name>" (RFC 9051 §6.4.4). We treat content as
+  // bytes, so any charset is accepted and ignored.
+  if ((tokens[0] ?? '').toUpperCase() === 'CHARSET') i = 2;
+
+  const flag = (f: string, present: boolean): SearchKey => ({ type: 'flag', flag: f, present });
+  const parseOne = (): SearchKey | null => {
+    const raw = tokens[i++];
+    if (raw === undefined) return null;
+    const k = raw.toUpperCase();
+    switch (k) {
+      case 'ALL':
+        return { type: 'all' };
+      case 'ANSWERED':
+        return flag('\\Answered', true);
+      case 'UNANSWERED':
+        return flag('\\Answered', false);
+      case 'DELETED':
+        return flag('\\Deleted', true);
+      case 'UNDELETED':
+        return flag('\\Deleted', false);
+      case 'DRAFT':
+        return flag('\\Draft', true);
+      case 'UNDRAFT':
+        return flag('\\Draft', false);
+      case 'FLAGGED':
+        return flag('\\Flagged', true);
+      case 'UNFLAGGED':
+        return flag('\\Flagged', false);
+      case 'SEEN':
+        return flag('\\Seen', true);
+      case 'UNSEEN':
+        return flag('\\Seen', false);
+      case 'KEYWORD':
+      case 'UNKEYWORD': {
+        const f = tokens[i++];
+        return f === undefined ? null : flag(f, k === 'KEYWORD');
+      }
+      case 'FROM':
+      case 'TO':
+      case 'CC':
+      case 'BCC':
+      case 'SUBJECT': {
+        const v = tokens[i++];
+        return v === undefined ? null : { type: 'header', name: k.toLowerCase(), value: v };
+      }
+      case 'HEADER': {
+        const name = tokens[i++];
+        const v = tokens[i++];
+        return name === undefined || v === undefined ? null : { type: 'header', name, value: v };
+      }
+      case 'BODY': {
+        const v = tokens[i++];
+        return v === undefined ? null : { type: 'body', value: v };
+      }
+      case 'TEXT': {
+        const v = tokens[i++];
+        return v === undefined ? null : { type: 'text', value: v };
+      }
+      case 'SINCE':
+      case 'BEFORE':
+      case 'ON': {
+        const d = parseImapDate(tokens[i++] ?? '');
+        return d === null ? null : { type: 'date', field: 'internal', op: k.toLowerCase() as 'since' | 'before' | 'on', day: d };
+      }
+      case 'SENTSINCE':
+      case 'SENTBEFORE':
+      case 'SENTON': {
+        const d = parseImapDate(tokens[i++] ?? '');
+        const op = k === 'SENTSINCE' ? 'since' : k === 'SENTBEFORE' ? 'before' : 'on';
+        return d === null ? null : { type: 'date', field: 'sent', op, day: d };
+      }
+      case 'LARGER':
+      case 'SMALLER': {
+        const n = Number(tokens[i++]);
+        return Number.isFinite(n) ? { type: 'size', op: k === 'LARGER' ? 'larger' : 'smaller', value: n } : null;
+      }
+      case 'NOT': {
+        const sub = parseOne();
+        return sub === null ? null : { type: 'not', key: sub };
+      }
+      case 'OR': {
+        const a = parseOne();
+        const b = parseOne();
+        return a === null || b === null ? null : { type: 'or', a, b };
+      }
+      case 'UID': {
+        const set = tokens[i++];
+        return set === undefined ? null : { type: 'uid', uids: new Set(parseSequenceSet(set, ctx.largestUid)) };
+      }
+      default:
+        // A bare sequence-set is a message-set key (e.g. "1,3:5" or "1:*").
+        if (/^(\d+|\*)([,:](\d+|\*))*$/.test(raw)) return { type: 'seq', seqs: new Set(parseSequenceSet(raw, ctx.count)) };
+        return null; // unknown / unsupported key — reject, never silently drop
     }
+  };
+
+  const keys: SearchKey[] = [];
+  while (i < tokens.length) {
+    const key = parseOne();
+    if (key === null) return null;
+    keys.push(key);
   }
   return keys;
 }
@@ -650,10 +763,18 @@ export class ImapServer {
             // Tokenise the raw criteria (after the SEARCH verb) respecting quotes,
             // so a quoted multi-word value stays whole.
             const critAt = line.toUpperCase().indexOf('SEARCH') + 'SEARCH'.length;
-            const keys = parseSearchKeys(imapTokens(line.slice(critAt)));
+            const msgs = selected.messages;
+            const largestUid = msgs.length > 0 ? msgs[msgs.length - 1]!.uid : 0;
+            const keys = parseSearchKeys(imapTokens(line.slice(critAt)), { largestUid, count: msgs.length });
+            if (keys === null) {
+              // An unsupported/malformed key: answer BAD rather than run a partial
+              // search that would return wrong (or inverted) results.
+              write(sock, `${tag} BAD SEARCH: unsupported or malformed search criteria`);
+              break;
+            }
             const hits: number[] = [];
-            selected.messages.forEach((m, i) => {
-              const searchable = { headers: parseMessage(m.raw).headers, flags: m.flags };
+            msgs.forEach((m, i) => {
+              const searchable = { headers: parseMessage(m.raw).headers, flags: m.flags, internalDate: m.internalDate, raw: m.raw, uid: m.uid, seq: i + 1 };
               if (matchesSearch(searchable, keys)) hits.push(uidMode ? m.uid : i + 1);
             });
             write(sock, `* SEARCH${hits.length > 0 ? ' ' + hits.join(' ') : ''}`);
