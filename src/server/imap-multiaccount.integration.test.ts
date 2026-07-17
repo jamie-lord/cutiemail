@@ -154,6 +154,37 @@ test('IDLE notifications are scoped per user: Bob\'s new mail does not wake Alic
   }
 });
 
+test('two of one user\'s devices share a store: a change on one connection surfaces on the other', async () => {
+  const { alice, bob } = twoAccounts();
+  const accounts: Record<string, { catalog: MemoryCatalog; notifier: MailboxNotifier }> = { alice, bob };
+  // The resolver hands BOTH of Alice's connections the SAME store instance (as MailStores'
+  // per-login cache does in production) — the precondition for multi-connection sync.
+  const server = await ImapServer.start(alice.catalog, {
+    authenticate: (u, p) => p === 'pw' && u in accounts,
+    resolveAccount: (login) => accounts[login],
+  });
+  const phone = await connect(server);
+  const desktop = await connect(server);
+  try {
+    await phone.run('p1', 'LOGIN alice pw');
+    await desktop.run('d1', 'LOGIN alice pw');
+    await phone.run('p2', 'SELECT INBOX');
+    await desktop.run('d2', 'SELECT INBOX');
+    // The desktop appends a message; the phone must see it at its next command boundary.
+    const msg = 'Subject: from desktop\r\n\r\nhi\r\n';
+    desktop.send(`d3 APPEND INBOX {${msg.length}}\r\n`);
+    await delay(30);
+    desktop.send(msg + '\r\n');
+    await delay(40);
+    const noop = await phone.run('p3', 'NOOP');
+    assert.match(noop, /^\* 2 EXISTS/m, 'the phone sees the desktop\'s new message (shared store)');
+  } finally {
+    phone.sock.destroy();
+    desktop.sock.destroy();
+    await server.close();
+  }
+});
+
 test('negative control: a resolver that mis-maps Bob to Alice\'s catalog leaks — the test catches it', async () => {
   const { alice } = twoAccounts();
   // Deliberately broken: every login is handed Alice's catalog.
