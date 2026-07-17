@@ -41,7 +41,7 @@ const messageWith = (received: number): string => {
 
 test('a message at the hop threshold is rejected 554 as a loop', async () => {
   const delivered: DeliveredMessage[] = [];
-  const rec = await SmtpReceiver.start((m) => delivered.push(m), { domain: 'mx.example.test', maxReceivedHops: 10 });
+  const rec = await SmtpReceiver.start((m) => { delivered.push(m); }, { domain: 'mx.example.test', maxReceivedHops: 10 });
   try {
     const r = new Reader(net.connect(rec.port, '127.0.0.1'));
     await r.line('ESMTP');
@@ -58,7 +58,7 @@ test('a message at the hop threshold is rejected 554 as a loop', async () => {
 
 test('a message just under the threshold still delivers', async () => {
   const delivered: DeliveredMessage[] = [];
-  const rec = await SmtpReceiver.start((m) => delivered.push(m), { domain: 'mx.example.test', maxReceivedHops: 10 });
+  const rec = await SmtpReceiver.start((m) => { delivered.push(m); }, { domain: 'mx.example.test', maxReceivedHops: 10 });
   try {
     const r = new Reader(net.connect(rec.port, '127.0.0.1'));
     await r.line('ESMTP');

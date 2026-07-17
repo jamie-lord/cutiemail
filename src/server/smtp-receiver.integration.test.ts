@@ -19,7 +19,7 @@ const connectTo = (port: number): { host: string; port: number; tls: 'none' } =>
 test('e2e: a message delivered by the client lands byte-exact in SQLite storage', async () => {
   const db = new DatabaseSync(':memory:');
   const mailbox = SqliteMailbox.open(db);
-  const receiver = await SmtpReceiver.start((msg) => mailbox.append(msg.data));
+  const receiver = await SmtpReceiver.start((msg) => { mailbox.append(msg.data); });
   try {
     const data = Buffer.from('Subject: hello\r\n\r\ndelivered through the live server\r\n', 'latin1');
     const result = await deliver(connectTo(receiver.port), {
@@ -51,7 +51,7 @@ test('receiver keeps the message final CRLF (RFC 5321 §4.1.1.4), matching aiosm
   ];
   for (const c of cases) {
     let stored: Buffer | null = null;
-    const receiver = await SmtpReceiver.start((msg) => (stored = Buffer.from(msg.data)));
+    const receiver = await SmtpReceiver.start((msg) => { stored = Buffer.from(msg.data); });
     try {
       const sock = net.connect(receiver.port, '127.0.0.1');
       await new Promise<void>((r) => sock.once('connect', () => r()));
@@ -80,7 +80,7 @@ test('receiver keeps the message final CRLF (RFC 5321 §4.1.1.4), matching aiosm
 test('e2e: the dot-stuffing round-trip is transparent (a leading-dot line survives)', async () => {
   const db = new DatabaseSync(':memory:');
   const mailbox = SqliteMailbox.open(db);
-  const receiver = await SmtpReceiver.start((msg) => mailbox.append(msg.data));
+  const receiver = await SmtpReceiver.start((msg) => { mailbox.append(msg.data); });
   try {
     // A body line that begins with a dot — the client stuffs it, the server unstuffs it.
     const data = Buffer.from('Subject: dots\r\n\r\n.a line starting with a dot\r\n..two dots\r\n', 'latin1');

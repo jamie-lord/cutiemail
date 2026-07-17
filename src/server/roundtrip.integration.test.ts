@@ -56,7 +56,7 @@ async function fetchFirstBody(port: number): Promise<Buffer> {
 test('round-trip: a message sent via SMTP is read back byte-exact via IMAP', async () => {
   const db = new DatabaseSync(':memory:');
   const mailbox = SqliteMailbox.open(db, 55);
-  const smtp = await SmtpReceiver.start((msg) => mailbox.append(msg.data, ['\\Recent']));
+  const smtp = await SmtpReceiver.start((msg) => { mailbox.append(msg.data, ['\\Recent']); });
   const imap = await ImapServer.start(mailbox);
   try {
     const data = Buffer.from(

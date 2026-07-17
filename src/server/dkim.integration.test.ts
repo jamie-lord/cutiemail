@@ -41,7 +41,7 @@ test('DKIM: a signed message delivered over SMTP verifies from SQLite storage', 
   // Deliver it through the live server into SQLite.
   const db = new DatabaseSync(':memory:');
   const mailbox = SqliteMailbox.open(db);
-  const smtp = await SmtpReceiver.start((m) => mailbox.append(m.data));
+  const smtp = await SmtpReceiver.start((m) => { mailbox.append(m.data); });
   try {
     const sent = await deliver(
       { host: '127.0.0.1', port: smtp.port, tls: 'none' },

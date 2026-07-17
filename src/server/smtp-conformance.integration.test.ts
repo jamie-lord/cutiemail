@@ -122,7 +122,7 @@ test('RSET clears a pending transaction', async () => {
 
 test('VRFY/EXPN/HELP are recognised (not 500) and do not disturb the transaction', async () => {
   const delivered: DeliveredMessage[] = [];
-  const rec = await SmtpReceiver.start((m) => delivered.push(m), { domain: 'mx.example.test' });
+  const rec = await SmtpReceiver.start((m) => { delivered.push(m); }, { domain: 'mx.example.test' });
   try {
     const c = await connect(rec);
     let at = c.length;
@@ -151,7 +151,7 @@ test('VRFY/EXPN/HELP are recognised (not 500) and do not disturb the transaction
 
 test('a command carrying a control octet is rejected 501 and not executed', async () => {
   const delivered: DeliveredMessage[] = [];
-  const rec = await SmtpReceiver.start((m) => delivered.push(m), { domain: 'mx.example.test' });
+  const rec = await SmtpReceiver.start((m) => { delivered.push(m); }, { domain: 'mx.example.test' });
   try {
     const c = await connect(rec);
     let at = c.length;
@@ -168,7 +168,7 @@ test('a command carrying a control octet is rejected 501 and not executed', asyn
 
 test('a normal transaction still works after the stricter rules', async () => {
   const delivered: DeliveredMessage[] = [];
-  const rec = await SmtpReceiver.start((m) => delivered.push(m), { domain: 'mx.example.test' });
+  const rec = await SmtpReceiver.start((m) => { delivered.push(m); }, { domain: 'mx.example.test' });
   try {
     const c = await connect(rec);
     c.send('EHLO client\r\nMAIL FROM:<a@b.test>\r\nRCPT TO:<c@mx.example.test>\r\nDATA\r\nSubject: ok\r\n\r\nbody\r\n.\r\n');

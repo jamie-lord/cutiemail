@@ -52,7 +52,7 @@ test('EHLO advertises SIZE and an over-limit SIZE= declaration is refused 552', 
 
 test('an oversized DATA body is rejected mid-stream, not buffered', async () => {
   const delivered: DeliveredMessage[] = [];
-  const rec = await SmtpReceiver.start((m) => delivered.push(m), { domain: 'mx.example.test', maxMessageSize: 2000 });
+  const rec = await SmtpReceiver.start((m) => { delivered.push(m); }, { domain: 'mx.example.test', maxMessageSize: 2000 });
   try {
     const r = new Reader(net.connect(rec.port, '127.0.0.1'));
     await r.line('ESMTP');
@@ -70,7 +70,7 @@ test('an oversized DATA body is rejected mid-stream, not buffered', async () => 
 
 test('EHLO advertises 8BITMIME and an 8-bit body is stored byte-exact', async () => {
   const delivered: DeliveredMessage[] = [];
-  const rec = await SmtpReceiver.start((m) => delivered.push(m), { domain: 'mx.example.test' });
+  const rec = await SmtpReceiver.start((m) => { delivered.push(m); }, { domain: 'mx.example.test' });
   try {
     const r = new Reader(net.connect(rec.port, '127.0.0.1'));
     await r.line('ESMTP');
@@ -95,7 +95,7 @@ test('EHLO advertises 8BITMIME and an 8-bit body is stored byte-exact', async ()
 
 test('a message within the limit still delivers', async () => {
   const delivered: DeliveredMessage[] = [];
-  const rec = await SmtpReceiver.start((m) => delivered.push(m), { domain: 'mx.example.test', maxMessageSize: 100_000 });
+  const rec = await SmtpReceiver.start((m) => { delivered.push(m); }, { domain: 'mx.example.test', maxMessageSize: 100_000 });
   try {
     const r = new Reader(net.connect(rec.port, '127.0.0.1'));
     await r.line('ESMTP');

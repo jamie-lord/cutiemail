@@ -95,7 +95,7 @@ test('routeRecipients splits on the local domain, case-insensitively', () => {
 
 test('relayOutbound delivers to the recipient MX, byte-exact', async () => {
   const received: DeliveredMessage[] = [];
-  const mx = await SmtpReceiver.start((m) => received.push(m), { domain: 'mx.elsewhere.example' });
+  const mx = await SmtpReceiver.start((m) => { received.push(m); }, { domain: 'mx.elsewhere.example' });
   try {
     const data = Buffer.from('Subject: outbound\r\n\r\nrelayed to the world\r\n', 'latin1');
     const results = await relayOutbound(
@@ -128,7 +128,7 @@ test('relayOutbound reports failure (not throw) when a domain has no MX/address'
 
 test('daemon: authenticated submission relays a remote recipient and stores a local one', async () => {
   const received: DeliveredMessage[] = [];
-  const mx = await SmtpReceiver.start((m) => received.push(m), { domain: 'mx.elsewhere.example' });
+  const mx = await SmtpReceiver.start((m) => { received.push(m); }, { domain: 'mx.elsewhere.example' });
 
   const config: MailServerConfig = {
     dbPath: ':memory:',
@@ -193,7 +193,7 @@ test('daemon: authenticated submission relays a remote recipient and stores a lo
 test('daemon full stack: submission → fix-up → DKIM sign → queue → relay, delivered signed', async () => {
   const { privateKey } = generateKeyPairSync('rsa', { modulusLength: 2048 });
   const received: DeliveredMessage[] = [];
-  const mx = await SmtpReceiver.start((m) => received.push(m), { domain: 'mx.elsewhere.example' });
+  const mx = await SmtpReceiver.start((m) => { received.push(m); }, { domain: 'mx.elsewhere.example' });
   const config: MailServerConfig = {
     dbPath: ':memory:',
     host: '127.0.0.1',

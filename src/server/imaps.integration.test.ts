@@ -47,7 +47,7 @@ async function fetchOverTls(port: number): Promise<Buffer> {
 test('IMAPS: a delivered message is fetched back byte-exact over an encrypted IMAP connection', async () => {
   const db = new DatabaseSync(':memory:');
   const mailbox = SqliteMailbox.open(db);
-  const smtp = await SmtpReceiver.start((m) => mailbox.append(m.data));
+  const smtp = await SmtpReceiver.start((m) => { mailbox.append(m.data); });
   const imap = await ImapServer.start(mailbox, { tls: { key: TEST_KEY, cert: TEST_CERT } });
   try {
     const data = Buffer.from('Subject: over imaps\r\n\r\nread me over TLS\r\n', 'latin1');

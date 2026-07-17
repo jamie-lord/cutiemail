@@ -41,7 +41,7 @@ test('submission: MAIL is refused until AUTH succeeds over TLS; wrong creds and 
   accounts.setPassword('alice', 'correct horse', Buffer.from('saltsalt'), 4096, 'sha256');
 
   const delivered: DeliveredMessage[] = [];
-  const receiver = await SmtpReceiver.start((m) => delivered.push(m), {
+  const receiver = await SmtpReceiver.start((m) => { delivered.push(m); }, {
     tls: { key: TEST_KEY, cert: TEST_CERT },
     requireAuth: true,
     authenticate: (u, p) => accounts.verifyPassword(u, p),
@@ -99,7 +99,7 @@ test('submission: AUTH PLAIN two-step continuation form (RFC 4954) is supported'
   const accounts = new AccountStore();
   accounts.setPassword('alice', 'correct horse', Buffer.from('saltsalt'), 4096, 'sha256');
   const delivered: DeliveredMessage[] = [];
-  const receiver = await SmtpReceiver.start((m) => delivered.push(m), {
+  const receiver = await SmtpReceiver.start((m) => { delivered.push(m); }, {
     tls: { key: TEST_KEY, cert: TEST_CERT },
     requireAuth: true,
     authenticate: (u, p) => accounts.verifyPassword(u, p),

@@ -98,7 +98,7 @@ test('an unterminated command line is bounded, not buffered without limit', asyn
 
 test('SMTP survives malformed commands and still completes a valid transaction', async () => {
   const delivered: unknown[] = [];
-  const server = await SmtpReceiver.start((m) => delivered.push(m), { domain: 'mx.example.test' });
+  const server = await SmtpReceiver.start((m) => { delivered.push(m); }, { domain: 'mx.example.test' });
   const c = new Conn(net.connect(server.port, '127.0.0.1'));
   try {
     await c.waitFor('ESMTP');

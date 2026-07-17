@@ -39,7 +39,7 @@ class Reader {
 
 test('STARTTLS: the connection upgrades and delivers over TLS', async () => {
   const delivered: DeliveredMessage[] = [];
-  const receiver = await SmtpReceiver.start((m) => delivered.push(m), { tls: TLS_OPTS });
+  const receiver = await SmtpReceiver.start((m) => { delivered.push(m); }, { tls: TLS_OPTS });
   try {
     const raw = net.connect(receiver.port, '127.0.0.1');
     raw.on('error', () => {});
@@ -77,7 +77,7 @@ test('STARTTLS: the connection upgrades and delivers over TLS', async () => {
 /** Send STARTTLS immediately followed by a full plaintext transaction (the injection). */
 async function attemptInjection(retain: boolean): Promise<DeliveredMessage[]> {
   const delivered: DeliveredMessage[] = [];
-  const receiver = await SmtpReceiver.start((m) => delivered.push(m), { tls: TLS_OPTS, retainBufferAcrossStarttls: retain });
+  const receiver = await SmtpReceiver.start((m) => { delivered.push(m); }, { tls: TLS_OPTS, retainBufferAcrossStarttls: retain });
   try {
     const raw = net.connect(receiver.port, '127.0.0.1');
     raw.on('error', () => {});

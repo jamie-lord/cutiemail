@@ -55,7 +55,7 @@ test('durability: a delivered message survives a server + database restart', asy
     {
       const db = new DatabaseSync(dbPath);
       const mailbox = SqliteMailbox.open(db, 99);
-      const smtp = await SmtpReceiver.start((m) => mailbox.append(m.data));
+      const smtp = await SmtpReceiver.start((m) => { mailbox.append(m.data); });
       const sent = await deliver(
         { host: '127.0.0.1', port: smtp.port, tls: 'none' },
         { from: 'a@example.com', recipients: ['b@example.net'], data, clientName: 'c.example.org' },

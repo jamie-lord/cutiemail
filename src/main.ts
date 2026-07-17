@@ -25,6 +25,8 @@ import { ImapServer } from './server/imap-server.ts';
 import { relayOutbound, routeRecipients, type OutboundOptions } from './server/outbound.ts';
 import { ensureSubmissionHeaders, formatDate } from './server/submission-fixup.ts';
 import { buildBounceMessage } from './server/bounce.ts';
+import { verifyDkim, type DkimKeyResolver } from './server/dkim-inbound.ts';
+import { resolveTxt } from 'node:dns/promises';
 import { dkimSign, makeSigner } from './server/dkim-signer.ts';
 import { prependReceived, protocolFor } from './server/received.ts';
 import { MailboxNotifier } from './server/mailbox-notifier.ts';
@@ -63,7 +65,27 @@ export interface MailServerConfig {
   readonly maxMessageSize?: number;
   /** Reject a message with at least this many Received hops as a loop (default 100). */
   readonly maxReceivedHops?: number;
+  /** Resolve DKIM public keys for inbound verification (injected in tests). Default: DNS. */
+  readonly dkimKeyResolver?: DkimKeyResolver;
 }
+
+/**
+ * Fetch a DKIM public-key record from DNS at "<selector>._domainkey.<domain>".
+ * A missing record is null (permerror at the caller); a DNS failure throws (temperror).
+ */
+const resolveDkimKeyViaDns: DkimKeyResolver = async (domain, selector) => {
+  let records: string[][];
+  try {
+    records = await resolveTxt(`${selector}._domainkey.${domain}`);
+  } catch (e) {
+    const code = (e as { code?: string }).code;
+    if (code === 'ENOTFOUND' || code === 'ENODATA') return null; // no key published
+    throw e; // SERVFAIL / timeout — retriable
+  }
+  // A TXT record may be split into multiple strings; concatenate each record's chunks.
+  const joined = records.map((chunks) => chunks.join('')).find((r) => r.includes('p='));
+  return joined === undefined ? null : Buffer.from(joined, 'latin1');
+};
 
 export interface RunningServer {
   readonly inbound: SmtpReceiver;
@@ -102,10 +124,20 @@ export async function startServer(cfg: MailServerConfig): Promise<RunningServer>
     notifier.notify('INBOX');
   };
 
-  // Inbound (port 25): mail arriving for us — stamp our Received trace line
-  // (RFC 5321 §4.4: the final-delivery MTA prepends one) and store it.
-  const inbound = await SmtpReceiver.start((m) => {
+  // Inbound (port 25): mail arriving for us — verify DKIM, stamp Authentication-Results
+  // and a Received trace line (RFC 5321 §4.4 / RFC 8601), and store it.
+  const dkimResolver: DkimKeyResolver = cfg.dkimKeyResolver ?? resolveDkimKeyViaDns;
+  const inbound = await SmtpReceiver.start(async (m) => {
     const receivedAt = new Date();
+    // Verify the sender's DKIM signature (informational — never a rejection; §6.1
+    // leniency preserved). The verdict is recorded in Authentication-Results.
+    let dkim: { verdict: string; domain: string | null } = { verdict: 'none', domain: null };
+    try {
+      dkim = await verifyDkim(m.data, dkimResolver);
+    } catch {
+      dkim = { verdict: 'temperror', domain: null };
+    }
+    const authResults = `Authentication-Results: ${cfg.domain}; dkim=${dkim.verdict}${dkim.domain !== null ? ` header.d=${dkim.domain}` : ''}`;
     const traced = prependReceived(m.data, {
       helo: m.helo,
       remoteAddress: m.remoteAddress,
@@ -115,9 +147,10 @@ export async function startServer(cfg: MailServerConfig): Promise<RunningServer>
       ...(m.recipients.length === 1 ? { forRecipient: m.recipients[0]! } : {}),
       date: receivedAt,
     });
+    const stamped = Buffer.concat([Buffer.from(`${authResults}\r\n`, 'latin1'), traced]);
     // INTERNALDATE = the moment we accepted the message (RFC 9051 §2.3.3), the same
     // instant stamped into the Received trace line above.
-    storeLocal(traced, receivedAt.getTime());
+    storeLocal(stamped, receivedAt.getTime());
   }, {
     domain: cfg.domain,
     tls: cfg.tls,

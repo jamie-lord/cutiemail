@@ -109,7 +109,7 @@ test('IMAP survives 60 fuzzed command streams and a clean session still works', 
 
 test('SMTP survives 60 fuzzed command streams and a clean transaction still works', async () => {
   const delivered: unknown[] = [];
-  const server = await SmtpReceiver.start((m) => delivered.push(m), { domain: 'mx.example.test' });
+  const server = await SmtpReceiver.start((m) => { delivered.push(m); }, { domain: 'mx.example.test' });
   const rand = rng(0xbeef);
   try {
     for (let i = 0; i < 60; i++) {

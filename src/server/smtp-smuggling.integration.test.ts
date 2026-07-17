@@ -20,7 +20,7 @@ const delay = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms
 
 async function deliverRaw(dataPayload: string): Promise<{ reply: string; delivered: DeliveredMessage[] }> {
   const delivered: DeliveredMessage[] = [];
-  const rec = await SmtpReceiver.start((m) => delivered.push(m), {});
+  const rec = await SmtpReceiver.start((m) => { delivered.push(m); }, {});
   let replies = '';
   try {
     const s = net.connect(rec.port, '127.0.0.1');

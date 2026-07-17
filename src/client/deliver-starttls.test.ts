@@ -16,7 +16,7 @@ import { TEST_CERT, TEST_KEY } from '../testing/tls-test-cert.ts';
 
 test('opportunistic STARTTLS: the transaction runs over TLS when the peer advertises it', async () => {
   const received: DeliveredMessage[] = [];
-  const mx = await SmtpReceiver.start((m) => received.push(m), { domain: 'mx.example.test', tls: { key: TEST_KEY, cert: TEST_CERT } });
+  const mx = await SmtpReceiver.start((m) => { received.push(m); }, { domain: 'mx.example.test', tls: { key: TEST_KEY, cert: TEST_CERT } });
   try {
     const data = Buffer.from('Subject: encrypted\r\n\r\nsent over TLS\r\n', 'latin1');
     const result = await deliver(
@@ -37,7 +37,7 @@ test('opportunistic STARTTLS: the transaction runs over TLS when the peer advert
 
 test('falls back to plaintext when the peer does not advertise STARTTLS', async () => {
   const received: DeliveredMessage[] = [];
-  const mx = await SmtpReceiver.start((m) => received.push(m), { domain: 'mx.example.test' }); // no tls -> no STARTTLS advertised
+  const mx = await SmtpReceiver.start((m) => { received.push(m); }, { domain: 'mx.example.test' }); // no tls -> no STARTTLS advertised
   try {
     const data = Buffer.from('Subject: plain\r\n\r\nno tls here\r\n', 'latin1');
     const result = await deliver(

@@ -36,7 +36,7 @@ export interface DeliveredMessage {
   readonly authenticated: boolean;
 }
 
-export type DeliveryHandler = (message: DeliveredMessage) => void;
+export type DeliveryHandler = (message: DeliveredMessage) => void | Promise<void>;
 
 export interface ReceiverOptions {
   readonly domain?: string;
@@ -134,6 +134,7 @@ class Connection {
   #tls = false;
   #authed = false;
   #awaitingAuth = false; // AUTH PLAIN issued without an initial response; next line is the SASL data
+  #processing: Promise<void> = Promise.resolve(); // serializes async #onData over chunks
   #helo = '';
   readonly #remoteAddress: string;
   readonly #handler: DeliveryHandler;
@@ -166,7 +167,13 @@ class Connection {
   }
 
   #bind(stream: Duplex): void {
-    stream.on('data', (chunk: Buffer) => this.#onData(chunk));
+    // Serialize chunk processing: #onData is async (an inbound delivery may await a
+    // DNS lookup for DKIM), so chain each chunk after the previous one completes.
+    // Without this, a pipelined client's next chunk could re-enter #onData while it
+    // is awaiting and corrupt the shared receive buffer.
+    stream.on('data', (chunk: Buffer) => {
+      this.#processing = this.#processing.then(() => this.#onData(chunk)).catch(() => {});
+    });
     stream.on('error', () => {});
   }
 
@@ -174,7 +181,7 @@ class Connection {
     this.#active.write(Buffer.from(`${line}\r\n`, 'latin1'));
   }
 
-  #onData(chunk: Buffer): void {
+  async #onData(chunk: Buffer): Promise<void> {
     this.#buf = Buffer.concat([this.#buf, Buffer.from(chunk)]);
     for (;;) {
       if (this.#inData) {
@@ -220,7 +227,7 @@ class Connection {
         }
         let stored = true;
         try {
-          this.#handler({
+          await this.#handler({
             from: this.#from,
             recipients: [...this.#recipients],
             data: unstuffed,
