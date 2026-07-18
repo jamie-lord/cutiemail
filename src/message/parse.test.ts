@@ -33,6 +33,22 @@ test('sanity: a well-formed message parses into headers + body', () => {
   assert.deepEqual(msg.anomalies, []);
 });
 
+test('a large all-CRLF message parses with bounded memory/time (run-4 HIGH DoS regression)', () => {
+  // The old parser materialised one object per physical line over the WHOLE message, so a
+  // ~10 MiB all-CRLF body (~5M lines) cost hundreds of MiB and, parsed 3x per inbound message,
+  // stalled/OOM-killed the process. The streaming parser is O(1) in line objects. Assert it
+  // parses correctly and fast (a generous 1.5s bound — the old allocation-heavy path was far
+  // slower at this size and grew super-linearly under GC pressure).
+  const body = '\r\n'.repeat(5_000_000); // ~10 MiB of empty CRLF lines
+  const big = b(`From: a@example.com${CRLF}Subject: hi${CRLF}${CRLF}${body}`);
+  const start = process.hrtime.bigint();
+  const msg = parseMessage(big);
+  const ms = Number(process.hrtime.bigint() - start) / 1e6;
+  assert.equal(msg.headers.length, 2, 'headers still parsed correctly');
+  assert.equal(msg.body.length, body.length, 'the body is a subarray, not re-materialised');
+  assert.ok(ms < 1500, `a large message must parse in bounded time (took ${ms.toFixed(0)}ms)`);
+});
+
 test('R-5322-2.1.1-a: a line over 998 octets is flagged (and the defect is caught)', () => {
   cites('R-5322-2.1.1-a');
   const overlong = b(`X: ${'a'.repeat(996)}${CRLF}${CRLF}body`); // line content = 3 + 996 = 999

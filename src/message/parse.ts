@@ -49,85 +49,92 @@ export interface ParserDefects {
   readonly acceptInvalidFieldNameChars?: boolean;
 }
 
-interface PhysLine {
-  readonly content: Buffer; // bytes before the terminator
-  readonly terminator: 'crlf' | 'lf' | 'none';
-  readonly lineNo: number; // 1-based
-  readonly bodyOffset: number; // byte index immediately after this line's terminator
-}
+type Terminator = 'crlf' | 'lf' | 'none';
+/** Callback per physical line, given by INDICES into buf ([start,end) is the content) so no
+ * per-line object is allocated — the callback subarrays only when it actually needs the bytes. */
+type LineFn = (buf: Buffer, start: number, end: number, terminator: Terminator, lineNo: number, bodyOffset: number) => void;
 
-/** Split into physical lines on LF, classifying each terminator. Bytes only. */
-function scanLines(buf: Buffer): PhysLine[] {
-  const lines: PhysLine[] = [];
+/**
+ * Iterate physical lines (LF-split, terminator-classified, bytes only) WITHOUT retaining a
+ * per-line object array AND without allocating a subarray per line — one callback per line by
+ * index, so both memory and allocation stay O(1) in the line count.
+ *
+ * The prior version materialised a `PhysLine[]` over the ENTIRE message. A 25 MiB message
+ * (the SIZE default) is ~13M lines ≈ ~2 GB of live objects, and the inbound path parses each
+ * message THREE times (DKIM + DMARC + ARC), so one unauthenticated all-CRLF message stalled
+ * the event loop for seconds and a few concurrent ones OOM-killed the process (audit run-4
+ * HIGH). The body region is never turned into line objects.
+ */
+function forEachLine(buf: Buffer, cb: LineFn): void {
   let start = 0;
   let lineNo = 0;
   for (let i = 0; i < buf.length; i++) {
     if (buf[i] === LF) {
       lineNo++;
       let end = i;
-      let terminator: 'crlf' | 'lf' = 'lf';
+      let terminator: Terminator = 'lf';
       if (end > start && buf[end - 1] === CR) {
         end -= 1;
         terminator = 'crlf';
       }
-      lines.push({ content: buf.subarray(start, end), terminator, lineNo, bodyOffset: i + 1 });
+      cb(buf, start, end, terminator, lineNo, i + 1);
       start = i + 1;
     }
   }
   if (start < buf.length) {
     lineNo++;
-    lines.push({ content: buf.subarray(start), terminator: 'none', lineNo, bodyOffset: buf.length });
+    cb(buf, start, buf.length, 'none', lineNo, buf.length);
   }
-  return lines;
 }
+
+const isBoundaryLine = (len: number, terminator: Terminator, defects: ParserDefects): boolean =>
+  len === 0 && (terminator === 'crlf' || (defects.splitHeaderBodyOnBareLf === true && terminator === 'lf'));
 
 const isWsp = (b: number | undefined): boolean => b === SP || b === HTAB;
 
 export function parseMessage(input: Buffer, defects: ParserDefects = {}): Message {
-  const lines = scanLines(input);
   const anomalies: Anomaly[] = [];
 
-  // Per-line octet-level anomalies (recorded across the whole message).
-  for (const l of lines) {
-    if (!defects.dontFlagOverlongLine && l.content.length > MAX_LINE) {
-      anomalies.push({ kind: 'line-over-998', line: l.lineNo });
-    }
-    if (l.terminator === 'lf') anomalies.push({ kind: 'bare-lf', line: l.lineNo });
+  // Pass 1: per-line octet-level anomalies (recorded across the whole message) + locate the
+  // header/body boundary (the first EMPTY line). Streaming — no per-line array is retained, so
+  // a 25 MiB body costs O(1) objects instead of ~2 GB.
+  let boundaryBodyOffset = -1;
+  forEachLine(input, (buf, start, end, terminator, lineNo, bodyOffset) => {
+    const len = end - start;
+    if (!defects.dontFlagOverlongLine && len > MAX_LINE) anomalies.push({ kind: 'line-over-998', line: lineNo });
+    if (terminator === 'lf') anomalies.push({ kind: 'bare-lf', line: lineNo });
     if (!defects.acceptNonAsciiSilently) {
       let flaggedNul = false;
       let flagged8 = false;
-      for (const b of l.content) {
+      for (let j = start; j < end; j++) {
+        const b = buf[j]!;
         if (b === NUL && !flaggedNul) {
-          anomalies.push({ kind: 'nul-octet', line: l.lineNo });
+          anomalies.push({ kind: 'nul-octet', line: lineNo });
           flaggedNul = true;
         } else if (b >= 0x80 && !flagged8) {
-          anomalies.push({ kind: 'eight-bit', line: l.lineNo });
+          anomalies.push({ kind: 'eight-bit', line: lineNo });
           flagged8 = true;
         }
       }
     }
-    // A CR inside the content (not consumed as a CRLF terminator) is a bare CR —
-    // in a field body, an injection vector (R-5322-2.2-b: no CR/LF except folding).
-    // Structural, not a charset issue, so gated by its own defect.
-    if (!defects.acceptEmbeddedCr && l.content.includes(CR)) {
-      anomalies.push({ kind: 'bare-cr', line: l.lineNo });
+    // A CR inside the content (not consumed as a CRLF terminator) is a bare CR — in a field
+    // body, an injection vector (R-5322-2.2-b: no CR/LF except folding). Gated by its own defect.
+    if (!defects.acceptEmbeddedCr) {
+      for (let j = start; j < end; j++) {
+        if (buf[j] === CR) {
+          anomalies.push({ kind: 'bare-cr', line: lineNo });
+          break;
+        }
+      }
     }
-  }
+    if (boundaryBodyOffset === -1 && isBoundaryLine(len, terminator, defects)) boundaryBodyOffset = bodyOffset;
+  });
 
-  // The header/body boundary: the first EMPTY line. Conformant = only a CRLF-
-  // terminated empty line counts; the defect also accepts a bare-LF empty line.
-  const isBoundary = (l: PhysLine): boolean =>
-    l.content.length === 0 &&
-    (l.terminator === 'crlf' || (defects.splitHeaderBodyOnBareLf === true && l.terminator === 'lf'));
+  const body = boundaryBodyOffset === -1 ? Buffer.alloc(0) : input.subarray(boundaryBodyOffset);
+  if (boundaryBodyOffset === -1) anomalies.push({ kind: 'no-empty-line', line: 0 });
 
-  const boundaryIdx = lines.findIndex(isBoundary);
-  const headerLines = boundaryIdx === -1 ? lines : lines.slice(0, boundaryIdx);
-  const body =
-    boundaryIdx === -1 ? Buffer.alloc(0) : input.subarray(lines[boundaryIdx]!.bodyOffset);
-  if (boundaryIdx === -1) anomalies.push({ kind: 'no-empty-line', line: 0 });
-
-  // Assemble header fields, honouring folding: a line starting with SP/HTAB
-  // continues the previous field.
+  // Pass 2: assemble header fields from the lines BEFORE the boundary, honouring folding (a line
+  // starting with SP/HTAB continues the previous field). Stops at the boundary line.
   const headers: Header[] = [];
   let cur: { name: Buffer; valueParts: Buffer[]; lineNo: number } | null = null;
   const flush = (): void => {
@@ -135,30 +142,42 @@ export function parseMessage(input: Buffer, defects: ParserDefects = {}): Messag
     headers.push({ name: cur.name, value: Buffer.concat(cur.valueParts) });
     cur = null;
   };
-  for (const l of headerLines) {
-    if (cur !== null && isWsp(l.content[0])) {
-      // Folded continuation: keep the CRLF-equivalent and the continuation bytes,
-      // so unfolding is the caller's choice and no information is lost.
-      cur.valueParts.push(Buffer.from([CR, LF]), l.content);
-      continue;
+  let inHeaders = true;
+  forEachLine(input, (buf, start, end, terminator, lineNo) => {
+    if (!inHeaders) return;
+    const len = end - start;
+    if (isBoundaryLine(len, terminator, defects)) {
+      inHeaders = false; // the boundary line itself is the separator, not a header
+      return;
+    }
+    if (cur !== null && len > 0 && isWsp(buf[start])) {
+      // Folded continuation: keep the CRLF-equivalent and the continuation bytes, so unfolding
+      // is the caller's choice and no information is lost.
+      cur.valueParts.push(Buffer.from([CR, LF]), buf.subarray(start, end));
+      return;
     }
     flush();
-    const colon = l.content.indexOf(COLON);
+    let colon = -1;
+    for (let j = start; j < end; j++) {
+      if (buf[j] === COLON) {
+        colon = j;
+        break;
+      }
+    }
     if (colon === -1) {
       // A header-section line with no colon (and not a fold) is malformed.
-      if (l.content.length > 0) anomalies.push({ kind: 'header-no-colon', line: l.lineNo });
-      continue;
+      if (len > 0) anomalies.push({ kind: 'header-no-colon', line: lineNo });
+      return;
     }
-    const name = l.content.subarray(0, colon);
-    // R-5322-2.2-a: a field name is printable US-ASCII 33-126, except colon (which
-    // ends it). Anything else — a space, a control octet, an 8-bit byte — is a
-    // malformed/spoofed field name and the disguise a smuggled header hides behind.
+    const name = buf.subarray(start, colon);
+    // R-5322-2.2-a: a field name is printable US-ASCII 33-126, except colon (which ends it).
+    // Anything else — a space, a control octet, an 8-bit byte — is a malformed/spoofed field
+    // name and the disguise a smuggled header hides behind.
     if (!defects.acceptInvalidFieldNameChars && name.some((b) => b < 33 || b > 126)) {
-      anomalies.push({ kind: 'field-name-invalid-char', line: l.lineNo });
+      anomalies.push({ kind: 'field-name-invalid-char', line: lineNo });
     }
-    const value = l.content.subarray(colon + 1);
-    cur = { name, valueParts: [value], lineNo: l.lineNo };
-  }
+    cur = { name, valueParts: [buf.subarray(colon + 1, end)], lineNo };
+  });
   flush();
 
   return { headers, body, anomalies };
