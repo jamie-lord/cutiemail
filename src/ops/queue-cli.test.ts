@@ -80,9 +80,55 @@ test('dead-letter list carries the final error; show prints headers; --raw is by
     assert.match(text, /Subject: hello/); // headers shown
     assert.equal(text.includes('body bytes'), false); // body not dumped without --raw
 
-    // --raw: the .eml path — byte-exact including the non-ASCII body bytes.
+    // --raw: the .eml path — byte-exact including the non-ASCII body bytes (non-TTY sink).
     const chunks: Buffer[] = [];
-    assert.equal(runDeadLetter(['show', deadId, '--raw', '--db', dbPath], capture().io, {}, (b) => void chunks.push(b)), 0);
+    assert.equal(runDeadLetter(['show', deadId, '--raw', '--db', dbPath], capture().io, {}, (b) => void chunks.push(b), false), 0);
+    assert.deepEqual(Buffer.concat(chunks), MESSAGE);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('dead-letter show sanitises terminal escape sequences in attacker-controlled headers', () => {
+  const dir = tmp();
+  try {
+    const dbPath = join(dir, 'control.db');
+    const db = openMailDb(dbPath);
+    const queue = SqliteQueue.open(db);
+    // A message whose Subject carries an OSC 52 clipboard-write + a CSI screen-clear.
+    const evil = Buffer.from('From: a@b.example\r\nSubject: \x1b]52;c;ZXZpbA==\x07\x1b[2Jhi\r\n\r\nbody\r\n', 'latin1');
+    const id = queue.enqueue('s@here.example', ['gone@there.example'], evil, 2000);
+    const entry = queue.due(Number.MAX_SAFE_INTEGER).find((e) => e.id === id)!;
+    queue.deadLetter(entry, { failedRecipients: ['gone@there.example'], lastError: 'permanent: nope', now: 3000 });
+    db.close();
+
+    const show = capture();
+    assert.equal(runDeadLetter(['show', id, '--db', dbPath], show.io, {}, () => {}, false), 0);
+    const text = show.out.join('\n');
+    assert.equal(text.includes('\x1b'), false, 'no ESC byte reaches the terminal');
+    assert.equal(/[\x00-\x08\x0e-\x1f\x7f-\x9f]/.test(text), false, 'no C0/C1 controls reach the terminal');
+    assert.match(text, /Subject: /); // the header is still shown, just neutralised
+    // The escapes are also neutralised in the `list` line (lastError can carry remote bytes).
+    const list = capture();
+    runDeadLetter(['list', '--db', dbPath], list.io, {}, () => {}, false);
+    assert.equal(list.out.join('\n').includes('\x1b'), false);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('dead-letter show --raw refuses a terminal (escape bytes would execute) but writes to a file sink', () => {
+  const dir = tmp();
+  try {
+    const { dbPath, deadId } = makeWorld(dir);
+    // isTty=true → refuse, exit 2, write nothing.
+    const chunks: Buffer[] = [];
+    const cap = capture();
+    assert.equal(runDeadLetter(['show', deadId, '--raw', '--db', dbPath], cap.io, {}, (b) => void chunks.push(b), true), 2);
+    assert.equal(chunks.length, 0, 'no bytes written to a TTY');
+    assert.match(cap.err.join('\n'), /refusing to write to a terminal/);
+    // isTty=false (redirected) → the exact bytes are written.
+    assert.equal(runDeadLetter(['show', deadId, '--raw', '--db', dbPath], capture().io, {}, (b) => void chunks.push(b), false), 0);
     assert.deepEqual(Buffer.concat(chunks), MESSAGE);
   } finally {
     rmSync(dir, { recursive: true, force: true });

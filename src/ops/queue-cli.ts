@@ -25,6 +25,18 @@ import type { OpsIo } from './cli.ts';
 
 const iso = (ms: number): string => new Date(ms).toISOString().replace(/\.\d{3}Z$/, 'Z');
 
+/**
+ * Neutralise terminal control characters before printing attacker-controlled message
+ * bytes to the operator's terminal (audit run-1, finding 5). A dead-lettered message's
+ * bytes (or a remote MX's error text) can carry ANSI/OSC escape sequences — OSC 52 to
+ * hijack the clipboard, CSI to forge/erase output. Strip C0 controls (keeping tab/CR/LF
+ * for header readability), DEL, and the C1 range (0x80–0x9f, which some terminals treat
+ * as 8-bit escape introducers). ESC (0x1b) is in the stripped range, so no escape
+ * sequence can be introduced. `--raw` keeps the exact bytes but refuses a TTY (below).
+ */
+const TERMINAL_CONTROLS = /[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f]/g;
+const sanitizeForTerminal = (s: string): string => s.replace(TERMINAL_CONTROLS, '.');
+
 /** "in 42s" / "38m ago" — the operator question is always "when / how stale". */
 function relative(ms: number, now: number): string {
   const d = ms - now;
@@ -85,7 +97,11 @@ function queueLine(e: QueueEntry, now: number): string {
 }
 
 function deadLetterLine(e: DeadLetterEntry, now: number): string {
-  return `${e.id}  from=<${e.from}> to=${e.recipients.join(',')} attempts=${e.attempts} gave-up=${iso(e.deadLettered)} (${relative(e.deadLettered, now)}) size=${e.data.length}\n        ${e.lastError}`;
+  // from/recipients are control-free envelope values; lastError can carry a remote MX's
+  // response bytes, so sanitise the whole line before it reaches the terminal.
+  return sanitizeForTerminal(
+    `${e.id}  from=<${e.from}> to=${e.recipients.join(',')} attempts=${e.attempts} gave-up=${iso(e.deadLettered)} (${relative(e.deadLettered, now)}) size=${e.data.length}\n        ${e.lastError}`,
+  );
 }
 
 export function runQueue(args: string[], io: OpsIo, env: Record<string, string | undefined>): number {
@@ -118,6 +134,7 @@ export function runDeadLetter(
   io: OpsIo,
   env: Record<string, string | undefined>,
   writeBytes: (b: Buffer) => void = (b) => void process.stdout.write(b),
+  isTty: boolean = process.stdout.isTTY === true,
 ): number {
   const parsed = parseArgs(args, env);
   if (parsed === 'help') {
@@ -151,16 +168,24 @@ export function runDeadLetter(
         return 1;
       }
       if (parsed.raw) {
+        // --raw emits the EXACT bytes (a replayable .eml), including any terminal escape
+        // sequences — safe when redirected to a file, dangerous to a live terminal. Refuse
+        // a TTY rather than execute an attacker's escapes in the operator's session.
+        if (isTty) {
+          io.err('dead-letter show --raw writes the exact message bytes to stdout; refusing to write to a terminal. Redirect to a file, e.g. `... --raw > message.eml`.');
+          return 2;
+        }
         writeBytes(e.data);
         return 0;
       }
       io.out(deadLetterLine(e, now));
       io.out('');
       // The header section is the useful part for diagnosis; the full bytes are
-      // one --raw away. Bytes-never-strings: split on the wire boundary.
+      // one --raw away. Bytes-never-strings: split on the wire boundary. Sanitise
+      // terminal control characters — the headers are attacker-controlled.
       const sep = e.data.indexOf(Buffer.from('\r\n\r\n', 'latin1'));
       const headers = sep === -1 ? e.data : e.data.subarray(0, sep);
-      io.out(headers.toString('latin1'));
+      io.out(sanitizeForTerminal(headers.toString('latin1')));
       io.out('');
       io.out(`(headers only — full ${e.data.length}-byte message: dead-letter show ${id} --raw)`);
       return 0;
