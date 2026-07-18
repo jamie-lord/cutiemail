@@ -37,17 +37,35 @@ function isPrivateOrLoopback(ip: string): boolean {
 }
 
 /**
- * A MX target we must refuse to relay to (SSRF guard). An attacker who controls a
- * recipient domain's DNS can publish "MX 0 127.0.0.1" (or a private/link-local address,
- * or "localhost") to make us open a port-25 connection to an internal host. A public
- * domain's MX is never legitimately loopback/private, so refuse those outright. NOTE: a
- * hostname that *resolves* to a private IP is not caught here (would need a pre-connect
- * lookup) — a recorded residual; the literal-IP and localhost forms are the direct attack.
+ * A MX target we must refuse to relay to on its LITERAL form (SSRF guard). An attacker who
+ * controls a recipient domain's DNS can publish "MX 0 127.0.0.1" (or a private/link-local
+ * address, or "localhost") to make us open a port-25 connection to an internal host. A
+ * public domain's MX is never legitimately loopback/private, so refuse those outright. The
+ * companion `resolvesToPrivate` closes the hostname-that-resolves-to-a-private-IP case.
  */
 export function isUnsafeMxTarget(host: string): boolean {
   const h = host.toLowerCase().replace(/\.$/, '');
   if (h === 'localhost' || h.endsWith('.localhost')) return true;
   return net.isIP(host) !== 0 && isPrivateOrLoopback(host);
+}
+
+/**
+ * True when an MX HOSTNAME resolves (over IPv4) to a private/loopback address — the SSRF
+ * case `isUnsafeMxTarget` (a literal-form check) misses: an attacker publishes an MX name
+ * that resolves to 127.0.0.1 / 169.254.169.254 / 10.x. Checked just before connecting, so
+ * the static hostname→private attack is closed. A narrow DNS-rebinding window remains (the
+ * OS re-resolves at connect time); pinning to the vetted address would need threading the
+ * TLS servername separately and is deferred. `resolve4` because relay connects family:4.
+ */
+export async function resolvesToPrivate(host: string, resolve: (h: string) => Promise<readonly string[]> = resolve4): Promise<boolean> {
+  if (net.isIP(host) !== 0) return false; // a literal IP is already handled by isUnsafeMxTarget
+  let addrs: readonly string[] = [];
+  try {
+    addrs = await resolve(host);
+  } catch {
+    addrs = [];
+  }
+  return addrs.some(isPrivateOrLoopback);
 }
 
 /** The envelope + bytes to relay — the subset of a delivered message relay needs. */
@@ -217,9 +235,11 @@ export async function relayOutbound(msg: RelayableMessage, opts: OutboundOptions
     let lastError = '';
     let lastClass: 'transient' | 'permanent' = 'transient';
     for (const host of candidateHosts) {
-      // SSRF guard: never open a relay connection to a loopback/private MX target that
-      // a hostile recipient-domain DNS could have pointed us at.
-      if (guardTargets && isUnsafeMxTarget(host)) {
+      // SSRF guard: never open a relay connection to a loopback/private MX target that a
+      // hostile recipient-domain DNS could have pointed us at — as a literal IP/localhost
+      // (isUnsafeMxTarget) OR as a hostname that resolves to a private address
+      // (resolvesToPrivate, a pre-connect DNS lookup).
+      if (guardTargets && (isUnsafeMxTarget(host) || (await resolvesToPrivate(host)))) {
         lastError = `refusing to relay to non-public MX target ${host}`;
         lastClass = 'permanent';
         continue;
