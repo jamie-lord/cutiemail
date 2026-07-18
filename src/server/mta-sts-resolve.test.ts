@@ -12,7 +12,7 @@ const POLICY = 'version: STSv1\nmode: enforce\nmx: mail.example.com\nmax_age: 86
 
 /** A controllable deps harness: settable TXT id, policy body, and clock; counts fetches. */
 function harness(opts: { id: string | null; body?: string | null }) {
-  const state = { id: opts.id, body: opts.body ?? POLICY, t: 1_000_000, fetches: 0, txtLookups: 0 };
+  const state: { id: string | null; body: string | null; t: number; fetches: number; txtLookups: number } = { id: opts.id, body: opts.body ?? POLICY, t: 1_000_000, fetches: 0, txtLookups: 0 };
   const deps: StsResolverDeps = {
     resolveTxt: async (name) => {
       state.txtLookups++;

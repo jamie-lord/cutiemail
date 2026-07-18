@@ -30,7 +30,7 @@ async function relay(port: number, policy: StsPolicy | null) {
 
 test('enforce + an MX that does not offer STARTTLS → not delivered, deferred (no downgrade)', async () => {
   const received: DeliveredMessage[] = [];
-  const mx = await SmtpReceiver.start((m) => received.push(m), { domain: 'mx.elsewhere.example' }); // plaintext
+  const mx = await SmtpReceiver.start((m) => { received.push(m); },{ domain: 'mx.elsewhere.example' }); // plaintext
   try {
     const [r] = await relay(mx.port, enforce('127.0.0.1'));
     assert.equal(r!.ok, false);
@@ -44,7 +44,7 @@ test('enforce + an MX that does not offer STARTTLS → not delivered, deferred (
 test('enforce + an MX with an untrusted (self-signed) certificate → not delivered', async () => {
   const received: DeliveredMessage[] = [];
   // Offers STARTTLS, but with the self-signed test cert — invalid under enforce.
-  const mx = await SmtpReceiver.start((m) => received.push(m), { domain: 'mx.elsewhere.example', tls: { key: TEST_KEY, cert: TEST_CERT } });
+  const mx = await SmtpReceiver.start((m) => { received.push(m); },{ domain: 'mx.elsewhere.example', tls: { key: TEST_KEY, cert: TEST_CERT } });
   try {
     const [r] = await relay(mx.port, enforce('127.0.0.1'));
     assert.equal(r!.ok, false);
@@ -56,7 +56,7 @@ test('enforce + an MX with an untrusted (self-signed) certificate → not delive
 
 test('enforce + no MX matches the policy → deferred without connecting', async () => {
   const received: DeliveredMessage[] = [];
-  const mx = await SmtpReceiver.start((m) => received.push(m), { domain: 'mx.elsewhere.example' });
+  const mx = await SmtpReceiver.start((m) => { received.push(m); },{ domain: 'mx.elsewhere.example' });
   try {
     const [r] = await relay(mx.port, enforce('mail.someone-else.example')); // 127.0.0.1 not listed
     assert.equal(r!.ok, false);
@@ -70,7 +70,7 @@ test('enforce + no MX matches the policy → deferred without connecting', async
 
 test('a testing-mode policy does NOT block delivery (opportunistic behavior preserved)', async () => {
   const received: DeliveredMessage[] = [];
-  const mx = await SmtpReceiver.start((m) => received.push(m), { domain: 'mx.elsewhere.example' }); // plaintext
+  const mx = await SmtpReceiver.start((m) => { received.push(m); },{ domain: 'mx.elsewhere.example' }); // plaintext
   try {
     const [r] = await relay(mx.port, policyOf('version: STSv1\nmode: testing\nmx: mail.someone-else.example\nmax_age: 86400\n'));
     assert.equal(r!.ok, true, 'testing mode is report-only — it must not block mail');
@@ -82,7 +82,7 @@ test('a testing-mode policy does NOT block delivery (opportunistic behavior pres
 
 test('no policy at all → delivered opportunistically, exactly as before MTA-STS', async () => {
   const received: DeliveredMessage[] = [];
-  const mx = await SmtpReceiver.start((m) => received.push(m), { domain: 'mx.elsewhere.example' });
+  const mx = await SmtpReceiver.start((m) => { received.push(m); },{ domain: 'mx.elsewhere.example' });
   try {
     const [r] = await relay(mx.port, null);
     assert.equal(r!.ok, true);
