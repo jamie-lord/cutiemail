@@ -56,3 +56,13 @@ The careful key-derivation design was only as strong as its weakest input path.
 - Live-verified (2026-07-18, mailtest box): an account added by CLI while the
   daemon was running authenticated over IMAPS immediately, no restart, no
   password anywhere in the environment.
+
+## Follow-up (2026-07-18)
+
+`node src/main.ts init <login>` operationalises the passwordless bootstrap: a
+first-run-only command that creates the primary account from a hidden prompt
+(refusing once any account exists) and prints a unit with no password in it. To
+catch a lingering plaintext seed, both `doctor` and the daemon at startup now warn
+when `MAIL_PASS`/`MAIL_ACCOUNTS` are set but the account already exists (the seed is
+redundant) — turning point 2's "reserve env for bootstrap" from advice into a
+visible nudge.

@@ -160,9 +160,23 @@ credential registry (which stores only the derived StoredKey/ServerKey, never th
 persistent outbound queue. Inbound mail is delivered into the addressed account's mailbox; a
 recipient that isn't a known local account is rejected at `RCPT` (no catch-all, no backscatter).
 
-**Managing accounts** — once the primary account exists, take the passwords out of the unit
-file entirely and use the CLI (it prompts for the password; when piped, it reads one line
-from stdin — never argv, which is visible in `ps`):
+**Recommended first run: `init` (no password in the environment).** Instead of putting a
+password in the unit file, create the primary account with a hidden prompt that writes SCRAM
+straight to the registry — so no plaintext password ever lands in the unit or
+`/proc/<pid>/environ`:
+
+```sh
+node src/main.ts init you --db /var/lib/mailserver/control.db
+# prompts (twice, hidden) for the password, then prints a passwordless unit to run
+```
+
+`init` is first-run-only — it refuses once any account exists (use `account add` after). The
+`MAIL_USER`/`MAIL_PASS` env vars remain as a create-only bootstrap for dev (`npm start`) and
+unattended provisioning, but a production unit should carry **no password at all**; `doctor`
+and the daemon both warn when `MAIL_PASS`/`MAIL_ACCOUNTS` are present but redundant.
+
+**Managing accounts** — use the CLI thereafter (it prompts for the password; when piped, it
+reads one line from stdin — never argv, which is visible in `ps`):
 
 ```sh
 node src/main.ts account add you --db /var/lib/mailserver/control.db
@@ -234,7 +248,9 @@ Environment=MAIL_HOST=0.0.0.0
 Environment=MAIL_CONTROL_DB=/var/lib/mailserver/control.db
 Environment=MAIL_DB=/var/lib/mailserver/mail.db
 Environment=MAIL_SMTP_PORT=25 MAIL_SUBMISSION_PORT=587 MAIL_IMAP_PORT=993
-Environment=MAIL_USER=you MAIL_PASS=change-this-passphrase
+# No MAIL_USER/MAIL_PASS: create the primary account with `init` (above), which writes
+# SCRAM to the registry — the unit carries no password. (MAIL_USER/MAIL_PASS still work
+# as a create-only bootstrap for dev, but the daemon warns when they linger unnecessarily.)
 Environment=MAIL_TLS_CERT=/var/lib/mailserver/tls/cert.pem
 Environment=MAIL_TLS_KEY=/var/lib/mailserver/tls/key.pem
 # Bind privileged ports (25/587/993) without root, and nothing more:

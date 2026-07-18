@@ -13,6 +13,7 @@
 import { runSetup } from './setup.ts';
 import { runDoctor } from './doctor.ts';
 import { runAccount } from './account.ts';
+import { runInit } from './init.ts';
 import { runBackup, runVerify } from './backup.ts';
 import { runQueue, runDeadLetter } from './queue-cli.ts';
 
@@ -25,6 +26,7 @@ const USAGE = [
   'usage: node src/main.ts [command]',
   '',
   'With no command, runs the mail server daemon. Commands:',
+  '  init     first-run: create the primary account (passwordless bootstrap)',
   '  setup    generate the DKIM key (if missing) and print the DNS records to publish',
   '  doctor   check the deployment against live DNS and the network (drift, cert, port 25)',
   '  account  add/list accounts, change passwords, enable/disable — no passwords in env',
@@ -38,6 +40,8 @@ const USAGE = [
 export async function runOps(argv: readonly string[], io: OpsIo, env: Record<string, string | undefined>): Promise<number> {
   const [cmd, ...rest] = argv;
   switch (cmd) {
+    case 'init':
+      return runInit(rest, io, env);
     case 'setup':
       return runSetup(rest, io, env);
     case 'doctor':

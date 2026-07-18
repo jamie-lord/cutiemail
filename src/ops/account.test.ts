@@ -240,9 +240,29 @@ test('ADR 0012 seeding: env accounts are create-only — an existing password is
     // And the operator is told, not left guessing why the env password fails.
     assert.equal(logs.filter((l) => l.includes('IGNORED')).length, 1);
 
-    // Same-password reboot is silent (no false alarm every boot).
+    // Same-password reboot is silent about IGNORED (no false alarm every boot).
     seedAccounts(registry, [{ user: 'demo', pass: 'rotated-pw', mailDbPath: ':memory:' }], (l) => void logs.push(l));
     assert.equal(logs.filter((l) => l.includes('IGNORED')).length, 1);
+    db.close();
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('seedAccounts advises removing redundant plaintext seeds once the account exists', async () => {
+  const dir = tmp();
+  try {
+    const db = openMailDb(join(dir, 'control.db'));
+    const registry = AccountRegistry.open(db);
+    const logs: string[] = [];
+    // First boot (genuine bootstrap): the account is created — no "redundant" advisory.
+    seedAccounts(registry, [{ user: 'demo', pass: 'boot-pw', mailDbPath: ':memory:' }], (l) => void logs.push(l));
+    assert.equal(logs.filter((l) => l.includes('redundant')).length, 0, 'first boot bootstraps — not redundant');
+    // Every subsequent boot: the seed is now redundant → one advisory to remove it.
+    seedAccounts(registry, [{ user: 'demo', pass: 'boot-pw', mailDbPath: ':memory:' }], (l) => void logs.push(l));
+    const advisories = logs.filter((l) => l.includes('redundant plaintext'));
+    assert.equal(advisories.length, 1, 'one advisory on a redundant reboot');
+    assert.match(advisories[0]!, /MAIL_PASS\/MAIL_ACCOUNTS/);
     db.close();
   } finally {
     rmSync(dir, { recursive: true, force: true });

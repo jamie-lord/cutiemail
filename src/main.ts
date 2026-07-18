@@ -167,13 +167,24 @@ export function seedAccounts(
   accounts: ReadonlyArray<{ readonly user: string; readonly pass: string; readonly mailDbPath: string }>,
   log: (line: string) => void,
 ): void {
+  let redundant = 0;
   for (const a of accounts) {
     const existing = registry.lookup(a.user);
     if (existing === undefined) {
       registry.upsert(a.user, a.pass, a.mailDbPath);
-    } else if (existing.enabled && !registry.verifyPassword(a.user, a.pass)) {
-      log(`account ${a.user}: already provisioned — the differing env password is IGNORED (change it with \`node src/main.ts account set-password ${a.user}\`)`);
+    } else {
+      // The account already exists → the registry is authoritative and this env seed does
+      // nothing but keep a plaintext password in the unit file / environment.
+      redundant++;
+      if (existing.enabled && !registry.verifyPassword(a.user, a.pass)) {
+        log(`account ${a.user}: already provisioned — the differing env password is IGNORED (change it with \`node src/main.ts account set-password ${a.user}\`)`);
+      }
     }
+  }
+  if (redundant > 0) {
+    // Not a per-account warning — one advisory. The seeds bootstrapped once; now they are
+    // only a liability (a plaintext password in the unit and /proc/<pid>/environ).
+    log(`${redundant} env-seeded account(s) already exist — MAIL_PASS/MAIL_ACCOUNTS are now redundant plaintext; remove them from the unit and manage with \`node src/main.ts account\`.`);
   }
 }
 

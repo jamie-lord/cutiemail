@@ -118,12 +118,12 @@ export async function promptSecret(promptText: string): Promise<string> {
 }
 
 /** The real source: hidden TTY prompt (with confirmation) or one line of stdin. */
-function stdinPasswordSource(): PasswordSource {
+export function stdinPasswordSource(): PasswordSource {
   return { interactive: process.stdin.isTTY === true, read: promptSecret };
 }
 
 /** One read piped, two matching reads interactive; empty is always refused. */
-async function readNewPassword(source: PasswordSource): Promise<string | null> {
+export async function readNewPassword(source: PasswordSource): Promise<string | null> {
   const first = await source.read('password: ');
   if (first === '') return null;
   if (!source.interactive) return first;

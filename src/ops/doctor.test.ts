@@ -12,7 +12,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { generateKeyPairSync } from 'node:crypto';
-import { doctorChecks, reportChecks, runDoctor, type DoctorDeps, type DoctorParams } from './doctor.ts';
+import { doctorChecks, reportChecks, runDoctor, envSecretsCheck, type DoctorDeps, type DoctorParams } from './doctor.ts';
 import { dkimTxtFromPrivateKey } from './setup.ts';
 import { TEST_CERT, TEST_KEY } from '../testing/tls-test-cert.ts';
 
@@ -214,4 +214,17 @@ test('runDoctor: no domain is a usage error (2); unknown flag is a usage error (
   assert.equal(await runDoctor(['--bogus'], io, { MAIL_DOMAIN: DOMAIN }, healthyDeps()), 2);
   // And end-to-end through the arg path against the healthy fake world: exit 0.
   assert.equal(await runDoctor(['--domain', DOMAIN, '--probe', 'probe.example'], io, {}, healthyDeps()), 0);
+});
+
+test('envSecretsCheck warns when plaintext credentials are in the environment, else silent', () => {
+  assert.deepEqual(envSecretsCheck({}), [], 'no env creds → no check');
+  assert.deepEqual(envSecretsCheck({ MAIL_USER: 'admin' }), [], 'a bare login is not a secret');
+  const warn = envSecretsCheck({ MAIL_PASS: 'hunter2' });
+  assert.equal(warn.length, 1);
+  assert.equal(warn[0]!.status, 'warn');
+  assert.equal(warn[0]!.name, 'secrets');
+  assert.match(warn[0]!.detail, /MAIL_PASS set in the environment/);
+  assert.doesNotMatch(warn[0]!.detail, /hunter2/, 'the secret value is never echoed');
+  // Both vars named when both present.
+  assert.match(envSecretsCheck({ MAIL_PASS: 'x', MAIL_ACCOUNTS: 'a:b' })[0]!.detail, /MAIL_PASS and MAIL_ACCOUNTS/);
 });

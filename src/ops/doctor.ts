@@ -376,5 +376,28 @@ export async function runDoctor(args: string[], io: OpsIo, env: Record<string, s
     return 2;
   }
   io.out(`doctor: ${domain} (host ${params.mailHost})`);
-  return reportChecks(await doctorChecks(params, deps), io);
+  const results = await doctorChecks(params, deps);
+  results.push(...envSecretsCheck(env));
+  return reportChecks(results, io);
+}
+
+/**
+ * Warn when a plaintext password is present in the environment doctor can see
+ * (MAIL_PASS or MAIL_ACCOUNTS). These are create-only bootstrap seeds (ADR 0012): once
+ * the account exists they are redundant and only a liability — a password sitting in the
+ * unit file and /proc/<pid>/environ. `init`/`account` write SCRAM to the registry, so a
+ * production unit needs no password at all. Scope: this sees the environment of the
+ * process running doctor; run it in the daemon's environment (or check the unit) to catch
+ * a deployed unit. The daemon itself also logs this advisory at startup.
+ */
+export function envSecretsCheck(env: Record<string, string | undefined>): CheckResult[] {
+  const present: string[] = [];
+  if ((env.MAIL_PASS ?? '') !== '') present.push('MAIL_PASS');
+  if ((env.MAIL_ACCOUNTS ?? '') !== '') present.push('MAIL_ACCOUNTS');
+  if (present.length === 0) return [];
+  return [{
+    name: 'secrets',
+    status: 'warn',
+    detail: `${present.join(' and ')} set in the environment — a plaintext password in the unit file / process environment. Once the account exists it is redundant: rotate with \`account set-password\` and drop it from the unit (the registry is the source of truth).`,
+  }];
 }
