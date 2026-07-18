@@ -314,7 +314,9 @@ export function realDoctorDeps(): DoctorDeps {
         });
       }),
     rdap: async (registrable) => {
-      const res = await fetch(`https://rdap.org/domain/${registrable}`, { signal: AbortSignal.timeout(10_000), redirect: 'follow' });
+      // Encode the domain into the path — it is operator config, but metacharacters
+      // (/, ?, @, ..) must not be able to alter the request path or host.
+      const res = await fetch(`https://rdap.org/domain/${encodeURIComponent(registrable)}`, { signal: AbortSignal.timeout(10_000), redirect: 'follow' });
       if (!res.ok) throw new Error(`RDAP ${res.status}`);
       return res.json();
     },

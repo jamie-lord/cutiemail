@@ -45,6 +45,7 @@ import { MailboxNotifier } from './server/mailbox-notifier.ts';
 import { SqliteQueue } from './store/sqlite-queue.ts';
 import { RelayLoop } from './server/relay-loop.ts';
 import { runOps } from './ops/cli.ts';
+import { validLogin } from './ops/account.ts';
 // Bundled self-signed certificate — local development default only.
 import { TEST_CERT as DEV_CERT, TEST_KEY as DEV_KEY } from './testing/tls-test-cert.ts';
 
@@ -232,7 +233,10 @@ export async function startServer(cfg: MailServerConfig): Promise<RunningServer>
     const at = address.lastIndexOf('@');
     if (at === -1 || address.slice(at + 1).toLowerCase() !== cfg.domain.toLowerCase()) return undefined;
     const local = address.slice(0, at).toLowerCase();
-    return registry.list().find((r) => r.login.toLowerCase() === local)?.login;
+    // Only an ENABLED account is a deliverable recipient — a disabled account is rejected at
+    // RCPT (550) rather than accepted-then-silently-dropped (matching the CLI's "inbound
+    // delivery now refuses it"), so mail to it is never lost without the sender learning.
+    return registry.list().find((r) => r.enabled && r.login.toLowerCase() === local)?.login;
   };
   // Append a message to a local user's mailbox (INBOX unless a DMARC failure quarantines it
   // to Junk) and wake the connections idling on that mailbox.
@@ -501,6 +505,19 @@ function isLoopbackHost(host: string): boolean {
   return host === '127.0.0.1' || host === '::1' || host === 'localhost';
 }
 
+/**
+ * Validate an env-provided account login before it becomes a `mail-<login>.db` filename.
+ * The `account` CLI applies `validLogin`; env seeding must too, or a malformed entry like
+ * `../x:pw` would build `mail-../x.db`. Operator-trusted config, so a bad value fails loud
+ * at boot rather than silently building a surprising path.
+ */
+function requireValidLogin(login: string, source: string): string {
+  if (!validLogin(login)) {
+    throw new Error(`${source}: invalid account login ${JSON.stringify(login)} — letters/digits then letters/digits/._- (max 64); it becomes the mailbox database filename`);
+  }
+  return login;
+}
+
 /** Build a config from environment variables, with dev-friendly defaults. Exported for tests. */
 export function configFromEnv(): MailServerConfig & { usingDevCert: boolean } {
   const certPath = process.env.MAIL_TLS_CERT;
@@ -537,12 +554,12 @@ export function configFromEnv(): MailServerConfig & { usingDevCert: boolean } {
     // migration; additional accounts come from MAIL_ACCOUNTS ("user:pass,user2:pass2")
     // and default their mail DB to mail-<user>.db beside the control DB.
     accounts: [
-      { user: process.env.MAIL_USER ?? 'demo', pass: process.env.MAIL_PASS ?? 'demo', mailDbPath: process.env.MAIL_DB ?? 'mail.db' },
+      { user: requireValidLogin(process.env.MAIL_USER ?? 'demo', 'MAIL_USER'), pass: process.env.MAIL_PASS ?? 'demo', mailDbPath: process.env.MAIL_DB ?? 'mail.db' },
       ...(process.env.MAIL_ACCOUNTS ?? '')
         .split(',')
         .map((s) => s.trim())
         .filter((s) => s.includes(':'))
-        .map((pair) => ({ user: pair.slice(0, pair.indexOf(':')), pass: pair.slice(pair.indexOf(':') + 1) })),
+        .map((pair) => ({ user: requireValidLogin(pair.slice(0, pair.indexOf(':')), 'MAIL_ACCOUNTS'), pass: pair.slice(pair.indexOf(':') + 1) })),
     ],
     tls: dev,
     ...(dkim !== undefined ? { dkim } : {}),

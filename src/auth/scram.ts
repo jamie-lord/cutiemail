@@ -12,7 +12,7 @@
  * channel binding are later increments; this is the cryptographic heart.
  */
 
-import { pbkdf2Sync, createHmac, createHash } from 'node:crypto';
+import { pbkdf2Sync, createHmac, createHash, timingSafeEqual } from 'node:crypto';
 
 export type ScramHash = 'sha1' | 'sha256';
 
@@ -70,5 +70,7 @@ export function verifyClientProof(
   if (defects.skipProofCheck === true) return true;
   const clientSignature = hmac(stored, authMessage, hash);
   const recoveredClientKey = xor(clientProof, clientSignature);
-  return digest(recoveredClientKey, hash).equals(stored);
+  // Constant-time compare — a credential check must not leak how much of the key matched.
+  const recovered = digest(recoveredClientKey, hash);
+  return recovered.length === stored.length && timingSafeEqual(recovered, stored);
 }

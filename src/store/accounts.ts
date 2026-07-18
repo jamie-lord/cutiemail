@@ -9,7 +9,7 @@
  * setPassword time, to derive the keys.
  */
 
-import { createHmac } from 'node:crypto';
+import { createHmac, timingSafeEqual } from 'node:crypto';
 import { hi, storedKey, verifyClientProof, type ScramHash } from '../auth/scram.ts';
 
 /** ServerKey = HMAC(SaltedPassword, "Server Key"). */
@@ -80,6 +80,7 @@ export class AccountStore {
   verifyPassword(username: string, password: string): boolean {
     const c = this.#creds.get(username);
     if (c === undefined) return false;
-    return storedKey(hi(password, c.salt, c.iterations, c.hash), c.hash).equals(c.storedKey);
+    const computed = storedKey(hi(password, c.salt, c.iterations, c.hash), c.hash);
+    return computed.length === c.storedKey.length && timingSafeEqual(computed, c.storedKey);
   }
 }

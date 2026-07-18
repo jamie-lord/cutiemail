@@ -14,18 +14,22 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { configFromEnv } from './main.ts';
 
-const TLS_KEYS = ['MAIL_TLS_CERT', 'MAIL_TLS_KEY', 'MAIL_HOST', 'MAIL_ALLOW_DEV_CERT'];
+const MAIL_KEYS = Object.keys(process.env).filter((k) => k.startsWith('MAIL_'));
 
-/** Run `fn` with the given env overrides applied, restoring the prior values after. */
+/**
+ * Run `fn` with the MAIL_* env reset to exactly `overrides` (all other MAIL_* cleared),
+ * restoring the caller's environment after — so each case starts from a known-clean config.
+ */
 function withEnv(overrides: Record<string, string | undefined>, fn: () => void): void {
+  const keys = new Set([...MAIL_KEYS, ...Object.keys(process.env).filter((k) => k.startsWith('MAIL_')), ...Object.keys(overrides)]);
   const saved = new Map<string, string | undefined>();
-  for (const k of TLS_KEYS) saved.set(k, process.env[k]);
+  for (const k of keys) saved.set(k, process.env[k]);
   try {
-    for (const k of TLS_KEYS) delete process.env[k];
+    for (const k of keys) delete process.env[k];
     for (const [k, v] of Object.entries(overrides)) if (v !== undefined) process.env[k] = v;
     fn();
   } finally {
-    for (const k of TLS_KEYS) {
+    for (const k of keys) {
       const v = saved.get(k);
       if (v === undefined) delete process.env[k];
       else process.env[k] = v;
@@ -54,6 +58,18 @@ test('MAIL_ALLOW_DEV_CERT=1 is an explicit unsafe opt-in for a public interface'
   withEnv({ MAIL_HOST: '0.0.0.0', MAIL_ALLOW_DEV_CERT: '1' }, () => {
     const cfg = configFromEnv();
     assert.equal(cfg.usingDevCert, true);
+  });
+});
+
+test('an invalid MAIL_USER or MAIL_ACCOUNTS login is rejected at boot (not turned into a bad filename)', () => {
+  for (const bad of ['../evil', 'a/b', 'a:b', '.hidden', 'x'.repeat(65)]) {
+    withEnv({ MAIL_USER: bad }, () => assert.throws(() => configFromEnv(), /invalid account login/, `MAIL_USER=${bad}`));
+  }
+  withEnv({ MAIL_ACCOUNTS: '../evil:pw' }, () => assert.throws(() => configFromEnv(), /invalid account login/));
+  // A valid multi-account list is accepted.
+  withEnv({ MAIL_ACCOUNTS: 'bob:pw1,carol.j:pw2' }, () => {
+    const cfg = configFromEnv();
+    assert.deepEqual(cfg.accounts.map((a) => a.user), ['demo', 'bob', 'carol.j']);
   });
 });
 

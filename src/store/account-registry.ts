@@ -14,7 +14,7 @@
  */
 
 import { DatabaseSync } from 'node:sqlite';
-import { randomBytes } from 'node:crypto';
+import { randomBytes, timingSafeEqual } from 'node:crypto';
 import { deriveCredential } from './accounts.ts';
 import type { ScramHash } from '../auth/scram.ts';
 
@@ -120,6 +120,7 @@ export class AccountRegistry {
     const r = this.#row(login);
     if (r === undefined || r.enabled !== 1) return false;
     const { storedKey } = deriveCredential(password, Buffer.from(r.salt), r.iterations, r.hash as ScramHash);
-    return storedKey.equals(Buffer.from(r.stored_key));
+    const expected = Buffer.from(r.stored_key);
+    return storedKey.length === expected.length && timingSafeEqual(storedKey, expected);
   }
 }
