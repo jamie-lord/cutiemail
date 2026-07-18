@@ -102,6 +102,17 @@ test('NEGATIVE: the newest seal carries cv=fail → cv=fail immediately (§5.2 s
   assert.equal(out.cv, 'fail');
 });
 
+test('NEGATIVE: the newest AMS does not sign From → cv=fail (mirror the DKIM From guard, run-3)', async () => {
+  // ARC-Seal signs only the ARC sets, not From; if the AMS h= omits From then a cv=pass chain
+  // leaves the displayed sender unprotected — a spoof could ride the ARC rescue past a
+  // p=reject DMARC failure. The AMS must sign From, exactly as the inbound DKIM path requires.
+  const sg = makeSigner('forwarder.example', 'arc1', 'rsa');
+  const hop = addArcSet(BASE_HEADERS, BODY, sg, 1, 'none', 'dmarc=pass', [], 'to:subject:date'); // From omitted
+  const raw = rawOf([...hop.lines, ...BASE_HEADERS], BODY);
+  const out = await verifyArc(raw, resolverFor(sg));
+  assert.equal(out.cv, 'fail', 'an AMS that does not sign From must not yield cv=pass');
+});
+
 test('NEGATIVE: an incomplete set (AMS missing) → cv=fail (§5.2 step 3.A)', async () => {
   const sg = makeSigner('forwarder.example', 'arc1', 'rsa');
   const hop = addArcSet(BASE_HEADERS, BODY, sg, 1, 'none', 'dmarc=pass', []);

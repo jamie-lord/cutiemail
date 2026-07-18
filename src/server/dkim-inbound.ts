@@ -135,6 +135,10 @@ async function verifyOneSignature(rawValue: string, headers: ReturnType<typeof p
   const headerCanon: HeaderCanon = (sig.tags.get('c') ?? '').split('/')[0] === 'relaxed' ? 'relaxed' : 'simple';
   const bodyCanon = bodyCanonOf(sig);
   const algo = hashAlgoOf(sig);
+  // RFC 8301: rsa-sha1 (and any sha1 body hash) MUST be treated as a verification failure.
+  // SHA-1 is broken — chosen-prefix collisions are practical ("SHA-1 is a Shambles", 2020) —
+  // so a sha1 DKIM must never yield a pass that then flows into DMARC alignment (audit run-3).
+  if (algo === 'sha1') return { verdict: 'fail', domain: sig.domain };
   const lTag = sig.tags.get('l');
   const lengthLimit = lTag !== undefined && /^\d+$/.test(lTag) ? Number(lTag) : undefined;
 
@@ -178,7 +182,7 @@ async function verifyOneSignature(rawValue: string, headers: ReturnType<typeof p
       ok = verifyEd25519(input, sig.signature, importEd25519PublicKey(Buffer.from(keyRecord.publicKey, 'base64')));
     } else {
       const publicKey = createPublicKey({ key: Buffer.from(keyRecord.publicKey, 'base64'), format: 'der', type: 'spki' });
-      ok = verifySignature(input, sig.signature, publicKey, algo === 'sha1' ? 'RSA-SHA1' : 'RSA-SHA256');
+      ok = verifySignature(input, sig.signature, publicKey, 'RSA-SHA256'); // rsa-sha1 rejected above (RFC 8301)
     }
   } catch {
     return { verdict: 'permerror', domain: sig.domain };

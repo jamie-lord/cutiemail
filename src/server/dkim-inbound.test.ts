@@ -33,6 +33,10 @@ function signedMessage(): { message: Buffer; publicKeyDer: string } {
 
 const keyRecord = (der: string): Buffer => Buffer.from(`v=DKIM1; k=rsa; p=${der}`, 'latin1');
 
+// A shared RSA keypair for the algorithm-downgrade test (below), so both the sha1 and the
+// sha256 signature are made with the SAME key the resolver returns.
+const signKeys = generateKeyPairSync('rsa', { modulusLength: 2048 });
+
 test('a valid DKIM signature verifies as pass', async () => {
   const { message, publicKeyDer } = signedMessage();
   const out = await verifyDkim(message, async () => keyRecord(publicKeyDer));
@@ -64,6 +68,31 @@ test('a missing key record is a permerror; a DNS error is a temperror', async ()
     ).verdict,
     'temperror',
   );
+});
+
+test('RFC 8301: a valid rsa-sha1 DKIM signature is rejected (SHA-1 is broken), sha256 passes', async () => {
+  const { createSign } = await import('node:crypto');
+  const { buildSigningInput } = await import('../crypto/dkim-verify.ts');
+  // Build a genuinely VALID signature over the message, differing only in the hash algorithm,
+  // so the test proves the algorithm is what's rejected — not a malformed signature.
+  const build = (algo: 'sha1' | 'sha256'): Buffer => {
+    const { privateKey } = signKeys;
+    const body = Buffer.from('Hello world\r\n', 'latin1');
+    const bh = computeBodyHash(body, 'relaxed', algo);
+    const sigValue = `v=1; a=rsa-${algo}; c=relaxed/relaxed; d=example.com; s=sel; h=from; bh=${bh}; b=`;
+    const input = buildSigningInput([{ name: 'From', value: 'a@example.com' }], sigValue, 'relaxed');
+    const s = createSign(algo === 'sha1' ? 'RSA-SHA1' : 'RSA-SHA256');
+    s.update(input);
+    s.end();
+    const b = s.sign(privateKey).toString('base64');
+    return Buffer.from(`DKIM-Signature: ${sigValue}${b}\r\nFrom: a@example.com\r\nSubject: t\r\n\r\nHello world\r\n`, 'latin1');
+  };
+  const der = signKeys.publicKey.export({ type: 'spki', format: 'der' }).toString('base64');
+  // rsa-sha1 must fail even though the signature is cryptographically valid for the key.
+  assert.equal((await verifyDkim(build('sha1'), async () => keyRecord(der))).verdict, 'fail', 'rsa-sha1 rejected');
+  // Negative control: the identical construction with rsa-sha256 passes (the rejection is
+  // specific to sha1, and the test harness genuinely produces a verifiable signature).
+  assert.equal((await verifyDkim(build('sha256'), async () => keyRecord(der))).verdict, 'pass', 'sha256 still verifies');
 });
 
 test('an unsigned message is "none"', async () => {

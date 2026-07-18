@@ -109,6 +109,12 @@ async function verifyNewestAms(
   const s = tagValue(ams, 's');
   if (bh === undefined || b === undefined || h === undefined || d === undefined || s === undefined) return false;
 
+  // The AMS must sign From — mirror the DKIM path (dkim-inbound rejects a From-omitting
+  // signature). ARC-Seal covers only the ARC header sets, not From, so an AMS whose h= omits
+  // From would let a cv=pass chain carry an unprotected (spoofable) sender that the ARC rescue
+  // then trusts past a p=reject DMARC failure (audit run-3 hardening).
+  if (!h.split(':').some((n) => n.trim().toLowerCase() === 'from')) return false;
+
   const c = tagValue(ams, 'c') ?? 'simple/simple';
   const headerCanon = c.split('/')[0] === 'relaxed' ? 'relaxed' : 'simple';
   const bodyCanon = c.split('/')[1] === 'relaxed' ? 'relaxed' : 'simple';

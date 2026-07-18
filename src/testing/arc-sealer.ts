@@ -73,12 +73,13 @@ export function addArcSet(
   cv: 'none' | 'pass' | 'fail',
   aarResult: string,
   priorSets: readonly ArcSetHeaders[],
+  hList: string = H_LIST, // override the AMS h= list (e.g. to omit From) for negative tests
 ): { lines: HeaderLine[]; set: ArcSetHeaders } {
   const aar = `i=${instance}; validator.example; ${aarResult}`;
 
   const bh = computeBodyHash(Buffer.from(body, 'latin1'), 'relaxed', 'sha256');
-  const amsBase = `i=${instance}; a=${algTag(sg.alg)}; c=relaxed/relaxed; d=${sg.d}; s=${sg.s}; h=${H_LIST}; bh=${bh}; b=`;
-  const signedFields = H_LIST.split(':').map((n) => {
+  const amsBase = `i=${instance}; a=${algTag(sg.alg)}; c=relaxed/relaxed; d=${sg.d}; s=${sg.s}; h=${hList}; bh=${bh}; b=`;
+  const signedFields = hList.split(':').map((n) => {
     const h = headers.find((x) => x.name.toLowerCase() === n)!;
     return { name: h.name, value: h.value };
   });
