@@ -185,6 +185,19 @@ node src/main.ts verify /backups/mail-$(date +%F)   # a backup you haven't verif
 boundary: SQLite pages carry no checksums, so a bit flipped inside a message blob on disk
 is invisible to it — media-level assurance is the filesystem's job (ZFS/btrfs/restic).
 
+**"Did my mail actually leave?"** — the outbound queue and the dead-letter store (messages
+delivery permanently gave up on, retained instead of dropped) are inspectable:
+
+```sh
+node src/main.ts queue list --db /var/lib/mailserver/control.db
+node src/main.ts dead-letter list --db /var/lib/mailserver/control.db
+node src/main.ts dead-letter show <id> --raw > message.eml   # the retained bytes, replayable
+node src/main.ts dead-letter requeue <id>                    # try delivery again
+```
+
+A permanently-failed message always does two things: the sender gets a `multipart/report`
+bounce, and the bytes land in the dead-letter store until an explicit `purge`.
+
 What the running server does, end to end: it **receives** on 25 (stamping a
 `Received:` trace line, rejecting oversized messages and mail loops), authenticates
 every sender (**SPF + DKIM + DMARC**, aligned over the full Public Suffix List, plus

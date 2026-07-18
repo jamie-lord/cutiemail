@@ -14,6 +14,7 @@ import { runSetup } from './setup.ts';
 import { runDoctor } from './doctor.ts';
 import { runAccount } from './account.ts';
 import { runBackup, runVerify } from './backup.ts';
+import { runQueue, runDeadLetter } from './queue-cli.ts';
 
 export interface OpsIo {
   out(line: string): void;
@@ -29,6 +30,8 @@ const USAGE = [
   '  account  add/list accounts, change passwords, enable/disable — no passwords in env',
   '  backup   consistent online snapshot of every database into a directory',
   '  verify   integrity + store-invariant check of database files (read-only)',
+  '  queue    what is waiting to go out, and when it retries',
+  '  dead-letter  inspect / requeue / purge messages delivery gave up on',
   '  help     this text',
 ].join('\n');
 
@@ -45,6 +48,10 @@ export async function runOps(argv: readonly string[], io: OpsIo, env: Record<str
       return runBackup(rest, io, env);
     case 'verify':
       return runVerify(rest, io);
+    case 'queue':
+      return runQueue(rest, io, env);
+    case 'dead-letter':
+      return runDeadLetter(rest, io, env);
     case 'help':
     case '--help':
     case '-h':

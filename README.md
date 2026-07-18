@@ -42,19 +42,23 @@ variable, and the SQLite files are created on first run (no schema step):
 | `MAIL_TRUSTED_ARC_SEALERS` | unset | comma-separated forwarder domains whose valid ARC chain may rescue a DMARC failure to the inbox |
 | `MAIL_MAX_SIZE` | `26214400` | max accepted message size in octets (25 MiB) |
 
-The same entry point is the operator toolbox: `node src/main.ts setup` generates a DKIM key
-(if none exists) and prints the exact DNS records to publish — MX, SPF, DKIM, DMARC, and the
-reverse-DNS instruction — as annotated zone lines derived from the server's own configuration.
-`node src/main.ts doctor` then checks the deployment against live DNS and the network — MX,
-FCrDNS, SPF (evaluated by the server's own RFC 7208 evaluator), the published DKIM key matching
-the local private key, DMARC, certificate validity/expiry, and an outbound port-25 probe — so
-"it worked when I set it up" can be re-verified any time drift is suspected. And
-`node src/main.ts account add|set-password|enable|disable|list` manages accounts in the control
-database directly — passwords prompted (or piped), never in argv or the environment; the running
-daemon picks changes up immediately, no restart (ADR 0012). `node src/main.ts backup <dir>` takes
-a transactionally consistent snapshot of every database while the daemon runs, and
-`node src/main.ts verify` proves a backup (or the live files) passes integrity *and* the store's
-own invariants, read-only.
+The same entry point is the operator toolbox (`node src/main.ts <command>`):
+
+- **`setup`** — generates a DKIM key (if none exists) and prints the exact DNS records to
+  publish — MX, SPF, DKIM, DMARC, reverse-DNS — as annotated zone lines derived from the
+  server's own configuration.
+- **`doctor`** — re-runnable drift check against live DNS and the network: MX, FCrDNS, SPF
+  (evaluated by the server's own RFC 7208 evaluator), the published DKIM key matching the
+  local private key, DMARC, certificate validity/expiry, and an outbound port-25 probe.
+- **`account add|set-password|enable|disable|list`** — accounts managed in the control
+  database; passwords prompted (or piped), never in argv or the environment, and the running
+  daemon picks changes up with no restart (ADR 0012).
+- **`backup <dir>` / `verify`** — a transactionally consistent snapshot of every database
+  while the daemon runs, and a read-only proof that a backup (or the live files) passes
+  integrity plus the store's own invariants.
+- **`queue list` / `dead-letter list|show|requeue|purge`** — what's waiting to go out and
+  what delivery permanently gave up on, inspectable down to the retained bytes (`show --raw`
+  writes a replayable `.eml`), re-queueable, never silently dropped.
 
 Embedding it instead of running the daemon? `startServer(config)` takes a `MailServerConfig`
 object directly, with the same knobs plus injection seams (DNS resolvers, the auth throttle, the
