@@ -25,6 +25,17 @@ test('the address survives when a comment precedes/follows it (the DMARC/AR use)
   assert.ok(stripComments('(spoof <x@evil.com>) <victim@bank.com>').includes('victim@bank.com'));
 });
 
+test('quote-aware: a ( inside a quoted-string is literal, and quoted-strings are preserved', () => {
+  // The run-4 regression guard: a `(` inside a quoted display-name must NOT be treated as a
+  // comment (which would unbalance the closing `"`). Quoted-strings are preserved verbatim so
+  // the caller can strip/interpret them itself with correct boundaries.
+  assert.equal(stripComments('"a(b)c" x'), '"a(b)c" x'); // the ( ) inside quotes are qtext, kept
+  assert.equal(stripComments('"<a@attacker.com>(" <victim@bank.com>'), '"<a@attacker.com>(" <victim@bank.com>');
+  assert.equal(stripComments('"(" <victim@bank.com>'), '"(" <victim@bank.com>');
+  assert.equal(stripComments('"a\\"b" y'), '"a\\"b" y'); // an escaped quote does not end the string
+  assert.equal(stripComments('(real comment) "kept (paren)"'), '  "kept (paren)"'); // comment→space + the literal space, quote kept
+});
+
 test('a stray unmatched ) outside a comment is kept; an unterminated ( is fail-closed', () => {
   assert.equal(stripComments('a)b'), 'a)b'); // lone close paren is literal
   // Unbalanced trailing "(" → treated as a comment to end-of-value and dropped. Malformed

@@ -50,6 +50,23 @@ test('DMARC aligns on the DISPLAYED From address, not a decoy hidden in a quoted
   assert.equal(out.verdict, 'fail', "the attacker's evil.com auth is not aligned with bank.com — no forged pass");
 });
 
+test('a ( planted inside the quoted display-name does not reopen the From-domain spoof (run-4 regression)', async () => {
+  // The run-3 CFWS DoS fix stripped comments BEFORE quoted-strings, so a `(` inside the quoted
+  // display-name was mis-read as a comment — unbalancing the closing `"` and re-exposing the
+  // attacker angle-addr. Both variants must align on the DISPLAYED bank.com.
+  const rec = dmarcAt({ '_dmarc.attacker.com': 'v=DMARC1; p=none', '_dmarc.bank.com': 'v=DMARC1; p=reject' });
+  // Variant A: decoy angle-addr + a stray ( inside the quoted display-name.
+  const a = Buffer.from('From: "<a@attacker.com>(" <victim@bank.com>\r\nSubject: hi\r\n\r\nbody\r\n', 'latin1');
+  const outA = await checkDmarc({ rawMessage: a, dkimPassedDomains: ['attacker.com'], spfResult: 'pass', spfDomain: 'attacker.com', resolveTxt: rec });
+  assert.equal(outA.fromDomain, 'bank.com', 'aligns on displayed bank.com, not the quoted decoy attacker.com');
+  assert.equal(outA.verdict, 'fail');
+  // Variant B (no attacker infra): a bare "(" quoted display-name used to yield null → p=reject skipped.
+  const b = Buffer.from('From: "(" <victim@bank.com>\r\nSubject: hi\r\n\r\nbody\r\n', 'latin1');
+  const outB = await checkDmarc({ rawMessage: b, dkimPassedDomains: [], spfResult: 'none', spfDomain: '', resolveTxt: rec });
+  assert.equal(outB.fromDomain, 'bank.com', 'the From domain is still extracted (was null) so p=reject IS fetched');
+  assert.equal(outB.policy, 'reject', "bank.com's p=reject is enforced, not skipped");
+});
+
 test('the same From-spoof hidden in a COMMENT is also defeated', async () => {
   const rec = dmarcAt({ '_dmarc.bank.com': 'v=DMARC1; p=reject' });
   const spoof = Buffer.from('From: (x <a@evil.com>) victim@bank.com\r\nSubject: hi\r\n\r\nbody\r\n', 'latin1');
