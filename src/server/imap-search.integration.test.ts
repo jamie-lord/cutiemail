@@ -97,6 +97,11 @@ test('SEARCH rejects an over-long key list instead of doing O(keys×messages) wo
     s.send(`a4 SEARCH ${Array.from({ length: 65 }, () => 'TEXT a').join(' ')}\r\n`);
     await s.ready('a4 BAD'); // ready() throws on timeout, so reaching here proves the rejection
     assert.match(s.snapshot().slice(s.snapshot().lastIndexOf('a4 ')), /^a4 BAD/m);
+    // The cap must also count through OR/NOT recursion: a deeply nested single top-level key
+    // with hundreds of TEXT leaves would otherwise bypass the top-level count (run-6).
+    s.send(`a5 SEARCH ${Array.from({ length: 300 }, () => 'OR TEXT a').join(' ')} TEXT a\r\n`);
+    await s.ready('a5 BAD');
+    assert.match(s.snapshot().slice(s.snapshot().lastIndexOf('a5 ')), /^a5 BAD/m);
   } finally {
     sock.destroy();
     await server.close();

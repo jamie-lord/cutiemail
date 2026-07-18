@@ -152,7 +152,11 @@ export class RelayLoop {
       // fails the queue store is unwritable and the row stays due until it recovers.
       this.#log(`queue ${entry.id}: settle failed — ${String(e)}; deferring to avoid re-send/re-bounce`);
       try {
-        this.#queue.reschedule(entry.id, entry.recipients, attempts, now + SETTLE_FAILURE_BACKOFF_MS);
+        // Defer only the recipients that neither delivered nor permanently failed — re-sending to
+        // an already-delivered recipient (or re-attempting a 5yz one) is pointless. If they all
+        // settled (retryLater empty) there is nothing to carry: leave one recipient so the row
+        // persists for the operator rather than vanishing on the fault.
+        this.#queue.reschedule(entry.id, retryLater.length > 0 ? retryLater : entry.recipients, attempts, now + SETTLE_FAILURE_BACKOFF_MS);
       } catch {
         /* the queue store is unwritable; the row remains due until it recovers */
       }

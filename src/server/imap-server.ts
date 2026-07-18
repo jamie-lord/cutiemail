@@ -116,6 +116,7 @@ const MAX_APPEND_LITERAL = 26_214_400; // 25 MiB, matching the SMTP SIZE default
 /** Inactivity autologout (RFC 9051 §5.4 requires a timer of at least 30 minutes). */
 const AUTOLOGOUT_MS = 1_800_000;
 const MAX_SEARCH_KEYS = 64; // top-level SEARCH keys; a real query uses a handful (DoS bound)
+const MAX_SEARCH_NODES = 256; // TOTAL keys across the tree incl. nested OR/NOT (recursion DoS bound)
 const MAX_CONNECTIONS = 512; // concurrent-connection ceiling per listener (pre-auth DoS bound)
 
 /** Special-use attributes by conventional folder name (RFC 6154 / 9051 §7.3.1). */
@@ -259,7 +260,14 @@ function parseSearchKeys(tokens: readonly string[], ctx: SearchContext): SearchK
   if ((tokens[0] ?? '').toUpperCase() === 'CHARSET') i = 2;
 
   const flag = (f: string, present: boolean): SearchKey => ({ type: 'flag', flag: f, present });
+  // Total parsed nodes across the WHOLE key tree, incremented on every (recursive) parseOne.
+  // The top-level MAX_SEARCH_KEYS cap alone is bypassable: OR/NOT recurse and push nothing onto
+  // keys[], so a deeply nested `OR TEXT a (OR TEXT b (...))` is a single top-level key with
+  // thousands of TEXT leaves — the same O(keys×messages×size) freeze the cap was meant to stop
+  // (audit run-6, an incomplete run-5 fix). Bound the total node count too.
+  let nodeCount = 0;
   const parseOne = (): SearchKey | null => {
+    if (++nodeCount > MAX_SEARCH_NODES) return null;
     const raw = tokens[i++];
     if (raw === undefined) return null;
     const k = raw.toUpperCase();
