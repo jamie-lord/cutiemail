@@ -33,6 +33,7 @@ import { buildBounceMessage } from './server/bounce.ts';
 import { verifyDkim, type DkimKeyResolver } from './server/dkim-inbound.ts';
 import { checkSpf, type SpfResolvers } from './auth/spf-check.ts';
 import { checkDmarc } from './server/dmarc-inbound.ts';
+import { verifyArc } from './server/arc-inbound.ts';
 import { resolveTxt, resolve4, resolve6, resolveMx } from 'node:dns/promises';
 import { dkimSign, makeSigner } from './server/dkim-signer.ts';
 import { prependReceived, protocolFor, stripOwnAuthResults } from './server/received.ts';
@@ -86,6 +87,17 @@ export interface MailServerConfig {
    * tests inject a fixed value to make quarantine deterministic.
    */
   readonly dmarcPctSampler?: () => number;
+  /**
+   * Domains whose ARC seals we trust (RFC 8617 §5.2: acting on ARC is LOCAL POLICY). When a
+   * message would be junked for a DMARC failure but carries a valid ARC chain (cv=pass) whose
+   * OUTERMOST sealer — the intermediary that forwarded it to us — is listed here, it is
+   * delivered to the INBOX instead. Default empty: ARC is recorded in Authentication-Results
+   * but never overrides DMARC, so behaviour is unchanged until an operator names a forwarder
+   * (e.g. a mailing list) they trust. Trusting the outermost sealer only is the correct
+   * boundary — an attacker cannot forge a seal under a trusted domain's key, and their own
+   * outer seal would not be trusted. Compared case-insensitively.
+   */
+  readonly trustedArcSealers?: readonly string[];
 }
 
 /** Real-DNS resolvers for SPF: a missing record is [] (→ none), a real error throws (→ temperror). */
@@ -205,6 +217,8 @@ export async function startServer(cfg: MailServerConfig): Promise<RunningServer>
   // and a Received trace line (RFC 5321 §4.4 / RFC 8601), and store it.
   const dkimResolver: DkimKeyResolver = cfg.dkimKeyResolver ?? resolveDkimKeyViaDns;
   const spfResolvers: SpfResolvers = cfg.spfResolvers ?? dnsSpfResolvers;
+  // Forwarders whose ARC seals we trust, lower-cased for case-insensitive comparison.
+  const trustedArcSealers = new Set((cfg.trustedArcSealers ?? []).map((d) => d.toLowerCase()));
   const inbound = await SmtpReceiver.start(async (m) => {
     const receivedAt = new Date();
     // Verify DKIM and SPF (informational — never a rejection; §6.1 leniency preserved).
@@ -241,13 +255,26 @@ export async function startServer(cfg: MailServerConfig): Promise<RunningServer>
     } catch {
       dmarc = { verdict: 'temperror', policy: null, fromDomain: null, pct: 100 };
     }
+    // ARC (RFC 8617 §5.2): validate any Authenticated Received Chain. A cv=pass means the
+    // chain is intact and every seal + the newest message signature verify — but that only
+    // says a chain exists, not that we should trust it; the trust decision is applied below
+    // against `trustedArcSealers`. Reuses the DKIM key resolver (ARC keys are DKIM-format).
+    let arc: Awaited<ReturnType<typeof verifyArc>> = { cv: 'none', instances: 0, sealDomains: [], outermostSealer: null, anomalies: [] };
+    try {
+      arc = await verifyArc(m.data, dkimResolver);
+    } catch {
+      arc = { cv: 'fail', instances: 0, sealDomains: [], outermostSealer: null, anomalies: ['arc-exception'] };
+    }
     // Only a hostname-shaped d= is echoed into the header (defense in depth — the DKIM
     // parser already constrains it, but the AR header must never carry AR delimiters).
     const dkimDomain = dkim.domain !== null && /^[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?$/.test(dkim.domain) ? dkim.domain : null;
     const authResults =
       `Authentication-Results: ${cfg.domain}; dkim=${dkim.verdict}${dkimDomain !== null ? ` header.d=${dkimDomain}` : ''}` +
       `; spf=${spf}${spfDomain !== '' ? ` smtp.mailfrom=${spfDomain}` : ''}` +
-      `; dmarc=${dmarc.verdict}${dmarc.policy !== null ? ` (p=${dmarc.policy})` : ''}`;
+      `; dmarc=${dmarc.verdict}${dmarc.policy !== null ? ` (p=${dmarc.policy})` : ''}` +
+      // arc's cv is a fixed enum (none/pass/fail) — safe to splice; the sealer domain is
+      // NOT echoed (it is attacker-controlled and would need AR-delimiter sanitisation).
+      `; arc=${arc.cv}`;
     // Strip any forged Authentication-Results claiming our authserv-id before adding
     // our own (RFC 8601 §5) — otherwise a client cannot tell ours from the attacker's.
     const cleaned = stripOwnAuthResults(m.data, cfg.domain);
@@ -266,8 +293,15 @@ export async function startServer(cfg: MailServerConfig): Promise<RunningServer>
     // (we don't do ARC, so rejecting would lose legitimately-forwarded mail; Junk is
     // recoverable). p=none stays informational. `pct` gates the share of failures acted on.
     const enforce = dmarc.verdict === 'fail' && (dmarc.policy === 'quarantine' || dmarc.policy === 'reject') && dmarcSample() < dmarc.pct;
-    const targetMailbox = enforce ? 'Junk' : 'INBOX';
-    if (enforce) log(`DMARC ${dmarc.policy} failure (from ${dmarc.fromDomain ?? '?'}) filed to Junk`);
+    // ARC override (RFC 8617): a DMARC failure that would be junked is instead delivered to the
+    // INBOX when a valid ARC chain (cv=pass) was sealed by a forwarder we trust — the case ARC
+    // exists for (a mailing list rewrites the message, breaking the author's DKIM/SPF, but seals
+    // that it authenticated cleanly on entry). We trust only the OUTERMOST sealer: the hop that
+    // handed the message to us. An empty trust set means this never fires.
+    const arcRescue = enforce && arc.cv === 'pass' && arc.outermostSealer !== null && trustedArcSealers.has(arc.outermostSealer.toLowerCase());
+    const targetMailbox = enforce && !arcRescue ? 'Junk' : 'INBOX';
+    if (arcRescue) log(`DMARC ${dmarc.policy} failure (from ${dmarc.fromDomain ?? '?'}) rescued to INBOX by trusted ARC seal ${arc.outermostSealer}`);
+    else if (enforce) log(`DMARC ${dmarc.policy} failure (from ${dmarc.fromDomain ?? '?'}) filed to Junk`);
     // INTERNALDATE = the moment we accepted the message (RFC 9051 §2.3.3), the same
     // instant stamped into the Received trace line above. Deliver a copy to each of our
     // local recipients' mailbox (ADR 0009).
