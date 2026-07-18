@@ -365,9 +365,9 @@ These are deliberate, recorded, and roughly in priority order for closing:
   IPv6 forward-confirmed rDNS.
 - **Hardened at the protocol layer, not fully operationally.** The wire surface has been
   adversarially audited — SMTP-smuggling defence, DoS caps (recipient count, DATA
-  scan, reply framing), auth-header spoofing and DMARC display-spoof fixes, an MX
-  SSRF guard, a bounded TLS handshake — and the auth paths carry a **per-IP brute-force
-  throttle** (submission + IMAP; over the threshold, auth is refused without checking the
-  password). But there is still *no spam filtering and no fail2ban-style network banning*,
+  scan, reply framing, a per-connection command-error limit that drops a peer streaming
+  junk), auth-header spoofing and DMARC display-spoof fixes, an MX SSRF guard, a bounded
+  TLS handshake — and the auth paths carry a **per-IP brute-force throttle** (submission +
+  IMAP; over the threshold, auth is refused without checking the password). But there is still *no spam filtering and no fail2ban-style network banning*,
   and it has not been through a third-party security review. Don't put anything you care
   about behind it yet.

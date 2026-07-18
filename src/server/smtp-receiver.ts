@@ -83,6 +83,13 @@ const IDLE_TIMEOUT_MS = 300_000;
 /** Max recipients per transaction (RFC 5321 §4.5.3.1.10 sets the floor at 100). */
 const MAX_RECIPIENTS = 100;
 const MAX_CONNECTIONS = 512; // concurrent-connection ceiling per listener (pre-auth DoS bound)
+// Client protocol errors tolerated before we drop the connection (Postfix's
+// smtpd_hard_error_limit is 20). The idle timer resets on every received chunk, so a
+// peer that streams junk commands — unknown verbs, out-of-order commands, recipient
+// probing — holds its connection slot indefinitely and is otherwise bounded only by
+// MAX_CONNECTIONS. Counting errors and disconnecting reclaims the slot from an abusive
+// peer while leaving well-behaved clients (which essentially never err) untouched.
+const MAX_HARD_ERRORS = 20;
 
 function unstuff(payload: Buffer): Buffer {
   const out: Buffer[] = [];
@@ -147,6 +154,8 @@ class Connection {
   #authed = false;
   #awaitingAuth = false; // AUTH PLAIN issued without an initial response; next line is the SASL data
   #processing: Promise<void> = Promise.resolve(); // serializes async #onData over chunks
+  #hardErrors = 0; // cumulative client protocol errors this session (see MAX_HARD_ERRORS)
+  #ended = false; // set once we have closed the connection ourselves; stops the #onData loop
   #helo = '';
   readonly #remoteAddress: string;
   readonly #handler: DeliveryHandler;
@@ -193,9 +202,29 @@ class Connection {
     this.#active.write(Buffer.from(`${line}\r\n`, 'latin1'));
   }
 
+  /**
+   * Emit a client-error reply and count it toward the hard-error limit. Returns true
+   * once the peer has exceeded MAX_HARD_ERRORS and the connection has been closed — the
+   * #onData loop then stops via its `#ended` guard. Only unambiguous client faults are
+   * routed through here (unknown/out-of-order/malformed commands, recipient probing);
+   * our own transient failures (451) and normal policy limits (SIZE, auth-required) are
+   * not counted, and repeated AUTH failures are handled separately by the per-IP throttle.
+   */
+  #reject(reply: string): boolean {
+    this.#write(reply);
+    if (++this.#hardErrors < MAX_HARD_ERRORS) return false;
+    this.#write('421 4.7.0 too many protocol errors, closing connection');
+    this.#active.end();
+    this.#ended = true;
+    return true;
+  }
+
   async #onData(chunk: Buffer): Promise<void> {
     this.#buf = Buffer.concat([this.#buf, Buffer.from(chunk)]);
     for (;;) {
+      // We closed the connection ourselves (e.g. hard-error limit) — stop processing
+      // anything the peer had already pipelined into #buf.
+      if (this.#ended) return;
       if (this.#inData) {
         // Cap the buffered DATA so an unterminated or oversized message cannot
         // grow memory without bound (RFC 1870 SIZE, enforced on actual bytes).
@@ -288,7 +317,7 @@ class Connection {
       // RFC 5321 §4.1.2: a command carrying an ASCII control octet (the CRLF
       // terminator is already stripped) is invalid — reject 501, never execute it.
       if (lineBytes.some((b) => b < 0x20)) {
-        this.#write('501 5.5.2 control character in command');
+        if (this.#reject('501 5.5.2 control character in command')) return;
         continue;
       }
       const verb = line.split(/\s+/)[0]?.toUpperCase() ?? '';
@@ -361,7 +390,7 @@ class Connection {
       case 'RCPT':
         // §4.1.4: RCPT with no reverse-path buffer is out of order — reject 503.
         if (!this.#inTransaction) {
-          this.#write('503 5.5.1 need MAIL before RCPT');
+          this.#reject('503 5.5.1 need MAIL before RCPT');
           break;
         }
         {
@@ -370,7 +399,9 @@ class Connection {
           // misdeliver mail for unknown users, and become a backscatter source for
           // foreign domains we can't actually relay to.
           if (this.#opts.acceptRecipient !== undefined && !this.#opts.acceptRecipient(rcpt)) {
-            this.#write('550 5.7.1 relaying denied — recipient not hosted here');
+            // Rejected recipients count toward the hard-error limit: an unauthenticated
+            // peer spraying RCPTs to enumerate/relay-probe is exactly the abuse to bound.
+            this.#reject('550 5.7.1 relaying denied — recipient not hosted here');
             break;
           }
           // Cap recipients per transaction (RFC 5321 §4.5.3.1.10 permits ≥100). Without
@@ -419,7 +450,7 @@ class Connection {
         this.#active.end();
         break;
       default:
-        this.#write('500 5.5.2 command not recognized');
+        this.#reject('500 5.5.2 command not recognized');
     }
   }
 
