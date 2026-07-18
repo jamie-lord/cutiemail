@@ -82,3 +82,31 @@ test('stripOwnAuthResults strips a forged AR whose authserv-id is folded onto a 
   const out = strip('Authentication-Results:\r\n us.example; dkim=pass\r\nSubject: x\r\n\r\nbody\r\n');
   assert.doesNotMatch(out, /dkim=pass/, 'a folded authserv-id does not evade the strip');
 });
+
+test('stripOwnAuthResults strips a forgery whose authserv-id hides behind a CFWS comment or quotes', () => {
+  // RFC 8601/5322: these all resolve to `us.example` for a compliant consumer, but the old
+  // "first non-space/; token" match saw the comment/quotes and KEPT the forged header.
+  for (const forged of [
+    'Authentication-Results: (x) us.example; dkim=pass header.d=bank.test',
+    'Authentication-Results: us.example (comment); dkim=pass header.d=bank.test',
+    'Authentication-Results: (a)us.example(b); dkim=pass header.d=bank.test',
+    'Authentication-Results: "us.example"; dkim=pass header.d=bank.test',
+    'Authentication-Results: (outer (nested) ) us.example; dkim=pass header.d=bank.test',
+    'Authentication-Results: us.example.; dkim=pass header.d=bank.test', // trailing FQDN dot
+  ]) {
+    const out = strip(`${forged}\r\nSubject: x\r\n\r\nbody\r\n`);
+    assert.doesNotMatch(out, /dkim=pass/, `must strip: ${forged}`);
+  }
+});
+
+test('stripOwnAuthResults still keeps a genuinely different authserv-id (no over-stripping)', () => {
+  // Negative control: a comment/quotes around a DIFFERENT id must NOT be mistaken for ours.
+  for (const legit of [
+    'Authentication-Results: (x) upstream.net; spf=pass',
+    'Authentication-Results: "upstream.net"; spf=pass',
+    'Authentication-Results: us.example.attacker.test; dkim=pass', // a different FQDN
+  ]) {
+    const out = strip(`${legit}\r\nSubject: x\r\n\r\nbody\r\n`);
+    assert.match(out, /spf=pass|us\.example\.attacker\.test/, `must keep: ${legit}`);
+  }
+});
