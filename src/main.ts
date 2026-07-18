@@ -496,11 +496,27 @@ function posIntEnv(raw: string | undefined, fallback: number): number {
   return Number.isInteger(n) && n > 0 ? n : fallback;
 }
 
-/** Build a config from environment variables, with dev-friendly defaults. */
-function configFromEnv(): MailServerConfig & { usingDevCert: boolean } {
+/** Whether `host` is a loopback bind address (safe to serve the dev cert on). */
+function isLoopbackHost(host: string): boolean {
+  return host === '127.0.0.1' || host === '::1' || host === 'localhost';
+}
+
+/** Build a config from environment variables, with dev-friendly defaults. Exported for tests. */
+export function configFromEnv(): MailServerConfig & { usingDevCert: boolean } {
   const certPath = process.env.MAIL_TLS_CERT;
   const keyPath = process.env.MAIL_TLS_KEY;
   const usingDevCert = certPath === undefined || keyPath === undefined;
+  const host = process.env.MAIL_HOST ?? '127.0.0.1';
+  // Fail closed (audit run-1, finding 3): the bundled dev certificate's private key is
+  // committed in the repo (src/testing/tls-test-cert.ts), so serving it on a non-loopback
+  // interface lets a trivial MITM present the same cert and capture AUTH credentials on
+  // 587/993. Refuse to boot rather than silently serve it publicly. MAIL_ALLOW_DEV_CERT=1
+  // is an explicit, unsafe opt-in for a throwaway local test on a public interface.
+  if (usingDevCert && !isLoopbackHost(host) && process.env.MAIL_ALLOW_DEV_CERT !== '1') {
+    throw new Error(
+      `refusing to bind ${host} with the bundled self-signed DEV certificate — its private key is public, so serving it on a public interface exposes account credentials. Set MAIL_TLS_CERT and MAIL_TLS_KEY to a real certificate. (For a deliberate throwaway test, set MAIL_ALLOW_DEV_CERT=1 — never in production.)`,
+    );
+  }
   // The bundled dev certificate is imported lazily only when no real cert is given.
   const dev = usingDevCert ? loadDevCert() : { cert: readFileSync(certPath!, 'utf8'), key: readFileSync(keyPath!, 'utf8') };
   // DKIM signing is enabled only when both a key file and a selector are given.
@@ -512,7 +528,7 @@ function configFromEnv(): MailServerConfig & { usingDevCert: boolean } {
     // database, so an existing single-account deploy migrates with no data loss: its
     // mail.db becomes that user's mail store, and the control DB is a new file alongside.
     dbPath: process.env.MAIL_CONTROL_DB ?? 'control.db',
-    host: process.env.MAIL_HOST ?? '127.0.0.1',
+    host,
     smtpPort: posIntEnv(process.env.MAIL_SMTP_PORT, 2525),
     submissionPort: posIntEnv(process.env.MAIL_SUBMISSION_PORT, 5587),
     imapPort: posIntEnv(process.env.MAIL_IMAP_PORT, 5993),

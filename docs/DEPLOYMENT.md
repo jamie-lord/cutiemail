@@ -289,9 +289,14 @@ In Thunderbird (or any client), add an account for `you@mail.example.com`:
 - **Outgoing — SMTP:** `mail.example.com`, port `587`, STARTTLS, *same* username +
   password (auth required).
 
-If you're using the bundled self-signed dev cert, the client will warn about the
-certificate — fine for a test, but a real Let's Encrypt cert avoids it and is what
-outside senders' opportunistic TLS expects.
+The daemon **refuses to boot** if you bind a non-loopback `MAIL_HOST` without a real
+certificate (`MAIL_TLS_CERT`/`MAIL_TLS_KEY`): the bundled dev cert's private key is
+committed to the repo, so serving it publicly would let anyone MITM your credential
+ports. `deploy/hetzner-up.sh` generates a per-box self-signed cert (a fresh, private
+key) so the box boots; a client still warns about self-signed, and a real Let's Encrypt
+cert avoids the warning and is what outside senders' opportunistic TLS expects.
+(`MAIL_ALLOW_DEV_CERT=1` forces the bundled dev cert onto a public interface — for a
+deliberate throwaway test only, never in production.)
 
 ## What actually happens on send and receive
 

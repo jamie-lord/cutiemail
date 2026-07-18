@@ -57,6 +57,17 @@ rsync -az --delete \
   "$REPO/" "root@$IP:/opt/mailserver/"
 ssh "root@$IP" 'chown -R mail:mail /opt/mailserver'
 
+# Provision a per-box TLS certificate. The daemon REFUSES to serve the bundled dev cert on
+# a public interface (its private key is committed), so we generate a fresh key/cert here.
+# This is self-signed (clients accept the warning); upgrade to Let's Encrypt once DNS points
+# at the box: `certbot certonly --standalone -d $MAIL_DOMAIN` and repoint MAIL_TLS_CERT/KEY.
+echo "generating a per-box TLS certificate (self-signed; upgrade to Let's Encrypt — see note)..."
+ssh "root@$IP" "mkdir -p /var/lib/mailserver/tls && \
+  openssl req -x509 -newkey rsa:2048 -nodes -days 365 \
+    -keyout /var/lib/mailserver/tls/key.pem -out /var/lib/mailserver/tls/cert.pem \
+    -subj '/CN=$MAIL_DOMAIN' -addext 'subjectAltName=DNS:$MAIL_DOMAIN' >/dev/null 2>&1 && \
+  chown -R mail:mail /var/lib/mailserver && chmod 600 /var/lib/mailserver/tls/key.pem"
+
 echo "writing the service unit and starting it..."
 ssh "root@$IP" "cat > /etc/systemd/system/mailserver.service" <<UNIT
 [Unit]
@@ -70,13 +81,22 @@ WorkingDirectory=/opt/mailserver
 ExecStart=/usr/bin/node src/main.ts
 Environment=MAIL_DOMAIN=$MAIL_DOMAIN
 Environment=MAIL_HOST=0.0.0.0
+Environment=MAIL_CONTROL_DB=/var/lib/mailserver/control.db
 Environment=MAIL_DB=/var/lib/mailserver/mail.db
 Environment=MAIL_SMTP_PORT=25
 Environment=MAIL_SUBMISSION_PORT=587
 Environment=MAIL_IMAP_PORT=993
 Environment=MAIL_USER=$MAIL_USER
 Environment=MAIL_PASS=$MAIL_PASS
+Environment=MAIL_TLS_CERT=/var/lib/mailserver/tls/cert.pem
+Environment=MAIL_TLS_KEY=/var/lib/mailserver/tls/key.pem
 AmbientCapabilities=CAP_NET_BIND_SERVICE
+# Defense-in-depth sandboxing for a single-process internet-facing daemon.
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/var/lib/mailserver
 Restart=on-failure
 
 [Install]
@@ -95,7 +115,9 @@ Reverse DNS is already set. Once DNS propagates, email $MAIL_USER@$MAIL_DOMAIN
 from your normal inbox and it should arrive.
 
   watch it land:   ssh root@$IP journalctl -fu mailserver
-  read over IMAP:  IMAPS $MAIL_DOMAIN:993, user '$MAIL_USER' (self-signed cert -> accept the warning)
+  read over IMAP:  IMAPS $MAIL_DOMAIN:993, user '$MAIL_USER' (per-box self-signed cert -> accept
+                   the warning, or upgrade to Let's Encrypt: certbot certonly --standalone
+                   -d $MAIL_DOMAIN, then repoint MAIL_TLS_CERT/MAIL_TLS_KEY at the live cert)
   destroy it all:  SERVER_NAME=$SERVER_NAME $DIR/hetzner-down.sh
 
 Note: outbound relay needs port 25 open OUTBOUND (blocked on new Hetzner

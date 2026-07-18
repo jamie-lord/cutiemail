@@ -37,7 +37,7 @@ variable, and the SQLite files are created on first run (no schema step):
 | `MAIL_ACCOUNTS` | unset | additional accounts, `"user:pass,user2:pass2"` (each gets its own `mail-<user>.db`); create-only, like `MAIL_USER` |
 | `MAIL_CONTROL_DB` | `control.db` | the control database — account registry + outbound queue |
 | `MAIL_DB` | `mail.db` | the **primary** account's mailbox database (`:memory:` for ephemeral) |
-| `MAIL_TLS_CERT` / `MAIL_TLS_KEY` | bundled dev cert | PEM cert/key paths (a self-signed dev cert is used if unset) |
+| `MAIL_TLS_CERT` / `MAIL_TLS_KEY` | bundled dev cert | PEM cert/key paths. Unset falls back to a bundled dev cert — but **only on a loopback bind**: the daemon refuses to boot with the dev cert on a non-loopback `MAIL_HOST` (its private key is public), so production must set these (`MAIL_ALLOW_DEV_CERT=1` forces it for a throwaway test). |
 | `MAIL_DKIM_KEY` / `MAIL_DKIM_SELECTOR` | unset | PEM RSA key + selector to sign outbound mail |
 | `MAIL_TRUSTED_ARC_SEALERS` | unset | comma-separated forwarder domains whose valid ARC chain may rescue a DMARC failure to the inbox |
 | `MAIL_MAX_SIZE` | `26214400` | max accepted message size in octets (25 MiB) |
