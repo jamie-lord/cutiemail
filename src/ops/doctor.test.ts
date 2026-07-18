@@ -191,6 +191,20 @@ test('exit-code policy: warnings exit 0, any failure exits 1', () => {
   assert.equal(reportChecks([{ name: 'a', status: 'ok', detail: '' }, { name: 'b', status: 'fail', detail: '' }], silent), 1);
 });
 
+test('reportChecks neutralises terminal escape sequences in remote-derived detail (run-6)', () => {
+  const out: string[] = [];
+  const io = { out: (l: string): void => void out.push(l), err: (): void => {} };
+  // An MX SMTP greeting / DMARC TXT record / PTR name is remote and spoofable — an OSC 52
+  // clipboard write + a CSI screen-clear + a lone-CR overwrite in a detail must not reach the
+  // operator's terminal raw (the same class queue-cli already neutralises).
+  reportChecks([{ name: 'mx', status: 'warn', detail: 'greeting \x1b]52;c;ZXZpbA==\x07\x1b[2Jok\rFORGED' }], io);
+  const text = out.join('\n');
+  assert.equal(text.includes('\x1b'), false, 'no ESC byte reaches the terminal');
+  assert.equal(/[\x00-\x08\x0e-\x1f\x7f-\x9f]/.test(text), false, 'no C0/C1 controls reach the terminal');
+  assert.equal(/\r(?!\n)/.test(text), false, 'no lone CR (line-overwrite forgery)');
+  assert.ok(text.includes('FORGED'), 'the visible text is still shown, just neutralised');
+});
+
 test('runDoctor: no domain is a usage error (2); unknown flag is a usage error (2)', async () => {
   const cap = { lines: [] as string[] };
   const io = { out: (l: string): void => void cap.lines.push(l), err: (l: string): void => void cap.lines.push(l) };

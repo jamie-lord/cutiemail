@@ -107,6 +107,14 @@ export function runSetup(args: string[], io: OpsIo, env: Record<string, string |
   // Defaults chosen so setup runs before any daemon config exists; when we default
   // the selector/key path, the env lines the daemon needs are printed at the end.
   const selector = env.MAIL_DKIM_SELECTOR ?? 'mail';
+  // The selector becomes both a published DNS label AND (by default) the DKIM key filename
+  // `dkim-<selector>.key`, so a value like `../../etc/foo` would steer the writeFileSync location.
+  // Constrain it to DNS-label characters (dot-separated), which also forbids `/` and `..`
+  // (audit run-6).
+  if (!/^[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?(\.[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?)*$/.test(selector)) {
+    io.err(`setup: invalid DKIM selector ${JSON.stringify(selector)} — use DNS-label characters (letters, digits, hyphen; dot-separated).`);
+    return 2;
+  }
   const keyPath = env.MAIL_DKIM_KEY ?? `dkim-${selector}.key`;
   let key: { pem: string; generated: boolean };
   try {

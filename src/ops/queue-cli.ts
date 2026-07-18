@@ -22,23 +22,14 @@ import { existsSync } from 'node:fs';
 import { SqliteQueue, type DeadLetterEntry, type QueueEntry } from '../store/sqlite-queue.ts';
 import { openMailDb } from '../store/open-mail-db.ts';
 import type { OpsIo } from './cli.ts';
+import { sanitizeForTerminal } from './terminal.ts';
 
 const iso = (ms: number): string => new Date(ms).toISOString().replace(/\.\d{3}Z$/, 'Z');
 
 /**
- * Neutralise terminal control characters before printing attacker-controlled message
- * bytes to the operator's terminal (audit run-1, finding 5). A dead-lettered message's
- * bytes (or a remote MX's error text) can carry ANSI/OSC escape sequences — OSC 52 to
- * hijack the clipboard, CSI to forge/erase output. Strip C0 controls (keeping tab/CR/LF
- * for header readability), DEL, and the C1 range (0x80–0x9f, which some terminals treat
- * as 8-bit escape introducers). ESC (0x1b) is in the stripped range, so no escape
- * sequence can be introduced. `--raw` keeps the exact bytes but refuses a TTY (below).
+ * `--raw` keeps the exact bytes but refuses a TTY (below); all other output is routed through
+ * the shared `sanitizeForTerminal` (src/ops/terminal.ts), which neutralises escape sequences.
  */
-const TERMINAL_CONTROLS = /[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f]/g;
-// A lone CR (0x0d not part of a CRLF) returns the cursor to column 0 and lets attacker
-// text overwrite the visible line (display forgery) — neutralise it too, keeping CRLF for
-// header readability (audit run-2 finding 5).
-const sanitizeForTerminal = (s: string): string => s.replace(/\r(?!\n)/g, '.').replace(TERMINAL_CONTROLS, '.');
 
 /** "in 42s" / "38m ago" — the operator question is always "when / how stale". */
 function relative(ms: number, now: number): string {

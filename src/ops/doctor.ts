@@ -35,6 +35,7 @@ import { parseDkimKeyRecord } from '../crypto/dkim-keyrecord.ts';
 import { registeredDomain } from '../auth/public-suffix.ts';
 import { dkimTxtFromPrivateKey } from './setup.ts';
 import type { OpsIo } from './cli.ts';
+import { sanitizeForTerminal } from './terminal.ts';
 
 export type CheckStatus = 'ok' | 'warn' | 'fail' | 'skip';
 export interface CheckResult {
@@ -238,7 +239,11 @@ export async function doctorChecks(p: DoctorParams, deps: DoctorDeps): Promise<C
 /** Render + exit-code policy: any fail -> 1, otherwise 0. */
 export function reportChecks(results: readonly CheckResult[], io: OpsIo): number {
   const label: Record<CheckStatus, string> = { ok: '  ok ', warn: ' WARN', fail: ' FAIL', skip: ' skip' };
-  for (const r of results) io.out(`${label[r.status]}  ${r.name.padEnd(8)} ${r.detail}`);
+  // r.detail carries remote, spoofable bytes — an MX's SMTP greeting, a DMARC/DKIM TXT record,
+  // an MX/PTR hostname — which can embed ANSI/OSC escape sequences to hijack the clipboard or
+  // paint a fake verdict on the operator's terminal. Neutralise them, as queue-cli already does
+  // for the identical class (audit run-6). r.name is a fixed internal label, left as-is.
+  for (const r of results) io.out(`${label[r.status]}  ${r.name.padEnd(8)} ${sanitizeForTerminal(r.detail)}`);
   const fails = results.filter((r) => r.status === 'fail').length;
   const warns = results.filter((r) => r.status === 'warn').length;
   io.out('');

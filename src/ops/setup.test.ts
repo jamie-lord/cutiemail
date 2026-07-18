@@ -161,6 +161,22 @@ test('runSetup refuses to run without a real domain (exit 2, nothing generated)'
   assert.deepEqual(cap.out, []);
 });
 
+test('runSetup rejects a DKIM selector that would traverse the key-file path (run-6)', () => {
+  const cap = capture();
+  // The selector defaults into the key filename `dkim-<selector>.key`; a traversal value must
+  // be refused (exit 2) before any file is written, not steer the writeFileSync location.
+  assert.equal(runSetup([], cap.io, { MAIL_DOMAIN: 'example.net', MAIL_DKIM_SELECTOR: '../../etc/evil' }), 2);
+  assert.equal(runSetup([], cap.io, { MAIL_DOMAIN: 'example.net', MAIL_DKIM_SELECTOR: 'a/b' }), 2);
+  assert.match(cap.err.join('\n'), /selector/i);
+  // A normal dotted selector is still accepted (no false rejection) — needs a writable key path.
+  const dir = mkdtempSync(join(tmpdir(), 'setup-sel-'));
+  try {
+    assert.equal(runSetup([], capture().io, { MAIL_DOMAIN: 'example.net', MAIL_DKIM_SELECTOR: 'mail.jul2026', MAIL_DKIM_KEY: join(dir, 'k.key') }), 0);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test('runSetup rejects a bad --dmarc-policy and an unknown flag with exit 2', () => {
   const a = capture();
   assert.equal(runSetup(['--dmarc-policy', 'delete-everything'], a.io, { MAIL_DOMAIN: 'example.net' }), 2);
