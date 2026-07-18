@@ -16,6 +16,10 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { verifyArc } from './arc-inbound.ts';
 import { makeArcSigner, addArcSet, arcResolver, rawMessageOf as rawOf, type HeaderLine } from '../testing/arc-sealer.ts';
+import { cryptoRequirement } from '../register/crypto/index.ts';
+import type { CryptoRequirementId } from '../register/crypto/index.ts';
+
+const cites = (id: CryptoRequirementId): void => assert.ok(cryptoRequirement(id).id === id);
 
 const makeSigner = makeArcSigner;
 const resolverFor = arcResolver;
@@ -69,6 +73,7 @@ test('NEGATIVE: altering the body after sealing fails the newest AMS → cv=fail
 });
 
 test('NEGATIVE: tampering a sealed ARC-Seal signature → cv=fail (§5.2 step 6)', async () => {
+  cites('R-8617-5.2-c'); // every AS from N..1 must validate; a broken seal fails the chain
   const sg = makeSigner('forwarder.example', 'arc1', 'rsa');
   const hop = addArcSet(BASE_HEADERS, BODY, sg, 1, 'none', 'dmarc=pass', []);
   const brokenSeal = { name: 'ARC-Seal', value: hop.set.as.slice(0, -4) + (hop.set.as.endsWith('AAAA') ? 'BBBB' : 'AAAA') };

@@ -14,10 +14,16 @@ import assert from 'node:assert/strict';
 import { generateKeyPairSync } from 'node:crypto';
 import { buildSealInput, verifySeal, signSeal, type ArcSetHeaders } from './arc-seal.ts';
 import { rawPublicKey } from './dkim-ed25519.ts';
+import { cryptoRequirement } from '../register/crypto/index.ts';
+import type { CryptoRequirementId } from '../register/crypto/index.ts';
 
+const cites = (id: CryptoRequirementId): void => assert.ok(cryptoRequirement(id).id === id);
 const set = (instance: number, aar: string, ams: string, as: string): ArcSetHeaders => ({ instance, aar, ams, as });
 
 test('GOLDEN §5.1.1: one-set seal input = relaxed(AAR)+CRLF, relaxed(AMS)+CRLF, relaxed(AS, b= emptied, no CRLF)', () => {
+  cites('R-8617-4.1.3-a'); // no body hash — the seal signs only header fields
+  cites('R-8617-4.1.3-b'); // relaxed canonicalization only
+  cites('R-8617-5.1.1-b'); // per-set order: AAR, AMS, AS
   const sets = [set(1, 'i=1; a.example; dkim=pass', 'i=1; a=rsa-sha256; h=from; bh=Zm9v; b=AAAA', 'i=1; a=rsa-sha256; cv=none; d=a.example; s=s1; b=BBBB')];
   const expected =
     'arc-authentication-results:i=1; a.example; dkim=pass\r\n' +
@@ -27,6 +33,7 @@ test('GOLDEN §5.1.1: one-set seal input = relaxed(AAR)+CRLF, relaxed(AMS)+CRLF,
 });
 
 test('GOLDEN §5.1.1: two-set seal input orders sets 1 then 2, prior AS kept intact, sealing AS emptied', () => {
+  cites('R-8617-5.1.1-a'); // increasing instance order, including the set being sealed
   const sets = [
     set(1, 'i=1; a.example; dkim=pass', 'i=1; a=rsa-sha256; h=from; bh=Zm9v; b=AAAA', 'i=1; a=rsa-sha256; cv=none; d=a.example; s=s1; b=BBBB'),
     set(2, 'i=2; b.example; dkim=fail', 'i=2; a=rsa-sha256; h=from; bh=YmFy; b=CCCC', 'i=2; a=rsa-sha256; cv=pass; d=b.example; s=s2; b=DDDD'),
