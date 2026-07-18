@@ -21,6 +21,16 @@ export type HeaderCanon = 'simple' | 'relaxed';
 export interface SignedField {
   readonly name: string;
   readonly value: string;
+  /**
+   * The VERBATIM field octets (name + ':' + value, original whitespace and folds, no trailing
+   * CRLF). Used only for `simple` header canon, which RFC 6376 §3.4.1 defines as the field
+   * byte-for-byte. Without it, `simple` canon was reconstructed from the trimmed `name`/`value`
+   * with one forced post-colon space — which both rejected legitimate simple-canon signatures
+   * (non-single-space/trailing-WSP headers) AND let a verifier re-collapse a whitespace-tampered
+   * signed header back to the signed form and PASS it (audit run-4). `relaxed` canon ignores it
+   * (it normalises whitespace itself), so signers/ARC that omit it are unaffected.
+   */
+  readonly raw?: Buffer;
 }
 
 const CR = 0x0d;
@@ -49,7 +59,14 @@ export function buildSigningInput(
 ): Buffer {
   const parts: Buffer[] = [];
   for (const f of signedFields) {
-    parts.push(canonField(Buffer.from(`${f.name}: ${f.value}\r\n`, 'latin1'), canon));
+    // For `simple` canon the field must be hashed verbatim (§3.4.1). Use the raw octets when
+    // the caller supplied them; the trimmed name/value reconstruction is only correct for
+    // `relaxed` (which normalises whitespace regardless).
+    const field =
+      canon === 'simple' && f.raw !== undefined
+        ? Buffer.concat([f.raw, Buffer.from([CR, LF])])
+        : Buffer.from(`${f.name}: ${f.value}\r\n`, 'latin1');
+    parts.push(canonField(field, canon));
   }
   let sigField = canonField(Buffer.from(`${signatureHeaderName}: ${emptyBTag(dkimSigValue)}\r\n`, 'latin1'), canon);
   // Remove the trailing CRLF from the DKIM-Signature field only.

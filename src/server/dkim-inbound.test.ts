@@ -95,6 +95,41 @@ test('RFC 8301: a valid rsa-sha1 DKIM signature is rejected (SHA-1 is broken), s
   assert.equal((await verifyDkim(build('sha256'), async () => keyRecord(der))).verdict, 'pass', 'sha256 still verifies');
 });
 
+test('DKIM simple header canon is verbatim: no false-pass on whitespace-tampered headers, no false-fail on legit spacing (run-4)', async () => {
+  const { createSign } = await import('node:crypto');
+  const { buildSigningInput } = await import('../crypto/dkim-verify.ts');
+  const der = signKeys.publicKey.export({ type: 'spki', format: 'der' }).toString('base64');
+  const body = Buffer.from('Hi\r\n', 'latin1');
+  const bh = computeBodyHash(body, 'simple', 'sha256');
+
+  // Sign c=simple/simple over From + Subject given the EXACT signed-field octets (raw).
+  const signSimple = (fromRaw: string, subjectRaw: string): string => {
+    const sigBase = `v=1; a=rsa-sha256; c=simple/simple; d=example.com; s=sel; h=from:subject; bh=${bh}; b=`;
+    const fields = [
+      { name: 'From', value: '', raw: Buffer.from(fromRaw, 'latin1') },
+      { name: 'Subject', value: '', raw: Buffer.from(subjectRaw, 'latin1') },
+    ];
+    const input = buildSigningInput(fields, sigBase, 'simple');
+    const s = createSign('RSA-SHA256');
+    s.update(input);
+    s.end();
+    return sigBase + s.sign(signKeys.privateKey).toString('base64');
+  };
+  const assemble = (sig: string, fromWire: string, subjectWire: string): Buffer =>
+    Buffer.from(`DKIM-Signature: ${sig}\r\n${fromWire}\r\n${subjectWire}\r\n\r\n${body.toString('latin1')}`, 'latin1');
+  const FROM = 'From: a@example.com';
+
+  // (1) Legit: the odd-spaced Subject the signer signed is exactly what is on the wire → PASS.
+  const oddSubject = 'Subject:   Hello World  ';
+  const legit = assemble(signSimple(FROM, oddSubject), FROM, oddSubject);
+  assert.equal((await verifyDkim(legit, async () => keyRecord(der))).verdict, 'pass', 'legit odd-spaced simple-canon header verifies');
+
+  // (2) Forgery: signer signed the canonical single-space Subject; attacker widens the whitespace
+  //     on the wire. Verbatim hashing must FAIL (the old trimmed rebuild collapsed it back → pass).
+  const tampered = assemble(signSimple(FROM, 'Subject: Hello World'), FROM, 'Subject:      Hello World      ');
+  assert.equal((await verifyDkim(tampered, async () => keyRecord(der))).verdict, 'fail', 'whitespace-tampered signed header must not verify');
+});
+
 test('an unsigned message is "none"', async () => {
   const out = await verifyDkim(Buffer.from('Subject: hi\r\n\r\nno signature\r\n', 'latin1'), async () => null);
   assert.equal(out.verdict, 'none');

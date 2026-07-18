@@ -172,7 +172,12 @@ async function verifyOneSignature(rawValue: string, headers: ReturnType<typeof p
   for (const name of sig.signedHeaders) {
     const lower = name.trim().toLowerCase();
     const h = headers.find((x) => x.name.toString('latin1').trim().toLowerCase() === lower);
-    if (h !== undefined) signedFields.push({ name: h.name.toString('latin1').trim(), value: h.value.toString('latin1').trim() });
+    if (h !== undefined) {
+      // Carry the verbatim field octets (name : value, original whitespace/folds) so `simple`
+      // header canon hashes them byte-for-byte (RFC 6376 §3.4.1) instead of a trimmed rebuild.
+      const raw = Buffer.concat([h.name, Buffer.from(':', 'latin1'), h.value]);
+      signedFields.push({ name: h.name.toString('latin1').trim(), value: h.value.toString('latin1').trim(), raw });
+    }
   }
   const input = buildSigningInput(signedFields, sigValue, headerCanon);
 
