@@ -125,13 +125,26 @@ const SPECIAL_USE: Record<string, string> = {
   Archive: '\\Archive',
 };
 
+/**
+ * Redact credentials from an IMAP command line for debug logging. Covers BOTH auth forms:
+ * `tag LOGIN user pass` (password), `tag AUTHENTICATE PLAIN <base64>` (the inline SASL
+ * initial response), and — when `isSaslContinuation` is set — a standalone base64 line that
+ * is the response to an `AUTHENTICATE` continuation (it decodes to \0user\0password).
+ * Missing the AUTHENTICATE forms wrote recoverable passwords to the log despite the
+ * "credentials redacted" contract (audit run-1, finding 7). Exported for its unit test.
+ */
+export function redactImapDebugLine(line: string, isSaslContinuation: boolean): string {
+  if (isSaslContinuation) return '<SASL response redacted>';
+  return line
+    .replace(/^(\S+\s+LOGIN\s+\S+\s+)\S+/i, '$1***')
+    .replace(/^(\S+\s+AUTHENTICATE\s+\S+\s+).*/i, '$1***');
+}
+
 /** MAIL_DEBUG=1 logs each received command line (credentials redacted) to stderr. */
 const DEBUG = process.env.MAIL_DEBUG === '1';
-function debugLog(line: string): void {
+function debugLog(line: string, isSaslContinuation = false): void {
   if (!DEBUG) return;
-  // Redact the password argument of LOGIN (tag LOGIN user pass).
-  const safe = line.replace(/^(\S+\s+LOGIN\s+\S+\s+)\S+/i, '$1***');
-  process.stderr.write(`[imap<] ${safe}\n`);
+  process.stderr.write(`[imap<] ${redactImapDebugLine(line, isSaslContinuation)}\n`);
 }
 
 const write = (sock: net.Socket, line: string): void => {
@@ -888,7 +901,9 @@ export class ImapServer {
         }
         const line = buf.subarray(0, nl).toString('latin1');
         buf = buf.subarray(nl + 2);
-        debugLog(line);
+        // If we are awaiting an AUTHENTICATE base64 response, this line IS the credential —
+        // redact it wholesale (the LOGIN/AUTHENTICATE regexes don't match a bare base64).
+        debugLog(line, pendingAuth !== null);
 
         // While idling, the only expected client input is DONE (RFC 2177).
         if (idle !== null) {
