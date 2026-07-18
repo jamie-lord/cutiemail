@@ -115,6 +115,8 @@ const MAX_APPEND_LITERAL = 26_214_400; // 25 MiB, matching the SMTP SIZE default
 
 /** Inactivity autologout (RFC 9051 §5.4 requires a timer of at least 30 minutes). */
 const AUTOLOGOUT_MS = 1_800_000;
+const MAX_SEARCH_KEYS = 64; // top-level SEARCH keys; a real query uses a handful (DoS bound)
+const MAX_CONNECTIONS = 512; // concurrent-connection ceiling per listener (pre-auth DoS bound)
 
 /** Special-use attributes by conventional folder name (RFC 6154 / 9051 §7.3.1). */
 const SPECIAL_USE: Record<string, string> = {
@@ -362,6 +364,11 @@ function parseSearchKeys(tokens: readonly string[], ctx: SearchContext): SearchK
 
   const keys: SearchKey[] = [];
   while (i < tokens.length) {
+    // Cap the number of top-level keys: a legitimate SEARCH uses a handful, but an
+    // authenticated client could send thousands of `TEXT x` keys, each scanning every message —
+    // O(keys × messages × size) work that freezes the single-threaded server for all accounts
+    // (audit run-5). 64 is far above any real query; beyond it, reject.
+    if (keys.length >= MAX_SEARCH_KEYS) return null;
     const key = parseOne();
     if (key === null) return null;
     keys.push(key);
@@ -590,6 +597,11 @@ export class ImapServer {
   ): Promise<ImapServer> {
     const catalog: ServableCatalog = 'listNames' in target ? target : inboxOnly(target);
     const server = options.tls !== undefined ? tls.createServer({ key: options.tls.key, cert: options.tls.cert }) : net.createServer();
+    // Bound concurrent connections so a pre-auth flood / slowloris (connections that dribble
+    // bytes to dodge the inactivity timeout) cannot exhaust file descriptors or memory — the
+    // single-threaded daemon has no per-IP accounting, so a global ceiling is the backstop
+    // (audit run-5). Far above any real client fan-out (a few clients × a handful each).
+    server.maxConnections = MAX_CONNECTIONS;
     return new Promise((resolve) => {
       server.listen(options.port ?? 0, options.host ?? '127.0.0.1', () => {
         const addr = server.address();
@@ -1498,11 +1510,14 @@ export class ImapServer {
               write(sock, `${tag} NO [TRYCREATE] no such mailbox`);
               break;
             }
-            // Reconcile peer changes first (EXPUNGE is permitted during COPY/MOVE, RFC
-            // 9051 §7.4.1) so the set resolves against, and MOVE's own EXPUNGE numbers
-            // match, a view the client agrees with — and no peer removal is swallowed.
-            syncSelected();
-            const entries = this.#resolveSet(selected, set, uidMode);
+            // Resolve the set against THIS connection's view (resolveForConn), BEFORE announcing
+            // peer changes — so a bare sequence number addresses the message the client meant,
+            // and a message a peer expunged is OMITTED, never replaced by whatever slid into its
+            // slot (RFC 9051 §7.4.1) — the same rule FETCH/STORE/SEARCH use. COPY/MOVE previously
+            // resolved the LIVE list AFTER syncSelected renumbered it, so a concurrent peer
+            // EXPUNGE made a sequence COPY/MOVE hit — and, for MOVE, destructively remove — the
+            // wrong message.
+            const entries = resolveForConn(set, uidMode);
             // UIDPLUS COPYUID: report the source and destination UIDs, in order.
             const srcUids: number[] = [];
             const dstUids: number[] = [];
@@ -1511,17 +1526,13 @@ export class ImapServer {
               // RFC 9051 §6.4.7: a copied message keeps its flags AND its internal date.
               dstUids.push(target.append(msg.raw, [...msg.flags], msg.internalDate));
             }
-            if (cmd === 'MOVE') {
-              // Remove from the source, reporting VANISHED (QRESYNC) or EXPUNGE by
-              // descending sequence so the client's numbering stays consistent (§6.4.8).
-              const descending = [...entries].sort((a, b) => b.seq - a.seq);
-              for (const { msg } of descending) selected.expunge(msg.uid);
-              emitExpunged(srcUids, descending.map((e) => e.seq));
-              knownUids = selected.messages.map((m) => m.uid);
-              if (selectedName !== null) connNotifier?.notify(selectedName);
-            }
+            if (cmd === 'MOVE') for (const { msg } of entries) selected.expunge(msg.uid);
+            // Announce the peer's EXPUNGE(s) AND (for MOVE) our own removals in one consistent
+            // renumber against the client's view (VANISHED under QRESYNC, else descending EXPUNGE).
+            syncSelected();
             // Wake connections idling on the destination (and, for MOVE, the source).
             if (dstUids.length > 0) connNotifier?.notify(canonicalMailboxName(targetName));
+            if (cmd === 'MOVE' && srcUids.length > 0 && selectedName !== null) connNotifier?.notify(selectedName);
             const copyuid = srcUids.length > 0 ? `[COPYUID ${target.uidValidity} ${srcUids.join(',')} ${dstUids.join(',')}] ` : '';
             write(sock, `${tag} OK ${copyuid}${cmd} completed`);
             break;

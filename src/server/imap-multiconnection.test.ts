@@ -269,6 +269,42 @@ test('a peer expunge is not swallowed when this connection then runs its own MOV
   }
 });
 
+test('a SEQUENCE-mode COPY/MOVE under a concurrent peer EXPUNGE never hits the WRONG message (run-5)', async () => {
+  // COPY/MOVE used to resolve the LIVE list AFTER announcing the peer's EXPUNGE, so a bare
+  // sequence number addressed whatever message slid into the expunged slot — for MOVE,
+  // DESTRUCTIVELY removing a message the user never referenced. It must resolve against the
+  // client's own view and OMIT a peer-expunged message (the rule FETCH/STORE already use).
+  for (const cmd of ['COPY', 'MOVE'] as const) {
+    const catalog = new MemoryCatalog();
+    const inbox = catalog.get('INBOX')!;
+    for (const subj of ['one', 'two', 'three']) inbox.append(Buffer.from(`Subject: ${subj}\r\n\r\nx\r\n`, 'latin1'));
+    catalog.create('Archive');
+    const notifier = new MailboxNotifier();
+    const server = await ImapServer.start(catalog, { authenticate: () => true, notifier });
+    const a = await open(server.port);
+    const b = await open(server.port);
+    try {
+      // B expunges message 2 (UID 2); A is not idling, so its view is still [uid1,uid2,uid3].
+      b.send('c1 STORE 2 +FLAGS (\\Deleted)\r\nc2 EXPUNGE\r\n');
+      await b.waitFor('c2 OK');
+
+      // A references "message 2" (its uid2, now gone) by SEQUENCE. It must act on NOTHING —
+      // never on the neighbour 'three' (uid3), which used to slide into slot 2.
+      a.send(`d1 ${cmd} 2 Archive\r\n`);
+      await a.waitFor('d1 OK');
+
+      assert.equal(catalog.get('Archive')!.messages.length, 0, `${cmd}: a peer-expunged sequence acts on nothing, not the neighbour`);
+      const inboxSubjects = catalog.get('INBOX')!.messages.map((m) => m.raw.toString('latin1'));
+      assert.ok(inboxSubjects.some((r) => r.includes('three')), `${cmd}: the neighbour 'three' is untouched in INBOX (not destructively moved)`);
+      assert.ok(inboxSubjects.some((r) => r.includes('one')), `${cmd}: 'one' is still present`);
+    } finally {
+      a.sock.destroy();
+      b.sock.destroy();
+      await server.close();
+    }
+  }
+});
+
 test('CLOSE expunges silently for the closer but still tells a peer the messages vanished', async () => {
   const catalog = new MemoryCatalog();
   const inbox = catalog.get('INBOX')!;
