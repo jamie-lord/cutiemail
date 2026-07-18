@@ -74,6 +74,41 @@ test('RENAME INBOX preserves highest_modseq and the expunge log (RFC 7162 invari
   assert.ok(foo.expungedSince(1).includes(uid1), 'the pre-rename expunge is visible on the renamed mailbox');
 });
 
+test('RENAME INBOX reports the moved messages as VANISHED on the now-empty INBOX (run-7 QRESYNC)', () => {
+  // The production path emptied INBOX but left its HIGHESTMODSEQ unchanged and its expunge log
+  // empty, so a QRESYNC/CONDSTORE client reconnecting to INBOX was told "nothing changed" while
+  // every cached message had silently moved out — a desync MemoryCatalog does not exhibit.
+  const cat = SqliteCatalog.open(new DatabaseSync(':memory:'));
+  const inbox = cat.get('INBOX')!;
+  for (const c of ['a', 'b', 'c']) inbox.append(Buffer.from(c)); // uid 1,2,3
+  const beforeModseq = inbox.highestModseq;
+  assert.equal(cat.rename('INBOX', 'Archive'), 'ok');
+  const after = cat.get('INBOX')!;
+  assert.equal(after.messages.length, 0, 'INBOX is emptied');
+  assert.ok(after.highestModseq > beforeModseq, 'INBOX modseq is bumped so a client detects a change');
+  assert.deepEqual(after.expungedSince(beforeModseq), [1, 2, 3], 'the moved messages are reported VANISHED on INBOX');
+  assert.equal(cat.get('Archive')!.messages.length, 3, 'the messages landed in Archive');
+});
+
+test('DELETE clears the expunge tombstones so a reused mailbox id does not inherit them (run-7 QRESYNC)', () => {
+  // create() reuses a freed internal id (MAX(id)+1); delete() must clear the expunge log or the
+  // next mailbox reusing that id inherits the dead folder's tombstones — a QRESYNC client would
+  // be told a LIVE message it just received had VANISHED. The MemoryCatalog oracle builds a fresh
+  // log, so the suite was blind to this.
+  const cat = SqliteCatalog.open(new DatabaseSync(':memory:'));
+  const foo = cat.create('Foo')!;
+  foo.append(Buffer.from('a'));
+  foo.append(Buffer.from('b'));
+  foo.expunge(1);
+  foo.expunge(2);
+  assert.deepEqual(foo.expungedSince(0), [1, 2], 'precondition: Foo has tombstones');
+  assert.equal(cat.delete('Foo'), true);
+  const bar = cat.create('Bar')!; // reuses Foo's freed id
+  assert.deepEqual(bar.expungedSince(0), [], 'a freshly created mailbox has no leaked tombstones');
+  const uid = bar.append(Buffer.from('live'));
+  assert.equal(bar.expungedSince(0).includes(uid), false, 'the live message it just received is not reported VANISHED');
+});
+
 test('INBOX matches case-insensitively; other names are exact; INBOX cannot be re-created', () => {
   const cat = SqliteCatalog.open(new DatabaseSync(':memory:'));
   assert.ok(cat.get('inbox') !== undefined);

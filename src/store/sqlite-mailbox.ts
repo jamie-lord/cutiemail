@@ -279,6 +279,12 @@ export class SqliteCatalog {
     try {
       this.#db.prepare('DELETE FROM flag WHERE mailbox_id = ?').run(id);
       this.#db.prepare('DELETE FROM message WHERE mailbox_id = ?').run(id);
+      // Delete the expunge tombstones too (as invalidate() does). create() reuses a freed
+      // internal id via MAX(id)+1, so an orphaned expunge log would leak into the next mailbox
+      // that reuses this id — a QRESYNC client would be told a LIVE message it just received in
+      // the new mailbox had VANISHED, and HIGHESTMODSEQ >= every tombstone's mod_seq breaks
+      // (audit run-7). MemoryCatalog builds a fresh log, so the test suite was blind to this.
+      this.#db.prepare('DELETE FROM expunged WHERE mailbox_id = ?').run(id);
       this.#db.prepare('DELETE FROM mailbox WHERE id = ?').run(id);
       this.#db.exec('COMMIT');
     } catch (e) {
@@ -310,10 +316,21 @@ export class SqliteCatalog {
         // violate the RFC 7162 §3.1.2.1 invariant (HIGHESTMODSEQ >= every message's MODSEQ)
         // and silently desync CONDSTORE/QRESYNC clients. Move the expunge log too, or
         // QRESYNC VANISHED (EARLIER) history is lost on rename.
+        // Capture the UIDs about to move OUT of INBOX, before reparenting.
+        const movedUids = (this.#db.prepare('SELECT uid FROM message WHERE mailbox_id = ? ORDER BY uid').all(Number(src.id)) as Array<{ uid: number }>).map((r) => Number(r.uid));
         this.#db.prepare('INSERT INTO mailbox (id, uid_validity, uid_next, name, highest_modseq) VALUES (?, 1, ?, ?, ?)').run(nextId, Number(inbox.uid_next), ct, Number(inbox.highest_modseq));
         this.#db.prepare('UPDATE message SET mailbox_id = ? WHERE mailbox_id = ?').run(nextId, Number(src.id));
         this.#db.prepare('UPDATE flag SET mailbox_id = ? WHERE mailbox_id = ?').run(nextId, Number(src.id));
         this.#db.prepare('UPDATE expunged SET mailbox_id = ? WHERE mailbox_id = ?').run(nextId, Number(src.id));
+        // Report the moved messages as VANISHED on the now-empty source INBOX: bump INBOX's
+        // highest_modseq and log each moved UID as expunged. Without this, INBOX has 0 messages
+        // but an unchanged HIGHESTMODSEQ and an empty expunge log, so a QRESYNC/CONDSTORE client
+        // reconnecting to INBOX is told "nothing changed" while every cached message silently
+        // disappeared — a desync/data-loss the MemoryCatalog oracle does not exhibit (audit run-7).
+        let modseq = Number(inbox.highest_modseq);
+        const logVanished = this.#db.prepare('INSERT OR REPLACE INTO expunged (mailbox_id, uid, mod_seq) VALUES (?, ?, ?)');
+        for (const uid of movedUids) logVanished.run(Number(src.id), uid, ++modseq);
+        if (movedUids.length > 0) this.#db.prepare('UPDATE mailbox SET highest_modseq = ? WHERE id = ?').run(modseq, Number(src.id));
       } else {
         this.#db.prepare('UPDATE mailbox SET name = ? WHERE id = ?').run(ct, Number(src.id));
       }
