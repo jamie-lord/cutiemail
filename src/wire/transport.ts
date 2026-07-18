@@ -91,6 +91,13 @@ export interface QuietResult {
 export interface WireOptions {
   readonly host: string;
   readonly port: number;
+  /**
+   * The name to validate the peer's certificate against / send as TLS SNI, when it must
+   * differ from `host`. The outbound relay sets `host` to a vetted IP (pinned to close the
+   * SSRF DNS-rebinding window) but still has to validate the certificate against the MX
+   * hostname, so it passes the hostname here. Defaults to `host` when unset.
+   */
+  readonly servername?: string;
   /** 'implicit' wraps TLS from the first byte (e.g. port 465). */
   readonly tls?: 'none' | 'implicit';
   readonly tlsOptions?: tls.ConnectionOptions;

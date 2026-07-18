@@ -91,22 +91,32 @@ export function isUnsafeMxTarget(host: string): boolean {
 }
 
 /**
- * True when an MX HOSTNAME resolves (over IPv4) to a private/loopback address — the SSRF
- * case `isUnsafeMxTarget` (a literal-form check) misses: an attacker publishes an MX name
- * that resolves to 127.0.0.1 / 169.254.169.254 / 10.x. Checked just before connecting, so
- * the static hostname→private attack is closed. A narrow DNS-rebinding window remains (the
- * OS re-resolves at connect time); pinning to the vetted address would need threading the
- * TLS servername separately and is deferred. `resolve4` because relay connects family:4.
+ * Vet an MX HOSTNAME and return a vetted IP to connect to, or null to refuse. This closes
+ * the SSRF case `isUnsafeMxTarget` (a literal-form check) misses: an attacker publishes an
+ * MX name that resolves to 127.0.0.1 / 169.254.169.254 / 10.x. The host is resolved ONCE
+ * (over IPv4 — relay connects family:4) and, if EVERY address is public, one is returned to
+ * be PINNED as the connect target. Pinning the vetted IP — rather than reconnecting by name
+ * and letting the OS re-resolve — closes the DNS-rebinding TOCTOU window (an attacker
+ * flipping the record from public to private between the check and the connect); the caller
+ * validates the certificate against the original hostname via TLS servername. Returns null
+ * when the name does not resolve, or ANY address is private/loopback (a mixed public+private
+ * answer is refused wholesale). A literal-IP host is returned as-is — its literal form was
+ * already vetted by isUnsafeMxTarget.
  */
-export async function resolvesToPrivate(host: string, resolve: (h: string) => Promise<readonly string[]> = resolve4): Promise<boolean> {
-  if (net.isIP(host) !== 0) return false; // a literal IP is already handled by isUnsafeMxTarget
+export async function vetMxHost(
+  host: string,
+  resolve: (h: string) => Promise<readonly string[]> = resolve4,
+): Promise<{ ip: string } | { permanent: boolean }> {
+  if (net.isIP(host) !== 0) return { ip: host }; // a literal IP is already handled by isUnsafeMxTarget
   let addrs: readonly string[] = [];
   try {
     addrs = await resolve(host);
   } catch {
-    addrs = [];
+    return { permanent: false }; // a DNS failure is transient — retry, don't bounce
   }
-  return addrs.some(isPrivateOrLoopback);
+  if (addrs.length === 0) return { permanent: false }; // no A records → transient, same as a lookup miss
+  if (addrs.some(isPrivateOrLoopback)) return { permanent: true }; // SSRF — refuse permanently
+  return { ip: addrs[0]! }; // pin a vetted public address as the connect target
 }
 
 /** The envelope + bytes to relay — the subset of a delivered message relay needs. */
@@ -278,17 +288,33 @@ export async function relayOutbound(msg: RelayableMessage, opts: OutboundOptions
     for (const host of candidateHosts) {
       // SSRF guard: never open a relay connection to a loopback/private MX target that a
       // hostile recipient-domain DNS could have pointed us at — as a literal IP/localhost
-      // (isUnsafeMxTarget) OR as a hostname that resolves to a private address
-      // (resolvesToPrivate, a pre-connect DNS lookup).
-      if (guardTargets && (isUnsafeMxTarget(host) || (await resolvesToPrivate(host)))) {
-        lastError = `refusing to relay to non-public MX target ${host}`;
-        lastClass = 'permanent';
-        continue;
+      // (isUnsafeMxTarget) OR as a hostname that resolves to a private address (vetMxHost).
+      // vetMxHost resolves ONCE and returns a vetted IP to PIN, so we connect straight to
+      // it rather than reconnecting by name (which would re-resolve and re-open a rebinding
+      // window). The cert is still validated against the MX hostname via `servername`.
+      let connectHost = host;
+      let servername: string | undefined;
+      if (guardTargets) {
+        if (isUnsafeMxTarget(host)) {
+          lastError = `refusing to relay to non-public MX target ${host}`;
+          lastClass = 'permanent';
+          continue;
+        }
+        const vet = await vetMxHost(host);
+        if (!('ip' in vet)) {
+          // 'private' → SSRF, permanent bounce; 'unresolved' → transient, retry. Either way
+          // net.connect is never handed a name to re-resolve, so no rebinding window opens.
+          lastError = vet.permanent ? `refusing to relay to non-public MX target ${host}` : `MX ${host} did not resolve`;
+          lastClass = vet.permanent ? 'permanent' : 'transient';
+          continue;
+        }
+        connectHost = vet.ip;
+        if (vet.ip !== host) servername = host; // pinned an IP → validate the cert against the name
       }
       try {
         // family: 4 — Gmail 550s IPv6 connections without a matching v6 PTR;
         // our PTR is set for the v4 address, so relay over IPv4 only.
-        const target = { host, port, tls: 'none' as const, family: 4 as const };
+        const target = { host: connectHost, port, tls: 'none' as const, family: 4 as const, ...(servername !== undefined ? { servername } : {}) };
         const envelope = { from: msg.from, recipients: [recipient], data: msg.data, clientName: opts.clientName };
         let r = await deliver(target, envelope, {}, undefined, { startTls: true, requireValidCert: enforce });
         // Opportunistic STARTTLS (RFC 3207): if the handshake itself failed, the MX

@@ -165,7 +165,7 @@ export async function deliver(
         const ready = await readReply(wire, timeoutMs);
         if (is2yz(ready)) {
           try {
-            await wire.startTls({ rejectUnauthorized: options.requireValidCert === true, servername: connect.host });
+            await wire.startTls({ rejectUnauthorized: options.requireValidCert === true, servername: connect.servername ?? connect.host });
             await wire.send(command(`EHLO ${req.clientName}`, defects));
             const reEhlo = await readReply(wire, timeoutMs);
             if (!is2yz(reEhlo)) return { ...base, greetingCode, openingVerb, failure: 'EHLO after STARTTLS refused' };
