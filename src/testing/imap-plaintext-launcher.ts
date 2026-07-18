@@ -11,8 +11,8 @@
  * special-use folders, a MailboxNotifier, and a fixed-credential authenticate.
  */
 
-import { DatabaseSync } from 'node:sqlite';
 import { SqliteCatalog } from '../store/sqlite-mailbox.ts';
+import { openMailDb } from '../store/open-mail-db.ts';
 import { ImapServer } from '../server/imap-server.ts';
 import { MailboxNotifier } from '../server/mailbox-notifier.ts';
 
@@ -22,12 +22,7 @@ async function main(): Promise<void> {
   const user = process.argv[4] ?? 'test';
   const pass = process.argv[5] ?? 'test';
 
-  const db = new DatabaseSync(dbPath);
-  try {
-    db.exec('PRAGMA journal_mode=WAL');
-  } catch {
-    /* :memory: */
-  }
+  const db = openMailDb(dbPath);
   const catalog = SqliteCatalog.open(db, 1);
   for (const name of ['Sent', 'Drafts', 'Trash', 'Junk', 'Archive']) catalog.create(name);
 

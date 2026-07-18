@@ -14,11 +14,11 @@
  * used by the integration test to drive the fully-assembled server on ephemeral ports.
  */
 
-import { DatabaseSync } from 'node:sqlite';
 import { randomUUID } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { SqliteCatalog } from './store/sqlite-mailbox.ts';
+import { openMailDb } from './store/open-mail-db.ts';
 import { AccountRegistry } from './store/account-registry.ts';
 import { MailStores } from './store/mail-stores.ts';
 import { MemoryCatalog } from './store/memory-catalog.ts';
@@ -147,14 +147,10 @@ export interface RunningServer {
 export async function startServer(cfg: MailServerConfig): Promise<RunningServer> {
   // The control-plane database (ADR 0009): the account registry + the global outbound
   // queue. Each USER's mail lives in its own database (one file per user), opened on
-  // demand by the store manager below. WAL: cleaner crash recovery, a reader never
-  // blocks the writer. (A no-op for an in-memory db, used by tests.)
-  const controlDb = new DatabaseSync(cfg.dbPath);
-  try {
-    controlDb.exec('PRAGMA journal_mode=WAL');
-  } catch {
-    /* :memory: and some builds don't support WAL — harmless */
-  }
+  // demand by the store manager below. openMailDb sets WAL (cleaner crash recovery, a
+  // reader never blocks the writer) + busy_timeout (a contending writer waits instead
+  // of raising SQLITE_BUSY). (WAL is a no-op for an in-memory db, used by tests.)
+  const controlDb = openMailDb(cfg.dbPath);
   const inMemory = cfg.dbPath === ':memory:';
   const log = cfg.onEvent ?? ((): void => {});
 
@@ -175,12 +171,7 @@ export async function startServer(cfg: MailServerConfig): Promise<RunningServer>
   const stores = new MailStores((login) => {
     const row = registry.lookup(login);
     if (row === undefined || !row.enabled) return undefined;
-    const udb = new DatabaseSync(row.mailDbPath);
-    try {
-      udb.exec('PRAGMA journal_mode=WAL');
-    } catch {
-      /* in-memory — harmless */
-    }
+    const udb = openMailDb(row.mailDbPath);
     const userCatalog = SqliteCatalog.open(udb, 1);
     for (const name of ['Sent', 'Drafts', 'Trash', 'Junk', 'Archive']) userCatalog.create(name);
     return { catalog: userCatalog, notifier: new MailboxNotifier(), close: () => udb.close() };
