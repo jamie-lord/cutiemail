@@ -38,6 +38,45 @@ test('a message with TWO From headers cannot pass DMARC (display-spoof defence, 
   assert.equal(out.verdict, 'fail', 'a duplicate-From message is a DMARC fail, never a pass');
 });
 
+test('DMARC aligns on the DISPLAYED From address, not a decoy hidden in a quoted display-name', async () => {
+  // The full-DMARC-bypass class (audit run-2, finding 1): the attacker owns evil.com (DKIM
+  // d=evil.com passes) and buries <x@evil.com> in the quoted display-name, while the real
+  // angle-addr every MUA shows is victim@bank.com. The old first-`<...>` match aligned on
+  // evil.com → forged dmarc=pass. The fix aligns on the displayed bank.com.
+  const rec = dmarcAt({ '_dmarc.evil.com': 'v=DMARC1; p=none', '_dmarc.bank.com': 'v=DMARC1; p=reject' });
+  const spoof = Buffer.from('From: "Security <x@evil.com>" <victim@bank.com>\r\nSubject: hi\r\n\r\nbody\r\n', 'latin1');
+  const out = await checkDmarc({ rawMessage: spoof, dkimPassedDomains: ['evil.com'], spfResult: 'pass', spfDomain: 'evil.com', resolveTxt: rec });
+  assert.equal(out.fromDomain, 'bank.com', 'aligns on the displayed victim@bank.com, not the decoy evil.com');
+  assert.equal(out.verdict, 'fail', "the attacker's evil.com auth is not aligned with bank.com — no forged pass");
+});
+
+test('the same From-spoof hidden in a COMMENT is also defeated', async () => {
+  const rec = dmarcAt({ '_dmarc.bank.com': 'v=DMARC1; p=reject' });
+  const spoof = Buffer.from('From: (x <a@evil.com>) victim@bank.com\r\nSubject: hi\r\n\r\nbody\r\n', 'latin1');
+  const out = await checkDmarc({ rawMessage: spoof, dkimPassedDomains: ['evil.com'], spfResult: 'pass', spfDomain: 'evil.com', resolveTxt: rec });
+  assert.equal(out.fromDomain, 'bank.com');
+  assert.equal(out.verdict, 'fail');
+});
+
+test('a legitimate display-name with an angle-addr still aligns and passes (no over-strict regression)', async () => {
+  const rec = dmarcAt({ '_dmarc.example.com': 'v=DMARC1; p=reject' });
+  const ok = Buffer.from('From: "Alice, Example" <alice@example.com>\r\nSubject: hi\r\n\r\nbody\r\n', 'latin1');
+  const out = await checkDmarc({ rawMessage: ok, dkimPassedDomains: ['example.com'], spfResult: 'none', spfDomain: '', resolveTxt: rec });
+  assert.equal(out.fromDomain, 'example.com');
+  assert.equal(out.verdict, 'pass');
+});
+
+test('a duplicate-From fail reports the published policy so it is enforced to Junk, not INBOX', async () => {
+  // Audit run-2 finding 3: the fromCount>1 path used to short-circuit with policy=null, so
+  // main.ts (which enforces on a quarantine/reject policy) delivered it to INBOX — the
+  // more deceptive duplicate-From spoof evading the enforcement a single-From spoof hit.
+  const rec = dmarcAt({ '_dmarc.bank.test': 'v=DMARC1; p=reject' });
+  const two = Buffer.from('From: ceo@bank.test\r\nFrom: x@evil.test\r\nSubject: hi\r\n\r\nbody\r\n', 'latin1');
+  const out = await checkDmarc({ rawMessage: two, dkimPassedDomains: [], spfResult: 'none', spfDomain: '', resolveTxt: rec });
+  assert.equal(out.verdict, 'fail');
+  assert.equal(out.policy, 'reject', 'the policy is now fetched (was null) so the failure is enforced');
+});
+
 test('a From with illegal whitespace before the colon is still seen (not hidden from DMARC)', async () => {
   // "From :" is malformed but a lenient MUA reads it as From; DMARC must see it too, so
   // the header name is trimmed before matching. Here the aligned identity makes it pass.

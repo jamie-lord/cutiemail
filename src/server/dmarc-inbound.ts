@@ -55,18 +55,43 @@ export function organizationalDomain(domain: string): string {
  * it pass. The name is trimmed before comparison so `From :` (illegal WSP before the
  * colon, which a lenient MUA still reads as From) can't hide the header from us.
  */
+/**
+ * The address domain of a From header value, parsed the way a compliant MUA displays it
+ * (RFC 5322 §3.4) — NOT with a naive first-`<...>` match. That match aligned DMARC on a
+ * decoy address hidden inside a quoted-string display-name or a comment
+ * (`From: "x <a@evil.com>" <victim@bank.com>`), while the client showed victim@bank.com —
+ * a full DMARC bypass. Strip comments and quoted-strings first (a `<>` inside them is not
+ * an address), then take the LAST angle-addr (or the bare addr-spec), matching
+ * imap/envelope.ts's parseOneAddress so the aligned domain equals the displayed one.
+ */
+function fromValueDomain(value: string): string | null {
+  let v = value;
+  let prev: string;
+  do {
+    prev = v;
+    v = v.replace(/\([^()]*\)/g, ' '); // RFC 5322 comments, innermost-first (handles nesting)
+  } while (v !== prev);
+  v = v.replace(/"(?:[^"\\]|\\.)*"/g, ' ').trim(); // quoted-string display-names
+  const open = v.lastIndexOf('<');
+  let addr: string;
+  if (open !== -1) {
+    const close = v.indexOf('>', open);
+    addr = (close !== -1 ? v.slice(open + 1, close) : v.slice(open + 1)).trim();
+  } else {
+    addr = v.trim();
+  }
+  const at = addr.lastIndexOf('@');
+  if (at === -1) return null;
+  // Strip a root-anchoring trailing dot so it aligns with a dot-less DKIM d=/SPF domain.
+  const domain = addr.slice(at + 1).trim().toLowerCase().replace(/\.$/, '');
+  return domain || null;
+}
+
 function fromHeaderInfo(raw: Buffer): { domain: string | null; count: number } {
   const { headers } = parseMessage(raw);
   const froms = headers.filter((h) => h.name.toString('latin1').trim().toLowerCase() === 'from');
   if (froms.length === 0) return { domain: null, count: 0 };
-  const value = froms[0]!.value.toString('latin1');
-  const angle = /<([^>]*)>/.exec(value);
-  const addr = (angle ? angle[1]! : value).trim();
-  const at = addr.lastIndexOf('@');
-  if (at === -1) return { domain: null, count: froms.length };
-  // Strip a root-anchoring trailing dot so it aligns with a dot-less DKIM d=/SPF domain.
-  const domain = addr.slice(at + 1).trim().toLowerCase().replace(/\.$/, '');
-  return { domain: domain || null, count: froms.length };
+  return { domain: fromValueDomain(froms[0]!.value.toString('latin1')), count: froms.length };
 }
 
 async function fetchDmarc(domain: string, resolveTxt: DmarcInput['resolveTxt']): Promise<string | null> {
@@ -77,10 +102,14 @@ async function fetchDmarc(domain: string, resolveTxt: DmarcInput['resolveTxt']):
 
 export async function checkDmarc(input: DmarcInput): Promise<DmarcOutcome> {
   const { domain: fromDomain, count: fromCount } = fromHeaderInfo(input.rawMessage);
-  // §3.6.1: exactly one From is required. More than one can't yield an unambiguous
-  // aligned identity — treat it as a fail (a display-spoof), never a pass.
-  if (fromCount > 1) return { verdict: 'fail', policy: null, fromDomain, pct: 100 };
-  if (fromDomain === null) return { verdict: 'none', policy: null, fromDomain: null, pct: 100 };
+  // §3.6.1: exactly one From is required. More than one is the canonical display-spoof
+  // (auth aligns one, the MUA may show another) — never a pass. But do NOT short-circuit
+  // here: fall through so the From domain's published policy is fetched, and force the
+  // verdict to `fail` below. Short-circuiting with policy=null let a duplicate-From spoof
+  // of a p=reject domain reach the INBOX instead of Junk (the enforcement predicate keys
+  // on the policy), so the MORE deceptive attack evaded the enforcement the plainer one hit.
+  const spoofMultiFrom = fromCount > 1;
+  if (fromDomain === null) return { verdict: spoofMultiFrom ? 'fail' : 'none', policy: null, fromDomain: null, pct: 100 };
 
   let recordText: string | null;
   // Whether the record came from the organizational domain rather than the From domain
@@ -98,10 +127,10 @@ export async function checkDmarc(input: DmarcInput): Promise<DmarcOutcome> {
   } catch {
     return { verdict: 'temperror', policy: null, fromDomain, pct: 100 };
   }
-  if (recordText === null) return { verdict: 'none', policy: null, fromDomain, pct: 100 };
+  if (recordText === null) return { verdict: spoofMultiFrom ? 'fail' : 'none', policy: null, fromDomain, pct: 100 };
 
   const record = parseDmarcRecord(Buffer.from(recordText, 'latin1'));
-  if (!record.valid) return { verdict: 'none', policy: null, fromDomain, pct: 100 };
+  if (!record.valid) return { verdict: spoofMultiFrom ? 'fail' : 'none', policy: null, fromDomain, pct: 100 };
 
   const dkimAligned = input.dkimPassedDomains.some((d) => checkAlignment(fromDomain, d, record.adkim, organizationalDomain));
   const spfAligned = input.spfResult === 'pass' && input.spfDomain !== '' && checkAlignment(fromDomain, input.spfDomain, record.aspf, organizationalDomain);
@@ -109,5 +138,8 @@ export async function checkDmarc(input: DmarcInput): Promise<DmarcOutcome> {
   // §6.6.3: a subdomain governed by the org-domain record uses sp= (when published),
   // falling back to p=. The applicable policy is what a downstream reader must see.
   const policy = viaOrgFallback && record.subdomainPolicy !== null ? record.subdomainPolicy : record.policy;
-  return { verdict: dkimAligned || spfAligned ? 'pass' : 'fail', policy, fromDomain, pct: record.pct };
+  // A multi-From message is a fail regardless of alignment (the display-spoof); with the
+  // real policy now fetched, a published quarantine/reject is enforced to Junk.
+  const verdict = spoofMultiFrom || !(dkimAligned || spfAligned) ? 'fail' : 'pass';
+  return { verdict, policy, fromDomain, pct: record.pct };
 }
