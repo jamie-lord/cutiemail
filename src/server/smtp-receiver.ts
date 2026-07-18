@@ -17,6 +17,7 @@ import tls from 'node:tls';
 import type { Duplex } from 'node:stream';
 import { CR, LF, DOT } from '../wire/bytes.ts';
 import { countReceived } from './received.ts';
+import type { AuthThrottle } from './auth-throttle.ts';
 
 /** MAIL_DEBUG=1 logs each received command line (AUTH redacted) to stderr. */
 const DEBUG = process.env.MAIL_DEBUG === '1';
@@ -69,6 +70,8 @@ export interface ReceiverOptions {
    * path, where an authenticated user may relay anywhere).
    */
   readonly acceptRecipient?: (address: string) => boolean;
+  /** Per-IP brute-force throttle for submission AUTH (shared with the IMAP server). */
+  readonly throttle?: AuthThrottle;
 }
 
 const addrOf = (line: string): string => /<([^>]*)>/.exec(line)?.[1] ?? '';
@@ -453,13 +456,21 @@ class Connection {
       this.#write('504 5.5.4 AUTH not supported');
       return;
     }
+    // Brute-force throttle: too many recent failures from this IP → refuse without checking
+    // the password (a transient 4yz, so a legitimate client retries after the window drains).
+    if (this.#opts.throttle?.isBlocked(this.#remoteAddress) === true) {
+      this.#write('454 4.7.0 too many failed attempts, try again later');
+      return;
+    }
     const decoded = Buffer.from(b64, 'base64').toString('latin1').split(NUL);
     const username = decoded[1] ?? '';
     const password = decoded[2] ?? '';
     if (this.#opts.authenticate(username, password)) {
+      this.#opts.throttle?.recordSuccess(this.#remoteAddress);
       this.#authed = true;
       this.#write('235 2.7.0 Authentication successful');
     } else {
+      this.#opts.throttle?.recordFailure(this.#remoteAddress);
       this.#write('535 5.7.8 Authentication credentials invalid');
     }
   }

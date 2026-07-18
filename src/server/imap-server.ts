@@ -28,6 +28,7 @@ import { matchesSearch, type SearchKey } from '../imap/search.ts';
 import { parseSequenceSet } from '../imap/sequence-set.ts';
 import { canonicalMailboxName } from '../store/mailbox-name.ts';
 import type { MailboxNotifier } from './mailbox-notifier.ts';
+import type { AuthThrottle } from './auth-throttle.ts';
 
 export interface ServableMessage {
   readonly uid: number;
@@ -505,6 +506,7 @@ export class ImapServer {
   readonly #notifier: MailboxNotifier | undefined;
   readonly #resolveAccount: ((login: string) => { catalog: ServableCatalog; notifier?: MailboxNotifier } | undefined) | undefined;
   readonly #autologoutMs: number;
+  readonly #throttle: AuthThrottle | undefined;
 
   private constructor(
     server: net.Server,
@@ -514,6 +516,7 @@ export class ImapServer {
     notifier?: MailboxNotifier,
     autologoutMs = AUTOLOGOUT_MS,
     resolveAccount?: (login: string) => { catalog: ServableCatalog; notifier?: MailboxNotifier } | undefined,
+    throttle?: AuthThrottle,
   ) {
     this.#server = server;
     this.port = port;
@@ -522,6 +525,7 @@ export class ImapServer {
     this.#notifier = notifier;
     this.#resolveAccount = resolveAccount;
     this.#autologoutMs = autologoutMs;
+    this.#throttle = throttle;
   }
 
   /**
@@ -545,6 +549,7 @@ export class ImapServer {
       notifier?: MailboxNotifier;
       autologoutMs?: number;
       resolveAccount?: (login: string) => { catalog: ServableCatalog; notifier?: MailboxNotifier } | undefined;
+      throttle?: AuthThrottle;
     } = {},
   ): Promise<ImapServer> {
     const catalog: ServableCatalog = 'listNames' in target ? target : inboxOnly(target);
@@ -553,7 +558,7 @@ export class ImapServer {
       server.listen(options.port ?? 0, options.host ?? '127.0.0.1', () => {
         const addr = server.address();
         const port = typeof addr === 'object' && addr !== null ? addr.port : 0;
-        const imap = new ImapServer(server, port, catalog, options.authenticate, options.notifier, options.autologoutMs, options.resolveAccount);
+        const imap = new ImapServer(server, port, catalog, options.authenticate, options.notifier, options.autologoutMs, options.resolveAccount, options.throttle);
         const event = options.tls !== undefined ? 'secureConnection' : 'connection';
         server.on(event, (sock: net.Socket) => {
           imap.#sockets.add(sock);
@@ -683,6 +688,11 @@ export class ImapServer {
 
   #handle(sock: net.Socket): void {
     let buf = Buffer.alloc(0);
+    const ip = sock.remoteAddress ?? '';
+    // Brute-force throttle helpers (no-ops when no throttle is configured).
+    const authBlocked = (): boolean => this.#throttle?.isBlocked(ip) === true;
+    const noteAuthFailure = (): void => this.#throttle?.recordFailure(ip);
+    const noteAuthSuccess = (): void => this.#throttle?.recordSuccess(ip);
     let selected: ServableMailbox | null = null;
     let selectedName: string | null = null;
     let pendingAppend: PendingAppend | null = null;
@@ -899,9 +909,11 @@ export class ImapServer {
           } else {
             const authedUser = this.#saslPlainUser(line.trim());
             if (authedUser !== null && bindAccount(authedUser)) {
+              noteAuthSuccess();
               authenticated = true;
               write(sock, `${authTag} OK [CAPABILITY ${CAPABILITIES}] authenticated`);
             } else {
+              noteAuthFailure();
               write(sock, `${authTag} NO [AUTHENTICATIONFAILED] invalid credentials`);
             }
           }
@@ -1095,12 +1107,18 @@ export class ImapServer {
             // containing spaces — a plain split(' ') would truncate the password.
             const user = qarg(1);
             const pass = qarg(2);
-            if (this.#authenticate !== undefined && !this.#authenticate(user, pass)) {
+            if (authBlocked()) {
+              // Too many recent failures from this IP — refuse without checking the password.
+              write(sock, `${tag} NO [UNAVAILABLE] too many failed attempts, try again later`);
+            } else if (this.#authenticate !== undefined && !this.#authenticate(user, pass)) {
+              noteAuthFailure();
               write(sock, `${tag} NO [AUTHENTICATIONFAILED] invalid credentials`);
             } else if (!bindAccount(user)) {
               // Credentials verified but the account is unknown or disabled (multi-account mode).
+              noteAuthFailure();
               write(sock, `${tag} NO [AUTHENTICATIONFAILED] invalid credentials`);
             } else {
+              noteAuthSuccess();
               authenticated = true;
               write(sock, `${tag} OK [CAPABILITY ${CAPABILITIES}] LOGIN completed`);
             }
@@ -1115,6 +1133,10 @@ export class ImapServer {
               write(sock, `${tag} NO [CANNOT] unsupported SASL mechanism`);
               break;
             }
+            if (authBlocked()) {
+              write(sock, `${tag} NO [UNAVAILABLE] too many failed attempts, try again later`);
+              break;
+            }
             const ir = arg(2);
             if (ir === '') {
               pendingAuth = tag;
@@ -1122,9 +1144,11 @@ export class ImapServer {
             } else {
               const authedUser = this.#saslPlainUser(ir);
               if (authedUser !== null && bindAccount(authedUser)) {
+                noteAuthSuccess();
                 authenticated = true;
                 write(sock, `${tag} OK [CAPABILITY ${CAPABILITIES}] authenticated`);
               } else {
+                noteAuthFailure();
                 write(sock, `${tag} NO [AUTHENTICATIONFAILED] invalid credentials`);
               }
             }

@@ -34,6 +34,7 @@ import { verifyDkim, type DkimKeyResolver } from './server/dkim-inbound.ts';
 import { checkSpf, type SpfResolvers } from './auth/spf-check.ts';
 import { checkDmarc } from './server/dmarc-inbound.ts';
 import { verifyArc } from './server/arc-inbound.ts';
+import { AuthThrottle } from './server/auth-throttle.ts';
 import { resolveTxt, resolve4, resolve6, resolveMx } from 'node:dns/promises';
 import { dkimSign, makeSigner } from './server/dkim-signer.ts';
 import { prependReceived, protocolFor, stripOwnAuthResults } from './server/received.ts';
@@ -98,6 +99,12 @@ export interface MailServerConfig {
    * outer seal would not be trusted. Compared case-insensitively.
    */
   readonly trustedArcSealers?: readonly string[];
+  /**
+   * The brute-force auth throttle shared by the submission + IMAP auth paths. Default is a
+   * fresh AuthThrottle with production limits (10 failures / 15 min per IP); tests inject one
+   * with a low threshold, and an operator could tune the limits here.
+   */
+  readonly authThrottle?: AuthThrottle;
 }
 
 /** Real-DNS resolvers for SPF: a missing record is [] (→ none), a real error throws (→ temperror). */
@@ -219,6 +226,9 @@ export async function startServer(cfg: MailServerConfig): Promise<RunningServer>
   const spfResolvers: SpfResolvers = cfg.spfResolvers ?? dnsSpfResolvers;
   // Forwarders whose ARC seals we trust, lower-cased for case-insensitive comparison.
   const trustedArcSealers = new Set((cfg.trustedArcSealers ?? []).map((d) => d.toLowerCase()));
+  // One brute-force throttle shared by the submission and IMAP auth paths, so an attacker
+  // cannot double their guess budget by alternating protocols. Keyed on source IP.
+  const authThrottle = cfg.authThrottle ?? new AuthThrottle();
   const inbound = await SmtpReceiver.start(async (m) => {
     const receivedAt = new Date();
     // Verify DKIM and SPF (informational — never a rejection; §6.1 leniency preserved).
@@ -398,6 +408,7 @@ export async function startServer(cfg: MailServerConfig): Promise<RunningServer>
     tls: cfg.tls,
     requireAuth: true,
     authenticate: verify,
+    throttle: authThrottle,
     host: cfg.host,
     port: cfg.submissionPort,
     ...(cfg.maxMessageSize !== undefined ? { maxMessageSize: cfg.maxMessageSize } : {}),
@@ -411,6 +422,7 @@ export async function startServer(cfg: MailServerConfig): Promise<RunningServer>
     host: cfg.host,
     port: cfg.imapPort,
     authenticate: verify,
+    throttle: authThrottle,
     resolveAccount: (login) => {
       const s = stores.get(login);
       return s === undefined ? undefined : { catalog: s.catalog, notifier: s.notifier };
