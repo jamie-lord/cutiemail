@@ -304,10 +304,16 @@ export class SqliteCatalog {
       if (cf === 'INBOX') {
         // Move INBOX's rows to a fresh mailbox, keeping their UIDs; leave INBOX empty.
         const nextId = Number((this.#db.prepare('SELECT COALESCE(MAX(id), 0) + 1 AS id FROM mailbox').get() as { id: number }).id);
-        const inboxUidNext = Number((this.#db.prepare('SELECT uid_next FROM mailbox WHERE id = ?').get(Number(src.id)) as { uid_next: number }).uid_next);
-        this.#db.prepare('INSERT INTO mailbox (id, uid_validity, uid_next, name) VALUES (?, 1, ?, ?)').run(nextId, inboxUidNext, ct);
+        const inbox = this.#db.prepare('SELECT uid_next, highest_modseq FROM mailbox WHERE id = ?').get(Number(src.id)) as { uid_next: number; highest_modseq: number };
+        // Carry INBOX's highest_modseq onto the new row: the moved messages keep their
+        // mod_seq values (>1 after any APPEND/STORE), so a DEFAULT-1 highest_modseq would
+        // violate the RFC 7162 §3.1.2.1 invariant (HIGHESTMODSEQ >= every message's MODSEQ)
+        // and silently desync CONDSTORE/QRESYNC clients. Move the expunge log too, or
+        // QRESYNC VANISHED (EARLIER) history is lost on rename.
+        this.#db.prepare('INSERT INTO mailbox (id, uid_validity, uid_next, name, highest_modseq) VALUES (?, 1, ?, ?, ?)').run(nextId, Number(inbox.uid_next), ct, Number(inbox.highest_modseq));
         this.#db.prepare('UPDATE message SET mailbox_id = ? WHERE mailbox_id = ?').run(nextId, Number(src.id));
         this.#db.prepare('UPDATE flag SET mailbox_id = ? WHERE mailbox_id = ?').run(nextId, Number(src.id));
+        this.#db.prepare('UPDATE expunged SET mailbox_id = ? WHERE mailbox_id = ?').run(nextId, Number(src.id));
       } else {
         this.#db.prepare('UPDATE mailbox SET name = ? WHERE id = ?').run(ct, Number(src.id));
       }

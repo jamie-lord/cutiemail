@@ -48,6 +48,32 @@ test('each mailbox has an independent UID sequence', () => {
   assert.equal(trash.uidNext, 2);
 });
 
+test('RENAME INBOX preserves highest_modseq and the expunge log (RFC 7162 invariant)', () => {
+  // Audit run-2 finding 2: the INBOX-rename special case moved messages (keeping their
+  // mod_seq) into a NEW mailbox row whose highest_modseq defaulted to 1 — violating
+  // HIGHESTMODSEQ >= every message's MODSEQ and silently desyncing CONDSTORE/QRESYNC.
+  const cat = SqliteCatalog.open(new DatabaseSync(':memory:'));
+  const inbox = cat.get('INBOX')!;
+  const uid1 = inbox.append(Buffer.from('a'));
+  inbox.append(Buffer.from('b'));
+  inbox.storeFlags(uid1, 'add', ['\\Seen']); // bump modseq above 1
+  inbox.expunge(uid1); // an entry in the expunge log to prove it moves
+  const beforeModseq = inbox.highestModseq;
+  assert.ok(beforeModseq > 1, 'precondition: modseq advanced past the default');
+
+  assert.equal(cat.rename('INBOX', 'Foo'), 'ok');
+  const foo = cat.get('Foo')!;
+  // The invariant: HIGHESTMODSEQ carried over, NOT reset to 1 (negative control: the old
+  // code left it at the column DEFAULT 1, below the moved messages' mod_seq).
+  assert.equal(foo.highestModseq, beforeModseq, 'highest_modseq carried onto the renamed mailbox');
+  // Monotonicity holds: a further change climbs above the carried value.
+  const remaining = inbox === foo ? uid1 : 2;
+  foo.storeFlags(remaining, 'add', ['\\Flagged']);
+  assert.ok(foo.highestModseq > beforeModseq, 'a later change gets a higher modseq');
+  // The expunge log moved with the messages (QRESYNC VANISHED history preserved).
+  assert.ok(foo.expungedSince(1).includes(uid1), 'the pre-rename expunge is visible on the renamed mailbox');
+});
+
 test('INBOX matches case-insensitively; other names are exact; INBOX cannot be re-created', () => {
   const cat = SqliteCatalog.open(new DatabaseSync(':memory:'));
   assert.ok(cat.get('inbox') !== undefined);
