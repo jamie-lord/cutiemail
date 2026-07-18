@@ -493,6 +493,13 @@ function configFromEnv(): MailServerConfig & { usingDevCert: boolean } {
     tls: dev,
     ...(dkim !== undefined ? { dkim } : {}),
     maxMessageSize: Number(process.env.MAIL_MAX_SIZE ?? 26_214_400), // 25 MiB default
+    // Forwarders (e.g. a mailing list) whose valid ARC chain may rescue a DMARC failure to
+    // the INBOX (ADR 0011). Comma-separated domains; empty = ARC is recorded but never
+    // overrides DMARC (the safe default).
+    trustedArcSealers: (process.env.MAIL_TRUSTED_ARC_SEALERS ?? '')
+      .split(',')
+      .map((s) => s.trim())
+      .filter(Boolean),
     usingDevCert,
   };
 }
