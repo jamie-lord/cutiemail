@@ -1,0 +1,7 @@
+From: a@x.test
+Content-Type: application/pdf;
+ filename*=UTF-8'en'%C2%A3%20rates.pdf
+Content-Disposition: attachment;
+ filename*=UTF-8'en'%C2%A3%20rates.pdf
+
+%PDF-fake

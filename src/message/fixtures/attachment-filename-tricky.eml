@@ -1,0 +1,9 @@
+From: a@x.test
+Content-Type: multipart/mixed; boundary="B"
+
+--B
+Content-Type: application/octet-stream; name="a\"b;cd.bin"
+Content-Disposition: attachment; filename="x	y.bin"
+
+data
+--B--

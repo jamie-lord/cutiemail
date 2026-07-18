@@ -1,0 +1,26 @@
+From: forwarder@x.test
+Subject: Fwd: hi
+Content-Type: multipart/mixed; boundary="F"
+
+--F
+Content-Type: text/plain
+
+See attached.
+--F
+Content-Type: message/rfc822
+
+From: "Inner, Person" <inner@z.test>
+To: orig@z.test
+Subject: =?utf-8?q?original?=
+Content-Type: multipart/alternative; boundary="G"
+
+--G
+Content-Type: text/plain
+
+inner plain
+--G
+Content-Type: text/html
+
+<b>inner html</b>
+--G--
+--F--

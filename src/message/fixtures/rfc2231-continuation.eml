@@ -1,0 +1,6 @@
+From: a@x.test
+Content-Type: application/x-stuff;
+ name*0="this_is_a_very_long_file";
+ name*1="name_split_in_two.dat"
+
+data
