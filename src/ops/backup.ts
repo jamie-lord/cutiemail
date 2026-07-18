@@ -21,7 +21,7 @@
  * are for; claiming it here would be a false promise.
  */
 
-import { existsSync, mkdirSync, readdirSync, statSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, readdirSync, statSync } from 'node:fs';
 import { basename, join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { AccountRegistry } from '../store/account-registry.ts';
@@ -36,6 +36,9 @@ export function snapshotDatabase(sourcePath: string, destPath: string): void {
   const db = openMailDb(sourcePath);
   try {
     db.exec(`VACUUM INTO ${sqlString(destPath)}`);
+    // The snapshot is a byte-exact copy of the source's secrets (SCRAM material + raw mail) —
+    // make it private explicitly, not only via the caller's umask (audit run-4).
+    chmodSync(destPath, 0o600);
   } finally {
     db.close();
   }
@@ -167,7 +170,7 @@ export function runBackup(args: string[], io: OpsIo, env: Record<string, string 
     io.err(`backup: control database ${dbPath} does not exist (set MAIL_CONTROL_DB or --db).`);
     return 2;
   }
-  mkdirSync(destDir, { recursive: true });
+  mkdirSync(destDir, { recursive: true, mode: 0o700 }); // the backup dir holds copies of all secrets
 
   // The control DB names every mailbox database — that enumeration is the backup
   // manifest. Missing mailbox files are accounts that never received mail (their

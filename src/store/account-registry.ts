@@ -49,7 +49,12 @@ interface RawRow {
   enabled: number;
 }
 
-const DEFAULT_ITERATIONS = 4096;
+// RFC 7677 §3.1 sets 4096 only as the FLOOR; OWASP's current guidance for PBKDF2-HMAC-SHA256
+// is 600,000. 4096 is ~5 orders of magnitude too low against a stolen control DB / backup
+// (GPU cracking runs at hundreds of millions of guesses/sec at 4096) — SCRAM's "server stores
+// no password" property is worthless with a weak KDF. Stored per-row, so existing accounts
+// re-derive at this cost on their next password change (audit run-4).
+const DEFAULT_ITERATIONS = 600_000;
 const DEFAULT_HASH: ScramHash = 'sha256';
 
 export class AccountRegistry {

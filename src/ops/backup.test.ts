@@ -18,7 +18,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
@@ -62,6 +62,18 @@ async function makeWorld(dir: string): Promise<{ controlPath: string; mailPath: 
   cdb.close();
   return { controlPath, mailPath };
 }
+
+test('a backup snapshot is written private (0600) — it is a copy of all secrets (run-4)', async () => {
+  const dir = tmp();
+  try {
+    const { controlPath } = await makeWorld(dir);
+    const dest = join(dir, 'snap.db');
+    snapshotDatabase(controlPath, dest);
+    assert.equal(statSync(dest).mode & 0o777, 0o600, 'the snapshot must not be world/group readable');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
 
 test('backup snapshots every database and the snapshot verifies clean; verify mutates nothing', async () => {
   const dir = tmp();

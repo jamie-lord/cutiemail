@@ -14,7 +14,7 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { runAccount, validLogin, type PasswordSource } from './account.ts';
@@ -61,6 +61,40 @@ test('add provisions a working account and the password never touches the disk',
     // password would fail this scan.
     const raw = readFileSync(dbPath);
     assert.equal(raw.includes(Buffer.from('s3cret-hunter2')), false);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('a new account uses a modern PBKDF2 iteration count and rejects a case-folding login (run-4)', async () => {
+  const dir = tmp();
+  try {
+    const dbPath = join(dir, 'control.db');
+    assert.equal(await runAccount(['add', 'Bob', '--db', dbPath], capture().io, {}, secrets('pw-one', 'pw-one')), 0);
+
+    // PBKDF2 iterations must be the modern default (>= 600k), not the RFC 7677 floor of 4096.
+    const db = openMailDb(dbPath);
+    const row = db.prepare('SELECT iterations FROM accounts WHERE login = ?').get('Bob') as { iterations: number };
+    assert.ok(row.iterations >= 600_000, `iterations must be >= 600000, got ${row.iterations}`);
+    db.close();
+
+    // A login that case-folds to an existing one is refused — on a case-insensitive filesystem
+    // "Bob" and "bob" would share one mail-<login>.db despite distinct credentials.
+    const cap = capture();
+    assert.equal(await runAccount(['add', 'bob', '--db', dbPath], cap.io, {}, secrets('pw-two', 'pw-two')), 1);
+    assert.match(cap.err.join('\n'), /case-insensitive|collides/i);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('a mail database is created private (0600), never world/group readable (run-4)', () => {
+  const dir = tmp();
+  try {
+    const dbPath = join(dir, 'perms.db');
+    openMailDb(dbPath).close();
+    const mode = statSync(dbPath).mode & 0o777;
+    assert.equal(mode, 0o600, `the DB (SCRAM material + raw mail) must be 0600, got ${mode.toString(8)}`);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

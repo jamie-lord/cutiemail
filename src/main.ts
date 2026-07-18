@@ -620,6 +620,12 @@ async function main(): Promise<void> {
 // operator CLI (setup, ... — see src/ops/cli.ts) against the same env configuration.
 // One entry point on purpose: the daemon IS the toolbox, there is no second artifact.
 if (import.meta.url === `file://${process.argv[1]}`) {
+  // Every file this process creates — the control DB and per-user mail DBs (with SCRAM
+  // credential material + raw message bytes), their WAL sidecars, and backup artifacts —
+  // is private to the mail user. A 0o077 umask makes new files 0600 and new dirs 0700 by
+  // default, closing the local-disclosure gap (audit run-4). Applies to the daemon and every
+  // operator subcommand (backup, account, setup) since they share this one entry point.
+  process.umask(0o077);
   const opsArgs = process.argv.slice(2);
   if (opsArgs.length > 0) {
     const io = {

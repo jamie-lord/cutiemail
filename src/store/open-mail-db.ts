@@ -21,6 +21,7 @@
  */
 
 import { DatabaseSync } from 'node:sqlite';
+import { chmodSync } from 'node:fs';
 
 /** The busy timeout every mail-database connection is opened with (ms). */
 export const BUSY_TIMEOUT_MS = 5000;
@@ -35,6 +36,17 @@ export function openMailDb(path: string): DatabaseSync {
     db.exec('PRAGMA journal_mode=WAL');
   } catch {
     /* :memory: and some builds don't support WAL — harmless */
+  }
+  // The DB holds SCRAM credential material (salt/iterations/stored_key/server_key) and raw
+  // message bytes — never group/world readable. The daemon's 0o077 umask makes new files
+  // 0600, but tighten explicitly here too so an ALREADY-DEPLOYED 0644 file is fixed on the
+  // next open (the WAL sidecars are covered by the umask when recreated). Audit run-4.
+  if (path !== ':memory:') {
+    try {
+      chmodSync(path, 0o600);
+    } catch {
+      /* best-effort: a read-only FS or a foreign owner is not fatal to opening */
+    }
   }
   return db;
 }

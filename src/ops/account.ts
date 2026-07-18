@@ -171,6 +171,16 @@ export async function runAccount(
           io.err(`account add: ${login} already exists — use set-password to change its password.`);
           return 1;
         }
+        // Reject a login that case-folds to an existing one: it maps to the same
+        // mail-<login>.db file on a case-insensitive filesystem (macOS default, some container
+        // volumes), silently sharing one mailbox between two distinct-credential accounts
+        // (audit run-4). Logins must be unique regardless of case.
+        const lc = login!.toLowerCase();
+        const clash = registry.list().find((a) => a.login.toLowerCase() === lc);
+        if (clash !== undefined) {
+          io.err(`account add: ${login} collides with existing account "${clash.login}" (case-insensitive) — logins must be unique regardless of case.`);
+          return 1;
+        }
         const password = await readNewPassword(source);
         if (password === null) {
           io.err('account add: empty password or the two entries did not match — nothing created.');
