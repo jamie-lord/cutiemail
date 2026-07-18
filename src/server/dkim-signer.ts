@@ -52,6 +52,11 @@ export function dkimSign(raw: Buffer, signer: DkimSigner): Buffer {
     }
   }
   if (signedFields.length === 0) return raw;
+  // Never emit a signature that does not cover From (mirrors the inbound guard,
+  // dkim-inbound.ts): a From-less signed message (e.g. a MAIL FROM:<> submission with no From
+  // header) lets a downstream append ANY From under our d= authority. Fail open — send it
+  // unsigned rather than sign a spoofable message (audit run-6).
+  if (!signedFields.some((f) => f.name.toLowerCase() === 'from')) return raw;
 
   const result = signMessage({
     domain: signer.domain,

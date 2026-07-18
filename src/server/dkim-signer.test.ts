@@ -82,6 +82,18 @@ test('tampering with the signed body breaks verification', () => {
   assert.equal(verifySigned(tampered, txt), false, 'a modified body must fail the body hash');
 });
 
+test('a From-less message is NOT signed (never lend d= authority to an unsigned From — run-6)', () => {
+  const { privateKey } = generateKeyPairSync('rsa', { modulusLength: 2048 });
+  const signer = makeSigner('mailtest.example', 'sel', privateKey.export({ type: 'pkcs8', format: 'pem' }) as string);
+  // A submission with MAIL FROM:<> and no From header (fixup adds Date/Message-ID but no From).
+  // Signing it would emit h= without From, so a downstream could append any From under our key.
+  const noFrom = Buffer.from('To: someone@example.net\r\nSubject: x\r\nDate: Thu, 16 Jul 2026 00:00:00 +0000\r\nMessage-ID: <1@mailtest.example>\r\n\r\nbody\r\n', 'latin1');
+  assert.equal(dkimSign(noFrom, signer), noFrom, 'a From-less message is returned unsigned (fail-open)');
+  // Control: the same message WITH a From is signed.
+  const withFrom = Buffer.from('From: a@mailtest.example\r\n' + noFrom.toString('latin1'), 'latin1');
+  assert.ok(dkimSign(withFrom, signer).toString('latin1').startsWith('DKIM-Signature:'), 'a message with From is still signed');
+});
+
 test('a message with no header/body boundary is returned unchanged (fail-open)', () => {
   const { privateKey } = generateKeyPairSync('rsa', { modulusLength: 2048 });
   const signer = makeSigner('mailtest.example', 'sel', privateKey.export({ type: 'pkcs8', format: 'pem' }) as string);
