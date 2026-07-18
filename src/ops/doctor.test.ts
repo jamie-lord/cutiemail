@@ -197,12 +197,14 @@ test('reportChecks neutralises terminal escape sequences in remote-derived detai
   // An MX SMTP greeting / DMARC TXT record / PTR name is remote and spoofable — an OSC 52
   // clipboard write + a CSI screen-clear + a lone-CR overwrite in a detail must not reach the
   // operator's terminal raw (the same class queue-cli already neutralises).
-  reportChecks([{ name: 'mx', status: 'warn', detail: 'greeting \x1b]52;c;ZXZpbA==\x07\x1b[2Jok\rFORGED' }], io);
-  const text = out.join('\n');
-  assert.equal(text.includes('\x1b'), false, 'no ESC byte reaches the terminal');
-  assert.equal(/[\x00-\x08\x0e-\x1f\x7f-\x9f]/.test(text), false, 'no C0/C1 controls reach the terminal');
-  assert.equal(/\r(?!\n)/.test(text), false, 'no lone CR (line-overwrite forgery)');
-  assert.ok(text.includes('FORGED'), 'the visible text is still shown, just neutralised');
+  // Includes a raw newline: a one-line detail must not split into an extra line that could be
+  // byte-identical to a genuine "ok" verdict (run-7 completes the run-6 fix — LF was passed).
+  reportChecks([{ name: 'mx', status: 'warn', detail: 'greeting \x1b]52;c;ZXZpbA==\x07\x1b[2J\n  ok   dkim   FORGED\rX' }], io);
+  const checkLine = out[0]!; // the single check line; reportChecks then adds a blank + summary
+  assert.equal(checkLine.includes('\x1b'), false, 'no ESC byte reaches the terminal');
+  assert.equal(/[\x00-\x08\x0e-\x1f\x7f-\x9f]/.test(checkLine), false, 'no C0/C1 controls reach the terminal');
+  assert.equal(/[\r\n]/.test(checkLine), false, 'no CR/LF survives — the detail cannot inject an extra (verdict-forging) line');
+  assert.ok(checkLine.includes('FORGED'), 'the visible text is still shown on the one line, just neutralised');
 });
 
 test('runDoctor: no domain is a usage error (2); unknown flag is a usage error (2)', async () => {

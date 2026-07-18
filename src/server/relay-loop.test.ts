@@ -121,6 +121,28 @@ test('past the give-up window, the still-failing recipients are bounced to the s
   assert.equal(bounces[0]!.failures[0]!.status, '5.4.7', 'the status is delivery-time-expired');
 });
 
+test('a settle fault on a mixed permanent+transient give-up keeps (does not drop) the permanent recipient (run-7)', async () => {
+  const queue = SqliteQueue.open(new DatabaseSync(':memory:'));
+  const relay = async (m: { recipients: readonly string[] }): Promise<readonly RelayResult[]> =>
+    m.recipients.map((rc) => r(rc, rc === 'perm@x.test' ? 'permanent' : 'transient'));
+  const bounces: unknown[] = [];
+  // The give-up branch's durable op (deadLetter) throws; reschedule works.
+  (queue as unknown as { deadLetter: () => void }).deadLetter = () => {
+    throw new Error('SQLITE_FULL');
+  };
+  const loop = new RelayLoop(queue, relay, { onBounce: (b) => bounces.push(b) });
+  const t0 = 7_000_000;
+  queue.enqueue('sender@ours.test', ['perm@x.test', 'trans@y.test'], Buffer.from('m'), t0);
+  await loop.tick(t0 + GIVE_UP_MS + 1); // past give-up → giveup branch → deadLetter throws
+
+  assert.equal(bounces.length, 0, 'no bounce emitted when the durable settle failed');
+  const rescheduled = queue.due(Number.MAX_SAFE_INTEGER);
+  assert.equal(rescheduled.length, 1, 'the row is deferred, not lost');
+  // BOTH unsettled recipients stay on the row — the permanent one is not dropped (dropping it
+  // would silently lose its bounce, since the bounce is emitted only after a clean settle).
+  assert.deepEqual([...rescheduled[0]!.recipients].sort(), ['perm@x.test', 'trans@y.test']);
+});
+
 test('a partial delivery carries only the undelivered recipient forward', async () => {
   const queue = SqliteQueue.open(new DatabaseSync(':memory:'));
   const relay = async (m: { recipients: readonly string[] }): Promise<readonly RelayResult[]> =>

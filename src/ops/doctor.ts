@@ -35,7 +35,7 @@ import { parseDkimKeyRecord } from '../crypto/dkim-keyrecord.ts';
 import { registeredDomain } from '../auth/public-suffix.ts';
 import { dkimTxtFromPrivateKey } from './setup.ts';
 import type { OpsIo } from './cli.ts';
-import { sanitizeForTerminal } from './terminal.ts';
+import { sanitizeForTerminalLine } from './terminal.ts';
 
 export type CheckStatus = 'ok' | 'warn' | 'fail' | 'skip';
 export interface CheckResult {
@@ -240,10 +240,10 @@ export async function doctorChecks(p: DoctorParams, deps: DoctorDeps): Promise<C
 export function reportChecks(results: readonly CheckResult[], io: OpsIo): number {
   const label: Record<CheckStatus, string> = { ok: '  ok ', warn: ' WARN', fail: ' FAIL', skip: ' skip' };
   // r.detail carries remote, spoofable bytes — an MX's SMTP greeting, a DMARC/DKIM TXT record,
-  // an MX/PTR hostname — which can embed ANSI/OSC escape sequences to hijack the clipboard or
-  // paint a fake verdict on the operator's terminal. Neutralise them, as queue-cli already does
-  // for the identical class (audit run-6). r.name is a fixed internal label, left as-is.
-  for (const r of results) io.out(`${label[r.status]}  ${r.name.padEnd(8)} ${sanitizeForTerminal(r.detail)}`);
+  // an MX/PTR hostname — which can embed ANSI/OSC escape sequences OR a raw newline to hijack the
+  // clipboard or inject a forged "ok" verdict line. Each check is exactly one line, so use the
+  // single-line sanitiser (also collapses CR/LF/TAB). r.name is a fixed internal label.
+  for (const r of results) io.out(`${label[r.status]}  ${r.name.padEnd(8)} ${sanitizeForTerminalLine(r.detail)}`);
   const fails = results.filter((r) => r.status === 'fail').length;
   const warns = results.filter((r) => r.status === 'warn').length;
   io.out('');

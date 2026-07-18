@@ -12,3 +12,12 @@
 const TERMINAL_CONTROLS = /[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f]/g;
 
 export const sanitizeForTerminal = (s: string): string => s.replace(/\r(?!\n)/g, '.').replace(TERMINAL_CONTROLS, '.');
+
+/**
+ * Single-line variant: additionally collapse CR/LF/TAB to a space. The multi-line
+ * sanitizeForTerminal keeps \n and \t (queue-cli dumps whole headers), but a caller that emits
+ * exactly ONE line per record (doctor's reportChecks) must neutralise an embedded newline too —
+ * a remote \n in a one-line detail would otherwise inject an extra terminal line byte-identical
+ * to a genuine "ok" verdict, forging a healthy result (audit run-7, completing the run-6 fix).
+ */
+export const sanitizeForTerminalLine = (s: string): string => sanitizeForTerminal(s).replace(/[\t\n\r]+/g, ' ');
