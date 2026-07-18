@@ -15,6 +15,7 @@
  */
 
 import { formatDate } from './submission-fixup.ts';
+import { stripComments } from '../message/cfws.ts';
 
 export interface ReceivedInfo {
   /** The name the client announced in EHLO/HELO. */
@@ -61,14 +62,9 @@ export function prependReceived(data: Buffer, info: ReceivedInfo): Buffer {
 export function authservIdOf(unfoldedHeader: string): string | null {
   const m = /^Authentication-Results:(.*)$/is.exec(unfoldedHeader);
   if (m === null) return null;
-  // Remove RFC 5322 comments, innermost first, until none remain (handles nesting).
-  let v = m[1]!;
-  let prev: string;
-  do {
-    prev = v;
-    v = v.replace(/\([^()]*\)/g, ' ');
-  } while (v !== prev);
-  v = v.replace(/^[ \t]+/, '');
+  // Remove RFC 5322 comments in one linear pass (nesting-aware; a fixed-point regex peel was
+  // O(depth²) and froze the event loop on a crafted header — audit run-3).
+  let v = stripComments(m[1]!).replace(/^[ \t]+/, '');
   let id: string;
   if (v.startsWith('"')) {
     // quoted-string: read to the closing unescaped quote.

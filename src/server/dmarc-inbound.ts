@@ -16,6 +16,7 @@
 
 import { parseDmarcRecord, checkAlignment } from '../auth/dmarc.ts';
 import { parseMessage } from '../message/parse.ts';
+import { stripComments } from '../message/cfws.ts';
 import { registeredDomain } from '../auth/public-suffix.ts';
 
 export type DmarcVerdict = 'pass' | 'fail' | 'none' | 'temperror';
@@ -65,12 +66,9 @@ export function organizationalDomain(domain: string): string {
  * imap/envelope.ts's parseOneAddress so the aligned domain equals the displayed one.
  */
 function fromValueDomain(value: string): string | null {
-  let v = value;
-  let prev: string;
-  do {
-    prev = v;
-    v = v.replace(/\([^()]*\)/g, ' '); // RFC 5322 comments, innermost-first (handles nesting)
-  } while (v !== prev);
+  // Strip RFC 5322 comments in one linear pass (a nested comment must never cost O(depth²) —
+  // that froze the event loop on a single crafted message, audit run-3), then quoted-strings.
+  let v = stripComments(value);
   v = v.replace(/"(?:[^"\\]|\\.)*"/g, ' ').trim(); // quoted-string display-names
   const open = v.lastIndexOf('<');
   let addr: string;
