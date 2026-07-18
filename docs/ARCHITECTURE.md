@@ -47,10 +47,12 @@ flowchart LR
 2. `src/server/smtp-receiver.ts` reads it off the wire as raw `Buffer`s, un-stuffs
    the leading dots (RFC 5321 §4.5.2), and hands the delivered bytes to a
    `store` callback.
-3. `src/main.ts` wired that callback to `SqliteMailbox.append()`, so the message
-   lands in SQLite as a `BLOB` — byte-exact, no round-trip through a JS string.
+3. `src/main.ts` resolves the recipient to a local account and appends to *that user's*
+   `SqliteMailbox`, so the message lands in SQLite as a `BLOB` — byte-exact, no round-trip
+   through a JS string.
 4. Thunderbird connects to `src/server/imap-server.ts` over TLS, `LOGIN`s (verified
-   against `src/store/accounts.ts`), `SELECT INBOX`, `FETCH 1 BODY[]`. The server
+   against the SCRAM `AccountRegistry` in `src/store/account-registry.ts`), `SELECT INBOX`,
+   `FETCH 1 BODY[]`. The server
    reads the `BLOB` back out and writes it down the socket inside an IMAP literal —
    the same bytes that arrived.
 
@@ -64,9 +66,12 @@ approximately-exact.
 
 The trace above is the happy path; a message off the open internet is not
 trusted. Between "read the bytes" and "append to SQLite", `main.ts`'s inbound
-handler authenticates the sender and records the result — informational, never a
-rejection (we are a mail server, not a spam filter; that stays a recorded cut).
-Because a DKIM key and the SPF/DMARC records are DNS lookups, the delivery handler
+handler authenticates the sender and records the result in `Authentication-Results`.
+That result is then *acted on*: a message that fails DMARC where the owner published
+`p=quarantine`/`p=reject` is filed to the recipient's Junk folder rather than the inbox
+(ADR 0010) — never hard-rejected at SMTP, so legitimately-forwarded mail isn't bounced,
+and a valid **ARC** chain from a trusted sealer can rescue it to the inbox (ADR 0011).
+Because a DKIM key and the SPF/DMARC/ARC records are DNS lookups, the delivery handler
 is `async`, and `smtp-receiver.ts` serialises chunk processing through a promise
 chain so a pipelined sender can't re-enter it and corrupt the receive buffer.
 
@@ -96,7 +101,11 @@ flowchart TB
   record can't fan the resolver into a DoS.
 - **DMARC** (`dmarc-inbound.ts`) ties the two to the `From` domain: it passes only
   when an *aligned* DKIM or SPF identifier passed (relaxed = same organizational
-  domain, via a public-suffix heuristic; strict = exact).
+  domain, resolved over the full embedded Public Suffix List in `auth/public-suffix.ts`;
+  strict = exact). The delivery path (`main.ts`) then enforces the policy — see above.
+- **ARC** (`server/arc-inbound.ts`) validates any Authenticated Received Chain per
+  RFC 8617 §5.2 — structure, the newest message signature, and every seal (RSA/Ed25519) —
+  so a forwarder you trust can vouch for mail that broke the author's DKIM in transit.
 
 The composition glue is fuzzed (`server/auth-fuzz.test.ts`): 1500 malformed
 records and headers, all returning a verdict without throwing. Both this and the
@@ -133,7 +142,8 @@ mail libraries, each with switchable defects for negative control:
 - `crypto/` — DKIM sign and verify end to end (canonicalisation → tag list → body
   hash → RSA/Ed25519), pinned to the RFC 6376 / 8463 test vectors. Real
   `node:crypto`, no crypto library.
-- `auth/` — SPF, DMARC, ARC structure, and SCRAM (the password-never-sent proof).
+- `auth/` — SPF, DMARC (with the embedded Public Suffix List), ARC chain validation,
+  and SCRAM (the password-never-sent proof).
 - `imap/` — the IMAP4rev2 pieces: command and response grammars, literals,
   `ENVELOPE`, sequence sets, `SEARCH`.
 - `smtp/`, `transport/` — the AUTH/SIZE decision logic and MTA-STS / SMTPUTF8.
@@ -145,9 +155,12 @@ flags, `EXPUNGE`, sequence numbers, `UIDVALIDITY`). `sqlite-mailbox.ts` is the
 named folders (INBOX, Trash, Sent, …) a real client creates; `memory-catalog.ts`
 is its reference twin. They expose one surface, and the corpus drives both through
 a single invariant harness — so the persistent implementation is proven to
-reproduce the reference behaviour exactly. `accounts.ts` (SCRAM credentials),
-`queue.ts` (the retry decision) and `sqlite-queue.ts` (the persisted outbound
-queue) sit alongside.
+reproduce the reference behaviour exactly. Alongside them: `account-registry.ts`
+(the multi-account SCRAM registry — StoredKey/ServerKey, never the password) and
+`mail-stores.ts` (the login-keyed cache that opens one mailbox DB per user);
+`accounts.ts` (the shared SCRAM credential derivation); and `queue.ts` (the retry
+decision) plus `sqlite-queue.ts` (the persisted outbound queue, with a `dead_letter`
+table that retains a message that exhausts its retries rather than dropping it).
 
 **`server/` + `client/`** — the live network layer. `smtp-receiver.ts` and
 `imap-server.ts` are real `net`/`tls` servers; `client/deliver.ts` is the sending
@@ -196,14 +209,16 @@ sequenceDiagram
     S-->>P: (later, live) * VANISHED 4
 ```
 
-**`main.ts`** — the daemon. Opens the database, seeds accounts, and starts three
-listeners (inbound SMTP, submission-with-AUTH, IMAPS). Inbound mail is authenticated
-(the section above), trace-stamped, and stored — and only for recipients we host, so
-we never accept mail we can't deliver. Submitted mail is split by `routeRecipients` —
-local recipients into a folder, remote ones through the send pipeline above.
-`startServer()` is factored out from `main()` so the whole assembly is itself under
-test. If you want to know what "the server" *is*, it is this file and the modules it
-wires.
+**`main.ts`** — the daemon. It opens a **control database** (`store/account-registry.ts` — the
+SCRAM credential registry — plus the outbound queue), opens one mailbox database per user through
+`store/mail-stores.ts`, and starts three listeners (inbound SMTP, submission-with-AUTH, IMAPS).
+Inbound mail is authenticated (the section above), trace-stamped, and delivered into the addressed
+account's mailbox — and only for recipients we host (`loginForLocalAddress`), so we never accept
+mail we can't deliver. Submitted mail is split by `routeRecipients` — local recipients into a
+folder, remote ones through the send pipeline above. Both auth-bearing listeners share one per-IP
+brute-force throttle (`server/auth-throttle.ts`). `startServer()` is factored out from `main()` so
+the whole assembly is itself under test. If you want to know what "the server" *is*, it is this
+file and the modules it wires.
 
 ## The test bed, and why it can be trusted
 
@@ -224,7 +239,7 @@ from a vendored RFC, with its RFC 2119 level, the party it binds (server / clien
 both), and an honest `testability` tag. `register/types.ts` defines the shape;
 `register/gate.ts` is a test that checks every quote against the `spec/*.txt` file
 it claims to come from — so a paraphrased or fabricated quote fails the build. This
-is the fixed thing everything else is measured against: 663 requirements across six
+is the fixed thing everything else is measured against: 668 requirements across six
 domains from 18 RFCs (`npm run registry` prints the live count). Registrations you
 *can't* test (client-binding, out-of-band) stay in the register anyway — deleting
 them would shrink the denominator and flatter the coverage number.
@@ -274,8 +289,9 @@ These aren't style preferences; break one and something real breaks.
   `.ts` with no build step, which forbids anything that needs a runtime transform:
   no `enum`, no constructor parameter properties. Classes use explicit `#private`
   fields. `noUncheckedIndexedAccess` is on, so indexing is guarded then `!`-asserted.
-- **Opinionated cuts are recorded, never silent.** No POP3, IMAP4rev2 only,
-  MTA-STS not DANE, SCRAM + PLAIN-over-TLS only. Each cut is an ADR in
+- **Opinionated cuts are recorded, never silent.** No POP3; IMAP4rev2 with a curated
+  extension set (rev1 also advertised for client compatibility); MTA-STS not DANE;
+  SCRAM + PLAIN-over-TLS only. Each cut is an ADR in
   `docs/decisions/` with a reason, so a future reader can tell "we decided against
   this" from "we forgot."
 

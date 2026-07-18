@@ -2,7 +2,7 @@
 
 This is the walkthrough for the thing the project is now capable of: put the
 daemon on a little Linux box, point DNS at it, and send mail to and receive mail
-from your existing inbox (Gmail, Fastmail, whatever) through a single account.
+from your existing inbox (Gmail, Fastmail, whatever) through one or more accounts.
 
 It is a **test bench, not a production MTA** — naive on purpose (see
 [Known limitations](#known-limitations)). The point is to get it into the real
@@ -16,7 +16,7 @@ flowchart LR
     GMAIL["your existing inbox<br/>(Gmail)"]
     subgraph BOX["your Linux box · mail.example.com"]
         DAEMON["the daemon<br/>src/main.ts"]
-        DB[("SQLite<br/>mail.db")]
+        DB[("SQLite<br/>control.db + mail-&lt;user&gt;.db")]
         DAEMON --- DB
     end
     CLIENT["a mail client<br/>(Thunderbird / your phone)"]
@@ -110,25 +110,38 @@ you're testing; tighten to `quarantine`/`reject` once you trust your setup.
 
 ## Running it
 
-The daemon is configured entirely by environment variables:
+The daemon is configured entirely by environment variables — there is no config file, and the
+SQLite databases are created on first run:
 
 | Variable | For a real deployment |
 |---|---|
 | `MAIL_DOMAIN` | `mail.example.com` — your hostname *and* mail domain |
-| `MAIL_DB` | `/var/lib/mailserver/mail.db` — a durable path, not `:memory:` |
 | `MAIL_HOST` | `0.0.0.0` — bind all interfaces, not just loopback |
 | `MAIL_SMTP_PORT` / `MAIL_SUBMISSION_PORT` / `MAIL_IMAP_PORT` | `25` / `587` / `993` |
-| `MAIL_USER` / `MAIL_PASS` | your single account, e.g. `you` / a real passphrase |
+| `MAIL_USER` / `MAIL_PASS` | the **primary** account, e.g. `you` / a real passphrase |
+| `MAIL_ACCOUNTS` | additional accounts as `"user:pass,user2:pass2"` (each gets its own `mail-<user>.db`) — omit for a single account |
+| `MAIL_CONTROL_DB` | `/var/lib/mailserver/control.db` — the control database (account registry + outbound queue) |
+| `MAIL_DB` | `/var/lib/mailserver/mail.db` — the **primary** account's mailbox database (a durable path, not `:memory:`) |
 | `MAIL_TLS_CERT` / `MAIL_TLS_KEY` | paths to a real certificate (Let's Encrypt) |
-| `MAIL_DKIM_KEY` / `MAIL_DKIM_SELECTOR` | PEM key path + selector to sign outbound (see Known limitations) |
+| `MAIL_DKIM_KEY` / `MAIL_DKIM_SELECTOR` | PEM key path + selector to sign outbound (see below) |
+| `MAIL_TRUSTED_ARC_SEALERS` | comma-separated forwarder domains whose valid ARC chain may rescue a DMARC failure to the inbox (e.g. a mailing list you subscribe to); omit for none |
 | `MAIL_MAX_SIZE` | max accepted message size in octets (default 25 MiB) |
 
+Each account's mailbox lives in its own SQLite file; a shared control database holds the SCRAM
+credential registry (which stores only the derived StoredKey/ServerKey, never the password) and the
+persistent outbound queue. Inbound mail is delivered into the addressed account's mailbox; a
+recipient that isn't a known local account is rejected at `RCPT` (no catch-all, no backscatter).
+
 What the running server does, end to end: it **receives** on 25 (stamping a
-`Received:` trace line, rejecting oversized messages and mail loops), **serves**
-the mailbox on 993 with the IMAP surface a real client needs — multiple folders,
-`IDLE` for instant new-mail, `UIDPLUS` — and **sends** what's submitted on 587 by
-signing it (DKIM), stamping `Received:`, and relaying to the recipient's MX over
-opportunistic STARTTLS, with a persistent retry queue behind it.
+`Received:` trace line, rejecting oversized messages and mail loops), authenticates
+every sender (**SPF + DKIM + DMARC**, aligned over the full Public Suffix List, plus
+**ARC** validation) and records the result in `Authentication-Results` — then **enforces**
+DMARC by filing a `p=quarantine`/`p=reject` failure into the recipient's Junk folder
+(never a hard reject; a trusted ARC sealer can rescue it). It **serves** the mailbox on 993
+with the IMAP surface a real client needs — multiple folders, `IDLE` for instant new-mail,
+`UIDPLUS`, `CONDSTORE`/`QRESYNC` — and **sends** what's submitted on 587 by signing it (DKIM),
+stamping `Received:`, and relaying to the recipient's MX over STARTTLS (opportunistic, or
+MTA-STS-enforced when the destination publishes a policy), with a persistent retry queue behind it.
 
 Ports 25/587/993 are privileged (< 1024), so the process needs the capability to
 bind them. The clean way is a systemd unit that grants exactly that and nothing
@@ -147,6 +160,7 @@ WorkingDirectory=/opt/mailserver
 ExecStart=/usr/bin/node src/main.ts
 Environment=MAIL_DOMAIN=mail.example.com
 Environment=MAIL_HOST=0.0.0.0
+Environment=MAIL_CONTROL_DB=/var/lib/mailserver/control.db
 Environment=MAIL_DB=/var/lib/mailserver/mail.db
 Environment=MAIL_SMTP_PORT=25 MAIL_SUBMISSION_PORT=587 MAIL_IMAP_PORT=993
 Environment=MAIL_USER=you MAIL_PASS=change-this-passphrase
@@ -263,11 +277,6 @@ These are deliberate, recorded, and roughly in priority order for closing:
   DNS hiccup) is queued in SQLite and retried on an exponential backoff until it
   delivers or the give-up window (~5 days) passes; a `5xx` bounces at once. The
   queue survives a restart. `MAIL_*` needs no extra config for this.
-- **One shared mailbox, no per-user routing.** Inbound mail for *any* address at
-  the hosted domain lands in the single account's mailbox — there is no per-user
-  routing. Recipients at *other* domains are rejected at `RCPT` (no open relay, no
-  backscatter); it just doesn't distinguish users within its own domain. Exactly
-  the naive single-account behaviour you asked for — fine for a test, not multi-user.
 - **`MAIL_DOMAIN` does double duty** as both the SMTP greeting/HELO name and the
   local mail domain. That's why this guide uses one name for host and domain
   (`you@mail.example.com`): a split like greeting `mail.example.com` + addresses
@@ -276,9 +285,11 @@ These are deliberate, recorded, and roughly in priority order for closing:
   without a matching v6 PTR and authentication; the PTR this guide sets is for
   the v4 address, so the relay pins `family: 4`. Revisit if you set up full
   IPv6 forward-confirmed rDNS.
-- **Hardened at the protocol layer, not operationally.** The wire surface has been
+- **Hardened at the protocol layer, not fully operationally.** The wire surface has been
   adversarially audited — SMTP-smuggling defence, DoS caps (recipient count, DATA
   scan, reply framing), auth-header spoofing and DMARC display-spoof fixes, an MX
-  SSRF guard, a bounded TLS handshake. But there is still *no rate limiting, no spam
-  filtering, and no fail2ban-style protection*, and it has not been through a
-  third-party security review. Don't put anything you care about behind it yet.
+  SSRF guard, a bounded TLS handshake — and the auth paths carry a **per-IP brute-force
+  throttle** (submission + IMAP; over the threshold, auth is refused without checking the
+  password). But there is still *no spam filtering and no fail2ban-style network banning*,
+  and it has not been through a third-party security review. Don't put anything you care
+  about behind it yet.

@@ -31,7 +31,7 @@ decision, why it matters. If you can't, don't do it. Real work is one of:
   - documentation a reader actually needs (mermaid diagrams, never ASCII art).
 Everything else is off-limits unless the vision itself changes: cosmetic refactors,
 edge-tinkering, re-auditing code already covered, redundant re-runs, and features
-outside the stated scope (POP3, JMAP, Sieve, ARC signing, a full PSL, and so on).
+outside the stated scope (POP3, JMAP, Sieve, ARC signing, and so on).
 
 HOW YOU WORK, EVERY TIME. Reproduce a bug with a test before fixing it; never write
 a test that passes for the wrong reason. Every omission is a recorded decision, not

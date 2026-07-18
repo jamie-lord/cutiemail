@@ -24,18 +24,27 @@ npm install     # only the type-checker; no runtime deps
 npm start       # launch the daemon with dev-friendly defaults
 ```
 
-`npm start` opens the database and starts three listeners: inbound SMTP, submission SMTP (SASL
-PLAIN AUTH over TLS), and IMAPS. Everything is configured by environment variable:
+`npm start` opens the databases and starts three listeners: inbound SMTP, submission SMTP (SASL
+PLAIN AUTH over TLS), and IMAPS. There is no config file — everything is configured by environment
+variable, and the SQLite files are created on first run (no schema step):
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `MAIL_DB` | `mail.db` | SQLite database path (`:memory:` for ephemeral) |
 | `MAIL_DOMAIN` | `mail.example.com` | the local mail domain *and* the SMTP greeting/HELO name |
-| `MAIL_HOST` | `127.0.0.1` | bind address |
+| `MAIL_HOST` | `127.0.0.1` | bind address (`0.0.0.0` in production) |
 | `MAIL_SMTP_PORT` / `MAIL_SUBMISSION_PORT` / `MAIL_IMAP_PORT` | `2525` / `5587` / `5993` | listener ports (use 25 / 587 / 993 in production) |
-| `MAIL_USER` / `MAIL_PASS` | `demo` / `demo` | the single seeded account |
+| `MAIL_USER` / `MAIL_PASS` | `demo` / `demo` | the **primary** account |
+| `MAIL_ACCOUNTS` | unset | additional accounts, `"user:pass,user2:pass2"` (each gets its own `mail-<user>.db`) |
+| `MAIL_CONTROL_DB` | `control.db` | the control database — account registry + outbound queue |
+| `MAIL_DB` | `mail.db` | the **primary** account's mailbox database (`:memory:` for ephemeral) |
 | `MAIL_TLS_CERT` / `MAIL_TLS_KEY` | bundled dev cert | PEM cert/key paths (a self-signed dev cert is used if unset) |
 | `MAIL_DKIM_KEY` / `MAIL_DKIM_SELECTOR` | unset | PEM RSA key + selector to sign outbound mail |
+| `MAIL_TRUSTED_ARC_SEALERS` | unset | comma-separated forwarder domains whose valid ARC chain may rescue a DMARC failure to the inbox |
+| `MAIL_MAX_SIZE` | `26214400` | max accepted message size in octets (25 MiB) |
+
+Embedding it instead of running the daemon? `startServer(config)` takes a `MailServerConfig`
+object directly, with the same knobs plus injection seams (DNS resolvers, the auth throttle, the
+DMARC sampler) that the test suite uses.
 
 To put it on a real box with real DNS and send mail to your own inbox, follow
 [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) — the DNS, systemd, and client walkthrough, with an
@@ -46,19 +55,27 @@ honest list of what is intentionally naive.
 - **Receive** — SMTP on 25 with STARTTLS. Rejects bare CR/LF (the SMTP-smuggling class), enforces
   SIZE, validates recipients against the hosted domain (no open relay, no backscatter), detects
   mail loops, and times out slow-loris connections. Every inbound message is authenticated —
-  **SPF + DKIM + DMARC** verified over DNS and recorded in an `Authentication-Results` header
-  (with any forged copy of that header stripped first) — then trace-stamped and stored.
+  **SPF + DKIM + DMARC** (aligned over the full Public Suffix List) verified over DNS and recorded
+  in an `Authentication-Results` header (with any forged copy of that header stripped first). DMARC
+  is **enforced**: a `p=quarantine`/`p=reject` failure is filed to the recipient's Junk folder
+  rather than the inbox — never hard-rejected, so legitimate forwarded mail isn't lost. **ARC**
+  (RFC 8617) is validated, and a valid chain from a forwarder you trust can rescue such a message
+  to the inbox. The message is then trace-stamped and delivered into the addressed account's mailbox.
 - **Submit + send** — submission on 587 with SASL PLAIN over TLS. A submitted message is fixed
   up (RFC 6409 — a missing From/Date/Message-ID is added), trace-stamped, **DKIM-signed**, and
-  handed to a **persistent SQLite retry queue** that relays it to the recipient's MX over
-  opportunistic STARTTLS with exponential backoff, giving up (and bouncing) only after ~5 days.
-  A permanent failure is bounced immediately as a `multipart/report` DSN — never to a null
-  return-path, so bounces can't loop.
-- **Read** — IMAPS on 993 with the surface a real client actually drives: `IMAP4rev2`, `IDLE`
-  (instant new mail), `UIDPLUS`, `SPECIAL-USE` (the Sent/Drafts/Trash/Junk/Archive folders),
+  handed to a **persistent SQLite retry queue** that relays it to the recipient's MX over STARTTLS
+  (opportunistic, or **MTA-STS-enforced** — validated-TLS-only, no downgrade — when the destination
+  publishes a policy) with exponential backoff, giving up only after ~5 days. A permanent failure is
+  bounced immediately as a `multipart/report` DSN — never to a null return-path, so bounces can't
+  loop — and a given-up message is retained in a dead-letter table for inspection rather than dropped.
+- **Read** — IMAPS on 993 with the surface a real client actually drives: `IMAP4rev1`+`IMAP4rev2`,
+  `IDLE` (instant new mail), `UIDPLUS`, `SPECIAL-USE` (the Sent/Drafts/Trash/Junk/Archive folders),
   `CONDSTORE` and `QRESYNC` (a reconnecting client resyncs the delta in one round-trip), plus
   `BODYSTRUCTURE` and per-part fetch, `SEARCH`/`ESEARCH`, `MOVE`, and multi-connection sync so a
   phone and a desktop on the same mailbox stay in agreement.
+- **Multiple accounts** — one SQLite database per user (a control database holds the SCRAM
+  credential registry and the outbound queue; each user gets their own `mail-<user>.db`), with the
+  IMAP and submission auth paths behind a per-IP brute-force throttle.
 
 The wire between every layer is raw bytes: message content is a `Buffer` from the socket to the
 SQLite `BLOB` and back, never round-tripped through a JavaScript string. That "bytes, never
@@ -74,7 +91,7 @@ one message from SMTP in to IMAP out. Start there to read the codebase.
 ## How it's tested, and why that's trustworthy
 
 Correctness is the point of the project, so the test bed is not an afterthought. Several
-independent disciplines back the 700+ tests:
+independent disciplines back the 850+ tests:
 
 - **The persistent store is proven against a reference model.** The SQLite mailbox and an
   in-memory reference mailbox are driven through one shared invariant harness and must agree
@@ -130,9 +147,12 @@ injection, smuggle-into-TLS, and the §4.2 post-handshake reset). The wire-level
 distilled, with sources, in [docs/research/smtp-divergence.md](docs/research/smtp-divergence.md).
 
 **Calibration before trust.** The runner is our own code, so its verdicts are only trustworthy
-once calibrated against known-good MTAs (Postfix, Exim), with every disagreement triaged to *our
-bug*, *our misreading*, or *a genuine divergence*. That step (see [reference-servers/](reference-servers/))
-is deliberately still outstanding, and the roadmap says so.
+once calibrated against known-good MTAs, with every disagreement triaged to *our bug*, *our
+misreading*, or *a genuine divergence*. It has been run against **three independent
+implementations — Exim, mox, and aiosmtpd — with zero false positives**; the triaged divergences
+(all three honour bare-LF command terminators, a widely-relaxed `MUST NOT`) are recorded in
+[reference-servers/](reference-servers/). A Postfix run is the one target still outstanding
+(it needs a root-capable host), and the roadmap says so.
 
 ## Design decisions
 
