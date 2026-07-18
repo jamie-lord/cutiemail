@@ -16,6 +16,28 @@ test('loopback, private, link-local, and localhost MX targets are refused', () =
   }
 });
 
+test('IPv4-mapped / -compatible IPv6 forms of a private address are refused (live-pentest finding)', () => {
+  // ::ffff:169.254.169.254 & friends are valid IPv6 literals whose last 32 bits carry a
+  // private/loopback/metadata IPv4; a dual-stack socket routes them to that IPv4. The guard
+  // previously classified them by the IPv6 prefix alone and let them through.
+  for (const h of [
+    '::ffff:169.254.169.254', // cloud-metadata via mapped IPv6
+    '::ffff:127.0.0.1',
+    '::ffff:10.0.0.1',
+    '::ffff:192.168.1.1',
+    '::ffff:7f00:1', // 127.0.0.1 in hex-mapped form
+    '::127.0.0.1', // deprecated IPv4-compatible loopback
+  ]) {
+    assert.equal(isUnsafeMxTarget(h), true, `${h} must be refused`);
+  }
+});
+
+test('a mapped IPv6 carrying a PUBLIC IPv4 is still allowed (no over-blocking)', () => {
+  for (const h of ['::ffff:93.184.216.34', '::ffff:8.8.8.8']) {
+    assert.equal(isUnsafeMxTarget(h), false, `${h} must be allowed`);
+  }
+});
+
 test('an empty / null-MX host is refused (net.connect would dial localhost — run-3 backstop)', () => {
   // The resolver normalises a null MX to '.', but this is the last line of defence: any empty,
   // whitespace, or '.' host must never reach net.connect (which resolves '' to 127.0.0.1).
