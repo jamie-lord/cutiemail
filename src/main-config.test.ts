@@ -66,11 +66,16 @@ test('an invalid MAIL_USER or MAIL_ACCOUNTS login is rejected at boot (not turne
     withEnv({ MAIL_USER: bad }, () => assert.throws(() => configFromEnv(), /invalid account login/, `MAIL_USER=${bad}`));
   }
   withEnv({ MAIL_ACCOUNTS: '../evil:pw' }, () => assert.throws(() => configFromEnv(), /invalid account login/));
-  // A valid multi-account list is accepted.
-  withEnv({ MAIL_ACCOUNTS: 'bob:pw1,carol.j:pw2' }, () => {
-    const cfg = configFromEnv();
-    assert.deepEqual(cfg.accounts.map((a) => a.user), ['demo', 'bob', 'carol.j']);
+  // The env primary is seeded ONLY when MAIL_USER is set; MAIL_ACCOUNTS adds to it.
+  withEnv({ MAIL_USER: 'alice', MAIL_ACCOUNTS: 'bob:pw1,carol.j:pw2' }, () => {
+    assert.deepEqual(configFromEnv().accounts.map((a) => a.user), ['alice', 'bob', 'carol.j']);
   });
+  withEnv({ MAIL_ACCOUNTS: 'bob:pw1,carol.j:pw2' }, () => {
+    // No MAIL_USER → no implicit 'demo' primary in config (a passwordless unit is possible;
+    // the dev demo/demo fallback lives in startServer and only fires on an empty registry).
+    assert.deepEqual(configFromEnv().accounts.map((a) => a.user), ['bob', 'carol.j']);
+  });
+  withEnv({}, () => assert.deepEqual(configFromEnv().accounts, [], 'no env accounts → empty (registry is the source of truth)'));
 });
 
 test('a real cert on a public interface is fine (no guard tripped)', () => {

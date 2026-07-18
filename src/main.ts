@@ -194,6 +194,8 @@ export interface RunningServer {
   readonly imap: ImapServer;
   /** The first account's INBOX — the single-account integration harness reads it. */
   readonly mailbox: ServableMailbox;
+  /** Enabled account logins from the registry (source of truth) — for the startup banner. */
+  readonly logins: readonly string[];
   readonly stores: MailStores;
   readonly queue: SqliteQueue;
   readonly relayLoop: RelayLoop;
@@ -226,6 +228,16 @@ export async function startServer(cfg: MailServerConfig): Promise<RunningServer>
   // that predates the 0600 hardening lingers world-readable (found in an audit: a disabled
   // account's mail-<user>.db left at 0644). Best-effort; :memory: and missing files skipped.
   for (const acct of registry.list()) secureMailDbFile(acct.mailDbPath);
+  // Dev out-of-box default: with NOTHING configured and NOTHING in the registry, seed a
+  // demo/demo account so `npm start` just works. A real deployment provisions with
+  // `init`/`account` (or MAIL_USER), so its registry is non-empty and this never fires —
+  // which is what lets a production unit carry no credentials at all.
+  if (registry.list().length === 0) {
+    const demoPath = inMemory ? ':memory:' : join(dirname(cfg.dbPath), 'mail.db');
+    registry.upsert('demo', 'demo', demoPath);
+    secureMailDbFile(demoPath);
+    log('no accounts configured — seeded a dev account demo/demo. Provision real ones with `node src/main.ts init` / `account`.');
+  }
   const verify = (user: string, pass: string): boolean => registry.verifyPassword(user, pass);
 
   // The per-user store manager: opens each user's mail DB once, provisioning INBOX + the
@@ -485,7 +497,11 @@ export async function startServer(cfg: MailServerConfig): Promise<RunningServer>
   // the primary (MAIL_USER) account would brick the whole daemon on the next boot, taking
   // down every OTHER enabled account too (audit run-2 robustness note). Only a genuinely
   // empty/all-disabled registry is fatal.
-  const mailbox = cfg.accounts.map((a) => stores.get(a.user)?.catalog.get('INBOX')).find((m) => m !== undefined);
+  // Scan the REGISTRY (the source of truth, ADR 0012), not the env seeds — a passwordless
+  // deployment has an empty cfg.accounts but a populated registry, and this must still find
+  // an INBOX to expose. Skips disabled accounts so disabling the primary can't brick the rest.
+  const enabledLogins = registry.list().filter((a) => a.enabled).map((a) => a.login);
+  const mailbox = enabledLogins.map((login) => stores.get(login)?.catalog.get('INBOX')).find((m) => m !== undefined);
   if (mailbox === undefined) {
     // Fail closed WITHOUT leaking the already-bound listeners + relay timer — an embedder
     // that catches this must not be left with orphaned handles keeping the loop alive.
@@ -503,6 +519,7 @@ export async function startServer(cfg: MailServerConfig): Promise<RunningServer>
     submission,
     imap,
     mailbox,
+    logins: enabledLogins,
     stores,
     queue,
     relayLoop,
@@ -583,7 +600,13 @@ export function configFromEnv(): MailServerConfig & { usingDevCert: boolean } {
     // migration; additional accounts come from MAIL_ACCOUNTS ("user:pass,user2:pass2")
     // and default their mail DB to mail-<user>.db beside the control DB.
     accounts: [
-      { user: requireValidLogin(process.env.MAIL_USER ?? 'demo', 'MAIL_USER'), pass: process.env.MAIL_PASS ?? 'demo', mailDbPath: process.env.MAIL_DB ?? 'mail.db' },
+      // The env primary is a CREATE-ONLY bootstrap seed, included ONLY when MAIL_USER is
+      // explicitly set. When it is unset the daemon runs entirely off the registry (accounts
+      // created by `init`/`account`), so a production unit needs no credentials at all; a
+      // genuinely empty registry gets a dev `demo/demo` fallback in startServer, not here.
+      ...(process.env.MAIL_USER !== undefined
+        ? [{ user: requireValidLogin(process.env.MAIL_USER, 'MAIL_USER'), pass: process.env.MAIL_PASS ?? 'demo', mailDbPath: process.env.MAIL_DB ?? 'mail.db' }]
+        : []),
       ...(process.env.MAIL_ACCOUNTS ?? '')
         .split(',')
         .map((s) => s.trim())
@@ -622,7 +645,7 @@ async function main(): Promise<void> {
   log(`  inbound SMTP     ${cfg.host}:${server.inbound.port}`);
   log(`  submission (AUTH) ${cfg.host}:${server.submission.port}`);
   log(`  IMAPS            ${cfg.host}:${server.imap.port}`);
-  log(`  accounts: ${cfg.accounts.map((a) => a.user).join(', ')}`);
+  log(`  accounts: ${server.logins.join(', ')}`);
   log(`  outbound: remote mail is queued and relayed to its MX, with retry${cfg.dkim !== undefined ? ' and DKIM signing' : ''}.`);
   if (cfg.usingDevCert) log('  NOTE: using the bundled self-signed DEV certificate — set MAIL_TLS_CERT/MAIL_TLS_KEY in production.');
   const shutdown = (): void => {
