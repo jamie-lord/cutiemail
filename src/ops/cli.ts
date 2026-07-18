@@ -13,6 +13,7 @@
 import { runSetup } from './setup.ts';
 import { runDoctor } from './doctor.ts';
 import { runAccount } from './account.ts';
+import { runBackup, runVerify } from './backup.ts';
 
 export interface OpsIo {
   out(line: string): void;
@@ -26,6 +27,8 @@ const USAGE = [
   '  setup    generate the DKIM key (if missing) and print the DNS records to publish',
   '  doctor   check the deployment against live DNS and the network (drift, cert, port 25)',
   '  account  add/list accounts, change passwords, enable/disable — no passwords in env',
+  '  backup   consistent online snapshot of every database into a directory',
+  '  verify   integrity + store-invariant check of database files (read-only)',
   '  help     this text',
 ].join('\n');
 
@@ -38,6 +41,10 @@ export async function runOps(argv: readonly string[], io: OpsIo, env: Record<str
       return runDoctor(rest, io, env);
     case 'account':
       return runAccount(rest, io, env);
+    case 'backup':
+      return runBackup(rest, io, env);
+    case 'verify':
+      return runVerify(rest, io);
     case 'help':
     case '--help':
     case '-h':

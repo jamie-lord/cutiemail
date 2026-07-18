@@ -170,6 +170,21 @@ restart. There is deliberately no `remove`: `disable` refuses auth and delivery 
 touching the user's mailbox database; deleting mail is an explicit `rm` of that file,
 never a management-verb side effect (ADR 0012).
 
+**Backups** — the whole server's state is the control database plus one mailbox database
+per user, so a backup is one command (safe while the daemon runs — it uses SQLite's
+`VACUUM INTO`, a transactionally consistent snapshot; a bare `cp` of a live WAL database
+is *not* safe):
+
+```sh
+node src/main.ts backup /backups/mail-$(date +%F) --db /var/lib/mailserver/control.db
+node src/main.ts verify /backups/mail-$(date +%F)   # a backup you haven't verified is a hope
+```
+
+`verify` is strictly read-only and checks both file integrity and the store invariants
+(UID monotonicity, the live/expunged partition, the queue/dead-letter exclusivity). Honest
+boundary: SQLite pages carry no checksums, so a bit flipped inside a message blob on disk
+is invisible to it — media-level assurance is the filesystem's job (ZFS/btrfs/restic).
+
 What the running server does, end to end: it **receives** on 25 (stamping a
 `Received:` trace line, rejecting oversized messages and mail loops), authenticates
 every sender (**SPF + DKIM + DMARC**, aligned over the full Public Suffix List, plus

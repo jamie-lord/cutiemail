@@ -51,7 +51,10 @@ the local private key, DMARC, certificate validity/expiry, and an outbound port-
 "it worked when I set it up" can be re-verified any time drift is suspected. And
 `node src/main.ts account add|set-password|enable|disable|list` manages accounts in the control
 database directly — passwords prompted (or piped), never in argv or the environment; the running
-daemon picks changes up immediately, no restart (ADR 0012).
+daemon picks changes up immediately, no restart (ADR 0012). `node src/main.ts backup <dir>` takes
+a transactionally consistent snapshot of every database while the daemon runs, and
+`node src/main.ts verify` proves a backup (or the live files) passes integrity *and* the store's
+own invariants, read-only.
 
 Embedding it instead of running the daemon? `startServer(config)` takes a `MailServerConfig`
 object directly, with the same knobs plus injection seams (DNS resolvers, the auth throttle, the
