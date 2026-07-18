@@ -40,6 +40,11 @@ export interface RelayLoopOptions {
   readonly onBounce?: (info: { from: string; data: Buffer; failures: readonly BouncedRecipient[] }) => void;
 }
 
+/** A compact one-line failure summary retained with a dead letter. */
+function deadLetterReason(failures: readonly BouncedRecipient[]): string {
+  return failures.map((f) => `<${f.recipient}> ${f.status}: ${f.detail}`).join('; ');
+}
+
 export class RelayLoop {
   readonly #queue: SqliteQueue;
   readonly #relay: RelayFn;
@@ -117,7 +122,11 @@ export class RelayLoop {
 
     const attempts = entry.attempts + 1;
     if (retryLater.length === 0) {
-      this.#queue.remove(entry.id);
+      // Every recipient is settled. If any failed permanently we bounced above and now
+      // also retain the message (its failed recipients) in the dead-letter store — the
+      // operator can inspect / re-queue it rather than have it silently gone from our
+      // side. If all delivered, nothing failed: just drop the live row.
+      this.#settle(entry, permanentFailures, now);
       return;
     }
     const { decision, nextAttempt } = decideRetry(attempts, entry.firstQueued, 'transient', now, this.#defects);
@@ -131,8 +140,22 @@ export class RelayLoop {
       }
       // Past the give-up window, the transient failures become permanent — bounce them.
       this.#bounce(entry.from, entry.data, gaveUp);
-      this.#queue.remove(entry.id);
+      // …and retain the given-up message; the transactional move guarantees a crash
+      // here can't remove it from the queue without leaving a dead-letter trace.
+      this.#queue.deadLetter({ ...entry, attempts }, { failedRecipients: retryLater, lastError: deadLetterReason(gaveUp), now });
     }
+  }
+
+  /** Finalise a fully-settled entry: dead-letter permanent failures, else just remove. */
+  #settle(entry: QueueEntry, permanentFailures: readonly BouncedRecipient[], now: number): void {
+    if (permanentFailures.length === 0) {
+      this.#queue.remove(entry.id);
+      return;
+    }
+    this.#queue.deadLetter(
+      { ...entry, attempts: entry.attempts + 1 },
+      { failedRecipients: permanentFailures.map((f) => f.recipient), lastError: deadLetterReason(permanentFailures), now },
+    );
   }
 
   /** Start ticking on an interval. `clock` defaults to the real clock. */
