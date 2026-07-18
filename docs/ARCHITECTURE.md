@@ -220,6 +220,17 @@ brute-force throttle (`server/auth-throttle.ts`). `startServer()` is factored ou
 the whole assembly is itself under test. If you want to know what "the server" *is*, it is this
 file and the modules it wires.
 
+**`src/ops/`** — the operator CLI behind the same entry point (`node src/main.ts <command>`;
+no argument runs the daemon). Its design rule is *reuse the enforcement code as the
+generation/checking code*: `setup` derives the DKIM TXT with the signer/verifier's own key
+primitives and the MTA-STS policy that our own RFC 8461 parser must accept; `doctor` evaluates
+the published SPF with the real RFC 7208 evaluator; `verify` asserts the invariants the
+crash/concurrency suites establish; `account` and `dead-letter` are thin verbs over the
+registry and queue stores. Every network/filesystem touch goes through an injected seam, so
+each check/command is tested in both directions (detects the broken state, no false alarm on
+the healthy one). Accounts are provisioned here rather than by env (ADR 0012); there is
+deliberately no HTTP listener (ADR 0013).
+
 ## The test bed, and why it can be trusted
 
 A conformance suite that reports all-green against a broken server is worse than

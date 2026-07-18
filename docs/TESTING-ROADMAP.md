@@ -260,3 +260,14 @@ Opinionated cuts re-affirmed against the mission (building them would be wastefu
 DANE** (ADR 0007 — the modern-client round-trip is already met). Fuzzing (#14) already has
 deterministic parser/socket/auth/CONDSTORE harnesses (~30k inputs); a continuous coverage-
 guided corpus is a possible future addition, not a gap.
+
+## Status (2026-07-18b): the operator-experience backlog (docs/BACKLOG.md) is done
+
+With the protocol map complete, the next increment came from evidence, not this map: a
+qualitative analysis of what self-hosting operators actually struggle with (the Mox HN
+thread + a Mox feature review) produced [BACKLOG.md](BACKLOG.md), and all six items were
+resolved the same day — an operator CLI (`setup`/`doctor`/`account`/`backup`/`verify`/
+`queue`/`dead-letter`, `src/ops/`) built to this document's own discipline (injected
+seams, both-directions tests, negative controls) and live-verified on the deployed box,
+plus two recorded decisions (ADR 0012: registry-owned accounts, create-only env seeding;
+ADR 0013: no HTTP listener — MTA-STS policy generated, hosted externally).

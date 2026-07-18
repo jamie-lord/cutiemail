@@ -7,6 +7,15 @@ and a feature/interface review of Mox itself ([xmox.nl](https://www.xmox.nl),
 it; every item had to clear the [working agreement's bar](WORKING-AGREEMENT.md) — one honest
 sentence, rooted in the vision, for why it measurably improves the project for an end user.*
 
+**Status (2026-07-18, same day): all six items are resolved.** B1–B5 built, tested, and
+live-verified on the deployed box (`setup`, `doctor`, `account`, `backup`/`verify`,
+`queue`/`dead-letter` — one operator CLI behind `node src/main.ts <command>`); B6 decided
+and recorded as [ADR 0013](decisions/0013-no-http-listener.md) — no HTTP listener; `setup`
+generates the MTA-STS policy + TXT record, hosting stays external, autoconfig cut with
+revisit triggers. Per-item verification evidence is in the commit messages
+(`git log --grep "(B[1-6]"`). The item list below is kept as written — it records why each
+item earned its place, which is the part that stays useful.
+
 ## What the evidence says
 
 The HN thread's centre of gravity is not features — it is **confidence**. The dominant
