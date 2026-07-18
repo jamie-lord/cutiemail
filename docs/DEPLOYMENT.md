@@ -237,13 +237,48 @@ Environment=MAIL_SMTP_PORT=25 MAIL_SUBMISSION_PORT=587 MAIL_IMAP_PORT=993
 Environment=MAIL_USER=you MAIL_PASS=change-this-passphrase
 Environment=MAIL_TLS_CERT=/var/lib/mailserver/tls/cert.pem
 Environment=MAIL_TLS_KEY=/var/lib/mailserver/tls/key.pem
-# Bind privileged ports without root:
+# Bind privileged ports (25/587/993) without root, and nothing more:
 AmbientCapabilities=CAP_NET_BIND_SERVICE
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
 Restart=on-failure
+
+# Defense-in-depth sandboxing (systemd-analyze security: 9.3 UNSAFE -> 1.6 OK).
+# MemoryDenyWriteExecute is deliberately OMITTED — the V8 JIT needs W+X memory and
+# Node will not start with it. RestrictAddressFamilies keeps AF_INET/AF_INET6 (SMTP/
+# IMAP + c-ares DNS) and AF_UNIX; verify outbound relay still works after any change.
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/mailserver
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+ProtectProc=invisible
+ProcSubset=pid
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+RestrictNamespaces=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+LockPersonality=true
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged
+UMask=0077
 
 [Install]
 WantedBy=multi-user.target
 ```
+
+Keep the data directory owner-only — `chmod 700 /var/lib/mailserver` (and its `tls/`
+and `dkim/` subdirs). The daemon writes each database `0600` and re-tightens every
+*registered* account's database to `0600` at boot (so even a disabled account's mailbox
+can't linger world-readable), but a `700` directory is the belt-and-braces that keeps a
+stray file unreachable by other local users in the first place.
 
 `systemctl enable --now mailserver`, then `journalctl -fu mailserver` to watch it
 — including the queue lines that report each relay attempt, its result, and any
@@ -363,11 +398,14 @@ These are deliberate, recorded, and roughly in priority order for closing:
   without a matching v6 PTR and authentication; the PTR this guide sets is for
   the v4 address, so the relay pins `family: 4`. Revisit if you set up full
   IPv6 forward-confirmed rDNS.
-- **Hardened at the protocol layer, not fully operationally.** The wire surface has been
-  adversarially audited — SMTP-smuggling defence, DoS caps (recipient count, DATA
+- **Hardened at the protocol and OS layers, but not fully operationally.** The wire surface
+  has been adversarially audited — SMTP-smuggling defence, DoS caps (recipient count, DATA
   scan, reply framing, a per-connection command-error limit that drops a peer streaming
   junk), auth-header spoofing and DMARC display-spoof fixes, an MX SSRF guard, a bounded
   TLS handshake — and the auth paths carry a **per-IP brute-force throttle** (submission +
-  IMAP; over the threshold, auth is refused without checking the password). But there is still *no spam filtering and no fail2ban-style network banning*,
-  and it has not been through a third-party security review. Don't put anything you care
-  about behind it yet.
+  IMAP; over the threshold, auth is refused without checking the password). The systemd unit
+  is **sandboxed** (`systemd-analyze security` ≈ 1.6/OK: no-new-privileges, read-only
+  filesystem bar the data dir, restricted syscalls/address-families/namespaces, private
+  /tmp and /dev), and the data directory + every account database are owner-only. But there
+  is still *no spam filtering and no fail2ban-style network banning*, and it has not been
+  through a third-party security review. Don't put anything you care about behind it yet.

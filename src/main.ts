@@ -21,7 +21,7 @@ import { randomUUID } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { SqliteCatalog } from './store/sqlite-mailbox.ts';
-import { openMailDb } from './store/open-mail-db.ts';
+import { openMailDb, secureMailDbFile } from './store/open-mail-db.ts';
 import { AccountRegistry } from './store/account-registry.ts';
 import { MailStores } from './store/mail-stores.ts';
 import { MemoryCatalog } from './store/memory-catalog.ts';
@@ -209,6 +209,12 @@ export async function startServer(cfg: MailServerConfig): Promise<RunningServer>
   // DB (so a production deploy keeps all databases together), or `:memory:` in-memory.
   const mailDbPathFor = (user: string, explicit?: string): string => explicit ?? (inMemory ? ':memory:' : join(dirname(cfg.dbPath), `mail-${user}.db`));
   seedAccounts(registry, cfg.accounts.map((a) => ({ user: a.user, pass: a.pass, mailDbPath: mailDbPathFor(a.user, a.mailDbPath) })), log);
+  // Enforce owner-only (0600) permissions on EVERY registered account's mail DB at boot —
+  // including a disabled/dormant account whose DB the lazy store manager never opens (so
+  // openMailDb's on-open heal never fires for it). Without this, a disabled account's DB
+  // that predates the 0600 hardening lingers world-readable (found in an audit: a disabled
+  // account's mail-<user>.db left at 0644). Best-effort; :memory: and missing files skipped.
+  for (const acct of registry.list()) secureMailDbFile(acct.mailDbPath);
   const verify = (user: string, pass: string): boolean => registry.verifyPassword(user, pass);
 
   // The per-user store manager: opens each user's mail DB once, provisioning INBOX + the

@@ -26,6 +26,22 @@ import { chmodSync } from 'node:fs';
 /** The busy timeout every mail-database connection is opened with (ms). */
 export const BUSY_TIMEOUT_MS = 5000;
 
+/**
+ * Force a mail-database file to owner-only (0600) permissions. The DB holds SCRAM
+ * credential material (salt/iterations/stored_key/server_key) and raw message bytes —
+ * never group/world readable. The daemon's 0o077 umask makes NEW files 0600, but this
+ * also fixes an ALREADY-DEPLOYED 0644 file (audit run-4). Best-effort and idempotent:
+ * :memory:, a missing file, a read-only FS, or a foreign owner are all non-fatal.
+ */
+export function secureMailDbFile(path: string): void {
+  if (path === ':memory:') return;
+  try {
+    chmodSync(path, 0o600);
+  } catch {
+    /* best-effort: :memory:, ENOENT, a read-only FS, or a foreign owner is not fatal */
+  }
+}
+
 /** Open (or create) a mail database with the daemon's WAL + busy_timeout settings. */
 export function openMailDb(path: string): DatabaseSync {
   const db = new DatabaseSync(path);
@@ -37,16 +53,7 @@ export function openMailDb(path: string): DatabaseSync {
   } catch {
     /* :memory: and some builds don't support WAL — harmless */
   }
-  // The DB holds SCRAM credential material (salt/iterations/stored_key/server_key) and raw
-  // message bytes — never group/world readable. The daemon's 0o077 umask makes new files
-  // 0600, but tighten explicitly here too so an ALREADY-DEPLOYED 0644 file is fixed on the
-  // next open (the WAL sidecars are covered by the umask when recreated). Audit run-4.
-  if (path !== ':memory:') {
-    try {
-      chmodSync(path, 0o600);
-    } catch {
-      /* best-effort: a read-only FS or a foreign owner is not fatal to opening */
-    }
-  }
+  // Tighten on the way in, so a handle opened on a pre-hardening 0644 file heals it.
+  secureMailDbFile(path);
   return db;
 }
