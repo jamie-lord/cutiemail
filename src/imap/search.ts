@@ -71,16 +71,24 @@ function bodyText(raw: Buffer): string {
   return (sep === -1 ? Buffer.alloc(0) : raw.subarray(sep + 4)).toString('latin1');
 }
 
-function matchesKey(msg: SearchableMessage, key: SearchKey): boolean {
+/** Per-message lowercased text/body, memoised for the duration of one message's SEARCH so a
+ * command with many TEXT/BODY keys re-uses one lowercasing instead of re-serialising the whole
+ * message per key (the O(keys × messages × size) blow-up — audit run-5). */
+interface TextMemo {
+  text?: string;
+  body?: string;
+}
+
+function matchesKey(msg: SearchableMessage, key: SearchKey, memo: TextMemo): boolean {
   switch (key.type) {
     case 'all':
       return true;
     case 'header':
       return headerContains(msg.headers, key.name, key.value);
     case 'body':
-      return bodyText(msg.raw).toLowerCase().includes(key.value.toLowerCase());
+      return (memo.body ??= bodyText(msg.raw).toLowerCase()).includes(key.value.toLowerCase());
     case 'text':
-      return msg.raw.toString('latin1').toLowerCase().includes(key.value.toLowerCase());
+      return (memo.text ??= msg.raw.toString('latin1').toLowerCase()).includes(key.value.toLowerCase());
     case 'flag':
       return msg.flags.has(key.flag) === key.present;
     case 'size':
@@ -93,9 +101,9 @@ function matchesKey(msg: SearchableMessage, key: SearchKey): boolean {
     case 'seq':
       return key.seqs.has(msg.seq);
     case 'not':
-      return !matchesKey(msg, key.key);
+      return !matchesKey(msg, key.key, memo);
     case 'or':
-      return matchesKey(msg, key.a) || matchesKey(msg, key.b);
+      return matchesKey(msg, key.a, memo) || matchesKey(msg, key.b, memo);
     case 'date': {
       if (key.field === 'sent') {
         const raw = headerValue(msg.headers, 'Date');
@@ -125,5 +133,6 @@ function compareDay(messageDay: number, op: 'since' | 'before' | 'on', keyDay: n
 /** Does the message match ALL the top-level keys (AND), per R-9051-6.4.4-a? */
 export function matchesSearch(msg: SearchableMessage, keys: readonly SearchKey[], defects: SearchDefects = {}): boolean {
   if (keys.length === 0) return true; // no criteria matches everything
-  return defects.orSemantics === true ? keys.some((k) => matchesKey(msg, k)) : keys.every((k) => matchesKey(msg, k));
+  const memo: TextMemo = {}; // one lowercasing per message, shared across all its keys
+  return defects.orSemantics === true ? keys.some((k) => matchesKey(msg, k, memo)) : keys.every((k) => matchesKey(msg, k, memo));
 }

@@ -80,6 +80,29 @@ test('SEARCH SUBJECT with a quoted multi-word phrase matches the whole phrase', 
   }
 });
 
+test('SEARCH rejects an over-long key list instead of doing O(keys×messages) work (run-5 DoS bound)', async () => {
+  const cat = new MemoryCatalog();
+  cat.get('INBOX')!.append(Buffer.from('From: a@x.test\r\nSubject: hi\r\n\r\nbody\r\n', 'latin1'));
+  const server = await ImapServer.start(cat, { authenticate: () => true });
+  const sock = net.connect(server.port, '127.0.0.1');
+  const s = new S(sock);
+  try {
+    await s.ready('* OK');
+    s.send('a1 LOGIN u p\r\na2 SELECT INBOX\r\n');
+    await s.ready('a2 OK');
+    // 64 keys (the cap) is accepted; 65 is rejected as malformed BEFORE any per-message scan,
+    // so a client cannot force O(keys × messages × size) work that freezes the whole server.
+    s.send(`a3 SEARCH ${Array.from({ length: 64 }, () => 'TEXT a').join(' ')}\r\n`);
+    await s.ready('a3 OK');
+    s.send(`a4 SEARCH ${Array.from({ length: 65 }, () => 'TEXT a').join(' ')}\r\n`);
+    await s.ready('a4 BAD'); // ready() throws on timeout, so reaching here proves the rejection
+    assert.match(s.snapshot().slice(s.snapshot().lastIndexOf('a4 ')), /^a4 BAD/m);
+  } finally {
+    sock.destroy();
+    await server.close();
+  }
+});
+
 test('SEARCH NOT / dates / size / OR are executed, not silently dropped', async () => {
   const cat = new MemoryCatalog();
   const inbox = cat.get('INBOX')!;

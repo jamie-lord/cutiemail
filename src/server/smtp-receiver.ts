@@ -82,6 +82,7 @@ const IDLE_TIMEOUT_MS = 300_000;
 
 /** Max recipients per transaction (RFC 5321 §4.5.3.1.10 sets the floor at 100). */
 const MAX_RECIPIENTS = 100;
+const MAX_CONNECTIONS = 512; // concurrent-connection ceiling per listener (pre-auth DoS bound)
 
 function unstuff(payload: Buffer): Buffer {
   const out: Buffer[] = [];
@@ -512,6 +513,10 @@ export class SmtpReceiver {
   static start(handler: DeliveryHandler, options: ReceiverOptions = {}): Promise<SmtpReceiver> {
     const domain = options.domain ?? 'mail.example.com';
     const server = net.createServer();
+    // Bound concurrent connections against a pre-auth flood / slowloris (no per-IP accounting on
+    // the single-threaded daemon, so a global ceiling is the backstop — audit run-5). Far above
+    // any real sending pattern.
+    server.maxConnections = MAX_CONNECTIONS;
     const sockets = new Set<net.Socket>();
     return new Promise((resolve) => {
       server.listen(options.port ?? 0, options.host ?? '127.0.0.1', () => {
