@@ -94,6 +94,19 @@ if you want to do it by hand or on another provider.
 The A and MX get mail flowing; PTR + the SPF/DKIM/DMARC trifecta are what earn a
 receiver's trust and keep you out of the spam folder.
 
+**You don't have to assemble these by hand.** The server generates them from its
+own configuration — including deriving the DKIM public key from the private key
+(generating one first if none exists):
+
+```sh
+MAIL_DOMAIN=mail.example.com node src/main.ts setup --ip <your-ip>
+```
+
+prints every record below as annotated, copy-pasteable zone lines. Re-run it any
+time to reprint them from the existing key (the output is deterministic, so you can
+diff it against what you actually published). The table explains what each record
+is *for*:
+
 | Record | Name | Value | Why |
 |---|---|---|---|
 | **A** | `mail.example.com` | your server's IP | where the host lives |
@@ -263,9 +276,11 @@ Both paths are the real code — the same `smtp-receiver`, `sqlite-mailbox`,
 
 These are deliberate, recorded, and roughly in priority order for closing:
 
-- **DKIM signing is wired in** (opt-in). Set `MAIL_DKIM_KEY` (a PEM RSA private
-  key, ≥1024-bit) and `MAIL_DKIM_SELECTOR`, and publish the matching public key
-  as a TXT record at `<selector>._domainkey.<domain>`. Generate and publish with:
+- **DKIM signing is wired in** (opt-in). Set `MAIL_DKIM_KEY` (a PEM private key,
+  RSA ≥1024-bit or Ed25519) and `MAIL_DKIM_SELECTOR`, and publish the matching
+  public key as a TXT record at `<selector>._domainkey.<domain>`. The easy path
+  is `node src/main.ts setup` (see [DNS](#dns)), which generates the key and
+  prints the record; the openssl equivalent, if you prefer to see the moving parts:
   ```sh
   openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 -out dkim.key
   echo "v=DKIM1; k=rsa; p=$(openssl rsa -in dkim.key -pubout -outform DER 2>/dev/null | base64 -w0)"

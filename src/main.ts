@@ -12,6 +12,9 @@
  * ports, a bundled self-signed dev certificate) so it runs out of the box; production
  * overrides the ports and supplies a real certificate. `startServer` is exported and
  * used by the integration test to drive the fully-assembled server on ephemeral ports.
+ *
+ * `node src/main.ts <command>` runs the operator CLI instead (src/ops/cli.ts):
+ * `setup` generates the DKIM key and prints the DNS records to publish.
  */
 
 import { randomUUID } from 'node:crypto';
@@ -41,6 +44,7 @@ import { prependReceived, protocolFor, stripOwnAuthResults } from './server/rece
 import { MailboxNotifier } from './server/mailbox-notifier.ts';
 import { SqliteQueue } from './store/sqlite-queue.ts';
 import { RelayLoop } from './server/relay-loop.ts';
+import { runOps } from './ops/cli.ts';
 // Bundled self-signed certificate — local development default only.
 import { TEST_CERT as DEV_CERT, TEST_KEY as DEV_KEY } from './testing/tls-test-cert.ts';
 
@@ -530,10 +534,27 @@ async function main(): Promise<void> {
   process.on('SIGTERM', shutdown);
 }
 
-// Run as a daemon when invoked directly.
+// Run as a daemon when invoked directly with no arguments; with arguments, run the
+// operator CLI (setup, ... — see src/ops/cli.ts) against the same env configuration.
+// One entry point on purpose: the daemon IS the toolbox, there is no second artifact.
 if (import.meta.url === `file://${process.argv[1]}`) {
-  main().catch((err: unknown) => {
-    process.stderr.write(`${String(err)}\n`);
-    process.exit(1);
-  });
+  const opsArgs = process.argv.slice(2);
+  if (opsArgs.length > 0) {
+    const io = {
+      out: (line: string): void => void process.stdout.write(`${line}\n`),
+      err: (line: string): void => void process.stderr.write(`${line}\n`),
+    };
+    // process.exitCode (not exit()) so buffered stdout drains — same lesson as src/cli.ts.
+    runOps(opsArgs, io, process.env).then((code) => {
+      process.exitCode = code;
+    }).catch((err: unknown) => {
+      process.stderr.write(`${String(err)}\n`);
+      process.exitCode = 1;
+    });
+  } else {
+    main().catch((err: unknown) => {
+      process.stderr.write(`${String(err)}\n`);
+      process.exit(1);
+    });
+  }
 }

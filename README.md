@@ -42,6 +42,10 @@ variable, and the SQLite files are created on first run (no schema step):
 | `MAIL_TRUSTED_ARC_SEALERS` | unset | comma-separated forwarder domains whose valid ARC chain may rescue a DMARC failure to the inbox |
 | `MAIL_MAX_SIZE` | `26214400` | max accepted message size in octets (25 MiB) |
 
+The same entry point is the operator toolbox: `node src/main.ts setup` generates a DKIM key
+(if none exists) and prints the exact DNS records to publish — MX, SPF, DKIM, DMARC, and the
+reverse-DNS instruction — as annotated zone lines derived from the server's own configuration.
+
 Embedding it instead of running the daemon? `startServer(config)` takes a `MailServerConfig`
 object directly, with the same knobs plus injection seams (DNS resolvers, the auth throttle, the
 DMARC sampler) that the test suite uses.
