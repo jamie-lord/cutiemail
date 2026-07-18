@@ -78,4 +78,5 @@ I'd rather you do one carefully-reasoned, well-verified thing than five hurried 
   restructured, not just topped up.
 
 See also: [TESTING-ROADMAP.md](TESTING-ROADMAP.md) for what's done vs. deliberately
-open, and [ARCHITECTURE.md](ARCHITECTURE.md) for how the pieces fit.
+open, [BACKLOG.md](BACKLOG.md) for the evidence-based queue of what's next, and
+[ARCHITECTURE.md](ARCHITECTURE.md) for how the pieces fit.

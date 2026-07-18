@@ -9,8 +9,8 @@ Node runs the TypeScript directly, and the only thing in `node_modules` is the t
 The design goal is the one behind the name we use for it internally, the *SQLite of email*:
 correct, minimal, and embeddable rather than a sprawling MTA. Scope is chosen deliberately and
 every omission is a recorded decision, not a gap — see [docs/WORKING-AGREEMENT.md](docs/WORKING-AGREEMENT.md)
-for the philosophy and [docs/TESTING-ROADMAP.md](docs/TESTING-ROADMAP.md) for what is done versus
-deliberately left out.
+for the philosophy, [docs/TESTING-ROADMAP.md](docs/TESTING-ROADMAP.md) for what is done versus
+deliberately left out, and [docs/BACKLOG.md](docs/BACKLOG.md) for what comes next and why.
 
 It is deployed and live: the daemon runs on a small box under real DNS and exchanges
 authenticated mail with Gmail (SPF, DKIM, and DMARC all passing), read back over IMAPS.
