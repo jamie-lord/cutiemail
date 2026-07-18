@@ -55,6 +55,37 @@ test('a permanent failure bounces immediately, no retry', async () => {
   assert.equal(queue.size, 0, 'a 5yz recipient is bounced, not retried');
 });
 
+test('a durable settle fault does not re-send or re-bounce every tick (run-5 relay/backscatter storm)', async () => {
+  const queue = SqliteQueue.open(new DatabaseSync(':memory:'));
+  let relayCalls = 0;
+  const relay = async (m: { recipients: readonly string[] }): Promise<readonly RelayResult[]> => {
+    relayCalls++;
+    return m.recipients.map((rc) => r(rc, 'permanent')); // a 5yz failure → would bounce
+  };
+  const bounces: unknown[] = [];
+  // Simulate a disk-full / lock-held-past-busy_timeout fault: the durable settle (remove AND
+  // deadLetter) throws AFTER the message went on the wire. reschedule stays working (best-effort).
+  const fault = (): never => {
+    throw new Error('SQLITE_FULL');
+  };
+  const q = queue as unknown as { remove: () => void; deadLetter: () => void };
+  q.remove = fault;
+  q.deadLetter = fault;
+  const loop = new RelayLoop(queue, relay, { onBounce: (b) => bounces.push(b) });
+  const t0 = 1_000_000;
+  queue.enqueue('sender@ours.test', ['bad@y.test'], Buffer.from('msg'), t0);
+
+  await loop.tick(t0);
+  assert.equal(relayCalls, 1, 'the message was sent once');
+  assert.equal(bounces.length, 0, 'no bounce is emitted when the durable settle failed (bounce follows a committed settle)');
+  // The row is deferred into the future, NOT left due — so an immediate re-tick re-sends nothing
+  // and re-bounces nothing (the pre-fix code left it due and stormed every tick).
+  assert.equal(queue.due(t0).length, 0, 'the row is deferred, not left immediately due');
+  await loop.tick(t0);
+  assert.equal(relayCalls, 1, 'not re-sent on an immediate re-tick');
+  assert.equal(bounces.length, 0, 'and not re-bounced');
+});
+
 test('a permanent failure notifies the sender via onBounce (RFC 5321 §6.1)', async () => {
   const queue = SqliteQueue.open(new DatabaseSync(':memory:'));
   const relay = async (m: { recipients: readonly string[] }): Promise<readonly RelayResult[]> => m.recipients.map((rc) => r(rc, 'permanent'));

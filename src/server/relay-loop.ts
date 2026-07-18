@@ -40,6 +40,9 @@ export interface RelayLoopOptions {
   readonly onBounce?: (info: { from: string; data: Buffer; failures: readonly BouncedRecipient[] }) => void;
 }
 
+/** How far to defer a row whose durable settle threw, so it is not re-sent every tick. */
+const SETTLE_FAILURE_BACKOFF_MS = 15 * 60_000;
+
 /** A compact one-line failure summary retained with a dead letter. */
 function deadLetterReason(failures: readonly BouncedRecipient[]): string {
   return failures.map((f) => `<${f.recipient}> ${f.status}: ${f.detail}`).join('; ');
@@ -117,33 +120,47 @@ export class RelayLoop {
         if (!r.ok) permanentFailures.push({ recipient: r.recipient, status: '5.0.0', detail: r.detail });
       }
     }
-    // A 5yz rejection is final — report it to the sender now.
-    this.#bounce(entry.from, entry.data, permanentFailures);
 
     const attempts = entry.attempts + 1;
-    if (retryLater.length === 0) {
-      // Every recipient is settled. If any failed permanently we bounced above and now
-      // also retain the message (its failed recipients) in the dead-letter store — the
-      // operator can inspect / re-queue it rather than have it silently gone from our
-      // side. If all delivered, nothing failed: just drop the live row.
-      this.#settle(entry, permanentFailures, now);
+    // The message has ALREADY gone on the wire. Emit bounces only AFTER the durable state
+    // transition (remove / deadLetter / reschedule) commits — never before. If we bounced first
+    // and the settle then threw (disk-full, a write lock held past busy_timeout, a crash), the
+    // row would stay due and be re-processed next tick — RE-SENDING the message and RE-EMITTING
+    // backscatter to the (forgeable) sender every ~60 s until the fault cleared (audit run-5).
+    const toBounce: BouncedRecipient[] = [...permanentFailures]; // 5yz rejections are final
+    try {
+      if (retryLater.length === 0) {
+        // Every recipient settled: retain permanent failures in dead-letter (operator can
+        // inspect / re-queue) or, if all delivered, just drop the live row.
+        this.#settle(entry, permanentFailures, now);
+      } else {
+        const { decision, nextAttempt } = decideRetry(attempts, entry.firstQueued, 'transient', now, this.#defects);
+        if (decision === 'retry') {
+          this.#queue.reschedule(entry.id, retryLater, attempts, nextAttempt);
+        } else {
+          const gaveUp: BouncedRecipient[] = retryLater.map((recipient) => ({ recipient, status: '5.4.7', detail: `delivery time expired after ${attempts} attempts` }));
+          for (const g of gaveUp) this.#log(`queue ${entry.id} ${g.recipient}: bounced (gave up after ${attempts} attempts)`);
+          toBounce.push(...gaveUp);
+          // The transactional move guarantees a crash here can't remove the row without leaving
+          // a dead-letter trace.
+          this.#queue.deadLetter({ ...entry, attempts }, { failedRecipients: retryLater, lastError: deadLetterReason(gaveUp), now });
+        }
+      }
+    } catch (e) {
+      // The durable settle failed. Do NOT bounce (it would repeat every tick) and do NOT leave
+      // the row due (it would re-send every tick): best-effort defer it. If even this write
+      // fails the queue store is unwritable and the row stays due until it recovers.
+      this.#log(`queue ${entry.id}: settle failed — ${String(e)}; deferring to avoid re-send/re-bounce`);
+      try {
+        this.#queue.reschedule(entry.id, entry.recipients, attempts, now + SETTLE_FAILURE_BACKOFF_MS);
+      } catch {
+        /* the queue store is unwritable; the row remains due until it recovers */
+      }
       return;
     }
-    const { decision, nextAttempt } = decideRetry(attempts, entry.firstQueued, 'transient', now, this.#defects);
-    if (decision === 'retry') {
-      this.#queue.reschedule(entry.id, retryLater, attempts, nextAttempt);
-    } else {
-      const gaveUp: BouncedRecipient[] = [];
-      for (const rcpt of retryLater) {
-        this.#log(`queue ${entry.id} ${rcpt}: bounced (gave up after ${attempts} attempts)`);
-        gaveUp.push({ recipient: rcpt, status: '5.4.7', detail: `delivery time expired after ${attempts} attempts` });
-      }
-      // Past the give-up window, the transient failures become permanent — bounce them.
-      this.#bounce(entry.from, entry.data, gaveUp);
-      // …and retain the given-up message; the transactional move guarantees a crash
-      // here can't remove it from the queue without leaving a dead-letter trace.
-      this.#queue.deadLetter({ ...entry, attempts }, { failedRecipients: retryLater, lastError: deadLetterReason(gaveUp), now });
-    }
+    // The durable transition committed — a re-tick can no longer re-process this entry, so each
+    // bounce is emitted exactly once.
+    this.#bounce(entry.from, entry.data, toBounce);
   }
 
   /** Finalise a fully-settled entry: dead-letter permanent failures, else just remove. */
