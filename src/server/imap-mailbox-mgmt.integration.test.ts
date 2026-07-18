@@ -57,6 +57,31 @@ test('DELETE and RENAME manage mailboxes; INBOX is protected', async () => {
   }
 });
 
+test('LIST/STATUS serialise a mailbox name as a proper astring (quote/special chars escaped)', async () => {
+  // A folder name containing a " or a non-space special used to be emitted as `"a b"c"` (the
+  // embedded quote closes the quoted-string early) or as a raw atom — either desyncs a strict
+  // client's parse (audit run-3). The name must be a correctly-escaped quoted-string.
+  const cat = SqliteCatalog.open(new DatabaseSync(':memory:'));
+  cat.create('a b"c'); // space AND an embedded double-quote
+  cat.create('foo)bar'); // a special char but NO space (old code emitted a bare atom)
+  const server = await ImapServer.start(cat, { authenticate: () => true });
+  const c = client(server.port);
+  try {
+    await new Promise<void>((r) => c.sock.once('connect', () => r()));
+    await c.run('a1', 'LOGIN u p');
+    const listing = await c.run('a2', 'LIST "" "*"');
+    assert.ok(listing.includes('"a b\\"c"'), `the embedded quote must be backslash-escaped: ${listing}`);
+    assert.ok(listing.includes('"foo)bar"'), `a special-but-spaceless name must be quoted, not a bare atom: ${listing}`);
+    // STATUS on the quote-bearing name echoes it with the same escaping.
+    const status = await c.run('a3', 'STATUS "a b\\"c" (MESSAGES)');
+    assert.match(status, /^a3 OK/m);
+    assert.ok(status.includes('"a b\\"c"'), `STATUS must echo the escaped name: ${status}`);
+  } finally {
+    c.sock.destroy();
+    await server.close();
+  }
+});
+
 test('RENAME INBOX moves its messages to the target and leaves INBOX empty', async () => {
   const cat = SqliteCatalog.open(new DatabaseSync(':memory:'));
   cat.get('INBOX')!.append(Buffer.from('Subject: keep me\r\n\r\nbody\r\n', 'latin1'));

@@ -26,6 +26,22 @@ test('sanity: no MX but an address record yields the domain as an implicit MX', 
   assert.deepEqual([...resolveMxHosts('nowhere.example', dns({})).hosts], []);
 });
 
+test('RFC 7505 null MX: a single empty/root MX target bounces (never dials host "")', () => {
+  // The real resolver surfaces "MX 0 ." as an empty exchange (''); a bare '' host would reach
+  // net.connect and dial localhost (audit run-3). Both '' and '.' must normalise to the '.'
+  // sentinel the relay bounces on — and it must be exactly one MX (a real MX alongside is not
+  // a null MX).
+  assert.deepEqual([...resolveMxHosts('nomail.example', dns({ 'nomail.example': [{ host: '', preference: 0 }] })).hosts], ['.'], 'empty exchange → null-MX sentinel');
+  assert.deepEqual([...resolveMxHosts('nomail.example', dns({ 'nomail.example': [{ host: '.', preference: 0 }] })).hosts], ['.'], 'literal "." → null-MX sentinel');
+  // A genuine single MX is untouched; a null MX joined by a real MX is NOT treated as null.
+  assert.deepEqual([...resolveMxHosts('ok.example', dns({ 'ok.example': [{ host: 'mx.ok.example', preference: 10 }] })).hosts], ['mx.ok.example']);
+  assert.deepEqual(
+    [...resolveMxHosts('mixed.example', dns({ 'mixed.example': [{ host: '', preference: 0 }, { host: 'mx.mixed.example', preference: 10 }] })).hosts],
+    ['', 'mx.mixed.example'],
+    'two records is not a null MX (the empty one is left for the SSRF backstop to refuse)',
+  );
+});
+
 test('R-5321-5.1-n: MX records are tried in order of increasing preference (ignorePreference caught)', () => {
   cites('R-5321-5.1-n');
   const records = {

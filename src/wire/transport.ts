@@ -376,6 +376,11 @@ export class Wire {
         clearTimeout(timer);
         secure.removeListener('error', onError);
         this.#socket = secure;
+        // RFC 3207 §4 / RFC 8314: discard any bytes buffered before the handshake across the
+        // TLS boundary — never let pre-handshake plaintext be consumed as the first encrypted
+        // reply (the CVE-2011-0411 injection class). On the sending side this is belt-and-braces
+        // (under enforce a MITM cannot complete the handshake), but the buffer must not survive.
+        this.#buffer = Buffer.alloc(0);
         this.#attach(secure);
         this.#record({
           kind: 'tls-established',

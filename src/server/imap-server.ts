@@ -154,6 +154,25 @@ const write = (sock: net.Socket, line: string): void => {
 const unquote = (s: string): string => s.replace(/^"|"$/g, '');
 
 /**
+ * Serialise a mailbox name to the wire as an astring (RFC 9051 §4.3). A bare `name.includes(' ')
+ * ? '"'+name+'"' : name` test both fails to escape a `"`/`\` inside the name (an embedded quote
+ * closes the quoted-string early and desyncs a strict client's LIST/STATUS parse) and emits a
+ * raw atom for a name with a non-space special. Quote and escape `\`/`"`; a control octet forces
+ * a literal — the same discipline envelope.imapString / body-structure.qstr already apply
+ * (audit run-3: mailbox names are owner-created, so this is an interop-correctness fix, not a
+ * cross-trust-boundary bypass).
+ */
+function imapMailboxAstring(name: string): string {
+  // A control octet (incl. CR/LF/NUL) can appear in neither an atom nor a quoted-string → literal.
+  if (/[\x00-\x1f\x7f]/.test(name)) return `{${Buffer.byteLength(name, 'utf8')}}\r\n${name}`;
+  // A valid atom (RFC 9051 ABNF: none of the atom-specials SP ( ) { % * " \ ]) goes bare — the
+  // common case (Work, Sent, INBOX) is unchanged, so simple names stay human-readable on the wire.
+  if (name.length > 0 && !/[\x00-\x1f\x7f "%()*\\\]{]/.test(name)) return name;
+  // Otherwise a quoted-string with the quoted-specials (" and \) escaped.
+  return `"${name.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`;
+}
+
+/**
  * Tokenise an IMAP argument string, keeping a "quoted string" (which may contain
  * spaces) as ONE token — so SEARCH SUBJECT "annual report" searches for the whole
  * phrase, not just "annual". A plain split(' ') breaks quoted multi-word values.
@@ -1011,7 +1030,7 @@ export class ImapServer {
               for (const name of matchNames(reference, pattern, allNames)) {
                 if (onlySpecialUse && SPECIAL_USE[name] === undefined) continue;
                 const attrs = wantSubscribed ? listAttributes(name, allNames).replace(/\)$/, ' \\Subscribed)') : listAttributes(name, allNames);
-                write(sock, `* LIST ${attrs} "/" ${name.includes(' ') ? `"${name}"` : name}`);
+                write(sock, `* LIST ${attrs} "/" ${imapMailboxAstring(name)}`);
               }
             }
             write(sock, `${tag} OK LIST completed`);
@@ -1021,7 +1040,7 @@ export class ImapServer {
             // rev2 dropped LSUB; answered like LIST as a deliberate concession to
             // clients that still probe with it during setup.
             for (const name of matchNames(qarg(1), qarg(2), connCatalog.listNames())) {
-              write(sock, `* LSUB () "/" ${name.includes(' ') ? `"${name}"` : name}`);
+              write(sock, `* LSUB () "/" ${imapMailboxAstring(name)}`);
             }
             write(sock, `${tag} OK LSUB completed`);
             break;
@@ -1089,7 +1108,7 @@ export class ImapServer {
               else if (w === 'HIGHESTMODSEQ') items.push(`HIGHESTMODSEQ ${box.highestModseq}`); // RFC 7162 §3.1.2.1
               else if (w === 'RECENT') items.push('RECENT 0');
             }
-            write(sock, `* STATUS ${name.includes(' ') ? `"${name}"` : name} (${items.join(' ')})`);
+            write(sock, `* STATUS ${imapMailboxAstring(name)} (${items.join(' ')})`);
             write(sock, `${tag} OK STATUS completed`);
             break;
           }

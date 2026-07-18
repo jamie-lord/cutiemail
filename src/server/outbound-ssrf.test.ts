@@ -16,6 +16,14 @@ test('loopback, private, link-local, and localhost MX targets are refused', () =
   }
 });
 
+test('an empty / null-MX host is refused (net.connect would dial localhost — run-3 backstop)', () => {
+  // The resolver normalises a null MX to '.', but this is the last line of defence: any empty,
+  // whitespace, or '.' host must never reach net.connect (which resolves '' to 127.0.0.1).
+  for (const h of ['', ' ', '.', '\t', '  ']) {
+    assert.equal(isUnsafeMxTarget(h), true, `"${h}" must be refused as an MX target`);
+  }
+});
+
 test('public MX hostnames and public IP literals are allowed', () => {
   for (const h of ['gmail-smtp-in.l.google.com', 'aspmx.l.google.com', 'mx1.example.com', 'mail.protonmail.ch', '8.8.8.8', '1.1.1.1', '172.15.0.1', '172.32.0.1', '2001:4860:4860::8888']) {
     assert.equal(isUnsafeMxTarget(h), false, `${h} must be allowed`);

@@ -58,6 +58,10 @@ function isPrivateOrLoopback(ip: string): boolean {
  */
 export function isUnsafeMxTarget(host: string): boolean {
   const h = host.toLowerCase().replace(/\.$/, '');
+  // An empty/whitespace host is never a valid public MX; refuse it outright. net.connect
+  // resolves an empty host to localhost, so this is the backstop for any null-MX ('' / '.')
+  // target that slips past the resolver's RFC 7505 normalisation (audit run-3).
+  if (h.trim() === '' || h === '.') return true;
   if (h === 'localhost' || h.endsWith('.localhost')) return true;
   return net.isIP(host) !== 0 && isPrivateOrLoopback(host);
 }
