@@ -33,8 +33,8 @@ variable, and the SQLite files are created on first run (no schema step):
 | `MAIL_DOMAIN` | `mail.example.com` | the local mail domain *and* the SMTP greeting/HELO name |
 | `MAIL_HOST` | `127.0.0.1` | bind address (`0.0.0.0` in production) |
 | `MAIL_SMTP_PORT` / `MAIL_SUBMISSION_PORT` / `MAIL_IMAP_PORT` | `2525` / `5587` / `5993` | listener ports (use 25 / 587 / 993 in production) |
-| `MAIL_USER` / `MAIL_PASS` | `demo` / `demo` | the **primary** account |
-| `MAIL_ACCOUNTS` | unset | additional accounts, `"user:pass,user2:pass2"` (each gets its own `mail-<user>.db`) |
+| `MAIL_USER` / `MAIL_PASS` | `demo` / `demo` | the **primary** account — creates it if missing; an existing account's password is managed with `account`, not env (ADR 0012) |
+| `MAIL_ACCOUNTS` | unset | additional accounts, `"user:pass,user2:pass2"` (each gets its own `mail-<user>.db`); create-only, like `MAIL_USER` |
 | `MAIL_CONTROL_DB` | `control.db` | the control database — account registry + outbound queue |
 | `MAIL_DB` | `mail.db` | the **primary** account's mailbox database (`:memory:` for ephemeral) |
 | `MAIL_TLS_CERT` / `MAIL_TLS_KEY` | bundled dev cert | PEM cert/key paths (a self-signed dev cert is used if unset) |
@@ -48,7 +48,10 @@ reverse-DNS instruction — as annotated zone lines derived from the server's ow
 `node src/main.ts doctor` then checks the deployment against live DNS and the network — MX,
 FCrDNS, SPF (evaluated by the server's own RFC 7208 evaluator), the published DKIM key matching
 the local private key, DMARC, certificate validity/expiry, and an outbound port-25 probe — so
-"it worked when I set it up" can be re-verified any time drift is suspected.
+"it worked when I set it up" can be re-verified any time drift is suspected. And
+`node src/main.ts account add|set-password|enable|disable|list` manages accounts in the control
+database directly — passwords prompted (or piped), never in argv or the environment; the running
+daemon picks changes up immediately, no restart (ADR 0012).
 
 Embedding it instead of running the daemon? `startServer(config)` takes a `MailServerConfig`
 object directly, with the same knobs plus injection seams (DNS resolvers, the auth throttle, the

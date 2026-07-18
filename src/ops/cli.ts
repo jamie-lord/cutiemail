@@ -12,6 +12,7 @@
 
 import { runSetup } from './setup.ts';
 import { runDoctor } from './doctor.ts';
+import { runAccount } from './account.ts';
 
 export interface OpsIo {
   out(line: string): void;
@@ -24,6 +25,7 @@ const USAGE = [
   'With no command, runs the mail server daemon. Commands:',
   '  setup    generate the DKIM key (if missing) and print the DNS records to publish',
   '  doctor   check the deployment against live DNS and the network (drift, cert, port 25)',
+  '  account  add/list accounts, change passwords, enable/disable — no passwords in env',
   '  help     this text',
 ].join('\n');
 
@@ -34,6 +36,8 @@ export async function runOps(argv: readonly string[], io: OpsIo, env: Record<str
       return runSetup(rest, io, env);
     case 'doctor':
       return runDoctor(rest, io, env);
+    case 'account':
+      return runAccount(rest, io, env);
     case 'help':
     case '--help':
     case '-h':

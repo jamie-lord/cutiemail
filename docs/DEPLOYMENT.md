@@ -141,8 +141,8 @@ SQLite databases are created on first run:
 | `MAIL_DOMAIN` | `mail.example.com` — your hostname *and* mail domain |
 | `MAIL_HOST` | `0.0.0.0` — bind all interfaces, not just loopback |
 | `MAIL_SMTP_PORT` / `MAIL_SUBMISSION_PORT` / `MAIL_IMAP_PORT` | `25` / `587` / `993` |
-| `MAIL_USER` / `MAIL_PASS` | the **primary** account, e.g. `you` / a real passphrase |
-| `MAIL_ACCOUNTS` | additional accounts as `"user:pass,user2:pass2"` (each gets its own `mail-<user>.db`) — omit for a single account |
+| `MAIL_USER` / `MAIL_PASS` | the **primary** account — used to *create* it on first boot; after that the registry is the source of truth and a changed env password is ignored with a warning (ADR 0012) |
+| `MAIL_ACCOUNTS` | additional accounts as `"user:pass,user2:pass2"` — create-only, same rule; the clean way to manage accounts is `node src/main.ts account` (below) |
 | `MAIL_CONTROL_DB` | `/var/lib/mailserver/control.db` — the control database (account registry + outbound queue) |
 | `MAIL_DB` | `/var/lib/mailserver/mail.db` — the **primary** account's mailbox database (a durable path, not `:memory:`) |
 | `MAIL_TLS_CERT` / `MAIL_TLS_KEY` | paths to a real certificate (Let's Encrypt) |
@@ -154,6 +154,21 @@ Each account's mailbox lives in its own SQLite file; a shared control database h
 credential registry (which stores only the derived StoredKey/ServerKey, never the password) and the
 persistent outbound queue. Inbound mail is delivered into the addressed account's mailbox; a
 recipient that isn't a known local account is rejected at `RCPT` (no catch-all, no backscatter).
+
+**Managing accounts** — once the primary account exists, take the passwords out of the unit
+file entirely and use the CLI (it prompts for the password; when piped, it reads one line
+from stdin — never argv, which is visible in `ps`):
+
+```sh
+node src/main.ts account add you --db /var/lib/mailserver/control.db
+node src/main.ts account set-password you --db /var/lib/mailserver/control.db
+node src/main.ts account list --db /var/lib/mailserver/control.db
+```
+
+The running daemon sees changes immediately (auth reads the registry per attempt) — no
+restart. There is deliberately no `remove`: `disable` refuses auth and delivery without
+touching the user's mailbox database; deleting mail is an explicit `rm` of that file,
+never a management-verb side effect (ADR 0012).
 
 What the running server does, end to end: it **receives** on 25 (stamping a
 `Received:` trace line, rejecting oversized messages and mail loops), authenticates

@@ -154,6 +154,28 @@ const resolveDkimKeyViaDns: DkimKeyResolver = async (domain, selector) => {
   return joined === undefined ? null : Buffer.from(joined, 'latin1');
 };
 
+/**
+ * Seed configured accounts into the registry — CREATE-ONLY (ADR 0012). Once an
+ * account exists, the registry is its source of truth: a changed env password is
+ * IGNORED (with a warning) rather than applied, so `account set-password` cannot
+ * be silently reverted by a stale unit file at the next boot. Exported for its
+ * unit test.
+ */
+export function seedAccounts(
+  registry: AccountRegistry,
+  accounts: ReadonlyArray<{ readonly user: string; readonly pass: string; readonly mailDbPath: string }>,
+  log: (line: string) => void,
+): void {
+  for (const a of accounts) {
+    const existing = registry.lookup(a.user);
+    if (existing === undefined) {
+      registry.upsert(a.user, a.pass, a.mailDbPath);
+    } else if (existing.enabled && !registry.verifyPassword(a.user, a.pass)) {
+      log(`account ${a.user}: already provisioned — the differing env password is IGNORED (change it with \`node src/main.ts account set-password ${a.user}\`)`);
+    }
+  }
+}
+
 export interface RunningServer {
   readonly inbound: SmtpReceiver;
   readonly submission: SmtpReceiver;
@@ -177,15 +199,15 @@ export async function startServer(cfg: MailServerConfig): Promise<RunningServer>
   const inMemory = cfg.dbPath === ':memory:';
   const log = cfg.onEvent ?? ((): void => {});
 
-  // The persistent account registry. Configured accounts are (re)seeded from config,
-  // which stays the source of truth for them; the registry also holds each user's
-  // mail-database path (default `mail-<user>.db` beside the control DB, or `:memory:`
-  // when the control DB is in-memory, or an explicit per-account override).
+  // The persistent account registry — the source of truth for accounts (ADR 0012).
+  // Config/env accounts are seeded CREATE-ONLY below; the registry also holds each
+  // user's mail-database path (default `mail-<user>.db` beside the control DB, or
+  // `:memory:` when the control DB is in-memory, or an explicit per-account override).
   const registry = AccountRegistry.open(controlDb);
   // A user's mail DB defaults to `mail-<user>.db` in the SAME directory as the control
   // DB (so a production deploy keeps all databases together), or `:memory:` in-memory.
   const mailDbPathFor = (user: string, explicit?: string): string => explicit ?? (inMemory ? ':memory:' : join(dirname(cfg.dbPath), `mail-${user}.db`));
-  for (const a of cfg.accounts) registry.upsert(a.user, a.pass, mailDbPathFor(a.user, a.mailDbPath));
+  seedAccounts(registry, cfg.accounts.map((a) => ({ user: a.user, pass: a.pass, mailDbPath: mailDbPathFor(a.user, a.mailDbPath) })), log);
   const verify = (user: string, pass: string): boolean => registry.verifyPassword(user, pass);
 
   // The per-user store manager: opens each user's mail DB once, provisioning INBOX + the
