@@ -10,7 +10,8 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { generateKeyPairSync } from 'node:crypto';
 import { signMessage } from '../crypto/dkim-sign.ts';
-import { verifyDkim } from './dkim-inbound.ts';
+import { verifyDkim, MAX_DKIM_SIGNATURES } from './dkim-inbound.ts';
+import { computeBodyHash, canonicalizedBodyLength } from '../crypto/dkim-bodyhash.ts';
 import type { SignedField } from '../crypto/dkim-verify.ts';
 
 function signedMessage(): { message: Buffer; publicKeyDer: string } {
@@ -121,6 +122,77 @@ test('with multiple signatures, the message passes if ANY signature verifies (RF
   assert.equal(out.verdict, 'pass', 'the valid example.com signature wins');
   assert.equal(out.domain, 'example.com', 'the passing domain is reported');
   assert.deepEqual([...out.passedDomains], ['example.com'], 'passedDomains lists the aligned domain for DMARC');
+});
+
+test('DoS defense: at most MAX_DKIM_SIGNATURES signatures are verified per message', async () => {
+  // An unauthenticated sender can pack a message with thousands of DKIM-Signature
+  // headers; each triggers a full-body hash before any DNS lookup, freezing the single
+  // event-loop thread for minutes. The cap bounds that. Every signature here is VALID
+  // (same key, same body), so each one PROCESSED reaches the DNS resolver — counting the
+  // resolver calls proves at most MAX are processed even though MAX+5 are present.
+  const k = generateKeyPairSync('rsa', { modulusLength: 2048 });
+  const der = k.publicKey.export({ type: 'spki', format: 'der' }).toString('base64');
+  const headers: SignedField[] = [{ name: 'From', value: 'alice@example.com' }, { name: 'Subject', value: 'flood' }];
+  const body = Buffer.from('flood body\r\n', 'latin1');
+  const signed = signMessage({ domain: 'example.com', selector: 's', headerCanon: 'relaxed', bodyCanon: 'relaxed', signedHeaders: headers, body, privateKey: k.privateKey });
+  assert.ok(signed.ok);
+  const sigLine = `DKIM-Signature: ${(signed as { header: string }).header}`;
+  const headerBlock = headers.map((h) => `${h.name}: ${h.value}`).join('\r\n') + '\r\n\r\n' + body.toString('latin1');
+  const message = Buffer.from(Array(MAX_DKIM_SIGNATURES + 5).fill(sigLine).join('\r\n') + '\r\n' + headerBlock, 'latin1');
+  let calls = 0;
+  const out = await verifyDkim(message, async () => {
+    calls++;
+    return keyRecord(der);
+  });
+  assert.ok(calls <= MAX_DKIM_SIGNATURES, `resolver called ${calls} times; cap is ${MAX_DKIM_SIGNATURES}`);
+  assert.equal(out.verdict, 'pass', 'a valid signature within the cap still passes');
+});
+
+test('a valid signature buried past the cap is not reached (negative control for the cap)', async () => {
+  const k = generateKeyPairSync('rsa', { modulusLength: 2048 });
+  const der = k.publicKey.export({ type: 'spki', format: 'der' }).toString('base64');
+  const headers: SignedField[] = [{ name: 'From', value: 'alice@example.com' }, { name: 'Subject', value: 'buried' }];
+  const body = Buffer.from('buried body\r\n', 'latin1');
+  const signed = signMessage({ domain: 'example.com', selector: 's', headerCanon: 'relaxed', bodyCanon: 'relaxed', signedHeaders: headers, body, privateKey: k.privateKey });
+  assert.ok(signed.ok);
+  const validLine = `DKIM-Signature: ${(signed as { header: string }).header}`;
+  // A minimal well-formed but bogus signature (wrong bh) — reaches the body-hash step and fails there.
+  const bogusLine = 'DKIM-Signature: v=1; a=rsa-sha256; c=relaxed/relaxed; b=AAAA; bh=AAAA; d=bogus.test; s=s; h=from';
+  const headerBlock = headers.map((h) => `${h.name}: ${h.value}`).join('\r\n') + '\r\n\r\n' + body.toString('latin1');
+  const resolve = async (): Promise<Buffer> => keyRecord(der);
+  // MAX bogus signatures, then the valid one at position MAX+1 — the cap stops before it.
+  const buried = Buffer.from(Array(MAX_DKIM_SIGNATURES).fill(bogusLine).join('\r\n') + '\r\n' + validLine + '\r\n' + headerBlock, 'latin1');
+  assert.notEqual((await verifyDkim(buried, resolve)).verdict, 'pass', 'a signature past the cap must not rescue the verdict');
+  // Control: the SAME valid signature one slot earlier (within the cap) passes.
+  const withinCap = Buffer.from(Array(MAX_DKIM_SIGNATURES - 1).fill(bogusLine).join('\r\n') + '\r\n' + validLine + '\r\n' + headerBlock, 'latin1');
+  assert.equal((await verifyDkim(withinCap, resolve)).verdict, 'pass', 'the same signature within the cap is verified');
+});
+
+test('an l= exceeding the body length is rejected before the DNS key fetch (RFC 6376 §3.5)', async () => {
+  const der = generateKeyPairSync('rsa', { modulusLength: 2048 }).publicKey.export({ type: 'spki', format: 'der' }).toString('base64');
+  const body = Buffer.from('short body\r\n', 'latin1');
+  const bodyLen = canonicalizedBodyLength(body, 'relaxed');
+  const headerBlock = 'From: a@example.com\r\nSubject: s\r\n\r\n' + body.toString('latin1');
+  const mkMessage = (l: number, bh: string): Buffer =>
+    Buffer.from(`DKIM-Signature: v=1; a=rsa-sha256; c=relaxed/relaxed; d=example.com; s=s; h=from:subject; l=${l}; bh=${bh}; b=AAAA\r\n${headerBlock}`, 'latin1');
+
+  // Overlong l=: the guard fails it before any DNS lookup (resolver never called).
+  let overlongCalls = 0;
+  const overlong = await verifyDkim(mkMessage(999999, computeBodyHash(body, 'relaxed', 'sha256')), async () => {
+    overlongCalls++;
+    return keyRecord(der);
+  });
+  assert.equal(overlong.verdict, 'fail');
+  assert.equal(overlongCalls, 0, 'an overlong l= must be rejected before the DNS key fetch');
+
+  // Control: a valid l= (== body length) with a matching bh passes the body-hash step and
+  // DOES reach the resolver — proving the guard fires on the length, not indiscriminately.
+  let validCalls = 0;
+  await verifyDkim(mkMessage(bodyLen, computeBodyHash(body, 'relaxed', 'sha256', bodyLen)), async () => {
+    validCalls++;
+    return keyRecord(der);
+  });
+  assert.ok(validCalls >= 1, 'a valid l= must not be blocked by the overlong-l= guard');
 });
 
 test('a signature that does not cover the From header is rejected (RFC 6376 §5.4)', async () => {

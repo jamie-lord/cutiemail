@@ -484,6 +484,18 @@ export async function startServer(cfg: MailServerConfig): Promise<RunningServer>
   };
 }
 
+/**
+ * Parse a positive-integer env var, falling back to `fallback` for an unset, empty,
+ * non-numeric, non-integer, or non-positive value. `Number('abc')` is NaN, and a NaN
+ * limit silently disables every `value > limit` guard — so a malformed MAIL_MAX_SIZE or
+ * port must fall back to a sane default, never poison a bound.
+ */
+function posIntEnv(raw: string | undefined, fallback: number): number {
+  if (raw === undefined || raw.trim() === '') return fallback;
+  const n = Number(raw);
+  return Number.isInteger(n) && n > 0 ? n : fallback;
+}
+
 /** Build a config from environment variables, with dev-friendly defaults. */
 function configFromEnv(): MailServerConfig & { usingDevCert: boolean } {
   const certPath = process.env.MAIL_TLS_CERT;
@@ -501,9 +513,9 @@ function configFromEnv(): MailServerConfig & { usingDevCert: boolean } {
     // mail.db becomes that user's mail store, and the control DB is a new file alongside.
     dbPath: process.env.MAIL_CONTROL_DB ?? 'control.db',
     host: process.env.MAIL_HOST ?? '127.0.0.1',
-    smtpPort: Number(process.env.MAIL_SMTP_PORT ?? 2525),
-    submissionPort: Number(process.env.MAIL_SUBMISSION_PORT ?? 5587),
-    imapPort: Number(process.env.MAIL_IMAP_PORT ?? 5993),
+    smtpPort: posIntEnv(process.env.MAIL_SMTP_PORT, 2525),
+    submissionPort: posIntEnv(process.env.MAIL_SUBMISSION_PORT, 5587),
+    imapPort: posIntEnv(process.env.MAIL_IMAP_PORT, 5993),
     domain: process.env.MAIL_DOMAIN ?? 'mail.example.com',
     // The primary account keeps its existing mail database (MAIL_DB) for a clean
     // migration; additional accounts come from MAIL_ACCOUNTS ("user:pass,user2:pass2")
@@ -518,7 +530,10 @@ function configFromEnv(): MailServerConfig & { usingDevCert: boolean } {
     ],
     tls: dev,
     ...(dkim !== undefined ? { dkim } : {}),
-    maxMessageSize: Number(process.env.MAIL_MAX_SIZE ?? 26_214_400), // 25 MiB default
+    // 25 MiB default. Validated: a malformed value must NOT become NaN, or every
+    // `len > NaN` size check is false and the DATA size cap silently disappears —
+    // removing the last bound on a multi-signature-flood DoS (see MAX_DKIM_SIGNATURES).
+    maxMessageSize: posIntEnv(process.env.MAIL_MAX_SIZE, 26_214_400),
     // Forwarders (e.g. a mailing list) whose valid ARC chain may rescue a DMARC failure to
     // the INBOX (ADR 0011). Comma-separated domains; empty = ARC is recorded but never
     // overrides DMARC (the safe default).
