@@ -1,0 +1,10 @@
+From: a@x.test
+Content-Type: multipart/mixed; boundary="E"
+
+--E
+
+--E
+Content-Type: text/plain
+
+
+--E--

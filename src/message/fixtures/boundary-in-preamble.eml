@@ -1,0 +1,10 @@
+From: a@x.test
+Content-Type: multipart/mixed; boundary="sep"
+
+This preamble mentions --sep-ish but not exactly.
+--sep
+Content-Type: text/plain
+
+real part
+--sep--
+Trailing --sep in the epilogue is ignored.

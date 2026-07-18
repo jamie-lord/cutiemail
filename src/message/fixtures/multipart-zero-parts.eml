@@ -1,0 +1,4 @@
+From: a@x.test
+Content-Type: multipart/mixed; boundary="NOPE"
+
+The boundary NOPE is named but no --NOPE delimiter is present.

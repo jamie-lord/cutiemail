@@ -1,0 +1,11 @@
+From: a@x.test
+Subject: line one
+	folded with a tab
+ folded with a space
+ =?UTF-8?Q?w?=
+ =?UTF-8?Q?ord?=
+To: one@x.test,
+	two@y.test,
+ three@z.test
+
+body

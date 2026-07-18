@@ -1,0 +1,27 @@
+From: Sender <s@x.test>
+To: r@y.test
+Subject: nested
+MIME-Version: 1.0
+Content-Type: multipart/mixed; boundary="OUT"
+
+preamble to ignore
+--OUT
+Content-Type: multipart/alternative; boundary="IN"
+
+--IN
+Content-Type: text/plain; charset=us-ascii
+
+plain body
+--IN
+Content-Type: text/html; charset=utf-8
+
+<p>html body</p>
+--IN--
+--OUT
+Content-Type: application/octet-stream; name="a.bin"
+Content-Transfer-Encoding: base64
+Content-Disposition: attachment; filename="a.bin"
+
+AAAA
+--OUT--
+epilogue ignored

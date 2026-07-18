@@ -1,0 +1,11 @@
+From: a@x.test
+Content-Type: multipart/mixed; boundary="B"
+
+--B
+Content-Type: text/plain
+
+first
+--B
+Content-Type: text/plain
+
+second, never closed

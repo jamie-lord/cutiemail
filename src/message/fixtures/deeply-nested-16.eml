@@ -1,0 +1,83 @@
+From: deep@x.test
+Content-Type: multipart/mixed; boundary="N0"
+
+--N0
+Content-Type: multipart/mixed; boundary="N1"
+
+--N1
+Content-Type: multipart/mixed; boundary="N2"
+
+--N2
+Content-Type: multipart/mixed; boundary="N3"
+
+--N3
+Content-Type: multipart/mixed; boundary="N4"
+
+--N4
+Content-Type: multipart/mixed; boundary="N5"
+
+--N5
+Content-Type: multipart/mixed; boundary="N6"
+
+--N6
+Content-Type: multipart/mixed; boundary="N7"
+
+--N7
+Content-Type: multipart/mixed; boundary="N8"
+
+--N8
+Content-Type: multipart/mixed; boundary="N9"
+
+--N9
+Content-Type: multipart/mixed; boundary="N10"
+
+--N10
+Content-Type: multipart/mixed; boundary="N11"
+
+--N11
+Content-Type: multipart/mixed; boundary="N12"
+
+--N12
+Content-Type: multipart/mixed; boundary="N13"
+
+--N13
+Content-Type: multipart/mixed; boundary="N14"
+
+--N14
+Content-Type: multipart/mixed; boundary="N15"
+
+--N15
+Content-Type: text/plain
+
+the deep core
+--N15--
+
+--N14--
+
+--N13--
+
+--N12--
+
+--N11--
+
+--N10--
+
+--N9--
+
+--N8--
+
+--N7--
+
+--N6--
+
+--N5--
+
+--N4--
+
+--N3--
+
+--N2--
+
+--N1--
+
+--N0--
