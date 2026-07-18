@@ -463,11 +463,23 @@ export async function startServer(cfg: MailServerConfig): Promise<RunningServer>
   relayLoop.start(cfg.relayIntervalMs ?? 60_000);
   void relayLoop.tick(Date.now());
 
-  // Expose the first account's INBOX for the single-account integration harness.
-  const firstUser = cfg.accounts[0]?.user;
-  const firstStore = firstUser !== undefined ? stores.get(firstUser) : undefined;
-  const mailbox = firstStore?.catalog.get('INBOX');
-  if (mailbox === undefined) throw new Error('a mail server needs at least one account');
+  // Expose an INBOX for the single-account integration harness — ANY enabled account's,
+  // scanning the configured accounts rather than fixing on accounts[0]. Otherwise disabling
+  // the primary (MAIL_USER) account would brick the whole daemon on the next boot, taking
+  // down every OTHER enabled account too (audit run-2 robustness note). Only a genuinely
+  // empty/all-disabled registry is fatal.
+  const mailbox = cfg.accounts.map((a) => stores.get(a.user)?.catalog.get('INBOX')).find((m) => m !== undefined);
+  if (mailbox === undefined) {
+    // Fail closed WITHOUT leaking the already-bound listeners + relay timer — an embedder
+    // that catches this must not be left with orphaned handles keeping the loop alive.
+    relayLoop.stop();
+    await inbound.close();
+    await submission.close();
+    await imap.close();
+    stores.closeAll();
+    controlDb.close();
+    throw new Error('a mail server needs at least one enabled account');
+  }
 
   return {
     inbound,
