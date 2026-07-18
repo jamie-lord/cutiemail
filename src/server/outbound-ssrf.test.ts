@@ -32,6 +32,22 @@ test('a hostname that RESOLVES to a private address is refused (the residual is 
   assert.equal(await resolvesToPrivate('mx.attacker.test', resolvesTo(['93.184.216.34', '10.0.0.5'])), true, 'ANY private address refuses');
 });
 
+test('CGNAT and reserved/documentation ranges are refused (run-2 finding 4)', async () => {
+  const resolvesTo = (addrs: string[]) => async (): Promise<readonly string[]> => addrs;
+  // 100.64/10 CGNAT is the one of real internal-reach concern in cloud/carrier nets.
+  for (const cgnat of ['100.64.0.1', '100.100.5.5', '100.127.255.254']) {
+    assert.equal(await resolvesToPrivate('mx.attacker.test', resolvesTo([cgnat])), true, `CGNAT ${cgnat}`);
+  }
+  // Reserved documentation/benchmark blocks — non-public.
+  for (const r of ['192.0.2.5', '198.51.100.5', '203.0.113.5', '198.18.0.1', '198.19.255.1', '192.0.0.1']) {
+    assert.equal(await resolvesToPrivate('mx.attacker.test', resolvesTo([r])), true, `reserved ${r}`);
+  }
+  // Public addresses that are NOT in those blocks stay allowed (no over-blocking).
+  for (const ok of ['100.63.255.255', '100.128.0.1', '192.0.1.1', '192.0.3.1', '198.20.0.1', '203.1.113.1', '93.184.216.34']) {
+    assert.equal(await resolvesToPrivate('mx1.example.com', resolvesTo([ok])), false, `public ${ok}`);
+  }
+});
+
 test('a hostname resolving only to public addresses is allowed; a literal IP is left to isUnsafeMxTarget', async () => {
   const resolvesTo = (addrs: string[]) => async (): Promise<readonly string[]> => addrs;
   assert.equal(await resolvesToPrivate('mx1.example.com', resolvesTo(['93.184.216.34'])), false, 'public address is fine');

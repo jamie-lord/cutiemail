@@ -35,7 +35,10 @@ const iso = (ms: number): string => new Date(ms).toISOString().replace(/\.\d{3}Z
  * sequence can be introduced. `--raw` keeps the exact bytes but refuses a TTY (below).
  */
 const TERMINAL_CONTROLS = /[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f]/g;
-const sanitizeForTerminal = (s: string): string => s.replace(TERMINAL_CONTROLS, '.');
+// A lone CR (0x0d not part of a CRLF) returns the cursor to column 0 and lets attacker
+// text overwrite the visible line (display forgery) — neutralise it too, keeping CRLF for
+// header readability (audit run-2 finding 5).
+const sanitizeForTerminal = (s: string): string => s.replace(/\r(?!\n)/g, '.').replace(TERMINAL_CONTROLS, '.');
 
 /** "in 42s" / "38m ago" — the operator question is always "when / how stale". */
 function relative(ms: number, now: number): string {

@@ -26,8 +26,21 @@ function isPrivateOrLoopback(ip: string): boolean {
   const fam = net.isIP(ip);
   if (fam === 4) {
     const p = ip.split('.').map(Number);
-    const [a, b] = [p[0] ?? 0, p[1] ?? 0];
-    return a === 0 || a === 127 || a === 10 || (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168) || (a === 169 && b === 254) || a >= 224;
+    const [a, b, c] = [p[0] ?? 0, p[1] ?? 0, p[2] ?? 0];
+    return (
+      a === 0 ||
+      a === 127 ||
+      a === 10 ||
+      (a === 172 && b >= 16 && b <= 31) ||
+      (a === 192 && b === 168) ||
+      (a === 169 && b === 254) ||
+      (a === 100 && b >= 64 && b <= 127) || // 100.64/10 CGNAT (RFC 6598) — reaches internal infra in cloud/carrier nets
+      (a === 198 && (b === 18 || b === 19)) || // 198.18/15 benchmarking (RFC 2544)
+      (a === 192 && b === 0 && (c === 0 || c === 2)) || // 192.0.0/24 IETF + 192.0.2/24 TEST-NET-1
+      (a === 198 && b === 51 && c === 100) || // 198.51.100/24 TEST-NET-2
+      (a === 203 && b === 0 && c === 113) || // 203.0.113/24 TEST-NET-3
+      a >= 224
+    );
   }
   if (fam === 6) {
     const low = ip.toLowerCase().replace(/^\[|\]$/g, '');

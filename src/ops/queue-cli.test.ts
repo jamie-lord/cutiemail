@@ -96,7 +96,8 @@ test('dead-letter show sanitises terminal escape sequences in attacker-controlle
     const db = openMailDb(dbPath);
     const queue = SqliteQueue.open(db);
     // A message whose Subject carries an OSC 52 clipboard-write + a CSI screen-clear.
-    const evil = Buffer.from('From: a@b.example\r\nSubject: \x1b]52;c;ZXZpbA==\x07\x1b[2Jhi\r\n\r\nbody\r\n', 'latin1');
+    // OSC 52 clipboard-write + CSI screen-clear + a lone CR line-overwrite in the Subject.
+    const evil = Buffer.from('From: a@b.example\r\nSubject: \x1b]52;c;ZXZpbA==\x07\x1b[2Jok\rFORGED\r\n\r\nbody\r\n', 'latin1');
     const id = queue.enqueue('s@here.example', ['gone@there.example'], evil, 2000);
     const entry = queue.due(Number.MAX_SAFE_INTEGER).find((e) => e.id === id)!;
     queue.deadLetter(entry, { failedRecipients: ['gone@there.example'], lastError: 'permanent: nope', now: 3000 });
@@ -107,6 +108,8 @@ test('dead-letter show sanitises terminal escape sequences in attacker-controlle
     const text = show.out.join('\n');
     assert.equal(text.includes('\x1b'), false, 'no ESC byte reaches the terminal');
     assert.equal(/[\x00-\x08\x0e-\x1f\x7f-\x9f]/.test(text), false, 'no C0/C1 controls reach the terminal');
+    // A lone CR (line-overwrite forgery) is neutralised too (run-2 finding 5).
+    assert.equal(/\r(?!\n)/.test(text), false, 'no lone CR reaches the terminal');
     assert.match(text, /Subject: /); // the header is still shown, just neutralised
     // The escapes are also neutralised in the `list` line (lastError can carry remote bytes).
     const list = capture();
