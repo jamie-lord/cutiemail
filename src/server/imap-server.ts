@@ -906,6 +906,12 @@ export class ImapServer {
           pendingAuth = null;
           if (line.trim() === '*') {
             write(sock, `${authTag} BAD authentication cancelled`);
+          } else if (authBlocked()) {
+            // Re-check the throttle on the continuation too (consistent with the LOGIN and
+            // AUTHENTICATE-initiation gates): refuse a blocked IP WITHOUT checking the
+            // password, so an IP that crossed the threshold on another connection between
+            // the command and its continuation gets no free guess here.
+            write(sock, `${authTag} NO [AUTHENTICATIONFAILED] too many attempts — try later`);
           } else {
             const authedUser = this.#saslPlainUser(line.trim());
             if (authedUser !== null && bindAccount(authedUser)) {

@@ -69,8 +69,15 @@ export class AuthThrottle {
     this.#fails.set(ip, kept);
   }
 
-  /** A successful auth clears the IP's failures — a legitimate user is never left throttled. */
+  /**
+   * A successful auth prunes only the IP's EXPIRED failures — it must NOT clear recent
+   * ones. Deleting the whole record let an attacker holding one valid credential reset the
+   * guessing budget against every OTHER account from the same IP: guess N times, log in to
+   * their own account to wipe the failures, repeat, unlimited. A legitimate user is still
+   * never left throttled: to reach this call they were under the threshold (a blocked IP is
+   * refused before the password is checked), and their old failures age out on the window.
+   */
   recordSuccess(ip: string): void {
-    this.#fails.delete(ip);
+    this.#recent(ip); // prunes expired failures in place; keeps recent ones
   }
 }

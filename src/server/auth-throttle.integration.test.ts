@@ -129,7 +129,12 @@ test('IMAP: after the failure threshold, even the CORRECT password is refused wi
   }
 });
 
-test('IMAP: a success before the threshold clears the IP (a legitimate user is never locked out)', async () => {
+test('IMAP: a success does NOT reset the throttle — brute force cannot be laundered through a login', async () => {
+  // The security fix (audit run-1, finding 2): a success prunes only EXPIRED failures.
+  // If a success wiped recent ones, an attacker holding one valid credential could reset
+  // the guessing budget against other accounts. Here maxFailures=3 at a fixed clock:
+  // 2 failures + a success (keeps both) + 1 failure = 3 → blocked, so even the correct
+  // password is then refused. Under the old delete()-on-success this final login was OK.
   const throttle = new AuthThrottle({ maxFailures: 3, now: () => 1000 });
   const server = await startServer(config(throttle));
   try {
@@ -142,24 +147,23 @@ test('IMAP: a success before the threshold clears the IP (a legitimate user is n
       await c.until(/a NO/);
       c.end();
     }
-    // …then a success clears the counter…
+    // …then a success (which must NOT clear the two recent failures)…
     const ok = await tlsConn(port);
     await ok.until(/\* OK/);
     ok.send(`a LOGIN alice "${PW}"\r\n`);
     await ok.until(/a OK/);
     ok.end();
-    // …so three more failures are needed to block again (the earlier two were cleared).
-    for (let i = 0; i < 2; i++) {
-      const c = await tlsConn(port);
-      await c.until(/\* OK/);
-      c.send('a LOGIN alice wrongpass\r\n');
-      await c.until(/a NO/);
-      c.end();
-    }
+    // …then one more failure reaches the threshold (2 kept + 1 = 3) → the IP is blocked.
+    const third = await tlsConn(port);
+    await third.until(/\* OK/);
+    third.send('a LOGIN alice wrongpass\r\n');
+    await third.until(/a NO/);
+    third.end();
+    // A subsequent attempt with the CORRECT password is refused — the budget was not reset.
     const c = await tlsConn(port);
     await c.until(/\* OK/);
     c.send(`a LOGIN alice "${PW}"\r\n`);
-    assert.match(await c.until(/a (OK|NO)/), /a OK/, 'still under threshold after the clearing success');
+    assert.match(await c.until(/a (OK|NO)/), /a NO/, 'the success did not reset the budget; the IP is blocked');
     c.end();
   } finally {
     await server.close();
