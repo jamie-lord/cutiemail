@@ -104,8 +104,18 @@ MAIL_DOMAIN=mail.example.com node src/main.ts setup --ip <your-ip>
 
 prints every record below as annotated, copy-pasteable zone lines. Re-run it any
 time to reprint them from the existing key (the output is deterministic, so you can
-diff it against what you actually published). The table explains what each record
-is *for*:
+diff it against what you actually published). And once the records are in, verify
+the whole deployment — live DNS, reverse DNS, SPF evaluation, DKIM key match, the
+certificate, and whether your provider actually allows outbound port 25 — with:
+
+```sh
+node src/main.ts doctor
+```
+
+It exits 1 on any failure, so it works as a cron'd health check; re-run it whenever
+deliverability "suddenly" changes, because the usual cause is drift in exactly the
+things it checks (an expired certificate, a changed IP, a lost PTR). The table
+explains what each record is *for*:
 
 | Record | Name | Value | Why |
 |---|---|---|---|

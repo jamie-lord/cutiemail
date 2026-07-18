@@ -45,6 +45,10 @@ variable, and the SQLite files are created on first run (no schema step):
 The same entry point is the operator toolbox: `node src/main.ts setup` generates a DKIM key
 (if none exists) and prints the exact DNS records to publish — MX, SPF, DKIM, DMARC, and the
 reverse-DNS instruction — as annotated zone lines derived from the server's own configuration.
+`node src/main.ts doctor` then checks the deployment against live DNS and the network — MX,
+FCrDNS, SPF (evaluated by the server's own RFC 7208 evaluator), the published DKIM key matching
+the local private key, DMARC, certificate validity/expiry, and an outbound port-25 probe — so
+"it worked when I set it up" can be re-verified any time drift is suspected.
 
 Embedding it instead of running the daemon? `startServer(config)` takes a `MailServerConfig`
 object directly, with the same knobs plus injection seams (DNS resolvers, the auth throttle, the
