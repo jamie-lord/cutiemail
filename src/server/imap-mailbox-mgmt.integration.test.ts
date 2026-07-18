@@ -64,6 +64,7 @@ test('LIST/STATUS serialise a mailbox name as a proper astring (quote/special ch
   const cat = SqliteCatalog.open(new DatabaseSync(':memory:'));
   cat.create('a b"c'); // space AND an embedded double-quote
   cat.create('foo)bar'); // a special char but NO space (old code emitted a bare atom)
+  cat.create('café'); // an 8-bit char → must be a length-correct literal, never a bare 8-bit atom
   const server = await ImapServer.start(cat, { authenticate: () => true });
   const c = client(server.port);
   try {
@@ -72,6 +73,9 @@ test('LIST/STATUS serialise a mailbox name as a proper astring (quote/special ch
     const listing = await c.run('a2', 'LIST "" "*"');
     assert.ok(listing.includes('"a b\\"c"'), `the embedded quote must be backslash-escaped: ${listing}`);
     assert.ok(listing.includes('"foo)bar"'), `a special-but-spaceless name must be quoted, not a bare atom: ${listing}`);
+    // The 8-bit name is a literal whose declared length matches the latin1 octets written (4),
+    // not the UTF-8 byte count (5) — a wrong length would desync the client's parse.
+    assert.ok(listing.includes('{4}\r\ncafé'), `an 8-bit name must be a length-correct literal: ${JSON.stringify(listing)}`);
     // STATUS on the quote-bearing name echoes it with the same escaping.
     const status = await c.run('a3', 'STATUS "a b\\"c" (MESSAGES)');
     assert.match(status, /^a3 OK/m);

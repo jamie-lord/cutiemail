@@ -163,11 +163,15 @@ const unquote = (s: string): string => s.replace(/^"|"$/g, '');
  * cross-trust-boundary bypass).
  */
 function imapMailboxAstring(name: string): string {
-  // A control octet (incl. CR/LF/NUL) can appear in neither an atom nor a quoted-string → literal.
-  if (/[\x00-\x1f\x7f]/.test(name)) return `{${Buffer.byteLength(name, 'utf8')}}\r\n${name}`;
-  // A valid atom (RFC 9051 ABNF: none of the atom-specials SP ( ) { % * " \ ]) goes bare — the
-  // common case (Work, Sent, INBOX) is unchanged, so simple names stay human-readable on the wire.
-  if (name.length > 0 && !/[\x00-\x1f\x7f "%()*\\\]{]/.test(name)) return name;
+  // A control octet OR an 8-bit byte can appear in neither an atom nor a quoted-string (both are
+  // 7-bit) → emit a literal. The declared length must be the octet count ACTUALLY written:
+  // write() serialises with latin1 (one byte per JS char), so it is name.length — NOT
+  // Buffer.byteLength(name,'utf8'), which over-counts an 8-bit char and desyncs the client
+  // (audit run-4 fix to the run-3 astring change).
+  if (/[^\x20-\x7e]/.test(name)) return `{${name.length}}\r\n${name}`;
+  // A valid atom (RFC 9051 ABNF: printable ASCII, none of the atom-specials SP ( ) { % * " \ ])
+  // goes bare — the common case (Work, Sent, INBOX) is unchanged, so simple names stay readable.
+  if (name.length > 0 && !/[ "%()*\]\\{]/.test(name)) return name;
   // Otherwise a quoted-string with the quoted-specials (" and \) escaped.
   return `"${name.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`;
 }
