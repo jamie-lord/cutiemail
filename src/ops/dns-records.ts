@@ -9,8 +9,12 @@
  * the server runs on removes the transcription step entirely.
  *
  * Deterministic: same parameters, same output, so a re-run is diffable against
- * what is already published. No timestamps, no randomness.
+ * what is already published. No timestamps, no randomness (the MTA-STS id is a
+ * content hash — it changes exactly when the policy changes, never between
+ * identical runs).
  */
+
+import { createHash } from 'node:crypto';
 
 export interface DnsPlanParams {
   /** The mail domain — the right-hand side of the addresses this server hosts. */
@@ -102,6 +106,39 @@ export function renderZone(records: readonly DnsRecord[]): string {
     lines.push('');
   }
   return lines.join('\n');
+}
+
+/**
+ * The inbound MTA-STS policy file for this deployment (RFC 8461 §3.2). Exported
+ * so the test can prove it round-trips through our OWN policy parser — the same
+ * code that enforces other domains' policies on our outbound leg.
+ */
+export function mtaStsPolicy(mailHost: string): string {
+  return `version: STSv1\nmode: enforce\nmx: ${mailHost}\nmax_age: 604800\n`;
+}
+
+/**
+ * The optional inbound MTA-STS block (ADR 0013): the policy file content (its mx
+ * line must match our config, so we generate it), the TXT record that signals it,
+ * and where to host it — any HTTPS static host; cutie-mail deliberately runs no
+ * HTTP listener. The id is derived from the policy content, so it changes exactly
+ * when the policy does (RFC 8461 §3.1: a new id tells caches to refetch) while
+ * re-runs stay deterministic and diffable.
+ */
+export function mtaStsSection(p: DnsPlanParams): string {
+  const policy = mtaStsPolicy(p.mailHost);
+  const id = createHash('sha256').update(policy, 'utf8').digest('hex').slice(0, 12);
+  return [
+    '; OPTIONAL — inbound MTA-STS (RFC 8461): lets senders that honour MTA-STS (Gmail does)',
+    `; refuse to deliver mail for @${p.domain} over anything but validated TLS to your MX.`,
+    `; Host this exact file at https://mta-sts.${p.domain}/.well-known/mta-sts.txt`,
+    '; (any HTTPS static host works — this server deliberately speaks no HTTP, ADR 0013):',
+    ';',
+    ...policy.trimEnd().split('\n').map((l) => `;   ${l}`),
+    ';',
+    '; then publish (the id changes automatically when the policy above changes):',
+    `_mta-sts.${p.domain}.\tIN\tTXT\t"v=STSv1; id=${id}"`,
+  ].join('\n');
 }
 
 /** The out-of-band steps that are not records in the operator's own zone. */

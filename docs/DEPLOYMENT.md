@@ -131,6 +131,11 @@ same name — so a receiver checking DMARC sees SPF *and* DKIM pass for the send
 domain, which is what moves mail from spam to the inbox. `p=none` is right while
 you're testing; tighten to `quarantine`/`reject` once you trust your setup.
 
+`setup` also prints an **optional inbound MTA-STS** section: the exact policy file to
+host at `https://mta-sts.<domain>/.well-known/mta-sts.txt` (any static HTTPS host — this
+server deliberately speaks no HTTP, ADR 0013) plus the `_mta-sts` TXT record, so senders
+that honour MTA-STS can refuse to deliver your mail over anything but validated TLS.
+
 ## Running it
 
 The daemon is configured entirely by environment variables — there is no config file, and the

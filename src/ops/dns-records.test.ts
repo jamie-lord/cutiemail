@@ -10,7 +10,8 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { dnsRecordsFor, chunkTxt, renderZone, renderNotes, type DnsPlanParams } from './dns-records.ts';
+import { dnsRecordsFor, chunkTxt, renderZone, renderNotes, mtaStsPolicy, mtaStsSection, type DnsPlanParams } from './dns-records.ts';
+import { parseStsPolicy, mxAllowed } from '../transport/mta-sts.ts';
 
 const base: DnsPlanParams = {
   domain: 'example.org',
@@ -68,6 +69,28 @@ test('chunkTxt splits at 255 and the chunks reassemble byte-exactly', () => {
   assert.equal(chunks.join(''), long);
   // Control in the short direction: a value that fits stays one string.
   assert.deepEqual(chunkTxt('v=spf1 mx -all'), ['v=spf1 mx -all']);
+});
+
+test('the generated MTA-STS policy round-trips through our OWN enforcement parser (ADR 0013)', () => {
+  const policy = mtaStsPolicy('mail.example.org');
+  // The exact code that enforces other domains' policies on our outbound leg
+  // must accept the policy we tell operators to publish for their inbound.
+  const parsed = parseStsPolicy(Buffer.from(policy, 'latin1'));
+  assert.equal(parsed.version, 'STSv1');
+  assert.equal(parsed.mode, 'enforce');
+  assert.equal(mxAllowed(parsed, 'mail.example.org'), true);
+  // NEGATIVE CONTROL: a host the policy doesn't list is refused by the same parser.
+  assert.equal(mxAllowed(parsed, 'evil.example.net'), false);
+
+  // The id is a content hash: identical runs identical, changed policy changed id.
+  const section = mtaStsSection(base);
+  const id = /id=([0-9a-f]{12})/.exec(section)?.[1];
+  assert.ok(id !== undefined);
+  assert.equal(/id=([0-9a-f]{12})/.exec(mtaStsSection(base))?.[1], id);
+  const other = /id=([0-9a-f]{12})/.exec(mtaStsSection({ ...base, mailHost: 'other.example.org' }))?.[1];
+  assert.notEqual(other, id);
+  // And the section names the well-known URL the operator must serve.
+  assert.match(section, /https:\/\/mta-sts\.example\.org\/\.well-known\/mta-sts\.txt/);
 });
 
 test('renderZone quotes TXT values and splits a long one into adjacent strings', () => {

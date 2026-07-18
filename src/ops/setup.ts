@@ -17,7 +17,7 @@ import { createPrivateKey, createPublicKey, generateKeyPairSync } from 'node:cry
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { rawPublicKey } from '../crypto/dkim-ed25519.ts';
-import { dnsRecordsFor, renderZone, renderNotes, type DnsPlanParams } from './dns-records.ts';
+import { dnsRecordsFor, renderZone, renderNotes, mtaStsSection, type DnsPlanParams } from './dns-records.ts';
 import type { OpsIo } from './cli.ts';
 
 /**
@@ -133,6 +133,8 @@ export function runSetup(args: string[], io: OpsIo, env: Record<string, string |
   io.out('');
   io.out(renderZone(dnsRecordsFor(plan)));
   io.out(renderNotes(plan));
+  io.out('');
+  io.out(mtaStsSection(plan));
   if (env.MAIL_DKIM_KEY === undefined || env.MAIL_DKIM_SELECTOR === undefined) {
     io.out('');
     io.out('Set these in the daemon environment so outbound mail is signed with this key:');
