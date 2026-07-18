@@ -184,6 +184,16 @@ export async function deliver(
       }
     }
 
+    // MTA-STS enforce / requireValidCert: the transaction must NEVER proceed in cleartext.
+    // The STARTTLS branches above return terminally when EHLO *succeeds*, but an EHLO refusal
+    // (HELO fallback) or a heloOnly opening skips them entirely — so an active attacker who
+    // strips ESMTP by rejecting the EHLO verb could otherwise force a full cleartext send under
+    // a policy that exists to forbid exactly that (audit run-3, HIGH). One post-greeting
+    // assertion closes every non-TLS path: under enforce, TLS must be established here.
+    if (options.requireValidCert === true && !wire.tlsEstablished) {
+      return { ...base, greetingCode, openingVerb, heloFellBack, failure: 'STARTTLS required (MTA-STS enforce) but the session is not encrypted' };
+    }
+
     // The mail transaction. In the pipeline defect we fire the envelope + DATA
     // without waiting for replies (violating lock-step, R-5321-2.1-h); otherwise
     // strictly one command, one reply.

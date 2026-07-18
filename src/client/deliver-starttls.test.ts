@@ -13,6 +13,7 @@ import { deliver } from './deliver.ts';
 import { SmtpReceiver } from '../server/smtp-receiver.ts';
 import type { DeliveredMessage } from '../server/smtp-receiver.ts';
 import { TEST_CERT, TEST_KEY } from '../testing/tls-test-cert.ts';
+import { withPeer } from '../testing/client-peer.ts';
 
 test('opportunistic STARTTLS: the transaction runs over TLS when the peer advertises it', async () => {
   const received: DeliveredMessage[] = [];
@@ -33,6 +34,38 @@ test('opportunistic STARTTLS: the transaction runs over TLS when the peer advert
   } finally {
     await mx.close();
   }
+});
+
+test('MTA-STS enforce: an EHLO refusal must NOT downgrade to a cleartext HELO transaction', async () => {
+  // Active-attacker downgrade (audit run-3, HIGH): a MITM refuses the EHLO verb so the
+  // STARTTLS-offer branch is never reached; the client used to fall back to HELO and send the
+  // whole message in the clear even under requireValidCert. Under enforce that MUST be terminal.
+  await withPeer({ ehloStatus: 500 }, async (peer) => {
+    const r = await deliver(
+      { host: '127.0.0.1', port: peer.port, tls: 'none' },
+      { from: 'me@x.test', recipients: ['you@mx.example.test'], data: Buffer.from('Subject: s\r\n\r\nsecret\r\n', 'latin1'), clientName: 'client.example.test' },
+      {},
+      undefined,
+      { startTls: true, requireValidCert: true },
+    );
+    assert.equal(r.ok, false, 'enforce must refuse, not send in cleartext');
+    assert.match(r.failure ?? '', /encrypt|STARTTLS|TLS/i);
+    assert.equal(peer.deliveries.length, 0, 'nothing was delivered in the clear');
+  });
+  // Negative control: WITHOUT enforce the same EHLO refusal still delivers opportunistically
+  // (the HELO fallback is legitimate when TLS is not required) — the fix must not break that.
+  await withPeer({ ehloStatus: 500 }, async (peer) => {
+    const r = await deliver(
+      { host: '127.0.0.1', port: peer.port, tls: 'none' },
+      { from: 'me@x.test', recipients: ['you@mx.example.test'], data: Buffer.from('Subject: s\r\n\r\nhi\r\n', 'latin1'), clientName: 'client.example.test' },
+      {},
+      undefined,
+      { startTls: true },
+    );
+    assert.ok(r.ok, `opportunistic delivery should still complete via HELO: ${r.failure}`);
+    assert.ok(r.heloFellBack, 'the HELO fallback still fires without enforce');
+    assert.equal(peer.deliveries.length, 1);
+  });
 });
 
 test('falls back to plaintext when the peer does not advertise STARTTLS', async () => {
