@@ -42,29 +42,11 @@ export interface MultipartDefects {
   readonly prefixBoundaryMatch?: boolean;
 }
 
-interface Line {
-  readonly start: number; // first content octet
-  readonly end: number; // one past last content octet (before CRLF/LF)
-  readonly next: number; // index after the line terminator
-}
-
-/** Split into lines on CRLF (tolerating a bare LF), tracking exact offsets. */
-function scanLines(buf: Buffer): Line[] {
-  const lines: Line[] = [];
-  let i = 0;
-  while (i <= buf.length) {
-    let j = i;
-    while (j < buf.length && !(buf[j] === CR && buf[j + 1] === LF) && buf[j] !== LF) j++;
-    let next: number;
-    if (j < buf.length && buf[j] === CR && buf[j + 1] === LF) next = j + 2;
-    else if (j < buf.length && buf[j] === LF) next = j + 1;
-    else next = j;
-    lines.push({ start: i, end: j, next });
-    if (next === j) break; // reached end with no terminator
-    i = next;
-    if (i === buf.length) break; // terminator was the last thing in the buffer
-  }
-  return lines;
+/** A delimiter line's offsets: its own start, and the index just past its terminator. */
+interface Delim {
+  readonly start: number; // first octet of the delimiter line
+  readonly next: number; // index after its line terminator (where the next part begins)
+  readonly kind: 'sep' | 'close';
 }
 
 /** Trim trailing linear whitespace (SP/HT) from a byte range end index. */
@@ -79,11 +61,11 @@ export function parseMultipart(body: Buffer, boundary: string, defects: Multipar
   if (boundary.length > 70 && defects.acceptOverlongBoundary !== true) anomalies.push('overlong-boundary');
 
   const marker = Buffer.from(`--${boundary}`, 'latin1');
-  const lines = scanLines(body);
 
-  // Classify a line as a separator delimiter, the closing delimiter, or content.
-  const classify = (ln: Line): 'sep' | 'close' | null => {
-    const line = body.subarray(ln.start, ln.end);
+  // Classify a line (given its content range [start,end)) as a separator delimiter,
+  // the closing delimiter, or content.
+  const classify = (start: number, end: number): 'sep' | 'close' | null => {
+    const line = body.subarray(start, end);
     let idx: number;
     if (defects.matchBoundaryAnywhere === true) {
       idx = line.indexOf(marker);
@@ -105,7 +87,30 @@ export function parseMultipart(body: Buffer, boundary: string, defects: Multipar
     return null;
   };
 
-  const delims = lines.map((ln, i) => ({ i, kind: classify(ln) })).filter((d) => d.kind !== null);
+  // Walk the body line by line, retaining ONLY the delimiter lines' offsets. A multipart body
+  // has at most a handful of delimiters but can carry millions of content lines, so we must not
+  // materialise a Line object per physical line: that whole-body allocation is the run-4-class
+  // OOM that parse.ts's forEachLine already removed, and it was never applied here — a 25 MiB
+  // all-CRLF body spiked ~1.5 GB and froze the (single-threaded) event loop for over a second
+  // when a client FETCHed BODYSTRUCTURE (audit run-9). This scan is O(body) time, O(delims) space.
+  const delims: Delim[] = [];
+  {
+    let i = 0;
+    while (i <= body.length) {
+      let j = i;
+      while (j < body.length && !(body[j] === CR && body[j + 1] === LF) && body[j] !== LF) j++;
+      let next: number;
+      if (j < body.length && body[j] === CR && body[j + 1] === LF) next = j + 2;
+      else if (j < body.length && body[j] === LF) next = j + 1;
+      else next = j;
+      const kind = classify(i, j);
+      if (kind !== null) delims.push({ start: i, next, kind });
+      if (next === j) break; // reached end with no terminator
+      i = next;
+      if (i === body.length) break; // terminator was the last thing in the buffer
+    }
+  }
+
   if (delims.length === 0) {
     // No boundary at all — the whole body is preamble; nothing structured.
     anomalies.push('no-boundary-found');
@@ -115,7 +120,7 @@ export function parseMultipart(body: Buffer, boundary: string, defects: Multipar
   const firstDelim = delims[0]!;
   // Preamble: everything before the first delimiter line, minus the CRLF attached
   // to that delimiter line.
-  let preEnd = lines[firstDelim.i]!.start;
+  let preEnd = firstDelim.start;
   if (preEnd >= 2 && body[preEnd - 2] === CR && body[preEnd - 1] === LF) preEnd -= 2;
   const preamble = body.subarray(0, Math.max(0, preEnd));
 
@@ -127,7 +132,7 @@ export function parseMultipart(body: Buffer, boundary: string, defects: Multipar
     const cur = delims[d]!;
     if (cur.kind === 'close') {
       closed = true;
-      epilogue = body.subarray(lines[cur.i]!.next);
+      epilogue = body.subarray(cur.next);
       break;
     }
     // Separator: the part runs from just after this delimiter line to the start of
@@ -135,12 +140,12 @@ export function parseMultipart(body: Buffer, boundary: string, defects: Multipar
     const next = delims[d + 1];
     if (next === undefined) {
       // Unterminated final part (no closing delimiter): take to end of body.
-      parts.push(Buffer.from(body.subarray(lines[cur.i]!.next)));
+      parts.push(Buffer.from(body.subarray(cur.next)));
       break;
     }
-    let partEnd = lines[next.i]!.start;
+    let partEnd = next.start;
     if (partEnd >= 2 && body[partEnd - 2] === CR && body[partEnd - 1] === LF) partEnd -= 2;
-    parts.push(Buffer.from(body.subarray(lines[cur.i]!.next, Math.max(lines[cur.i]!.next, partEnd))));
+    parts.push(Buffer.from(body.subarray(cur.next, Math.max(cur.next, partEnd))));
   }
 
   if (!closed) anomalies.push('no-closing-delimiter');

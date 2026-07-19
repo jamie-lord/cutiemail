@@ -96,3 +96,23 @@ test('a multipart with no closing delimiter is flagged', () => {
   const r = parseMultipart(unterminated, BOUNDARY);
   assert.ok(!r.closed && hasMultipartAnomaly(r, 'no-closing-delimiter'), 'a missing close is surfaced');
 });
+
+test('a huge body is split without allocating a per-line object over the whole body (run-9 OOM)', () => {
+  // parseMultipart must retain only the delimiter lines' offsets, never a Line object per physical
+  // line. The old code built a Line[] over the ENTIRE body (the run-4-class pattern parse.ts had
+  // already removed), so a 25 MiB all-CRLF body — declaring boundary="X" is enough; the boundary
+  // need never appear — spiked ~1.5 GB and froze the single-threaded event loop for over a second
+  // when a client FETCHed BODYSTRUCTURE. This is a differential guard: an 8 MiB all-CRLF body is
+  // ~4 M lines; the old implementation would allocate ~4 M objects (hundreds of MB), the new one
+  // essentially none. A generous 96 MiB heap-delta ceiling cleanly separates the two.
+  const huge = Buffer.alloc(8 * 1024 * 1024, 0x0a); // 8 MiB of bare LF => ~4 M "lines"
+  const before = process.memoryUsage().heapUsed;
+  const t0 = process.hrtime.bigint();
+  const r = parseMultipart(huge, 'X'); // boundary "X" is absent from the body
+  const elapsedMs = Number(process.hrtime.bigint() - t0) / 1e6;
+  const grewMiB = (process.memoryUsage().heapUsed - before) / (1024 * 1024);
+  assert.ok(hasMultipartAnomaly(r, 'no-boundary-found'), 'no delimiter present => no structure');
+  assert.equal(r.parts.length, 0);
+  assert.ok(grewMiB < 96, `heap growth stays bounded, not O(lines): grew ${grewMiB.toFixed(0)} MiB`);
+  assert.ok(elapsedMs < 2000, `and completes promptly: ${elapsedMs.toFixed(0)} ms`);
+});
