@@ -271,3 +271,13 @@ resolved the same day — an operator CLI (`setup`/`doctor`/`account`/`backup`/`
 seams, both-directions tests, negative controls) and live-verified on the deployed box,
 plus two recorded decisions (ADR 0012: registry-owned accounts, create-only env seeding;
 ADR 0013: no HTTP listener — MTA-STS policy generated, hosted externally).
+
+## Status (2026-07-19): every tier here is done — open work now lives in one backlog
+
+The map above is fully worked off. The two test-bed items still open — real-MTA (Postfix)
+calibration (#1, environment-blocked) and a longer Dovecot `imaptest` soak (#4,
+environment-blocked) — plus the SPF vector-suite adoption and the remaining correctness/
+usability work are no longer tracked in these dated status blocks. They have been consolidated
+into the single live queue, [BACKLOG.md](BACKLOG.md), which is now the one place to look for
+what is not yet done and what was deliberately declined. This document remains the *map* of
+what the server does and how each surface is tested; the backlog is the *queue*.

@@ -1,220 +1,205 @@
-# Backlog — operator-experience work, grounded in evidence
+# Backlog — the single queue of open work
 
-*Written 2026-07-18. Sources: a full qualitative read of the 308-comment Hacker News
-discussion of Mox ([news.ycombinator.com/item?id=43261729](https://news.ycombinator.com/item?id=43261729))
-and a feature/interface review of Mox itself ([xmox.nl](https://www.xmox.nl),
-[github.com/mjl-/mox](https://github.com/mjl-/mox)). Nothing here is copied because Mox has
-it; every item had to clear the [working agreement's bar](WORKING-AGREEMENT.md) — one honest
-sentence, rooted in the vision, for why it measurably improves the project for an end user.*
+*Rewritten 2026-07-19. This is the one live list of what is **not yet done**. Every item
+below has cleared the [working agreement's bar](WORKING-AGREEMENT.md): a one-sentence,
+mission-rooted reason why it matters. Everything that was weighed and **declined** is in the
+ledger at the bottom, each with its reason — so a cut is a recorded decision, not a silent
+gap. What has already shipped is not re-listed here; it is a pointer, below.*
 
-**Status (2026-07-18, same day): all six items are resolved.** B1–B5 built, tested, and
-live-verified on the deployed box (`setup`, `doctor`, `account`, `backup`/`verify`,
-`queue`/`dead-letter` — one operator CLI behind `node src/main.ts <command>`); B6 decided
-and recorded as [ADR 0013](decisions/0013-no-http-listener.md) — no HTTP listener; `setup`
-generates the MTA-STS policy + TXT record, hosting stays external, autoconfig cut with
-revisit triggers. Per-item verification evidence is in the commit messages
-(`git log --grep "(B[1-6]"`). The item list below is kept as written — it records why each
-item earned its place, which is the part that stays useful.
+## What's already done (not repeated below)
 
-## What the evidence says
+Two whole bodies of work are complete and live-verified, so they are out of this queue:
 
-The HN thread's centre of gravity is not features — it is **confidence**. The dominant
-themes, by comment volume:
+- **The protocol/test map** — every tier of [TESTING-ROADMAP.md](TESTING-ROADMAP.md) is DONE:
+  full send + receive with real clients (Thunderbird + Apple Mail), complete IMAP4rev2,
+  SPF/DKIM/DMARC/ARC inbound + DKIM/SPF/DMARC outbound with enforcement, SQLite storage with
+  crash/concurrency proofs, the outbound queue + bounces. Deployed on the box.
+- **The operator-experience backlog (former B1–B6)** — the `setup`/`doctor`/`account`/
+  `backup`/`verify`/`queue` operator CLI (`src/ops/`), plus [ADR 0012](decisions/0012-account-provisioning-cli.md)
+  (registry-owned accounts) and [ADR 0013](decisions/0013-no-http-listener.md) (no HTTP
+  listener). Evidence is in the commit messages (`git log --grep "(B[1-6]"`).
 
-1. **Deliverability anxiety** (~80+ comments, contested): the closest thing to a synthesis
-   is that personal-scale mail from a clean host with correct SPF/DKIM/DMARC/rDNS mostly
-   works — and that most failures trace to *setup mistakes, provider choice, domain age,
-   or silent drift*, not to some unfixable cabal. The recurring fear is epistemic:
-   *"I'm curious to know how you could know if any emails you send are getting silently
-   dropped."* (AnonHP)
-2. **Setup complexity of the traditional stack** (~20 comments): *"a 20+ hour byzantine
-   nightmare of setting up postfix & dovecot… an even more kafkaesque nightmare of rspamd
-   (with its 3 different programming languages… 92+ configuration files)"* (QuadrupleA).
-3. **Maintenance burden**: the people who quit self-hosting cite hours-per-month upkeep;
-   the happy Mox users cite the opposite — *"Running backup & update every couple months
-   takes <5 min"* (kbmn).
+Beyond those, aliases + `+tag` subaddressing shipped as [ADR 0014](decisions/0014-aliases-and-subaddressing.md),
+and eight security-audit runs + two live pentest sessions converged (find rate 8→6→7→7→4→5→4→0).
+The residue of *that* work — two delicate items each held back for a dedicated, live-verified
+pass rather than an audit-loop patch — is items 2 and 3 below.
 
-What people praise about Mox, ranked by frequency: **the quickstart** — above all that it
-*generates and prints the exact DNS records* and pre-flights the classic failure modes
-(outbound port 25 blocked, too-young domain) — then rock-solid stability, low resource
-use, and the all-in-one integration of the auth cluster. *"The beauty of Mox is that it
-tells you what exact DNS records you need to set up"* (jnd-cz).
+## How an item earns its place here
 
-The lesson for cutie-mail is sharp: **our protocol engine is already the hard part, and it
-is done and live-verified. What the evidence says end users actually struggle with is the
-last mile — knowing their DNS is right, knowing mail is flowing, and operating the thing
-over time.** That is squarely inside the mission ("very simple to INSTALL and OPERATE"
-is a core property of the vision, not an accessory), and it is currently served only by
-prose in [DEPLOYMENT.md](DEPLOYMENT.md).
+Ordered by value. Each states its evidence, its one-sentence mission fit, its shape, and how
+it will be tested — the four-part discipline the working agreement requires. An item that
+can't fill in all four isn't on the list; it's in the ledger.
 
-Equally important, the evidence *validates* choices already made, so they are not
-re-litigated below: never silently dropping mail (Mox's author: rejecting outright or
-delivering — *"it's that behaviour from the bigmail providers I don't like and undermines
-trust in email!"* — our DMARC-to-Junk-never-reject is the same instinct); built-in auth
-throttling (*"potentially eliminating the need for fail2ban"*); one self-contained
-artifact instead of a stack; and SQLite-per-user storage.
+---
 
-## The backlog
+## Open work
 
-Ordered. Each item states its evidence, its one-sentence mission justification, its shape,
-and how it will be tested — per the working agreement, an item that can't fill in all four
-doesn't get listed.
+### 1. Send-as / submission sender-authorization — *security + usability; needs ADR 0015*
 
-### B1 — `setup`: DKIM keygen + annotated DNS record generation
+- **Evidence:** [ADR 0014](decisions/0014-aliases-and-subaddressing.md) names this as its
+  deliberate follow-up, and the multi-account work ([ADR 0009](decisions/0009-multi-account-per-user-database.md))
+  left a matching hole: **submission never checks that `From` matches the authenticated user**,
+  so any authenticated account can spoof any address (its own domain or another user's). This
+  is the top parked security item, escalated by multi-account.
+- **Mission fit:** a person with aliases expects to *send* as `sales@` or `j.smith@`, not just
+  receive there — and closing the cross-account spoof is a genuine security correction, not a
+  convenience. One change delivers both.
+- **Shape:** at the submission `MAIL FROM`/`From:`-header chokepoint, require the `From`
+  local-part to be the authenticated login **or one of its aliases**, over our own domain;
+  reject otherwise. This is a sender-authorization policy decision — it deserves its own ADR
+  (0015), because it also settles what happens to a foreign-domain `From` (relay-for-known-senders
+  vs refuse) and to a `From` that disagrees with the envelope sender.
 
-- **Evidence:** the single most-praised Mox feature in the whole thread; the direct
-  antidote to the top setup pain (hand-assembling the deliverability DNS cluster is where
-  first-time operators fail).
-- **Mission fit:** we implement SPF/DKIM/DMARC end-to-end, but the operator must hand-derive
-  the records from prose — generating them from the same code that enforces them is the
-  "simple to install" promise kept by the engine itself.
-- **Shape:** a subcommand that (a) generates a DKIM keypair if none exists (Ed25519 +
-  RSA, reusing the existing key handling — never overwriting), and (b) prints annotated,
-  copy-pasteable zone lines derived from the server's own config: MX, SPF (with the box's
-  IP), the DKIM TXT computed from the private key, DMARC, and the rDNS/FCrDNS instruction.
-  Re-runnable at any time to reprint records from existing keys (Mox's `config dnsrecords`
-  insight: regeneration matters as much as first generation).
-- **Testing:** the record rendering is a pure function of config + key material — unit-tested
-  exactly, including the DKIM public-key derivation against the existing RFC-pinned vectors;
-  then one live verification: records generated for `mailtest.lord.technology` must match
-  what is actually published (they were hand-built — the generator must agree with reality).
+```mermaid
+flowchart TD
+    S["submission: authenticated as LOGIN"] --> F{"From local-part resolves<br/>to LOGIN or an alias of LOGIN,<br/>on our domain?"}
+    F -->|yes| OK["accept — sign + queue"]
+    F -->|no| NO["reject 550 — not authorised for this From"]
+```
 
-### B2 — `doctor`: live preflight and drift check
+- **Testing:** reproduce the spoof first (a failing test: account A submits with account B's
+  `From` and is currently accepted); then the authz gate, negative-controlled both ways (own
+  address + own alias accepted; another account's address and an unowned alias refused). Live
+  re-validation against Gmail that a legitimate send-as an alias still passes SPF/DKIM/DMARC and
+  is accepted — the deliverability re-check ADR 0014 flagged.
 
-- **Evidence:** Mox's quickstart pre-flights outbound port 25 (the classic VPS gotcha) and
-  domain age via RDAP; the thread's deepest fear is drift — *"Gmail accepted my emails
-  fine... until one day it didn't"* (jks). A re-runnable checker converts that anxiety into
-  a command.
-- **Mission fit:** correctness-first applies to the deployment, not just the protocol —
-  a server whose DKIM selector silently mismatches its published key is *wrong*, and we
-  already own every primitive needed to detect it.
-- **Shape:** a subcommand that checks, against live DNS and the network: MX points at this
-  host; A/AAAA and FCrDNS agree; the published SPF authorises this box's IP; the DKIM TXT
-  at the configured selector matches the local private key; DMARC is present; the TLS cert
-  chain is valid and not near expiry; outbound port 25 is dialable. Optional cheap extras:
-  RDAP domain age (one HTTPS JSON fetch — flags the fresh-domain spam-foldering confounder
-  a user hit live in the thread). Clear pass/warn/fail output, non-zero exit on fail.
-- **Testing:** every check unit-tested through the existing injected-resolver seams (fake
-  DNS, fake dial results — both directions: detects the broken state, passes the good one);
-  one recorded live run against the mailtest box. Note: our own box currently has exactly
-  the kind of latent drift this catches — certbot renewal is not re-provisioned since the
-  migration, so cert expiry *will* eventually bite; `doctor` is the tool that notices.
+### 2. Oversign `From` — DKIM prepended-`From` replay — *security; dedicated pass*
 
-### B3 — account provisioning CLI: passwords out of the environment
+- **Evidence:** parked across security-audit runs 6–8 as the top item for a dedicated pass. A
+  message signed with a single `h=…:from` can have a **second `From:` header prepended** by an
+  attacker and still verify, because our signer doesn't oversign and our inbound `h=`
+  reconstruction isn't yet RFC 6376 §5.4.2-strict. (DMARC's single-`From` check already fails
+  the two-`From` replay at strict verifiers, which is why this is MED, not HIGH.)
+- **Mission fit:** correctness-first applies to the crypto we emit — a signature an attacker can
+  replay under a forged header is *wrong*, and we own both the signer and the verifier.
+- **Shape:** sign with `h=from:from` (oversign — a prepended duplicate then breaks the hash),
+  **paired** with making the inbound verifier's `h=` reconstruction §5.4.2-compliant (bottom-up,
+  excess header instances → empty) so our own round-trip still verifies. The two must land
+  together or the round-trip breaks.
+- **Testing:** reproduce the replay first (a signed message + a prepended `From:` that currently
+  verifies); then the oversign + verifier fix, with the round-trip green and the replay now
+  rejected. Live Gmail deliverability re-validation — oversigning changes the wire signature, so
+  confirm Gmail still accepts.
 
-- **Evidence:** the setup-complexity theme generally, and Mox's account model (accounts are
-  server state managed by the operator, not OS users or boot-time parameters).
-- **Mission fit:** the SCRAM registry was deliberately designed to store only
-  StoredKey/ServerKey, never the password — but today every boot re-feeds plaintext
-  passwords through `MAIL_USER/PASS`/`MAIL_ACCOUNTS`, which means they live forever in the
-  systemd unit; closing that hole is a genuine security correction, not a convenience.
-- **Shape:** `account add / set-password / remove / list` subcommands writing the control-DB
-  registry directly (prompting for the password, never taking it as an argv argument —
-  argv is visible in `ps`). Env-var accounts remain supported for dev/ephemeral use; the
-  precedence between env-provisioned and CLI-provisioned accounts is a design decision to
-  record as an ADR when built (the obvious candidate: CLI-managed registry is the source of
-  truth; env seeds only a missing account, never overwrites).
-- **Testing:** registry round-trip tests already exist — extended to the CLI path; a
-  negative control proving the plaintext never lands in the DB (the existing invariant);
-  live verification: provision an account on the box with no password in the unit file,
-  authenticate over IMAPS.
+### 3. RENAME-INBOX catalog-parity reconciliation — *correctness; dedicated pass*
 
-### B4 — `backup` + `verify`: the SQLite payoff
+- **Evidence:** the residual from security-audit run-8 (recorded LOW, no disk data loss). The
+  defensible silent-vanish bug is *fixed* (commit 22a40ae bumps INBOX modseq + logs moved UIDs),
+  but `MemoryCatalog` (the test oracle) and `SqliteCatalog` (production) still diverge on the
+  semantics of a *second* consecutive INBOX rename: keeps-UIDs vs reassigns-from-1, and where the
+  old tombstones land. A narrow window can re-open a QRESYNC desync.
+- **Mission fit:** the reference model and the real store must agree, or the whole
+  differential-testing guarantee is hollow for this path — this is the reference-vs-prod
+  divergence class the audit kept surfacing.
+- **Shape:** a deliberate decision on rename semantics (target keeps UIDs vs reassigns; tombstone
+  locality), then make both catalogs implement it identically, validated differentially.
+- **Testing:** extend the QRESYNC/CONDSTORE differential harness to a double-rename sequence run
+  against both catalogs — results must be identical, closing the run-8 second-rename residual.
 
-- **Evidence:** the maintenance-burden theme is what makes people quit; the happy Mox
-  users cite the backup/update loop being minutes. Mox needs a dedicated
-  `backup`/`verifydata` pair because its store is thousands of message files plus an index
-  DB — ours is *n* SQLite files, which is the "SQLite of email" ethos paying out.
-- **Mission fit:** a mail server whose entire state can be snapshotted and verified with
-  one command each is the operational meaning of the project's name.
-- **Shape:** `backup <destdir>` — a consistent online snapshot of control.db + every
-  `mail-<user>.db` (SQLite's online backup API / `VACUUM INTO`, both WAL-safe; mechanism
-  chosen at build time against our Node version). `verify <dir>` — `PRAGMA
-  integrity_check` plus the cross-table invariants the crash-consistency suite already
-  proves (UID monotonicity, queue/dead-letter partition, catalog/mailbox agreement),
-  runnable against a backup or the live files. Docs must state the WAL caveat plainly: a
-  naive `cp` of a live DB is not a backup.
-- **Testing:** backup taken *under concurrent write load* (the existing concurrency harness
-  provides this) must verify clean and reopen with all invariants intact; `verify` proven
-  to detect a deliberately corrupted file (negative control — a verifier never shown to
-  fail is not coverage).
+### 4. Password minimum-length policy — *small security/usability*
 
-### B5 — queue + dead-letter operator CLI
+- **Evidence:** noted on the production-readiness menu — `account add` / `init` / `set-password`
+  currently accept **any** password, including a one-character one.
+- **Mission fit:** a mail account is an internet-facing credential; refusing a trivially-weak one
+  is the smallest honest hardening, and the per-IP throttle already in place is not a substitute
+  for it.
+- **Shape:** a minimum length (and nothing more — no composition rules, which modern guidance
+  discourages) enforced at every password entry point, with a clear error.
+- **Testing:** unit-tested at each entry point (below the floor rejected, at/above accepted); no
+  live check needed — it's local policy, not wire behaviour.
 
-- **Evidence:** the silent-drop fear (AnonHP, §above) and Mox's queue tooling
-  (`queue list/hold/fail/dump…`) — the operator's answer to "did my mail actually leave?"
-- **Mission fit:** we built dead-letter retention precisely so no message is ever silently
-  lost, but the API is programmatic only — retention without inspectability is a promise
-  the operator can't check.
-- **Shape:** `queue list` (pending sends, next-attempt times, attempt counts) and
-  `dead-letter list / show <id> / requeue <id> / purge <id>` wrapping the existing
-  `listDeadLetters`/`getDeadLetter`/`requeueDeadLetter`/`purgeDeadLetter` API. Read-only
-  except the two existing mutation verbs. Smallest item on the list.
-- **Testing:** the API is already tested; the CLI layer gets exact-output tests plus one
-  live check on the box (a queued message visible, a dead-letter requeued and delivered).
+### 5. App-specific passwords — *usability/security; needs a decision*
 
-### B6 — inbound MTA-STS policy publication (+ client autoconfig) — *decision required*
+- **Evidence:** the production-readiness menu's remaining feature. Auth is SCRAM /
+  PLAIN-over-TLS only, and 2FA is ecosystem-blocked (IMAP/SMTP clients + SASL don't support it —
+  [BACKLOG ledger](#considered-and-not-on-the-queue--with-reasons)), so a revocable per-device
+  credential is the nearest modern auth-hygiene win.
+- **Mission fit:** letting an operator revoke one lost phone without resetting every device is
+  the modern-mailbox expectation the vision targets — but it is a feature, not a bug fix, so it
+  is flagged for a decision, not pre-approved.
+- **Shape (if built):** N named, independently-revocable credentials per account in the registry
+  (each its own SCRAM material), authenticating exactly like the primary; the primary can be
+  reserved for management. An ADR records the model (do app-passwords bypass the throttle? can
+  they be scoped to IMAP vs submission?).
+- **Testing:** registry round-trip + a negative control that a revoked credential no longer
+  authenticates while its siblings still do; live IMAPS/submission auth on the box with an
+  app-password and no primary password in play.
 
-- **Evidence:** we *enforce* MTA-STS outbound but publish no policy of our own, so a sender
-  cannot protect mail addressed **to us** from TLS downgrade; Thunderbird-style autoconfig
-  removes the last manual step of client setup. Mox bundles a webserver for exactly these
-  static needs.
-- **Mission fit (the tension, stated honestly):** both are single static documents served
-  over TLS we already terminate — but they require an HTTPS listener and certificate
-  coverage for `mta-sts.<domain>`/`autoconfig.<domain>`, which is the first step of "a mail
-  server that also speaks HTTP". That is a real scope boundary, which is why this is ranked
-  last and flagged as a decision, not pre-approved. If built: opt-in, static responses
-  only, no webserver ambitions ever (no proxying, no file serving). If declined: record it
-  as an opinionated cut ("publish MTA-STS via any external static host" is a documented
-  workaround — the policy file is two lines and can live anywhere that serves HTTPS).
-- **Testing (if built):** policy fetch round-trip through our own MTA-STS *client* (we
-  already have the fetcher — the server must satisfy its own enforcer), and a live
-  Thunderbird account-creation walkthrough for autoconfig.
+---
 
-## Considered and rejected — with reasons
+## Test-bed completeness — recorded, lower priority
 
-Per the working agreement, every omission is a recorded decision. HN demand alone does not
-clear the bar; these were weighed and declined:
+The test suite is the one place completeness is the goal, so these stay listed — but each is
+either environment-blocked or marginal against coverage already achieved, so none outranks the
+correctness work above.
 
-- **Spam filtering (Bayesian / reputation / DNSBLs).** The thread itself downplays the
-  problem at personal scale (*"My spam folder currently contains 0 elements"* — kbmn;
-  *"An overstated problem IMO"* — account42), and our DMARC enforcement already junks the
-  forged class. A Bayesian filter is a large new subsystem with training UX. **Revisit
-  trigger:** the box being used as a daily driver with observed, recorded spam volume that
-  DMARC enforcement doesn't catch.
-- **Webmail.** The mission is *existing clients* (Thunderbird, Apple Mail); Mox's own
-  webmail is self-described as "still in early stages" and drew the thread's only aesthetic
-  complaints. Building a mail *client* is a different project.
-- **2FA / passkeys.** Mox's author states the blocker precisely: IMAP/SMTP clients and the
-  SASL standards don't support it yet — *"clients (like thunderbird) would still have to
-  implement it."* Nothing meaningful to build until the ecosystem moves. The per-IP
-  throttle covers the brute-force class today.
-- **JMAP, Sieve, CalDAV/CardDAV, POP3.** Reaffirmed cuts (ADR 0007 / roadmap). The demand
-  exists in the thread; the mission — the modern-client round-trip, minimal-first — is
-  already met without them. JMAP remains the recorded "desirable later, not minimum" item.
-- **Backup MX / HA / clustering.** Personal scale; even Mox declines this (its author:
-  a single server "for over a decade without issues"), and the thread's own experts note
-  accept-then-forward backup MXes create backscatter obligations. B4's snapshot story is
-  the honest availability answer at this scale.
-- **Built-in ACME.** Genuinely attractive for the ten-minute-setup story, but a large
-  zero-dep engineering effort (JOSE, account lifecycle, http-01 on port 80) duplicating
-  certbot, which is ubiquitous and already documented. **Revisit trigger:** real evidence
-  that cert provisioning is the setup step that defeats operators.
-- **Greylisting.** Mox rejects it too (it poisons reputation-based reasoning and delays
-  legitimate mail); nothing in the thread defends it.
-- **Milter / plugin hooks / external filter integration.** Anti-mission: the project is
-  self-contained and opinionated precisely to avoid integration-point complexity (Mox's
-  author makes the same argument for one package).
-- **Distro packaging / unattended updates.** The #1 wish of Mox *users* — but it
-  presupposes a distribution story this project doesn't have yet and isn't seeking.
-- **Prometheus metrics / structured log tooling.** Real Mox strengths, but at personal
-  scale `doctor` (B2) + the queue CLI (B5) answer the actual operator questions; a metrics
-  endpoint is infrastructure without a consumer here.
+### 6. Real-MTA (Postfix) calibration #23/#24 — *environment-blocked*
 
-## Sequencing note
+- The SMTP receiver suite is calibrated against **three** independent implementations already —
+  Exim 4.99, mox 0.0.15, aiosmtpd 1.4.6 — zero false positives, with the bare-LF finding
+  confirmed real across all three. Postfix is the recorded 4th target, blocked here by Docker
+  registry egress (diagnosis in `reference-servers/README.md`); native Postfix needs root and
+  would disturb host mail. Do it on a root-capable / working-Docker host; the harness runs
+  unchanged. Marginal value — a 4th permissive-or-hardened MTA mostly re-confirms.
 
-B1 + B2 are one natural increment (shared DNS/record plumbing; together they are the
-"confidence" answer the evidence asks for). B3 stands alone and fixes a real wart. B4 and
-B5 are small and independent. B6 waits for an explicit decision. As ever: each item lands
-with its tests, its live verification where internet-facing, and its doc updates in the
-same increment.
+### 7. openSPF RFC 7208 vector suite adoption — *low; strengthens a real surface*
+
+- SPF is implemented and wired (`src/auth/spf-check.ts`), but the canonical ~200-case
+  open-spf.org YAML suite isn't yet vendored as a pinned oracle. Adopting it would exercise the
+  macro / edge-case boundary we currently treat as a deliberate safe non-match. Vendor as a
+  frozen snapshot (BSD-style licence, HTTP-only host — noted in the mail-server memory).
+
+### 8. Longer Dovecot `imaptest` soak — *environment-blocked*
+
+- The IMAP server was calibrated against `imaptest` (~12k mutations, which found + fixed a real
+  RFC 9051 §7.4.1 renumbering bug). A longer soak needs a fresh Dovecot-2.3.21 source compile
+  (no Homebrew formula; Docker egress broken here). Marginal against the build cost; do it where
+  a prebuilt `imaptest` is available.
+
+*Optional, not a gap:* continuous coverage-guided fuzzing. The parsers (SMTP/MIME/IMAP/address)
+already have deterministic fuzz harnesses (~30k adversarial inputs) plus the audit sweeps; a
+coverage-guided corpus would go deeper but is an addition, not a missing floor.
+
+---
+
+## Considered and not on the queue — with reasons
+
+Per the working agreement, every omission is a recorded decision. HN/feature demand alone does
+not clear the bar. These were weighed and declined; most carry a revisit trigger.
+
+**Scope cuts (ADR 0007 — the opinionated boundary):**
+
+- **POP3.** IMAP4rev2 serves every modern client; a whole extra protocol + harness for nothing gained.
+- **JMAP.** Genuinely modern and desirable, but additive — the modern-client round-trip is already met. The standing "desirable later, not minimum" item.
+- **Sieve.** Deferred later tier; per-`+tag` folder filing would want it, but that filing is itself out of scope now.
+- **CalDAV / CardDAV / webmail.** Building a mail *client* or a calendar is a different project; the mission is *existing* clients.
+- **DANE.** Needs DNSSEC validation Node's resolver doesn't provide; MTA-STS is the chosen outbound TLS-policy mechanism.
+- **ARC sealing.** We never forward, so there is nothing to seal — inbound ARC verification (ADR 0011) is the whole of the useful surface.
+
+**Reporting / operational cuts:**
+
+- **DMARC `rua`/`ruf` + TLS-RPT emission.** Outbound scheduled-report machinery, ~zero value at personal scale; `ruf` is privacy-fraught.
+- **Prometheus metrics / structured-log tooling.** `doctor` + the queue CLI answer the operator's real questions at this scale; a metrics endpoint has no consumer here.
+- **Richer `account list` (created / last-login).** A marginal nicety with no correctness or security payoff. Its one real use — spotting a dormant/compromised account — is thin at personal scale. **Revisit** if app-passwords (item 5) land: a per-credential *last-used* is worth more than a per-account one, and would ride along.
+- **ValiMail `arc_test_suite` external vector pin.** ARC's offline sign/verify round-trips + a golden signing-input already cover the scope; an external pin is marginal. Recorded nice-to-have.
+- **Unified project-wide coverage percentage (ADR 0008).** Rolling the outbound-client and receiver coverage into one number is cosmetic reporting, not correctness — fails the bar.
+
+**Infrastructure / availability cuts:**
+
+- **MTA-STS policy publication + client autoconfig (former B6, ADR 0013).** Decided: no HTTP listener. The policy file is two lines and can live on any external static host; `setup` emits it. Revisit trigger recorded in ADR 0013.
+- **Built-in ACME.** Attractive for the ten-minute-setup story, but a large zero-dep effort duplicating certbot, which is ubiquitous and documented. **Revisit** if cert provisioning proves to be the setup step that defeats operators.
+- **Backup MX / HA / clustering.** Personal scale; even Mox declines it, and accept-then-forward backup MXes create backscatter obligations. The `backup`/`verify` snapshot story is the honest availability answer here.
+- **Distro packaging / unattended updates.** Presupposes a distribution story the project doesn't have yet and isn't seeking.
+- **Multi-domain.** ADR 0009 fixes one domain per server as the minimum; a multi-domain story is a real scope expansion, revisitable with a stated reason, not a queued item.
+
+**Security features blocked or covered elsewhere:**
+
+- **2FA / passkeys.** Blocked on the ecosystem: IMAP/SMTP clients and the SASL mechanisms don't support it, so there is nothing to build until they move. The per-IP throttle covers the brute-force class today; app-passwords (item 5) are the reachable adjacent win.
+- **Spam filtering (Bayesian / DNSBL / reputation).** DMARC enforcement already junks the forged class, and the problem is downplayed at personal scale. A Bayesian filter is a large subsystem with training UX. **Revisit** trigger: the box used as a daily driver with recorded spam volume DMARC doesn't catch.
+- **Greylisting.** Rejected — it poisons reputation-based reasoning and delays legitimate mail (Mox rejects it too).
+- **Milter / plugin hooks / external filter integration.** Anti-mission: the project is self-contained and opinionated precisely to avoid integration-point complexity.
+
+*Already resolved (here for the record, so they aren't re-proposed):* dot-stuffing / DATA
+transparency (ADR 0005's revisit trigger fired — the receiving sink was built and R-5321-4.5.2-c
+is covered), per-IP brute-force lockout (ADR 0009's "later nice-to-have" — the throttle shipped),
+and the full STARTTLS-injection family (ADR 0006 — all three variants covered).
