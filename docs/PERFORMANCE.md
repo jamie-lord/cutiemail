@@ -8,8 +8,11 @@ so `npm test` and `tsc` ignore them. Two machines: **laptop** (8-core, 16 GB, NV
 > **Status: fixed (2026-07-19).** The lazy-storage refactor below landed (commits `3ec1a2b`,
 > `97d26cc`). On the box, a single-message body fetch on a 50k mailbox went **1825 ms → 0.53 ms**,
 > per-command heap churn **195 MB → 1.3 MB**, and greeting latency under load **4.6 s → 0.44 s**.
-> The [Fixed](#what-was-fixed) section carries the full before/after. The diagnosis below is kept
-> as the record of *why* — read it in the past tense.
+> A second stress round (`ad27034`) then found and fixed a matching freeze on the **write** path —
+> bulk `STORE`/`COPY` ran one transaction per message (**~37 s → ~3 s** for a 20k folder). The
+> [Fixed](#what-was-fixed) and [stress-findings](#pushing-harder--stress-findings-2026-07-19)
+> sections carry the full before/after. The diagnosis below is kept as the record of *why* — read
+> it in the past tense.
 
 ## TL;DR
 
@@ -164,17 +167,57 @@ constructor — instead of `open()`, which had re-executed `CREATE TABLE IF NOT 
 `pragma_table_info` probes, and `CREATE INDEX` every time. The catalog runs schema + migrations once
 at open; `open()` stays for tests that create a bare mailbox.
 
+## Pushing harder — stress findings (2026-07-19)
+
+After the read-path fix, a second round pushed bigger mailboxes (up to 100k / 442 MB), bulk
+whole-mailbox commands, large attachments, and concurrent load (`perf/stress.bench.ts`,
+`perf/large-messages.bench.ts`, `perf/inbound-burst.bench.ts`). One new bug, three characterised
+ceilings.
+
+### 4. [DONE] Bulk STORE / COPY / EXPUNGE ran one transaction per message
+
+The same O(mailbox) freeze, on the write path. `storeFlags`/`append`/`expunge` each open their own
+transaction (one fsync), and the `STORE 1:*` / `COPY 1:*` / `UID EXPUNGE` loops called them **once
+per message** — so marking a 20k folder read, or archiving it, was 20k fsyncs: **~37 s of frozen
+server** on the box. `SqliteMailbox.#tx` is now reentrant and exposes `transaction(fn)`; the server
+wraps its bulk loops in it, so N mutations commit at **one** fsync. Per-message modseqs and FETCH
+responses are unchanged (the catalog-parity oracle + full suite hold). Plain `EXPUNGE`
+(`expungeDeleted`) and `SEARCH` were already batched/streamed.
+
+**Measured (box, 20k mailbox):** `STORE 1:*` **36,726 ms → 2968 ms (12×)**; `COPY 1:*`
+**37,581 ms → 4139 ms (9×)**. Now CPU/SQL-bound, not fsync-bound. Live-verified on the service.
+
+### Characterised ceilings (not bugs — the shape of a synchronous single-thread server)
+
+- **Metadata floor scales with mailbox size, and serialises under concurrent readers.** `index()`
+  is O(rows) (no BLOBs): **521 ms at 50k, 1192 ms at 100k** on the box. Because it is synchronous,
+  concurrent heavy readers queue behind each other — 3 readers on a 50k mailbox delayed a new
+  connection's greeting to 0.44 s, **8 readers to 3.8 s**. No errors, no crash — pure latency, and
+  only under many clients hammering a large mailbox (not realistic steady use). This is what the
+  deferred lever below would cut.
+- **Inbound accept ceiling ≈ the single writer.** 5000 concurrent deliveries (32 in flight, 20
+  recipient DBs) sustained **244/s on the box with zero `SQLITE_BUSY`** — the synchronous writer
+  serialises everything (so `busy_timeout` never even engages) and never errors. 244/s is ~880k
+  mail/hour, far beyond any personal mailbox; a genuine flood queues at the sender's MX, it does not
+  fail here.
+- **Concurrent large-body fetch memory ≈ 3× the bytes in flight.** `raw(uid)` loads a whole body,
+  and 24 clients each fetching a 2 MB message peaked at **+141 MB** (the SQLite buffer + the
+  `Buffer.from` copy + literal framing). Authenticated-only and bounded by `MAX_APPEND_LITERAL`
+  (25 MB) × connections, so personal-scale-safe; worth remembering before raising that cap or the
+  512-connection limit.
+
 ### Deferred — a real lever, higher risk, only bites the extreme case
 
 **Make a *bounded* fetch sub-linear.** `resolveForConn` still calls `index()` (all metadata) to map
-sequence numbers, so even opening one message pays the metadata read (424 ms on the box for a 50k
-mailbox; ~80 ms on a normal server). It could instead resolve the set to UIDs first — from the
-in-memory client view for sequence mode, a cheap `MAX(uid)` for `*` in UID mode — and batch-fetch
-metadata for only the matched messages, making `FETCH <one message>` O(matched) not O(mailbox). It
-is **not built**: it touches the RFC 9051 §7.4.1 client-view sequence logic that is heavily tested
-and has been a source of subtle bugs (audit runs 5–7), and the residual only hurts very large
-mailboxes on very slow hardware — disproportionate risk for the mission. Recorded as the next lever
-if a large-mailbox latency complaint ever materialises.
+sequence numbers, so even opening one message pays the metadata read (**424 ms** on the box for a
+50k mailbox, **1192 ms at 100k**; ~80 ms on a normal server) — and that floor is what serialises
+under the 8-reader load above. It could instead resolve the set to UIDs first — from the in-memory
+client view for sequence mode, a cheap `MAX(uid)` for `*` in UID mode — and batch-fetch metadata for
+only the matched messages, making `FETCH <one message>` O(matched) not O(mailbox). It is **not
+built**: it touches the RFC 9051 §7.4.1 client-view sequence logic that is heavily tested and has
+been a source of subtle bugs (audit runs 5–7), and the residual only hurts very large mailboxes
+under heavy concurrent load on slow hardware — disproportionate risk for the mission. Recorded as
+the next lever if a large-mailbox latency complaint ever materialises.
 
 ### Body/header SEARCH of a huge mailbox
 
