@@ -532,8 +532,9 @@ export async function startServer(cfg: MailServerConfig): Promise<RunningServer>
   const mailbox = enabledLogins.map((login) => stores.get(login)?.catalog.get('INBOX')).find((m) => m !== undefined);
   if (mailbox === undefined) {
     // Fail closed WITHOUT leaking the already-bound listeners + relay timer — an embedder
-    // that catches this must not be left with orphaned handles keeping the loop alive.
-    relayLoop.stop();
+    // that catches this must not be left with orphaned handles keeping the loop alive. Await the
+    // loop so no in-flight tick races the controlDb.close() below.
+    await relayLoop.stop();
     await inbound.close();
     await submission.close();
     await imap.close();
@@ -552,7 +553,9 @@ export async function startServer(cfg: MailServerConfig): Promise<RunningServer>
     queue,
     relayLoop,
     async close() {
-      relayLoop.stop();
+      // Await the relay loop (not just clear its timer) so an in-flight tick draining the queue
+      // finishes before we close its database — otherwise the tick hits "database is not open".
+      await relayLoop.stop();
       await inbound.close();
       await submission.close();
       await imap.close();

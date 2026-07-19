@@ -56,6 +56,10 @@ export class RelayLoop {
   readonly #onBounce: RelayLoopOptions['onBounce'];
   #timer: ReturnType<typeof setInterval> | null = null;
   #ticking = false;
+  /** Set by stop(): the in-flight tick bails at the next entry boundary and no new work starts. */
+  #stopped = false;
+  /** The currently-running tick, so stop() can await it before the DB is closed. */
+  #running: Promise<void> = Promise.resolve();
   /** A tick requested while one was running — its `now`, so the re-run isn't lost. */
   #pending: number | null = null;
 
@@ -84,19 +88,26 @@ export class RelayLoop {
    */
   async tick(now: number): Promise<void> {
     this.#pending = now;
-    if (this.#ticking) return;
+    if (this.#ticking) return this.#running;
     this.#ticking = true;
-    try {
-      while (this.#pending !== null) {
-        const at = this.#pending;
-        this.#pending = null;
-        for (const entry of this.#queue.due(at)) {
-          await this.#processEntry(entry, at);
+    this.#running = (async () => {
+      try {
+        while (this.#pending !== null) {
+          if (this.#stopped) return; // stopped (shutdown) before starting a batch — do not touch the DB
+          const at = this.#pending;
+          this.#pending = null;
+          for (const entry of this.#queue.due(at)) {
+            // Bail at the entry boundary if stop() was called mid-drain: leave the remaining rows
+            // durably queued (recovered on next start) rather than race the DB being closed under us.
+            if (this.#stopped) return;
+            await this.#processEntry(entry, at);
+          }
         }
+      } finally {
+        this.#ticking = false;
       }
-    } finally {
-      this.#ticking = false;
-    }
+    })();
+    return this.#running;
   }
 
   async #processEntry(entry: QueueEntry, now: number): Promise<void> {
@@ -185,14 +196,24 @@ export class RelayLoop {
   /** Start ticking on an interval. `clock` defaults to the real clock. */
   start(intervalMs: number, clock: () => number = () => Date.now()): void {
     if (this.#timer !== null) return;
+    this.#stopped = false;
     this.#timer = setInterval(() => void this.tick(clock()), intervalMs);
     this.#timer.unref?.();
   }
 
-  stop(): void {
+  /**
+   * Stop ticking and AWAIT any in-flight tick, so a caller can then close the queue's database
+   * without a running tick racing it to a "database is not open" crash (found under mixed load:
+   * a tick draining a backed-up queue outlived close(), which had cleared the timer but not waited
+   * for the tick). A tick mid-drain bails at the next entry boundary (≤ one message), leaving the
+   * rest durably queued. Idempotent and safe to await.
+   */
+  async stop(): Promise<void> {
+    this.#stopped = true;
     if (this.#timer !== null) {
       clearInterval(this.#timer);
       this.#timer = null;
     }
+    await this.#running.catch(() => {});
   }
 }
