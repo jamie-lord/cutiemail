@@ -121,6 +121,11 @@ SystemCallArchitectures=native
 SystemCallFilter=@system-service
 SystemCallFilter=~@privileged
 UMask=0077
+# File-descriptor ceiling. Each open user mail DB holds ~3 fds (db + -wal + -shm) plus
+# one per live IMAP connection; the default 1024 would be a hard wall well before memory
+# (docs/PERFORMANCE.md). One store is cached per real account, so this is generous
+# headroom, not a workaround for a leak.
+LimitNOFILE=65536
 Restart=on-failure
 
 [Install]

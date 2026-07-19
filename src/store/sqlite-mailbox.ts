@@ -77,6 +77,18 @@ export class SqliteMailbox {
     this.#id = id;
   }
 
+  /**
+   * Attach to an EXISTING mailbox row without re-running schema DDL or the migration
+   * probes — the catalog already ensured both at open() and has confirmed this row's id.
+   * This is the hot path: SqliteCatalog.get() runs on every SELECT/STATUS/COPY, and the
+   * old code re-executed CREATE TABLE IF NOT EXISTS ×4 + three pragma_table_info probes
+   * + CREATE INDEX on every one of those (docs/PERFORMANCE.md finding 4). attach() is a
+   * bare constructor call.
+   */
+  static attach(db: DatabaseSync, id: number): SqliteMailbox {
+    return new SqliteMailbox(db, id);
+  }
+
   /** Open (or create) a mailbox in the given database (":memory:" or a file path). */
   static open(db: DatabaseSync, uidValidity = 1, id = 1): SqliteMailbox {
     db.exec(SCHEMA);
@@ -290,7 +302,9 @@ export class SqliteCatalog {
   get(name: string): SqliteMailbox | undefined {
     const canon = canonicalMailboxName(name);
     const row = this.#db.prepare('SELECT id FROM mailbox WHERE name = ?').get(canon) as { id: number } | undefined;
-    return row === undefined ? undefined : SqliteMailbox.open(this.#db, 1, Number(row.id));
+    // attach() (not open()): the schema/migrations ran once at catalog open, and the row
+    // exists — so a per-command get() does no DDL (docs/PERFORMANCE.md finding 4).
+    return row === undefined ? undefined : SqliteMailbox.attach(this.#db, Number(row.id));
   }
 
   /** Create a mailbox. Returns undefined if the name already exists. */
@@ -299,7 +313,8 @@ export class SqliteCatalog {
     if (this.get(canon) !== undefined) return undefined;
     const next = this.#db.prepare('SELECT COALESCE(MAX(id), 0) + 1 AS id FROM mailbox').get() as { id: number };
     this.#db.prepare('INSERT INTO mailbox (id, uid_validity, uid_next, name) VALUES (?, ?, 1, ?)').run(Number(next.id), uidValidity, canon);
-    return SqliteMailbox.open(this.#db, uidValidity, Number(next.id));
+    // The row is inserted and the schema is present — attach without re-running DDL.
+    return SqliteMailbox.attach(this.#db, Number(next.id));
   }
 
   /** Delete a mailbox and its messages/flags. False if absent or INBOX (RFC 9051 §6.3.4). */

@@ -27,12 +27,12 @@ interface Row {
   n: number;
   dbMB: number;
   appendMsgPerS: number;
-  loadMs: number; // one full `.messages` access — the per-IMAP-command tax
-  loadMB: number; // bytes materialised into JS heap by that access
-  rssAfterMB: number;
-  fetch1Ms: number; // cost to read a SINGLE message's flags (== full load today)
-  seqNoMs: number; // sequenceNumber() of a mid mailbox UID — O(n) COUNT
-  statusMs: number; // STATUS (MESSAGES UNSEEN SIZE) — also loads everything today
+  legacyMs: number; // OLD path: one full `.messages` access (loads every BLOB) — the per-command tax before the fix
+  legacyMB: number; // bytes materialised into JS heap by that access
+  indexMs: number; // NEW path: index() — metadata only, what a FETCH FLAGS / STATUS / SELECT now costs
+  indexMB: number; // heap churned by index() (no BLOBs)
+  raw1Ms: number; // NEW path: raw(uid) — fetch ONE body, what a BODY[] fetch of one message costs
+  statusMs: number; // STATUS (MESSAGES UNSEEN SIZE) via index() — no BLOBs
 }
 
 function benchOne(n: number): Row {
@@ -60,31 +60,31 @@ function benchOne(n: number): Row {
     const coldInbox = coldCat.get('INBOX')!;
     const dbMB = fileSizeMB(dbPath);
 
-    // --- the per-command tax: one full `.messages` materialisation ---
-    const rssBefore = rssMB();
+    // --- OLD path: one full `.messages` materialisation (every BLOB copied) ---
     let materialised = 0;
-    const load = timed(() => {
+    const legacy = timed(() => {
       const all = coldInbox.messages;
-      for (const m of all) materialised += m.raw.length; // touch every byte reference
+      for (const m of all) materialised += m.raw.length;
       return all.length;
     });
-    const rssAfterMB = rssMB();
 
-    // --- what the server pays to answer FETCH 1 (FLAGS): same full load ---
-    const fetch1 = timed(() => {
-      const all = coldInbox.messages;
-      return all[0]?.flags.size ?? 0; // the server indexes [0] after loading ALL
+    // --- NEW path: index() — the metadata a FETCH FLAGS / STATUS / SELECT now reads ---
+    let indexBytes = 0;
+    const index = timed(() => {
+      const all = coldInbox.index();
+      for (const m of all) indexBytes += 24 + m.flags.size * 8; // rough per-row heap, no BLOBs
+      return all.length;
     });
 
-    // --- sequenceNumber of a mid UID: O(n) COUNT(*) WHERE uid <= ? ---
+    // --- NEW path: raw(uid) — one body, what a BODY[] fetch of a single message costs ---
     const midUid = Math.max(1, Math.floor(n / 2));
-    const seq = timed(() => coldInbox.sequenceNumber(midUid));
+    const raw1 = timed(() => coldInbox.raw(midUid)?.length ?? 0);
 
-    // --- STATUS (MESSAGES UNSEEN SIZE): the server maps/filters `.messages` ---
+    // --- STATUS (MESSAGES UNSEEN SIZE) via index(): no BLOBs, size from metadata ---
     const status = timed(() => {
-      const all = coldInbox.messages;
+      const all = coldInbox.index();
       const unseen = all.filter((m) => !m.flags.has('\\Seen')).length;
-      const bytes = all.reduce((a, m) => a + m.raw.length, 0);
+      const bytes = all.reduce((a, m) => a + m.size, 0);
       return unseen + bytes;
     });
 
@@ -93,11 +93,11 @@ function benchOne(n: number): Row {
       n,
       dbMB,
       appendMsgPerS,
-      loadMs: load.ms,
-      loadMB: materialised / 1048576,
-      rssAfterMB: rssAfterMB - rssBefore,
-      fetch1Ms: fetch1.ms,
-      seqNoMs: seq.ms,
+      legacyMs: legacy.ms,
+      legacyMB: materialised / 1048576,
+      indexMs: index.ms,
+      indexMB: indexBytes / 1048576,
+      raw1Ms: raw1.ms,
       statusMs: status.ms,
     };
   } finally {
@@ -110,9 +110,10 @@ function benchOne(n: number): Row {
   }
 }
 
-console.log(`\nStorage scaling — ${msgBytes}-byte messages, WAL on disk, cold-read after checkpoint\n`);
-const H = ['msgs', 'dbMB', 'append/s', 'load ms', 'loadMB', 'rssΔMB', 'FETCH1 ms', 'seqNo ms', 'STATUS ms'];
-const W = [8, 8, 10, 9, 8, 8, 10, 9, 10];
+console.log(`\nStorage scaling — ${msgBytes}-byte messages, WAL on disk, cold-read after checkpoint`);
+console.log('OLD = the removed `.messages` getter; NEW = index() (metadata) + raw(uid) (one body).\n');
+const H = ['msgs', 'dbMB', 'append/s', 'OLD ms', 'OLD MB', 'NEW idx ms', 'idx MB', 'raw1 ms', 'STATUS ms'];
+const W = [8, 8, 10, 8, 8, 11, 8, 8, 10];
 console.log(H.map((h, i) => pad(h, W[i]!)).join(' '));
 console.log(W.map((w) => '-'.repeat(w)).join(' '));
 for (const n of sizes) {
@@ -121,16 +122,16 @@ for (const n of sizes) {
     r.n,
     r.dbMB.toFixed(1),
     Math.round(r.appendMsgPerS),
-    r.loadMs.toFixed(1),
-    r.loadMB.toFixed(1),
-    r.rssAfterMB.toFixed(1),
-    r.fetch1Ms.toFixed(1),
-    r.seqNoMs.toFixed(2),
+    r.legacyMs.toFixed(1),
+    r.legacyMB.toFixed(1),
+    r.indexMs.toFixed(1),
+    r.indexMB.toFixed(2),
+    r.raw1Ms.toFixed(2),
     r.statusMs.toFixed(1),
   ];
   console.log(cells.map((c, i) => pad(c, W[i]!)).join(' '));
 }
 console.log(
-  '\nRead: "FETCH1 ms" is the wall time to answer FETCH 1 (FLAGS) — one message — and it tracks' +
-    '\n"load ms" because the server materialises the whole mailbox first. "loadMB" is heap churn per command.\n',
+  '\nRead: "OLD ms" is what answering FETCH 1 (FLAGS) cost before the fix (a full `.messages` load).' +
+    '\n"NEW idx ms" is what it costs now (index(), metadata only); "raw1 ms" is a single BODY[] fetch.\n',
 );
