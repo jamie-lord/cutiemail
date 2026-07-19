@@ -9,10 +9,12 @@ so `npm test` and `tsc` ignore them. Two machines: **laptop** (8-core, 16 GB, NV
 > `97d26cc`). On the box, a single-message body fetch on a 50k mailbox went **1825 ms → 0.53 ms**,
 > per-command heap churn **195 MB → 1.3 MB**, and greeting latency under load **4.6 s → 0.44 s**.
 > A second stress round (`ad27034`) then found and fixed a matching freeze on the **write** path —
-> bulk `STORE`/`COPY` ran one transaction per message (**~37 s → ~3 s** for a 20k folder). The
-> [Fixed](#what-was-fixed) and [stress-findings](#pushing-harder--stress-findings-2026-07-19)
-> sections carry the full before/after. The diagnosis below is kept as the record of *why* — read
-> it in the past tense.
+> bulk `STORE`/`COPY` ran one transaction per message (**~37 s → ~3 s** for a 20k folder). A third,
+> adversarial round (`93de573`) found and fixed a real **OOM** — an authenticated read-slowloris
+> that killed the box (now bounded by a write-backlog budget). The
+> [Fixed](#what-was-fixed), [stress](#pushing-harder--stress-findings-2026-07-19) and
+> [red-team](#red-team--deliberately-trying-to-break-it-2026-07-19) sections carry the details. The
+> diagnosis below is kept as the record of *why* — read it in the past tense.
 
 ## TL;DR
 
@@ -229,3 +231,50 @@ the existing authenticated-only SEARCH-key DoS guards. Left as-is; the personal-
 
 `sequenceNumber` (indexed COUNT, <2 ms at 50k); append throughput (~550/s on the box, disk-fsync-
 bound, ample for personal scale); per-user memory (176 KB). No effort spent here.
+
+## Red-team — deliberately trying to break it (2026-07-19)
+
+A third round stopped measuring and tried to crash, hang, or OOM the server
+(`perf/abuse.bench.ts`, `perf/oom.bench.ts`). One real OOM, now fixed; the parser held.
+
+### 5. [DONE] Authenticated read-slowloris OOM
+
+The genuine break. The server frames a whole FETCH body and hands it to the socket with **no
+backpressure** — a client that requests a large message then stops reading leaves the entire
+response buffered in the process, unbounded. Summed across connections this is an OOM, and
+`MAX_CONNECTIONS` (512) does not help because each connection needs only *one* big fetch. Live on
+the box: **~112 connections each stalling on a 25 MB `BODY[]` drove RSS to 3.3 GB and the Linux
+OOM-killer killed the process** (`Out of memory: Killed process … node`, confirmed in `dmesg`).
+Authenticated — it needs valid credentials — but a single misbehaving or slow-linked client
+fetching big attachments is the same shape.
+
+Fix: a server-wide **write-backlog budget** (256 MiB, `MAX_WRITE_BACKLOG`). After each body write,
+if the summed `writableLength` across all sockets exceeds it, the biggest-backlog (slowest-draining)
+connections are dropped until back under — a client reading promptly holds ~0 and is never chosen,
+so normal use is untouched. The decision is a pure, unit-tested `shedToBudget()`; end-to-end,
+`perf/oom.bench.ts` now **plateaus at ~325 MB out to 256 stalled clients (was OOM-killed at ~112)**
+and the process survives. `writableLength` is the right metric: it measures exactly the in-process
+backlog that OOMs (on a platform whose kernel absorbs the data in its own bounded send buffer, the
+process never accumulates and the guard correctly stays idle).
+
+### Related, not yet fixed — APPEND read-side buffering
+
+The mirror image on the *read* path: `APPEND INBOX {25000000}` makes the server buffer up to
+`MAX_APPEND_LITERAL` (25 MB) of incoming literal per connection before it processes the message, so
+many connections dribbling large APPENDs can pin ~25 MB each the same way. The per-connection and
+aggregate bounds a full fix wants (stream the literal to storage instead of buffering it whole, or
+an aggregate read-budget) are a larger change to the APPEND path; recorded here with its sibling.
+Lower urgency than the FETCH side (it requires *sending* 25 MB per connection, not just asking),
+and authenticated.
+
+### Parser / protocol abuse — held
+
+Nine pathological inputs (a 64 KB explicit sequence set, an over-cap command line, `FETCH
+1:4294967295`, astronomically large explicit UIDs, an APPEND literal declared-but-never-sent, an
+over-25 MB APPEND, binary/NUL floods, 2000-connection connect/disconnect churn, 10k pipelined
+commands) all left the server **alive and responsive**, RSS flat. The sequence-set parser clamps
+ranges to the largest UID in use (no enumeration blow-up), the command line is capped at 64 KB, the
+APPEND literal at 25 MB, and connections at 512 (Node's `maxConnections`, which drops a flood
+cleanly). One cosmetic note: the 64 KB line cap is only checked while a line is *unterminated*, so a
+complete oversized line arriving in a single loopback chunk is parsed — network-safe (TCP delivers
+it in ≤64 KB reads, which the cap catches), not worth hardening.
