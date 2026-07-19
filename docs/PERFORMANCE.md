@@ -257,15 +257,31 @@ and the process survives. `writableLength` is the right metric: it measures exac
 backlog that OOMs (on a platform whose kernel absorbs the data in its own bounded send buffer, the
 process never accumulates and the guard correctly stays idle).
 
-### Related, not yet fixed — APPEND read-side buffering
+### 8. [DONE] APPEND read-side slow-upload OOM
 
-The mirror image on the *read* path: `APPEND INBOX {25000000}` makes the server buffer up to
-`MAX_APPEND_LITERAL` (25 MB) of incoming literal per connection before it processes the message, so
-many connections dribbling large APPENDs can pin ~25 MB each the same way. The per-connection and
-aggregate bounds a full fix wants (stream the literal to storage instead of buffering it whole, or
-an aggregate read-budget) are a larger change to the APPEND path; recorded here with its sibling.
-Lower urgency than the FETCH side (it requires *sending* 25 MB per connection, not just asking),
-and authenticated.
+The mirror image on the *read* path. `APPEND INBOX {25000000}` makes the server buffer the whole
+declared literal in the connection's receive buffer before it can store the message, so a client
+that declares a big literal then uploads slowly (or withholds the terminating CRLF) pins ~its size
+per connection — and, across connections each needing only ONE APPEND, that OOMs the process too.
+Reproduced live (`perf/append-oom.bench.ts`): RSS grew **~23 MB per stalled APPEND** on the box,
+reaching **1466 MB at 64 connections** and tripping the kernel's `TCP: out of memory` — ~140 would
+have OOM-killed node.
+
+Because a literal's size is *declared* up front, this is bounded cleanly rather than by shedding: a
+new APPEND **reserves** its declared size against a server-wide budget (`MAX_APPEND_INFLIGHT`,
+256 MiB, configurable) and is **refused with a transient `NO`** once that would exceed it — a
+synchronizing literal then never sends its data (and retries); a non-synchronizing one drops the
+link, as the size cap already does. The reservation is released on completion, error, or disconnect.
+Verified on the box: RSS now **plateaus at ~388 MB out to 128 stalled uploaders** (116 refused) and
+a real IMAPS `APPEND` is unaffected. Regression test covers refusal-at-budget and release on both
+completion and disconnect.
+
+*Related inefficiency (not a vulnerability, left as-is):* the receive buffer grows via
+`Buffer.concat` per chunk, which is O(n²) for a large literal and generates enough GC-lagged garbage
+to inflate the plateau above the reserved live set (~388 MB vs ~256 MB on the box; more on a machine
+with idle RAM). The budget bounds it regardless, and V8 collects the garbage under pressure, so this
+is a CPU/transient-allocation wart, not a memory-safety issue — a chunk-list accumulation would tidy
+it but means restructuring the heavily-tested literal/line/pipelining data loop, not worth the risk.
 
 ### Parser / protocol abuse — held
 
