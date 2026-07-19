@@ -80,6 +80,8 @@ export interface MailServerConfig {
   readonly onEvent?: (line: string) => void;
   /** How often the relay loop drains the queue (default 60s). */
   readonly relayIntervalMs?: number;
+  /** Max queued outbound messages before submission returns a transient 451 (default 10000). */
+  readonly maxQueueDepth?: number;
   /** Max accepted message size in octets (RFC 1870 SIZE). Undefined = no limit. */
   readonly maxMessageSize?: number;
   /** Reject a message with at least this many Received hops as a loop (default 100). */
@@ -412,6 +414,10 @@ export async function startServer(cfg: MailServerConfig): Promise<RunningServer>
 
   // The persistent outbound queue (in the control DB) + the loop that drains it.
   const queue = SqliteQueue.open(controlDb);
+  // Cap on queued outbound messages before submission applies 451 backpressure — bounds the disk a
+  // runaway sender can consume. Generous vs any personal-scale backlog (incl. a downstream MX being
+  // down and messages legitimately retrying), tiny vs the drain rate × a sane outage window.
+  const maxQueueDepth = cfg.maxQueueDepth ?? 10_000;
   const relayLoop = new RelayLoop(queue, (m) => relayOutbound(m, outboundOpts), {
     log,
     // RFC 5321 §6.1: notify the sender when we permanently give up. Build the bounce
@@ -453,6 +459,15 @@ export async function startServer(cfg: MailServerConfig): Promise<RunningServer>
       throw new MessageRejected(`550 5.7.1 sender <${m.from}> not authorized for this account`);
     }
     const { local, remote } = routeRecipients(m.recipients, cfg.domain);
+    // Backpressure: the outbound queue drains serially (~11/s on a small VM), so a runaway or
+    // compromised authenticated account submitting faster than that would grow the queue — and,
+    // since each row stores the whole signed body, the DISK — without bound (found under mixed
+    // load). Reject a message needing outbound queuing once the queue is at capacity, with a
+    // TRANSIENT 451 (RFC 3463 4.3.1) so a well-behaved sender retries and no mail is lost.
+    // Checked BEFORE local delivery so a rejected message isn't half-delivered then retried.
+    if (remote.length > 0 && queue.size >= maxQueueDepth) {
+      throw new MessageRejected('451 4.3.1 mail queue full; retry later');
+    }
     // RFC 6409 fix-up (submission only, never on the inbound port): add Date /
     // Message-ID when the client omitted them — Gmail rejects messages without.
     const fixed = ensureSubmissionHeaders(m.data, cfg.domain, m.from);
