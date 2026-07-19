@@ -166,13 +166,22 @@ export interface Sheddable {
  * that are failing to consume their data. Pure and deterministic, so it can be tested without
  * depending on real kernel socket buffering (which varies by platform).
  */
-export function shedToBudget(sockets: Iterable<Sheddable>, budget: number): number {
+export function shedToBudget(sockets: Iterable<Sheddable>, budget: number, exempt?: Sheddable): number {
   const all = [...sockets];
   let total = 0;
   for (const s of all) total += s.writableLength;
   if (total <= budget) return 0;
   let shed = 0;
-  for (const s of all.sort((a, b) => b.writableLength - a.writableLength)) {
+  // Never shed `exempt` — the socket whose own write just triggered this check. Its
+  // writableLength is sampled synchronously, before the kernel has drained a single byte, so it
+  // sits at the full pre-drain size of a response it is about to consume normally, which by size
+  // alone is indistinguishable from a stalled backlog. Dropping it would let an attacker holding
+  // many modest, genuinely-stalled sockets (each kept below the victim's transient peak) push a
+  // promptly-reading victim's own FETCH over budget and get the VICTIM destroyed while the abuser
+  // survives — cross-tenant, since one listener serves every account (audit run-9). `exempt` still
+  // counts toward `total`, so we shed the genuinely-accumulated backlog of OTHERS until under it.
+  const candidates = all.filter((s) => s !== exempt).sort((a, b) => b.writableLength - a.writableLength);
+  for (const s of candidates) {
     if (total <= budget) break;
     total -= s.writableLength;
     s.destroy(); // a client not draining won't receive a BYE anyway — just reclaim the memory
@@ -685,8 +694,8 @@ export class ImapServer {
    * write. This is the backstop against the read-slowloris OOM; the connections it drops are, by
    * construction, ones not consuming their data.
    */
-  #shedIfOverBudget(): void {
-    shedToBudget(this.#sockets, this.#maxWriteBacklog);
+  #shedIfOverBudget(exempt?: net.Socket): void {
+    shedToBudget(this.#sockets, this.#maxWriteBacklog, exempt);
   }
 
   /**
@@ -864,7 +873,9 @@ export class ImapServer {
     sock.write(Buffer.concat([Buffer.from(`* ${seq} FETCH (`, 'latin1'), ...out, Buffer.from(')\r\n', 'latin1')]));
     // A body response can be large; if slow readers have let the server-wide queue exceed budget,
     // shed the slowest so many stalled fetchers cannot OOM the process (docs/PERFORMANCE.md).
-    this.#shedIfOverBudget();
+    // Exempt THIS socket: its writableLength is at a same-tick pre-drain peak from the write above,
+    // not a stall, so it must not be the one dropped (audit run-9 shed-the-victim).
+    this.#shedIfOverBudget(sock);
   }
 
   #handle(sock: net.Socket): void {

@@ -63,3 +63,31 @@ test('total exceeds budget only via many mid-size backlogs: sheds enough of them
   assert.ok(remaining <= 256 * 1024 * 1024, 'remaining backlog is within budget');
   assert.ok(shed >= 8 && shed < 20, `shed enough but not all (${shed})`);
 });
+
+test('shed-the-victim: the socket that just wrote (exempt) is never dropped for others', () => {
+  // The abuse from audit run-9: an attacker holds many modest, genuinely-stalled sockets, each kept
+  // below a victim's transient peak; the victim's OWN large FETCH is what pushes the total over
+  // budget. Because the shed samples writableLength synchronously right after the victim's write —
+  // before the kernel drains a byte — the victim's socket shows its full pre-drain size and would be
+  // selected as the single biggest backlog. Exempting the triggering socket must send the shed to
+  // the attacker's accumulated backlog instead, and spare the victim.
+  const attackers = Array.from({ length: 255 }, () => fakeSocket(1 * 1024 * 1024)); // 255 MB stalled
+  const victim = fakeSocket(20 * 1024 * 1024); // just wrote a 20 MB body; sampled at pre-drain peak
+  const shed = shedToBudget([...attackers, victim], 256 * 1024 * 1024, victim);
+  assert.equal(victim.destroyed, false, 'the promptly-reading victim is NOT shed');
+  assert.ok(shed >= 19, `sheds the attacker's stalled backlog instead (${shed})`);
+  assert.equal(attackers.filter((s) => s.destroyed).length, shed, 'every shed socket is an attacker');
+  const remaining = [...attackers, victim].filter((s) => !s.destroyed).reduce((n, s) => n + s.writableLength, 0);
+  assert.ok(remaining <= 256 * 1024 * 1024, 'and the total is brought back within budget');
+});
+
+test('exempt still counts toward the total (memory bound is preserved)', () => {
+  // If the exempt socket did not count toward `total`, a large exempt write plus a full-budget
+  // backlog of others would sit unbounded above budget. It must count, so others are shed to fit.
+  const others = Array.from({ length: 10 }, () => fakeSocket(30 * 1024 * 1024)); // 300 MB
+  const exempt = fakeSocket(20 * 1024 * 1024);
+  shedToBudget([...others, exempt], 256 * 1024 * 1024, exempt);
+  const remaining = [...others, exempt].filter((s) => !s.destroyed).reduce((n, s) => n + s.writableLength, 0);
+  assert.ok(remaining <= 256 * 1024 * 1024, 'exempt is counted, so the total is still bounded');
+  assert.equal(exempt.destroyed, false);
+});
