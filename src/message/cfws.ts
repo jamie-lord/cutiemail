@@ -4,8 +4,9 @@
  * (§3.2.2 / §3.2.4), so a `(` inside a quoted-string is literal `qtext`, NOT a comment
  * start, and a `"` inside a comment is `ctext`, not a quote delimiter. Comments are
  * removed (each top-level comment → one space; nested comments collapse); quoted-strings
- * are PRESERVED verbatim (the caller decides what to do with them — `fromValueDomain`
- * strips them next to find the address; `authservIdOf` interprets a quoted authserv-id).
+ * are PRESERVED verbatim (the caller decides what to do with them — `authorAddrSpec`
+ * (message/from-author.ts) strips them next to find the address; `authservIdOf` interprets a
+ * quoted authserv-id).
  * Quoted-pairs (`\x`) are consumed with their escape in both contexts. An unbalanced
  * trailing `(` (malformed) is treated as a comment to end-of-value and dropped
  * (fail-closed).

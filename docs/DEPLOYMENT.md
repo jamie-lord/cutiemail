@@ -191,8 +191,7 @@ never a management-verb side effect (ADR 0012).
 
 **Aliases and `+tag` subaddressing** — an account can answer to more than one address
 (ADR 0014). An alias is a second address whose mail lands in the same mailbox — it adds no
-database (a user is still one file), and it is a delivery address only: you can't log in as
-one (and sending *as* one is a separate, not-yet-shipped step). Subaddressing is on by
+database (a user is still one file), and you can't log in as one. Subaddressing is on by
 default: `you+anything@your.domain` delivers to `you` with no setup, handy for per-service
 filtering.
 
@@ -205,6 +204,13 @@ node src/main.ts account alias remove sales
 Give the local-part only (`sales`, not `sales@your.domain`). An address is a login *or* an
 alias, never both; unknown addresses are still refused at RCPT (no catch-all). New aliases
 receive immediately — no restart.
+
+**Sending as an alias** — you can also *send* as any address you own (your login, an alias, or
+a `+tag` subaddress). Submission enforces this: your client's `From` (and the envelope sender)
+must resolve to your account, on your domain, or the message is refused `550` (ADR 0015). Set
+your mail client's identity/From to the alias — for example configure a `sales@your.domain`
+identity in Thunderbird — and mail sends DKIM-signed as that address. You cannot send as
+another account's address or a foreign domain; that is the point.
 
 **Backups** — the whole server's state is the control database plus one mailbox database
 per user, so a backup is one command (safe while the daemon runs — it uses SQLite's

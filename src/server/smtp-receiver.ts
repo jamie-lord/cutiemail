@@ -35,6 +35,25 @@ export interface DeliveredMessage {
   readonly remoteAddress: string;
   /** Whether the client authenticated (submission) — selects ESMTPSA vs ESMTP(S). */
   readonly authenticated: boolean;
+  /** The authenticated SASL login (submission only; undefined on the inbound port). The
+   *  submission handler authorizes the message's sender against this identity (ADR 0015). */
+  readonly authenticatedUser?: string;
+}
+
+/**
+ * A deliberate, PERMANENT rejection raised by the delivery handler — e.g. a submission
+ * sender-authorization failure (ADR 0015). It carries the full SMTP reply line so the
+ * receiver returns that 5xx, distinct from the generic transient 451 an unexpected
+ * store/sign error maps to. Anything the handler throws that is NOT a MessageRejected stays
+ * a transient 451 (a crash is a "try again", not a "never").
+ */
+export class MessageRejected extends Error {
+  readonly reply: string;
+  constructor(reply: string) {
+    super(reply);
+    this.name = 'MessageRejected';
+    this.reply = reply;
+  }
 }
 
 export type DeliveryHandler = (message: DeliveredMessage) => void | Promise<void>;
@@ -152,6 +171,7 @@ class Connection {
   #inTransaction = false; // a reverse-path buffer exists (MAIL accepted, not yet reset)
   #tls = false;
   #authed = false;
+  #authedUser = ''; // the SASL authcid once authenticated — the identity send-as authorizes against
   #awaitingAuth = false; // AUTH PLAIN issued without an initial response; next line is the SASL data
   #processing: Promise<void> = Promise.resolve(); // serializes async #onData over chunks
   #hardErrors = 0; // cumulative client protocol errors this session (see MAX_HARD_ERRORS)
@@ -269,7 +289,7 @@ class Connection {
           this.#buf = this.#buf.subarray(eod);
           continue;
         }
-        let stored = true;
+        let reply = '250 2.0.0 message stored';
         try {
           await this.#handler({
             from: this.#from,
@@ -279,16 +299,19 @@ class Connection {
             helo: this.#helo,
             remoteAddress: this.#remoteAddress,
             authenticated: this.#authed,
+            ...(this.#authed ? { authenticatedUser: this.#authedUser } : {}),
           });
-        } catch {
-          stored = false; // a store/sign failure is a temporary error, not a crash
+        } catch (err) {
+          // A deliberate policy rejection carries its own permanent reply; anything else is
+          // an unexpected store/sign failure — transient, so the client retries.
+          reply = err instanceof MessageRejected ? err.reply : '451 4.3.0 error storing message';
         }
         this.#from = '';
         this.#recipients = [];
         this.#inData = false;
         this.#inTransaction = false;
         this.#buf = this.#buf.subarray(eod);
-        this.#write(stored ? '250 2.0.0 message stored' : '451 4.3.0 error storing message');
+        this.#write(reply);
         continue;
       }
       const nl = this.#buf.indexOf(Buffer.from([CR, LF]));
@@ -500,6 +523,7 @@ class Connection {
     if (this.#opts.authenticate(username, password)) {
       this.#opts.throttle?.recordSuccess(this.#remoteAddress);
       this.#authed = true;
+      this.#authedUser = username;
       this.#write('235 2.7.0 Authentication successful');
     } else {
       this.#opts.throttle?.recordFailure(this.#remoteAddress);

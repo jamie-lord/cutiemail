@@ -20,9 +20,11 @@ Two whole bodies of work are complete and live-verified, so they are out of this
   listener). Evidence is in the commit messages (`git log --grep "(B[1-6]"`).
 
 Beyond those, aliases + `+tag` subaddressing shipped as [ADR 0014](decisions/0014-aliases-and-subaddressing.md),
-and eight security-audit runs + two live pentest sessions converged (find rate 8→6→7→7→4→5→4→0).
-The residue of *that* work — two delicate items each held back for a dedicated, live-verified
-pass rather than an audit-loop patch — is items 2 and 3 below.
+**send-as / submission sender-authorization** shipped as [ADR 0015](decisions/0015-submission-sender-authorization.md)
+(closing the cross-account spoof), and eight security-audit runs + two live pentest sessions
+converged (find rate 8→6→7→7→4→5→4→0). The residue of *that* work — two delicate items each
+held back for a dedicated, live-verified pass rather than an audit-loop patch — is items 2 and
+3 below.
 
 ## How an item earns its place here
 
@@ -33,35 +35,6 @@ can't fill in all four isn't on the list; it's in the ledger.
 ---
 
 ## Open work
-
-### 1. Send-as / submission sender-authorization — *security + usability; needs ADR 0015*
-
-- **Evidence:** [ADR 0014](decisions/0014-aliases-and-subaddressing.md) names this as its
-  deliberate follow-up, and the multi-account work ([ADR 0009](decisions/0009-multi-account-per-user-database.md))
-  left a matching hole: **submission never checks that `From` matches the authenticated user**,
-  so any authenticated account can spoof any address (its own domain or another user's). This
-  is the top parked security item, escalated by multi-account.
-- **Mission fit:** a person with aliases expects to *send* as `sales@` or `j.smith@`, not just
-  receive there — and closing the cross-account spoof is a genuine security correction, not a
-  convenience. One change delivers both.
-- **Shape:** at the submission `MAIL FROM`/`From:`-header chokepoint, require the `From`
-  local-part to be the authenticated login **or one of its aliases**, over our own domain;
-  reject otherwise. This is a sender-authorization policy decision — it deserves its own ADR
-  (0015), because it also settles what happens to a foreign-domain `From` (relay-for-known-senders
-  vs refuse) and to a `From` that disagrees with the envelope sender.
-
-```mermaid
-flowchart TD
-    S["submission: authenticated as LOGIN"] --> F{"From local-part resolves<br/>to LOGIN or an alias of LOGIN,<br/>on our domain?"}
-    F -->|yes| OK["accept — sign + queue"]
-    F -->|no| NO["reject 550 — not authorised for this From"]
-```
-
-- **Testing:** reproduce the spoof first (a failing test: account A submits with account B's
-  `From` and is currently accepted); then the authz gate, negative-controlled both ways (own
-  address + own alias accepted; another account's address and an unowned alias refused). Live
-  re-validation against Gmail that a legitimate send-as an alias still passes SPF/DKIM/DMARC and
-  is accepted — the deliverability re-check ADR 0014 flagged.
 
 ### 2. Oversign `From` — DKIM prepended-`From` replay — *security; dedicated pass*
 

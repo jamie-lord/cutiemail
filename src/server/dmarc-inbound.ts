@@ -15,8 +15,7 @@
  */
 
 import { parseDmarcRecord, checkAlignment } from '../auth/dmarc.ts';
-import { parseMessage } from '../message/parse.ts';
-import { stripComments } from '../message/cfws.ts';
+import { fromAuthor, domainOfAddrSpec } from '../message/from-author.ts';
 import { registeredDomain } from '../auth/public-suffix.ts';
 
 export type DmarcVerdict = 'pass' | 'fail' | 'none' | 'temperror';
@@ -50,46 +49,16 @@ export function organizationalDomain(domain: string): string {
 }
 
 /**
- * The From domain and how many From headers the message carries. RFC 5322 §3.6.1
- * requires exactly one; a message with more than one is the canonical DMARC display
- * spoof (auth aligns the first, the MUA may show the last), so the caller must not let
- * it pass. The name is trimmed before comparison so `From :` (illegal WSP before the
- * colon, which a lenient MUA still reads as From) can't hide the header from us.
+ * The From domain and how many From headers the message carries. RFC 5322 §3.6.1 requires
+ * exactly one; a message with more than one is the canonical DMARC display spoof (auth aligns
+ * the first, the MUA may show the last), so the caller must not let it pass. The domain comes
+ * from the shared spoof-hardened author extractor (message/from-author.ts) — the SAME parse
+ * the submission send-as gate uses, so DMARC alignment and sender-authorization can never
+ * disagree on who the From is.
  */
-/**
- * The address domain of a From header value, parsed the way a compliant MUA displays it
- * (RFC 5322 §3.4) — NOT with a naive first-`<...>` match. That match aligned DMARC on a
- * decoy address hidden inside a quoted-string display-name or a comment
- * (`From: "x <a@evil.com>" <victim@bank.com>`), while the client showed victim@bank.com —
- * a full DMARC bypass. Strip comments and quoted-strings first (a `<>` inside them is not
- * an address), then take the LAST angle-addr (or the bare addr-spec), matching
- * imap/envelope.ts's parseOneAddress so the aligned domain equals the displayed one.
- */
-function fromValueDomain(value: string): string | null {
-  // Strip RFC 5322 comments in one linear pass (a nested comment must never cost O(depth²) —
-  // that froze the event loop on a single crafted message, audit run-3), then quoted-strings.
-  let v = stripComments(value);
-  v = v.replace(/"(?:[^"\\]|\\.)*"/g, ' ').trim(); // quoted-string display-names
-  const open = v.lastIndexOf('<');
-  let addr: string;
-  if (open !== -1) {
-    const close = v.indexOf('>', open);
-    addr = (close !== -1 ? v.slice(open + 1, close) : v.slice(open + 1)).trim();
-  } else {
-    addr = v.trim();
-  }
-  const at = addr.lastIndexOf('@');
-  if (at === -1) return null;
-  // Strip a root-anchoring trailing dot so it aligns with a dot-less DKIM d=/SPF domain.
-  const domain = addr.slice(at + 1).trim().toLowerCase().replace(/\.$/, '');
-  return domain || null;
-}
-
 function fromHeaderInfo(raw: Buffer): { domain: string | null; count: number } {
-  const { headers } = parseMessage(raw);
-  const froms = headers.filter((h) => h.name.toString('latin1').trim().toLowerCase() === 'from');
-  if (froms.length === 0) return { domain: null, count: 0 };
-  return { domain: fromValueDomain(froms[0]!.value.toString('latin1')), count: froms.length };
+  const { address, count } = fromAuthor(raw);
+  return { domain: address === null ? null : domainOfAddrSpec(address), count };
 }
 
 async function fetchDmarc(domain: string, resolveTxt: DmarcInput['resolveTxt']): Promise<string | null> {

@@ -25,8 +25,9 @@ import { openMailDb, secureMailDbFile } from './store/open-mail-db.ts';
 import { AccountRegistry } from './store/account-registry.ts';
 import { MailStores } from './store/mail-stores.ts';
 import { MemoryCatalog } from './store/memory-catalog.ts';
-import { SmtpReceiver } from './server/smtp-receiver.ts';
+import { SmtpReceiver, MessageRejected } from './server/smtp-receiver.ts';
 import type { DeliveredMessage } from './server/smtp-receiver.ts';
+import { fromAuthor } from './message/from-author.ts';
 import { ImapServer } from './server/imap-server.ts';
 import type { ServableMailbox } from './server/imap-server.ts';
 import { relayOutbound, routeRecipients, type OutboundOptions } from './server/outbound.ts';
@@ -431,10 +432,36 @@ export async function startServer(cfg: MailServerConfig): Promise<RunningServer>
   });
 
   const submissionHandler = (m: DeliveredMessage): void => {
+    // ADR 0015 — submission sender-authorization. An authenticated user may send only AS an
+    // address they OWN (their login, an alias, or a `base+tag` subaddress, ADR 0014), on our
+    // domain. Without this, any authenticated account can put ANY address in From — including
+    // another account's — the cross-account spoof. Fail closed BEFORE routing/signing/relay,
+    // with a PERMANENT 550 (a policy no, not a "try again").
+    //
+    // The authenticated login, canonicalised through the registry (case-/alias-insensitive);
+    // undefined if the account was disabled or removed between AUTH and DATA — fail closed.
+    const authed = m.authenticatedUser !== undefined ? registry.resolveLocalPart(m.authenticatedUser) : undefined;
+    if (authed === undefined) throw new MessageRejected('550 5.7.1 not authorized to send');
+    // The envelope MAIL FROM must be an address this user owns. A submitting client always
+    // sets a real return-path; a null sender <> is a bounce, which never originates here.
+    if ((m.from === '' ? undefined : loginForLocalAddress(m.from)) !== authed) {
+      throw new MessageRejected(`550 5.7.1 sender <${m.from}> not authorized for this account`);
+    }
     const { local, remote } = routeRecipients(m.recipients, cfg.domain);
     // RFC 6409 fix-up (submission only, never on the inbound port): add Date /
     // Message-ID when the client omitted them — Gmail rejects messages without.
     const fixed = ensureSubmissionHeaders(m.data, cfg.domain, m.from);
+    // The From: header author must ALSO be owned. Checked after the fix-up so a client that
+    // omitted From gets the (owned) envelope synthesized in — still exactly one, still owned.
+    // Spoof-hardened parse (last angle-addr; comments/quoted-strings stripped) and exactly one
+    // From (RFC 5322 §3.6.1; a second From is the display-spoof DMARC also rejects).
+    const { address: fromAddr, count: fromCount } = fromAuthor(fixed);
+    if (fromCount !== 1 || fromAddr === null) {
+      throw new MessageRejected('550 5.7.1 message must carry exactly one From address');
+    }
+    if (loginForLocalAddress(fromAddr) !== authed) {
+      throw new MessageRejected(`550 5.7.1 From <${fromAddr}> not authorized for this account`);
+    }
     // Stamp our Received trace line (§4.4), then sign — DKIM does not cover
     // Received, so the order is fix-up → Received → DKIM-Signature on top.
     const traced = prependReceived(fixed, {
