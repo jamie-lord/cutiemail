@@ -278,3 +278,52 @@ APPEND literal at 25 MB, and connections at 512 (Node's `maxConnections`, which 
 cleanly). One cosmetic note: the 64 KB line cap is only checked while a line is *unterminated*, so a
 complete oversized line arriving in a single loopback chunk is parsed — network-safe (TCP delivers
 it in ≤64 KB reads, which the cap catches), not worth hardening.
+
+## Outbound + mixed load — the send leg and everything at once (2026-07-19)
+
+A fourth round measured the *outbound* path and then ran inbound + outbound + IMAP together to the
+edge of what the box sustains (`perf/outbound.bench.ts`, `perf/mixed-load.bench.ts`). One real bug,
+one hardening, and a clean bill on robustness.
+
+### Outbound ceiling (box)
+
+Two stages, different limits:
+
+- **Submission accept: ~59 msgs/s.** Authenticated STARTTLS+AUTH clients → sender-authz → header
+  fix-up → **DKIM RSA-2048 signing** → enqueue. Signing is the cost (the laptop does ~258/s).
+- **Relay drain: ~11 msgs/s.** The `RelayLoop` processes the queue **serially** — one MX dialog at
+  a time (`for (const entry of due) await processEntry(...)`) — even to an instant-accepting local
+  sink. The real internet is slower still (per-message DNS + TLS + remote acceptance). ~11/s is
+  ~40k mail/hour, ample for personal scale, but it means a burst drains slowly and, crucially, that
+  submission can outrun it.
+
+### 6. [DONE] Outbound-queue backpressure
+
+Because submission (59/s) outruns the serial relay (11/s) and applied **no backpressure**, a
+sustained outbound stream grew the queue without bound — mixed-load runs showed depth climbing
+0→520+ monotonically. Each queued row holds the whole signed body, so that is a **disk**-exhaustion
+vector for a runaway or compromised authenticated account (the disk analogue of the FETCH OOM).
+Fix: submission now returns a transient **451 4.3.1** for a message needing outbound queuing once
+`queue.size >= maxQueueDepth` (config, default 10000 — generous vs a legitimate downstream-outage
+backlog, tiny vs the disk), checked *before* local delivery so a refused message is never
+half-delivered then retried, and a purely-local message is never refused.
+
+### 7. [DONE] Shutdown race — relay tick vs. DB close
+
+The real bug the mixed load exposed. `RelayLoop.stop()` cleared its interval timer but did **not**
+wait for an in-flight tick, so a tick draining a backed-up queue kept running while `close()` went
+on to close the control database — and the tick's next `queue.due()` hit a closed handle:
+**`Error: database is not open`**, an unhandled rejection on every shutdown that had outbound mail
+queued (i.e. exactly when the box is busy). `stop()` is now async, sets a stop flag, and awaits the
+in-flight tick, which bails at the next entry boundary leaving the rest durably queued; `close()`
+awaits it before closing the DB. Verified in production: `systemctl stop` now logs a clean
+"Deactivated successfully" with no error. Regression test reproduces the race.
+
+### Robustness under sustained mixed load — clean
+
+20 s of 6 inbound + 6 outbound + 6 IMAP workers at once (all four SQLite writers — enqueue,
+relay-settle, inbound delivery, IMAP store — contending), including a **40%-rejection bounce storm**
+(432 DSN bounces + 216 dead-letters): **zero errors, zero `SQLITE_BUSY`, no memory growth** (RSS
+flat 48→50 MB), no crash, no backscatter loop. The synchronous single-thread + `busy_timeout`
+serialise the writers cleanly, and the bounce/dead-letter path holds under load. Throughput per
+stream falls to ~30/s each as the three compete for two cores — expected, not a fault.
