@@ -343,3 +343,40 @@ relay-settle, inbound delivery, IMAP store — contending), including a **40%-re
 flat 48→50 MB), no crash, no backscatter loop. The synchronous single-thread + `busy_timeout`
 serialise the writers cleanly, and the bounce/dead-letter path holds under load. Throughput per
 stream falls to ~30/s each as the three compete for two cores — expected, not a fault.
+
+## Soak — 20 minutes under connection churn, hunting slow leaks (2026-07-19)
+
+The short bursts above can't reveal a *slow* leak (a per-connection handle/subscription/buffer that
+drips over minutes). A soak can — the design point is connection **churn**, not throughput:
+`perf/soak.bench.ts` runs the full daemon and hammers it with thousands of short-lived connections
+that connect, do a little work (a quarter of the IMAP ones IDLE then vanish *abruptly* — the classic
+leak trigger), and disconnect. It samples RSS/heapUsed/external/arrayBuffers, active handles, open
+fds, event-loop lag, each server's live connection count, and the queue/dead-letter depth over time
+(GC forced before each memory sample, so the trend is *live* memory), and fits a slope to each.
+
+**Result (box, 1200 s, 4881 churned connections, 0 errors): no leak.** The signals that would show a
+leak are flat:
+
+| signal | slope | verdict |
+|---|--:|---|
+| **heapUsed** (live JS memory) | **+0.06 MB/min** | flat — no object leak |
+| external / arrayBuffers | +0.01 / +0.01 MB/min | flat |
+| active handles | −0.01 /min | flat |
+| open fds | +0.00 /min | flat |
+| live connections | −0.01 /min, **0 at rest** | fully released |
+| APPEND reserved | **0 B at rest** | fully released |
+
+RSS rose to a **working-set plateau (~150 MB)** — an independent per-process sampler confirmed it
+flattening (147→147→151 MB), and with heapUsed flat that is allocator/RSS stickiness, not a JS leak.
+A dedicated regression test (`imap-connection-cleanup.test.ts`) pins the teardown: connections that
+SELECT+IDLE then close abruptly release both their socket and their notifier subscription, across
+cycles, so `connectionCount` and `subscriberCount` return to zero. New observability getters
+(`ImapServer.connectionCount`/`appendReservedBytes`, `SmtpReceiver.connectionCount`,
+`MailboxNotifier.subscriberCount`) back both the soak and future ops visibility.
+
+**Two known (non-leak) behaviors the soak re-confirmed:** the outbound queue climbed (79→315) because
+the serial relay was **starved** by the synchronous IMAP/inbound work monopolising the event loop
+(peak lag ~1.4 s) — it drains once load subsides and is bounded by the queue backpressure cap; and
+tail event-loop lag reaches ~1.4 s under sustained churn on two cores. Both trace to the documented
+single-thread + synchronous-SQLite architecture (the metadata floor and serial relay), not to any
+leak, and are bounded by the caps already in place.
