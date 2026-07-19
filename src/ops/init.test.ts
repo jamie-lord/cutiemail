@@ -59,7 +59,7 @@ test('init refuses once any account exists — points at account add', async () 
   try {
     const dbPath = join(dir, 'control.db');
     // First init succeeds.
-    assert.equal(await runInit(['admin'], capture().io, { MAIL_CONTROL_DB: dbPath }, secrets('pw1', 'pw1')), 0);
+    assert.equal(await runInit(['admin'], capture().io, { MAIL_CONTROL_DB: dbPath }, secrets('admin-pw1', 'admin-pw1')), 0);
     // Second init refuses without touching the existing account.
     const cap = capture();
     const code = await runInit(['other'], cap.io, { MAIL_CONTROL_DB: dbPath }, secrets('pw2', 'pw2'));
@@ -69,7 +69,7 @@ test('init refuses once any account exists — points at account add', async () 
     const db = openMailDb(dbPath);
     const registry = AccountRegistry.open(db);
     assert.equal(registry.lookup('other'), undefined, 'the refused account was not created');
-    assert.equal(registry.verifyPassword('admin', 'pw1'), true, 'the existing account is untouched');
+    assert.equal(registry.verifyPassword('admin', 'admin-pw1'), true, 'the existing account is untouched');
     db.close();
   } finally {
     rmSync(dir, { recursive: true, force: true });
@@ -84,6 +84,10 @@ test('init rejects an invalid login (usage error) and an empty/mismatched passwo
     assert.equal(await runInit([], capture().io, { MAIL_CONTROL_DB: dbPath }, secrets('pw', 'pw')), 2);
     assert.equal(await runInit(['admin'], capture().io, { MAIL_CONTROL_DB: dbPath }, secrets('', '')), 1);
     assert.equal(await runInit(['admin'], capture().io, { MAIL_CONTROL_DB: dbPath }, secrets('a', 'b')), 1);
+    // A too-short password (below the policy floor) is refused, nothing created.
+    const cap = capture();
+    assert.equal(await runInit(['admin'], cap.io, { MAIL_CONTROL_DB: dbPath }, secrets('short', 'short')), 1);
+    assert.match(cap.err.join('\n'), /too short/i);
     // None of those created anything.
     const db = openMailDb(dbPath);
     assert.equal(AccountRegistry.open(db).list().length, 0);

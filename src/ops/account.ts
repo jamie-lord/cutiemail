@@ -196,6 +196,22 @@ export async function readNewPassword(source: PasswordSource): Promise<string | 
   return first === second ? first : null;
 }
 
+/**
+ * The minimum length for a HUMAN-CHOSEN account password (NIST SP 800-63B §5.1.1.2 sets 8 as
+ * the floor for user-chosen secrets; we follow length-over-composition and impose no character
+ * rules). App-specific passwords (ADR 0017) are server-generated far longer and bypass this —
+ * it governs only passwords a person types.
+ */
+export const MIN_PASSWORD_LENGTH = 8;
+
+/** Null if `password` satisfies the policy; otherwise a one-line reason to show the operator. */
+export function passwordPolicyError(password: string): string | null {
+  if (password.length < MIN_PASSWORD_LENGTH) {
+    return `password too short — use at least ${MIN_PASSWORD_LENGTH} characters (nothing was changed).`;
+  }
+  return null;
+}
+
 export async function runAccount(
   args: string[],
   io: OpsIo,
@@ -260,6 +276,11 @@ export async function runAccount(
           io.err('account add: empty password or the two entries did not match — nothing created.');
           return 1;
         }
+        const addPolicyErr = passwordPolicyError(password);
+        if (addPolicyErr !== null) {
+          io.err(`account add: ${addPolicyErr}`);
+          return 1;
+        }
         const mailDbPath = dbPath === ':memory:' ? ':memory:' : join(dirname(dbPath), `mail-${login}.db`);
         registry.upsert(login!, password, mailDbPath);
         io.out(`account ${login} created (mailbox database: ${mailDbPath}).`);
@@ -275,6 +296,11 @@ export async function runAccount(
         const password = await readNewPassword(source);
         if (password === null) {
           io.err('account set-password: empty password or the two entries did not match — unchanged.');
+          return 1;
+        }
+        const setPolicyErr = passwordPolicyError(password);
+        if (setPolicyErr !== null) {
+          io.err(`account set-password: ${setPolicyErr}`);
           return 1;
         }
         // Preserve the routing and state; only the credential changes.

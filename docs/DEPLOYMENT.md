@@ -189,6 +189,11 @@ restart. There is deliberately no `remove`: `disable` refuses auth and delivery 
 touching the user's mailbox database; deleting mail is an explicit `rm` of that file,
 never a management-verb side effect (ADR 0012).
 
+Passwords must be at least 8 characters (the NIST SP 800-63B floor); `init`, `account add`,
+and `account set-password` refuse a shorter one. A weak password seeded through the
+deprecated `MAIL_PASS`/`MAIL_ACCOUNTS` env path is only *warned* about (a boot must not fail
+on it) — provision real credentials with `init`/`account` instead.
+
 **Aliases and `+tag` subaddressing** — an account can answer to more than one address
 (ADR 0014). An alias is a second address whose mail lands in the same mailbox — it adds no
 database (a user is still one file), and you can't log in as one. Subaddressing is on by

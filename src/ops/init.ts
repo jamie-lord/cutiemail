@@ -17,7 +17,7 @@ import { join, dirname } from 'node:path';
 import type { OpsIo } from './cli.ts';
 import { openMailDb } from '../store/open-mail-db.ts';
 import { AccountRegistry } from '../store/account-registry.ts';
-import { validLogin, readNewPassword, stdinPasswordSource, type PasswordSource } from './account.ts';
+import { validLogin, readNewPassword, passwordPolicyError, stdinPasswordSource, type PasswordSource } from './account.ts';
 
 const USAGE = [
   'usage: node src/main.ts init <login> [--db <control.db>]',
@@ -66,6 +66,11 @@ export async function runInit(
     const password = await readNewPassword(source);
     if (password === null) {
       io.err('init: empty password or the two entries did not match — nothing created.');
+      return 1;
+    }
+    const policyErr = passwordPolicyError(password);
+    if (policyErr !== null) {
+      io.err(`init: ${policyErr}`);
       return 1;
     }
     const mailDbPath = dbPath === ':memory:' ? ':memory:' : join(dirname(dbPath), `mail-${login}.db`);

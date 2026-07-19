@@ -36,18 +36,6 @@ can't fill in all four isn't on the list; it's in the ledger.
 
 ## Open work
 
-### 4. Password minimum-length policy — *small security/usability*
-
-- **Evidence:** noted on the production-readiness menu — `account add` / `init` / `set-password`
-  currently accept **any** password, including a one-character one.
-- **Mission fit:** a mail account is an internet-facing credential; refusing a trivially-weak one
-  is the smallest honest hardening, and the per-IP throttle already in place is not a substitute
-  for it.
-- **Shape:** a minimum length (and nothing more — no composition rules, which modern guidance
-  discourages) enforced at every password entry point, with a clear error.
-- **Testing:** unit-tested at each entry point (below the floor rejected, at/above accepted); no
-  live check needed — it's local policy, not wire behaviour.
-
 ### 5. App-specific passwords — *usability/security; needs a decision*
 
 - **Evidence:** the production-readiness menu's remaining feature. Auth is SCRAM /

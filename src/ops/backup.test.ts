@@ -43,7 +43,7 @@ function capture(): Cap {
   const err: string[] = [];
   return { out, err, io: { out: (l) => void out.push(l), err: (l) => void err.push(l) } };
 }
-const pw: PasswordSource = { interactive: false, read: () => Promise.resolve('pw') };
+const pw: PasswordSource = { interactive: false, read: () => Promise.resolve('backup-test-pw') };
 
 /** A control DB + one populated mail DB, provisioned through the real code paths. */
 async function makeWorld(dir: string): Promise<{ controlPath: string; mailPath: string }> {

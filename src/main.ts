@@ -46,7 +46,7 @@ import { MailboxNotifier } from './server/mailbox-notifier.ts';
 import { SqliteQueue } from './store/sqlite-queue.ts';
 import { RelayLoop } from './server/relay-loop.ts';
 import { runOps } from './ops/cli.ts';
-import { validLogin } from './ops/account.ts';
+import { validLogin, MIN_PASSWORD_LENGTH } from './ops/account.ts';
 // Bundled self-signed certificate — local development default only.
 import { TEST_CERT as DEV_CERT, TEST_KEY as DEV_KEY } from './testing/tls-test-cert.ts';
 
@@ -173,6 +173,11 @@ export function seedAccounts(
     const existing = registry.lookup(a.user);
     if (existing === undefined) {
       registry.upsert(a.user, a.pass, a.mailDbPath);
+      // Advisory only (never a hard boot failure): the CLI/init paths reject a sub-floor
+      // password, but an env seed shouldn't stop the daemon from starting — warn instead.
+      if (a.pass.length < MIN_PASSWORD_LENGTH) {
+        log(`account ${a.user}: seeded password is under ${MIN_PASSWORD_LENGTH} characters — set a stronger one with \`node src/main.ts account set-password ${a.user}\`.`);
+      }
     } else {
       // The account already exists → the registry is authoritative and this env seed does
       // nothing but keep a plaintext password in the unit file / environment.
