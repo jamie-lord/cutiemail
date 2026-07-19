@@ -14,6 +14,7 @@ import type { MailServerConfig } from '../main.ts';
 import { signMessage } from '../crypto/dkim-sign.ts';
 import type { SignedField } from '../crypto/dkim-verify.ts';
 import { TEST_CERT, TEST_KEY } from '../testing/tls-test-cert.ts';
+import { readMessages } from '../testing/read-messages.ts';
 
 const delay = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
 
@@ -68,9 +69,9 @@ test('a DKIM-signed inbound message is verified and stamped Authentication-Resul
   const server = await startServer(config);
   try {
     await deliverInbound(server.inbound.port, message);
-    for (let i = 0; i < 200 && server.mailbox.messages.length === 0; i++) await delay(20);
-    assert.equal(server.mailbox.messages.length, 1, 'the message was stored');
-    const stored = server.mailbox.messages[0]!.raw.toString('latin1');
+    for (let i = 0; i < 200 && readMessages(server.mailbox).length === 0; i++) await delay(20);
+    assert.equal(readMessages(server.mailbox).length, 1, 'the message was stored');
+    const stored = readMessages(server.mailbox)[0]!.raw.toString('latin1');
     assert.match(stored, /^Authentication-Results: mail\.example\.test; dkim=pass header\.d=example\.com/m, 'the verified result is stamped');
     assert.match(stored, /inbound signed body/, 'the original message is intact below the trace headers');
   } finally {
@@ -115,9 +116,9 @@ test('the daemon evaluates inbound SPF and records it in Authentication-Results'
     await step('QUIT\r\n');
     s.destroy();
 
-    for (let i = 0; i < 200 && server.mailbox.messages.length === 0; i++) await delay(20);
-    assert.equal(server.mailbox.messages.length, 1);
-    const stored = server.mailbox.messages[0]!.raw.toString('latin1');
+    for (let i = 0; i < 200 && readMessages(server.mailbox).length === 0; i++) await delay(20);
+    assert.equal(readMessages(server.mailbox).length, 1);
+    const stored = readMessages(server.mailbox)[0]!.raw.toString('latin1');
     assert.match(stored, /Authentication-Results:.*spf=pass smtp\.mailfrom=sender\.test/, 'SPF pass is recorded for the authorised loopback sender');
     assert.match(stored, /dkim=none/, 'an unsigned message is dkim=none');
   } finally {
@@ -166,9 +167,9 @@ test('the daemon evaluates DMARC (aligned SPF pass) and stamps dmarc=pass', asyn
     await step('QUIT\r\n');
     s.destroy();
 
-    for (let i = 0; i < 200 && server.mailbox.messages.length === 0; i++) await delay(20);
-    assert.equal(server.mailbox.messages.length, 1);
-    const stored = server.mailbox.messages[0]!.raw.toString('latin1');
+    for (let i = 0; i < 200 && readMessages(server.mailbox).length === 0; i++) await delay(20);
+    assert.equal(readMessages(server.mailbox).length, 1);
+    const stored = readMessages(server.mailbox)[0]!.raw.toString('latin1');
     assert.match(stored, /spf=pass smtp\.mailfrom=sender\.test/, 'SPF passes for the authorised sender');
     assert.match(stored, /dmarc=pass \(p=reject\)/, 'DMARC passes (aligned SPF) and reports the policy');
   } finally {
@@ -211,8 +212,8 @@ test('a forged Authentication-Results with our authserv-id is stripped (RFC 8601
     );
     await step('QUIT\r\n');
     s.destroy();
-    for (let i = 0; i < 200 && server.mailbox.messages.length === 0; i++) await delay(20);
-    const stored = server.mailbox.messages[0]!.raw.toString('latin1');
+    for (let i = 0; i < 200 && readMessages(server.mailbox).length === 0; i++) await delay(20);
+    const stored = readMessages(server.mailbox)[0]!.raw.toString('latin1');
     assert.doesNotMatch(stored, /dkim=pass header\.d=trusted-bank\.test/, 'the forged our-id result is removed');
     assert.match(stored, /Authentication-Results: upstream\.relay\.test; spf=pass/, 'a different authserv-id is left intact');
     assert.match(stored, /Authentication-Results: mail\.example\.test; dkim=none/, 'our own verified result is stamped');

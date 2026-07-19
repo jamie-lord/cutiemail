@@ -16,6 +16,7 @@ import net from 'node:net';
 import { startServer } from '../main.ts';
 import type { MailServerConfig } from '../main.ts';
 import { TEST_CERT, TEST_KEY } from '../testing/tls-test-cert.ts';
+import { readMessages } from '../testing/read-messages.ts';
 
 const delay = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
 
@@ -77,8 +78,8 @@ test('delivery transparency: dot-un-stuffing, control octets, and local-part cas
     // yet the Received line must preserve the recipient exactly as the client wrote it.
     await deliverRaw(server.inbound.port, 'You@mail.example.test', data);
 
-    assert.equal(server.mailbox.messages.length, 1);
-    const stored = server.mailbox.messages[0]!.raw.toString('latin1');
+    assert.equal(readMessages(server.mailbox).length, 1);
+    const stored = readMessages(server.mailbox)[0]!.raw.toString('latin1');
 
     // §4.4: a Received line was prepended, and it preserves the recipient case (§2.4-d).
     assert.match(stored, /^Received: from probe\.example .*for <You@mail\.example\.test>;/m, 'Received prepended, recipient case preserved');

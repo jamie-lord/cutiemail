@@ -12,6 +12,7 @@ import tls from 'node:tls';
 import { startServer } from '../main.ts';
 import type { MailServerConfig } from '../main.ts';
 import { TEST_CERT, TEST_KEY } from '../testing/tls-test-cert.ts';
+import { readMessages } from '../testing/read-messages.ts';
 
 const delay = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
 const plainToken = (u: string, p: string): string => Buffer.from(`\0${u}\0${p}`, 'latin1').toString('base64');
@@ -85,9 +86,9 @@ test('a permanently-rejected submission bounces to the local sender INBOX', asyn
     sec.end();
 
     // The relay attempts delivery, is rejected 550, and bounces to alice's INBOX.
-    for (let i = 0; i < 200 && server.mailbox.messages.length === 0; i++) await delay(25);
-    assert.equal(server.mailbox.messages.length, 1, 'a bounce was delivered to the local sender');
-    const bounce = server.mailbox.messages[0]!.raw.toString('latin1');
+    for (let i = 0; i < 200 && readMessages(server.mailbox).length === 0; i++) await delay(25);
+    assert.equal(readMessages(server.mailbox).length, 1, 'a bounce was delivered to the local sender');
+    const bounce = readMessages(server.mailbox)[0]!.raw.toString('latin1');
     assert.match(bounce, /From: Mail Delivery System <MAILER-DAEMON@mail\.example\.test>/, 'the bounce is from MAILER-DAEMON');
     assert.match(bounce, /multipart\/report; report-type=delivery-status/, 'it is a delivery-status report');
     assert.match(bounce, /Final-Recipient: rfc822; nobody@remote\.example/, 'it names the failed recipient');

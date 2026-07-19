@@ -12,6 +12,7 @@ import { startServer } from '../main.ts';
 import type { MailServerConfig } from '../main.ts';
 import { deliver } from '../client/deliver.ts';
 import { TEST_CERT, TEST_KEY } from '../testing/tls-test-cert.ts';
+import { readMessages } from '../testing/read-messages.ts';
 
 const delay = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
 
@@ -60,12 +61,12 @@ test('a p=quarantine (and p=reject) DMARC failure is filed to Junk, not the INBO
     const junk = alice.catalog.get('Junk')!;
 
     await sendFrom(server.inbound.port, 'spoofer.test'); // p=quarantine, fails
-    assert.equal(junk.messages.length, 1, 'the quarantined message is in Junk');
-    assert.equal(inbox.messages.length, 0, 'and NOT in the INBOX');
+    assert.equal(readMessages(junk).length, 1, 'the quarantined message is in Junk');
+    assert.equal(readMessages(inbox).length, 0, 'and NOT in the INBOX');
 
     await sendFrom(server.inbound.port, 'rejector.test'); // p=reject → also Junk, never hard-reject
-    assert.equal(junk.messages.length, 2, 'p=reject failure is quarantined to Junk (not rejected)');
-    assert.equal(inbox.messages.length, 0);
+    assert.equal(readMessages(junk).length, 2, 'p=reject failure is quarantined to Junk (not rejected)');
+    assert.equal(readMessages(inbox).length, 0);
   } finally {
     await server.close();
   }
@@ -76,10 +77,10 @@ test('a p=none DMARC failure stays informational — delivered to the INBOX', as
   try {
     const alice = server.stores.get('alice')!;
     await sendFrom(server.inbound.port, 'monitor.test'); // p=none, fails
-    assert.equal(alice.catalog.get('INBOX')!.messages.length, 1, 'p=none failure goes to the INBOX');
-    assert.equal(alice.catalog.get('Junk')!.messages.length, 0, 'not quarantined');
+    assert.equal(readMessages(alice.catalog.get('INBOX')!).length, 1, 'p=none failure goes to the INBOX');
+    assert.equal(readMessages(alice.catalog.get('Junk')!).length, 0, 'not quarantined');
     // The Authentication-Results header still records the failure.
-    assert.match(alice.catalog.get('INBOX')!.messages[0]!.raw.toString('latin1'), /dmarc=fail/);
+    assert.match(readMessages(alice.catalog.get('INBOX')!)[0]!.raw.toString('latin1'), /dmarc=fail/);
   } finally {
     await server.close();
   }
@@ -91,8 +92,8 @@ test('pct gates enforcement: a sample at or above pct leaves the failure in the 
   try {
     const alice = server.stores.get('alice')!;
     await sendFrom(server.inbound.port, 'gated.test'); // p=quarantine; pct=10, fails, but not sampled
-    assert.equal(alice.catalog.get('INBOX')!.messages.length, 1, 'outside the pct sample → INBOX');
-    assert.equal(alice.catalog.get('Junk')!.messages.length, 0);
+    assert.equal(readMessages(alice.catalog.get('INBOX')!).length, 1, 'outside the pct sample → INBOX');
+    assert.equal(readMessages(alice.catalog.get('Junk')!).length, 0);
   } finally {
     await server.close();
   }

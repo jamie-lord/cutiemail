@@ -19,6 +19,7 @@ import type { MailServerConfig } from '../main.ts';
 import { deliver } from '../client/deliver.ts';
 import { TEST_CERT, TEST_KEY } from '../testing/tls-test-cert.ts';
 import { makeArcSigner, addArcSet, arcResolver, rawMessageOf, type HeaderLine } from '../testing/arc-sealer.ts';
+import { readMessages } from '../testing/read-messages.ts';
 
 const delay = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
 
@@ -74,9 +75,9 @@ test('a valid ARC chain from a TRUSTED list rescues a DMARC-reject failure to th
   try {
     const alice = server.stores.get('alice')!;
     await send(server.inbound.port, sealedMessage());
-    assert.equal(alice.catalog.get('INBOX')!.messages.length, 1, 'rescued to the INBOX by the trusted ARC seal');
-    assert.equal(alice.catalog.get('Junk')!.messages.length, 0, 'not quarantined');
-    const stored = alice.catalog.get('INBOX')!.messages[0]!.raw.toString('latin1');
+    assert.equal(readMessages(alice.catalog.get('INBOX')!).length, 1, 'rescued to the INBOX by the trusted ARC seal');
+    assert.equal(readMessages(alice.catalog.get('Junk')!).length, 0, 'not quarantined');
+    const stored = readMessages(alice.catalog.get('INBOX')!)[0]!.raw.toString('latin1');
     assert.match(stored, /dmarc=fail/, 'DMARC still recorded as failed');
     assert.match(stored, /arc=pass/, 'ARC recorded as pass in Authentication-Results');
   } finally {
@@ -89,10 +90,10 @@ test('NEGATIVE: the SAME valid chain from an UNtrusted sealer stays in Junk (tru
   try {
     const alice = server.stores.get('alice')!;
     await send(server.inbound.port, sealedMessage());
-    assert.equal(alice.catalog.get('Junk')!.messages.length, 1, 'an untrusted (though valid) chain does not override DMARC');
-    assert.equal(alice.catalog.get('INBOX')!.messages.length, 0);
+    assert.equal(readMessages(alice.catalog.get('Junk')!).length, 1, 'an untrusted (though valid) chain does not override DMARC');
+    assert.equal(readMessages(alice.catalog.get('INBOX')!).length, 0);
     // The chain still validated — arc=pass is recorded even though it was not acted on.
-    assert.match(alice.catalog.get('Junk')!.messages[0]!.raw.toString('latin1'), /arc=pass/);
+    assert.match(readMessages(alice.catalog.get('Junk')!)[0]!.raw.toString('latin1'), /arc=pass/);
   } finally {
     await server.close();
   }
@@ -105,9 +106,9 @@ test('NEGATIVE: a TAMPERED chain from a trusted sealer stays in Junk (cv=fail �
     // Flip a byte of the body after sealing → the newest AMS no longer verifies → cv=fail.
     const tampered = sealedMessage().toString('latin1').replace('traversed', 'tampered!');
     await send(server.inbound.port, Buffer.from(tampered, 'latin1'));
-    assert.equal(alice.catalog.get('Junk')!.messages.length, 1, 'a broken chain cannot rescue');
-    assert.equal(alice.catalog.get('INBOX')!.messages.length, 0);
-    assert.match(alice.catalog.get('Junk')!.messages[0]!.raw.toString('latin1'), /arc=fail/);
+    assert.equal(readMessages(alice.catalog.get('Junk')!).length, 1, 'a broken chain cannot rescue');
+    assert.equal(readMessages(alice.catalog.get('INBOX')!).length, 0);
+    assert.match(readMessages(alice.catalog.get('Junk')!)[0]!.raw.toString('latin1'), /arc=fail/);
   } finally {
     await server.close();
   }

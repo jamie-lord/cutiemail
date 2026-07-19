@@ -21,6 +21,7 @@ import { SmtpReceiver } from './smtp-receiver.ts';
 import type { DeliveredMessage } from './smtp-receiver.ts';
 import { relayOutbound, routeRecipients } from './outbound.ts';
 import { TEST_CERT, TEST_KEY } from '../testing/tls-test-cert.ts';
+import { readMessages } from '../testing/read-messages.ts';
 
 /** Authenticate over STARTTLS and submit one message; resolves when accepted. */
 async function submit(port: number, from: string, rcpts: readonly string[], message: string): Promise<void> {
@@ -174,7 +175,7 @@ test('daemon: authenticated submission relays a remote recipient and stores a lo
     secure.end();
 
     // Local recipient: in the mailbox.
-    assert.equal(server.mailbox.messages.length, 1, 'the local copy was stored');
+    assert.equal(readMessages(server.mailbox).length, 1, 'the local copy was stored');
     // Remote recipient: relayed to the MX (relay is async after the 250).
     await waitUntil(() => received.length === 1, 'the remote copy to reach the MX');
     assert.deepEqual(received[0]!.recipients, ['friend@elsewhere.example'], 'only the remote recipient was relayed');

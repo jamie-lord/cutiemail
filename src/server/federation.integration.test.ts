@@ -21,6 +21,7 @@ import { generateKeyPairSync } from 'node:crypto';
 import { startServer } from '../main.ts';
 import type { MailServerConfig } from '../main.ts';
 import { TEST_CERT, TEST_KEY } from '../testing/tls-test-cert.ts';
+import { readMessages } from '../testing/read-messages.ts';
 
 const delay = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
 
@@ -114,10 +115,10 @@ test('two daemons: a submission to A is DKIM-signed, relayed, and lands in B, tr
     // Wait for B to receive the relayed message. Generous budget: the relay does
     // RSA signing + a TLS handshake, and the whole suite runs test files in
     // parallel, so a tight window flakes under load.
-    for (let i = 0; i < 1500 && B.mailbox.messages.length === 0; i++) await delay(10);
-    assert.equal(B.mailbox.messages.length, 1, 'B received the message A relayed');
+    for (let i = 0; i < 1500 && readMessages(B.mailbox).length === 0; i++) await delay(10);
+    assert.equal(readMessages(B.mailbox).length, 1, 'B received the message A relayed');
 
-    const arrived = B.mailbox.messages[0]!.raw.toString('latin1');
+    const arrived = readMessages(B.mailbox)[0]!.raw.toString('latin1');
     assert.match(arrived, /^DKIM-Signature: v=1;.*d=a\.example\.test/ms, "A's DKIM signature is present");
     // B verified A's signature end-to-end (A signed, B checked against A's key).
     assert.match(arrived, /^Authentication-Results: b\.example\.test; dkim=pass header\.d=a\.example\.test/m, 'B verified the DKIM signature as pass');

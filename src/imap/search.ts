@@ -30,8 +30,10 @@ export interface SearchableMessage {
   readonly flags: ReadonlySet<string>;
   /** INTERNALDATE as epoch-millis. */
   readonly internalDate: number;
-  /** The full raw message bytes (for SIZE and BODY/TEXT substring search). */
+  /** The full raw message bytes (for BODY/TEXT substring search) — may be fetched lazily. */
   readonly raw: Buffer;
+  /** RFC822.SIZE in octets, if known without the body — lets LARGER/SMALLER skip the BLOB. */
+  readonly size?: number;
   /** This message's UID and 1-based sequence number, for UID/sequence-set keys. */
   readonly uid: number;
   readonly seq: number;
@@ -91,8 +93,12 @@ function matchesKey(msg: SearchableMessage, key: SearchKey, memo: TextMemo): boo
       return (memo.text ??= msg.raw.toString('latin1').toLowerCase()).includes(key.value.toLowerCase());
     case 'flag':
       return msg.flags.has(key.flag) === key.present;
-    case 'size':
-      return key.op === 'larger' ? msg.raw.length > key.value : msg.raw.length < key.value;
+    case 'size': {
+      // Prefer the metadata size so a LARGER/SMALLER search never loads a body; fall
+      // back to the raw length for callers that don't supply it (older test fixtures).
+      const size = msg.size ?? msg.raw.length;
+      return key.op === 'larger' ? size > key.value : size < key.value;
+    }
     case 'modseq':
       // RFC 7162 §3.1.5: MODSEQ n matches messages with mod-sequence >= n.
       return msg.modseq >= key.value;

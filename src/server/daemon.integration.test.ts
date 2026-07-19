@@ -15,6 +15,7 @@ import { startServer } from '../main.ts';
 import type { MailServerConfig } from '../main.ts';
 import { deliver } from '../client/deliver.ts';
 import { TEST_CERT, TEST_KEY } from '../testing/tls-test-cert.ts';
+import { readMessages } from '../testing/read-messages.ts';
 
 const delay = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
 
@@ -80,7 +81,7 @@ test('daemon: deliver via inbound SMTP, read back via IMAPS with a real login', 
       { from: 'someone@example.net', recipients: ['alice@mail.example.test'], data, clientName: 'sender.example.net' },
     );
     assert.ok(sent.ok, `inbound delivery should succeed: ${sent.failure}`);
-    assert.equal(server.mailbox.messages.length, 1, 'stored in the daemon mailbox');
+    assert.equal(readMessages(server.mailbox).length, 1, 'stored in the daemon mailbox');
 
     // The daemon prepends a Received trace line (§4.4) on inbound delivery, then
     // the original message follows byte-exact.

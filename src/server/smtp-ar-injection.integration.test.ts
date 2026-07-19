@@ -14,6 +14,7 @@ import net from 'node:net';
 import { startServer } from '../main.ts';
 import type { MailServerConfig } from '../main.ts';
 import { TEST_CERT, TEST_KEY } from '../testing/tls-test-cert.ts';
+import { readMessages } from '../testing/read-messages.ts';
 
 const delay = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
 
@@ -69,8 +70,8 @@ test('a MAIL FROM domain carrying AR delimiters cannot forge a method result in 
   try {
     // The domain part is packed with a forged "dkim=pass" resinfo.
     await deliverWithEnvelope(server.inbound.port, 'probe.example', 'x@evil.test; dkim=pass header.d=bank.test (yes)');
-    assert.equal(server.mailbox.messages.length, 1);
-    const ar = ourAr(server.mailbox.messages[0]!.raw.toString('latin1'));
+    assert.equal(readMessages(server.mailbox).length, 1);
+    const ar = ourAr(readMessages(server.mailbox)[0]!.raw.toString('latin1'));
     assert.ok(ar.length > 0, 'the server stamped its own Authentication-Results');
     // Our genuine verdict is dkim=none (no signature); a dkim=pass anywhere in our
     // header means the envelope forged one.
@@ -87,8 +88,8 @@ test('a HELO name carrying AR delimiters cannot forge a method result (null retu
     // Null return-path <> makes the SPF identity fall back to HELO, which is also
     // attacker-chosen; pack it with a forged spf=pass.
     await deliverWithEnvelope(server.inbound.port, 'evil.test;spf=pass', '');
-    assert.equal(server.mailbox.messages.length, 1);
-    const ar = ourAr(server.mailbox.messages[0]!.raw.toString('latin1'));
+    assert.equal(readMessages(server.mailbox).length, 1);
+    const ar = ourAr(readMessages(server.mailbox)[0]!.raw.toString('latin1'));
     assert.doesNotMatch(ar, /spf=pass/, 'no forged spf=pass is injected via HELO');
   } finally {
     await server.close();

@@ -13,7 +13,7 @@
  */
 
 import { DatabaseSync } from 'node:sqlite';
-import { DELETED, type StoredMessage, type StoreMode } from './mailbox.ts';
+import { DELETED, type MessageMeta, type StoredMessage, type StoreMode } from './mailbox.ts';
 import { canonicalMailboxName } from './mailbox-name.ts';
 
 const SCHEMA = `
@@ -119,6 +119,40 @@ export class SqliteMailbox {
       modseq: Number(r.mod_seq),
       flags: new Set((flagStmt.all(this.#id, r.uid) as Array<{ flag: string }>).map((f) => f.flag)),
     }));
+  }
+
+  /**
+   * Per-message metadata (uid, flags, internalDate, modseq, size) in ascending-UID order,
+   * WITHOUT the body bytes — the ServableMailbox view the IMAP server drives on every
+   * command. Two queries, no matter the mailbox size: the message rows carry LENGTH(raw)
+   * (SQLite computes the octet count without transferring the BLOB), and all flags come in
+   * ONE grouped query joined in memory — replacing the old `messages` getter that copied
+   * every BLOB into the JS heap and ran a flag query PER message. This is the change that
+   * makes FETCH 1 / STATUS / SELECT O(rows) instead of O(total mailbox bytes), so a single
+   * synchronous read no longer freezes the event loop (docs/PERFORMANCE.md).
+   */
+  index(): readonly MessageMeta[] {
+    const rows = this.#db.prepare('SELECT uid, internal_date, mod_seq, LENGTH(raw) AS size FROM message WHERE mailbox_id = ? ORDER BY uid').all(this.#id) as Array<{ uid: number; internal_date: number; mod_seq: number; size: number }>;
+    const flagsByUid = new Map<number, Set<string>>();
+    for (const fr of this.#db.prepare('SELECT uid, flag FROM flag WHERE mailbox_id = ?').all(this.#id) as Array<{ uid: number; flag: string }>) {
+      const uid = Number(fr.uid);
+      const set = flagsByUid.get(uid) ?? new Set<string>();
+      set.add(fr.flag);
+      flagsByUid.set(uid, set);
+    }
+    return rows.map((r) => ({
+      uid: Number(r.uid),
+      internalDate: Number(r.internal_date),
+      modseq: Number(r.mod_seq),
+      size: Number(r.size),
+      flags: flagsByUid.get(Number(r.uid)) ?? new Set<string>(),
+    }));
+  }
+
+  /** One message's raw bytes by UID, fetched as a single row (undefined if absent). */
+  raw(uid: number): Buffer | undefined {
+    const row = this.#db.prepare('SELECT raw FROM message WHERE mailbox_id = ? AND uid = ?').get(this.#id, uid) as { raw: Uint8Array } | undefined;
+    return row === undefined ? undefined : Buffer.from(row.raw);
   }
 
   /**

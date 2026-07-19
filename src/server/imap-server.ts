@@ -24,21 +24,12 @@ import tls from 'node:tls';
 import { parseMessage } from '../message/parse.ts';
 import { bodyResponse, bodyStructureResponse, resolvePart } from '../message/body-structure.ts';
 import { buildEnvelope, serializeEnvelope } from '../imap/envelope.ts';
-import { matchesSearch, type SearchKey } from '../imap/search.ts';
+import { matchesSearch, type SearchableMessage, type SearchKey } from '../imap/search.ts';
 import { parseSequenceSet } from '../imap/sequence-set.ts';
 import { canonicalMailboxName } from '../store/mailbox-name.ts';
+import type { MessageMeta } from '../store/mailbox.ts';
 import type { MailboxNotifier } from './mailbox-notifier.ts';
 import type { AuthThrottle } from './auth-throttle.ts';
-
-export interface ServableMessage {
-  readonly uid: number;
-  readonly flags: ReadonlySet<string>;
-  /** INTERNALDATE as epoch-millis (0 = unknown). Set by the receiver / APPEND. */
-  readonly internalDate: number;
-  readonly raw: Buffer;
-  /** The per-message mod-sequence (RFC 7162 CONDSTORE); monotonic within a mailbox. */
-  readonly modseq: number;
-}
 
 const IMAP_MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'] as const;
 
@@ -65,7 +56,17 @@ export interface ServableMailbox {
   readonly uidValidity: number;
   readonly uidNext: number;
   readonly highestModseq: number;
-  readonly messages: readonly ServableMessage[];
+  /**
+   * Ordered (mailbox / ascending-UID) metadata for every message, WITHOUT body bytes —
+   * the cheap whole-mailbox view. Historically this was a `messages` getter that loaded
+   * every raw BLOB (and ran a flag query per message) on every access, so even
+   * `FETCH 1 (FLAGS)` cost O(total mailbox bytes) and, because node:sqlite is
+   * synchronous, froze the event loop for its duration (docs/PERFORMANCE.md). index()
+   * returns only metadata, turning those commands into bounded, sub-millisecond work.
+   */
+  index(): readonly MessageMeta[];
+  /** One message's raw bytes by UID (undefined if absent) — fetched a single row at a time. */
+  raw(uid: number): Buffer | undefined;
   append(raw: Buffer, flags?: readonly string[], internalDate?: number): number;
   expunge(uid: number): void;
   storeFlags(uid: number, mode: 'add' | 'remove' | 'replace', flags: readonly string[]): void;
@@ -636,16 +637,16 @@ export class ImapServer {
    * Resolve a sequence-set against a mailbox. In UID mode the set denotes UIDs
    * ("*" = highest UID in use); otherwise message sequence numbers.
    */
-  #resolveSet(mailbox: ServableMailbox, set: string, uidMode: boolean): { seq: number; msg: ServableMessage }[] {
-    const msgs = mailbox.messages;
+  #resolveSet(mailbox: ServableMailbox, set: string, uidMode: boolean): { seq: number; meta: MessageMeta }[] {
+    const msgs = mailbox.index();
     if (msgs.length === 0) return [];
     if (uidMode) {
       const largest = msgs[msgs.length - 1]!.uid;
       const uids = new Set(parseSequenceSet(set, largest));
-      return msgs.map((msg, i) => ({ seq: i + 1, msg })).filter((e) => uids.has(e.msg.uid));
+      return msgs.map((meta, i) => ({ seq: i + 1, meta })).filter((e) => uids.has(e.meta.uid));
     }
     const seqs = parseSequenceSet(set, msgs.length);
-    return seqs.filter((s) => s >= 1 && s <= msgs.length).map((s) => ({ seq: s, msg: msgs[s - 1]! }));
+    return seqs.filter((s) => s >= 1 && s <= msgs.length).map((s) => ({ seq: s, meta: msgs[s - 1]! }));
   }
 
   /** Emit one message's FETCH response for the requested atts. */
@@ -663,9 +664,14 @@ export class ImapServer {
     return this.#authenticate === undefined || this.#authenticate(user, pass) ? user : null;
   }
 
-  #emitFetch(sock: net.Socket, seq: number, msg: ServableMessage, atts: FetchAtts, uidMode: boolean): void {
+  #emitFetch(sock: net.Socket, seq: number, meta: MessageMeta, atts: FetchAtts, uidMode: boolean, mailbox: ServableMailbox): void {
     const out: Buffer[] = [];
     let first = true;
+    // The body bytes are fetched at most ONCE, and only if a body-bearing att is asked for:
+    // a FETCH of FLAGS/UID/SIZE/INTERNALDATE/MODSEQ (the message-list sync clients do
+    // constantly) never touches the BLOB. size comes from the metadata, not the body.
+    let rawCache: Buffer | undefined;
+    const raw = (): Buffer => (rawCache ??= mailbox.raw(meta.uid) ?? Buffer.alloc(0));
     const sep = (): void => {
       if (!first) out.push(Buffer.from(' ', 'latin1'));
       first = false;
@@ -679,37 +685,37 @@ export class ImapServer {
       out.push(Buffer.from(`${name} {${payload.length}}\r\n`, 'latin1'), payload);
     };
     // UID is mandatory in a UID FETCH response even when not requested.
-    if (atts.uid || uidMode) text(`UID ${msg.uid}`);
-    if (atts.flags) text(`FLAGS (${[...msg.flags].join(' ')})`);
-    if (atts.internalDate) text(`INTERNALDATE "${formatImapDateTime(msg.internalDate)}"`);
-    if (atts.size) text(`RFC822.SIZE ${msg.raw.length}`);
-    if (atts.modseq) text(`MODSEQ (${msg.modseq})`);
-    if (atts.envelope) text(`ENVELOPE ${serializeEnvelope(buildEnvelope(parseMessage(msg.raw).headers))}`);
-    if (atts.body) text(`BODY ${bodyResponse(msg.raw)}`);
-    if (atts.bodyStructure) text(`BODYSTRUCTURE ${bodyStructureResponse(msg.raw)}`);
+    if (atts.uid || uidMode) text(`UID ${meta.uid}`);
+    if (atts.flags) text(`FLAGS (${[...meta.flags].join(' ')})`);
+    if (atts.internalDate) text(`INTERNALDATE "${formatImapDateTime(meta.internalDate)}"`);
+    if (atts.size) text(`RFC822.SIZE ${meta.size}`);
+    if (atts.modseq) text(`MODSEQ (${meta.modseq})`);
+    if (atts.envelope) text(`ENVELOPE ${serializeEnvelope(buildEnvelope(parseMessage(raw()).headers))}`);
+    if (atts.body) text(`BODY ${bodyResponse(raw())}`);
+    if (atts.bodyStructure) text(`BODYSTRUCTURE ${bodyStructureResponse(raw())}`);
     // The legacy RFC822.* items — real Thunderbird fetches RFC822.HEADER for the list.
-    if (atts.rfc822Header) literal('RFC822.HEADER', headerBlock(msg.raw));
-    if (atts.rfc822Text) literal('RFC822.TEXT', bodyBlock(msg.raw));
-    if (atts.rfc822) literal('RFC822', msg.raw);
+    if (atts.rfc822Header) literal('RFC822.HEADER', headerBlock(raw()));
+    if (atts.rfc822Text) literal('RFC822.TEXT', bodyBlock(raw()));
+    if (atts.rfc822) literal('RFC822', raw());
     for (const { section, partial } of atts.bodySections) {
       const up = section.toUpperCase();
       let name: string;
       let payload: Buffer;
       if (up === '') {
         name = 'BODY[]';
-        payload = msg.raw;
+        payload = raw();
       } else if (up.startsWith('HEADER.FIELDS')) {
         const isNot = up.startsWith('HEADER.FIELDS.NOT');
         const fields = /\(([^)]*)\)/.exec(section)?.[1] ?? '';
         const names = fields.split(/\s+/).filter((f) => f.length > 0);
         name = `BODY[HEADER.FIELDS${isNot ? '.NOT' : ''} (${names.map((n) => n.toUpperCase()).join(' ')})]`;
-        payload = headerFields(msg.raw, names, isNot);
+        payload = headerFields(raw(), names, isNot);
       } else if (up === 'HEADER') {
         name = 'BODY[HEADER]';
-        payload = headerBlock(msg.raw);
+        payload = headerBlock(raw());
       } else if (up === 'TEXT') {
         name = 'BODY[TEXT]';
-        payload = bodyBlock(msg.raw);
+        payload = bodyBlock(raw());
       } else if (/^\d/.test(up)) {
         // A part specifier: "1", "2.1" (nested), "1.MIME"/"1.HEADER" (the part's
         // headers), "1.TEXT" (its body). Navigate the MIME tree so a client can fetch
@@ -717,14 +723,14 @@ export class ImapServer {
         const parsed = /^([\d.]+?)(?:\.(MIME|HEADER|TEXT))?$/.exec(up);
         const path = parsed ? parsed[1]!.split('.').map(Number) : [];
         const spec = parsed?.[2];
-        const entity = path.length > 0 && !path.some(Number.isNaN) ? resolvePart(msg.raw, path) : null;
+        const entity = path.length > 0 && !path.some(Number.isNaN) ? resolvePart(raw(), path) : null;
         name = `BODY[${up}]`;
         payload = entity === null ? Buffer.alloc(0) : spec === 'MIME' || spec === 'HEADER' ? headerBlock(entity) : bodyBlock(entity);
       } else {
         // Truly unrecognised section — serve the whole body rather than lie with an
         // empty literal.
         name = 'BODY[]';
-        payload = msg.raw;
+        payload = raw();
       }
       if (partial !== undefined) {
         // RFC 9051 §6.4.5: <origin.count> slices the section; the response is
@@ -736,8 +742,8 @@ export class ImapServer {
     }
     if (first) {
       // A FETCH that named nothing we recognise still answers with FLAGS+UID.
-      text(`FLAGS (${[...msg.flags].join(' ')})`);
-      text(`UID ${msg.uid}`);
+      text(`FLAGS (${[...meta.flags].join(' ')})`);
+      text(`UID ${meta.uid}`);
     }
     sock.write(Buffer.concat([Buffer.from(`* ${seq} FETCH (`, 'latin1'), ...out, Buffer.from(')\r\n', 'latin1')]));
   }
@@ -799,7 +805,8 @@ export class ImapServer {
 
     const syncSelected = (): void => {
       if (selected === null) return;
-      const current = selected.messages.map((m) => m.uid);
+      const live = selected.index();
+      const current = live.map((m) => m.uid);
       const present = new Set(current);
       const removedPositions: number[] = []; // 1-based positions in the client's current view
       const removedUids: number[] = [];
@@ -817,8 +824,8 @@ export class ImapServer {
         write(sock, `* ${knownUids.length} EXISTS`);
       }
       // Flag changes made elsewhere. Sequence numbers are the client's post-EXPUNGE
-      // view, which now matches selected.messages order (append-only + in-place remove).
-      selected.messages.forEach((m, i) => {
+      // view, which now matches the mailbox order (append-only + in-place remove).
+      live.forEach((m, i) => {
         const cur = flagKey(m.flags);
         const prev = knownFlags.get(m.uid);
         if (prev !== undefined && prev !== cur) {
@@ -843,22 +850,22 @@ export class ImapServer {
      * a message not yet in the client's view (e.g. one it just APPENDed) keeps its
      * live position so a self-append-then-fetch still works.
      */
-    const resolveForConn = (set: string, uidMode: boolean): { seq: number; msg: ServableMessage }[] => {
+    const resolveForConn = (set: string, uidMode: boolean): { seq: number; meta: MessageMeta }[] => {
       if (selected === null) return [];
-      const live = selected.messages;
+      const live = selected.index();
       if (uidMode) {
         if (live.length === 0) return [];
         const largest = live[live.length - 1]!.uid;
         const wanted = new Set(parseSequenceSet(set, largest));
         const viewIndex = new Map(knownUids.map((uid, i) => [uid, i + 1]));
-        return live.map((msg, i) => ({ seq: viewIndex.get(msg.uid) ?? i + 1, msg })).filter((e) => wanted.has(e.msg.uid));
+        return live.map((meta, i) => ({ seq: viewIndex.get(meta.uid) ?? i + 1, meta })).filter((e) => wanted.has(e.meta.uid));
       }
       const byUid = new Map(live.map((m) => [m.uid, m]));
-      const out: { seq: number; msg: ServableMessage }[] = [];
+      const out: { seq: number; meta: MessageMeta }[] = [];
       for (const s of parseSequenceSet(set, knownUids.length)) {
         if (s < 1 || s > knownUids.length) continue;
-        const msg = byUid.get(knownUids[s - 1]!);
-        if (msg !== undefined) out.push({ seq: s, msg });
+        const meta = byUid.get(knownUids[s - 1]!);
+        if (meta !== undefined) out.push({ seq: s, meta });
       }
       return out;
     };
@@ -1122,13 +1129,16 @@ export class ImapServer {
               .map((w) => w.toUpperCase())
               .filter((w) => w.length > 0);
             const items: string[] = [];
+            // One metadata snapshot (no BLOBs) answers every counted item, including SIZE
+            // (from meta.size, not the body). Read only if a count is actually requested.
+            const idx = wanted.some((w) => w === 'MESSAGES' || w === 'UNSEEN' || w === 'SIZE' || w === 'DELETED') ? box.index() : [];
             for (const w of wanted) {
-              if (w === 'MESSAGES') items.push(`MESSAGES ${box.messages.length}`);
+              if (w === 'MESSAGES') items.push(`MESSAGES ${idx.length}`);
               else if (w === 'UIDNEXT') items.push(`UIDNEXT ${box.uidNext}`);
               else if (w === 'UIDVALIDITY') items.push(`UIDVALIDITY ${box.uidValidity}`);
-              else if (w === 'UNSEEN') items.push(`UNSEEN ${box.messages.filter((m) => !m.flags.has('\\Seen')).length}`);
-              else if (w === 'SIZE') items.push(`SIZE ${box.messages.reduce((n, m) => n + m.raw.length, 0)}`);
-              else if (w === 'DELETED') items.push(`DELETED ${box.messages.filter((m) => m.flags.has('\\Deleted')).length}`);
+              else if (w === 'UNSEEN') items.push(`UNSEEN ${idx.filter((m) => !m.flags.has('\\Seen')).length}`);
+              else if (w === 'SIZE') items.push(`SIZE ${idx.reduce((n, m) => n + m.size, 0)}`);
+              else if (w === 'DELETED') items.push(`DELETED ${idx.filter((m) => m.flags.has('\\Deleted')).length}`);
               else if (w === 'HIGHESTMODSEQ') items.push(`HIGHESTMODSEQ ${box.highestModseq}`); // RFC 7162 §3.1.2.1
               else if (w === 'RECENT') items.push('RECENT 0');
             }
@@ -1247,11 +1257,12 @@ export class ImapServer {
             // Snapshot the mailbox this connection now sees, so later NOOP/CHECK/IDLE
             // can tell it what other connections expunged, delivered, or re-flagged
             // (RFC 9051 §7.4.1).
-            knownUids = box.messages.map((m) => m.uid);
-            knownFlags = new Map(box.messages.map((m) => [m.uid, flagKey(m.flags)]));
+            const selIdx = box.index();
+            knownUids = selIdx.map((m) => m.uid);
+            knownFlags = new Map(selIdx.map((m) => [m.uid, flagKey(m.flags)]));
             // EXAMINE opens read-only (RFC 9051 §6.3.2): no flag changes, no EXPUNGE.
             readOnly = cmd === 'EXAMINE';
-            write(sock, `* ${box.messages.length} EXISTS`);
+            write(sock, `* ${selIdx.length} EXISTS`);
             write(sock, '* FLAGS (\\Seen \\Answered \\Flagged \\Deleted \\Draft)');
             // Read-only advertises no settable permanent flags.
             write(sock, `* OK [PERMANENTFLAGS (${readOnly ? '' : '\\Seen \\Answered \\Flagged \\Deleted \\Draft'})] flags stored`);
@@ -1281,7 +1292,7 @@ export class ImapServer {
                 const vanished = box.expungedSince(clientModseq, knownSet);
                 if (vanished.length > 0) write(sock, `* VANISHED (EARLIER) ${compressSequenceSet(vanished)}`);
                 // Flag changes since the client's mod-sequence, as untagged FETCH.
-                box.messages.forEach((m, i) => {
+                selIdx.forEach((m, i) => {
                   if (m.modseq > clientModseq && (knownSet === undefined || knownSet.has(m.uid))) {
                     write(sock, `* ${i + 1} FETCH (UID ${m.uid} FLAGS (${[...m.flags].join(' ')}) MODSEQ (${m.modseq}))`);
                   }
@@ -1329,20 +1340,20 @@ export class ImapServer {
             // A read-only (EXAMINE) mailbox never has its flags changed by a fetch.
             const marksSeen = !readOnly && atts.bodySections.some((s) => !s.peek);
             let markedSeen = false;
-            for (const { seq, msg } of resolveForConn(set, uidMode)) {
-              if (changedSince !== null && msg.modseq <= changedSince) continue;
-              this.#emitFetch(sock, seq, msg, atts, uidMode);
-              if (marksSeen && !msg.flags.has('\\Seen')) {
-                const newFlags = [...msg.flags, '\\Seen'];
-                selected.storeFlags(msg.uid, 'add', ['\\Seen']);
+            for (const { seq, meta } of resolveForConn(set, uidMode)) {
+              if (changedSince !== null && meta.modseq <= changedSince) continue;
+              this.#emitFetch(sock, seq, meta, atts, uidMode, selected);
+              if (marksSeen && !meta.flags.has('\\Seen')) {
+                const newFlags = [...meta.flags, '\\Seen'];
+                selected.storeFlags(meta.uid, 'add', ['\\Seen']);
                 // Tell the client about the flag its fetch just triggered, and record it
                 // as our own change so syncSelected does not echo it back to us.
-                knownFlags.set(msg.uid, flagKey(newFlags));
+                knownFlags.set(meta.uid, flagKey(newFlags));
                 markedSeen = true;
                 // After storeFlags, highestModseq is exactly this message's new mod-seq.
                 const parts = [`FLAGS (${newFlags.join(' ')})`];
                 if (condstore) parts.push(`MODSEQ (${selected.highestModseq})`);
-                if (uidMode) parts.push(`UID ${msg.uid}`);
+                if (uidMode) parts.push(`UID ${meta.uid}`);
                 write(sock, `* ${seq} FETCH (${parts.join(' ')})`);
               }
             }
@@ -1367,7 +1378,8 @@ export class ImapServer {
               if (returnOpts.length === 0) returnOpts = ['ALL']; // RETURN () defaults to ALL
               criteria = criteria.slice(rm[0].length);
             }
-            const msgs = selected.messages;
+            const sel = selected;
+            const msgs = sel.index();
             const largestUid = msgs.length > 0 ? msgs[msgs.length - 1]!.uid : 0;
             const keys = parseSearchKeys(imapTokens(criteria), { largestUid, count: knownUids.length });
             if (keys === null) {
@@ -1396,7 +1408,27 @@ export class ImapServer {
             knownUids.forEach((uid, i) => {
               const m = byUidSearch.get(uid);
               if (m === undefined) return;
-              const searchable = { headers: parseMessage(m.raw).headers, flags: m.flags, internalDate: m.internalDate, raw: m.raw, uid: m.uid, seq: i + 1, modseq: m.modseq };
+              // The body is fetched (and parsed) lazily, and at most once: a metadata-only
+              // query (UNSEEN, SINCE, UID, LARGER — size is in meta) never loads a BLOB, so
+              // a big flag/date SEARCH stays cheap. Only HEADER/BODY/TEXT criteria pay to
+              // stream a message, one row at a time — never the whole mailbox at once.
+              let rawCache: Buffer | undefined;
+              let headersCache: ReturnType<typeof parseMessage>['headers'] | undefined;
+              const getRaw = (): Buffer => (rawCache ??= sel.raw(uid) ?? Buffer.alloc(0));
+              const searchable: SearchableMessage = {
+                get headers() {
+                  return (headersCache ??= parseMessage(getRaw()).headers);
+                },
+                flags: m.flags,
+                internalDate: m.internalDate,
+                size: m.size,
+                get raw() {
+                  return getRaw();
+                },
+                uid: m.uid,
+                seq: i + 1,
+                modseq: m.modseq,
+              };
               if (matchesSearch(searchable, keys)) {
                 hits.push(uidMode ? m.uid : i + 1);
                 if (m.modseq > highestHitModseq) highestHitModseq = m.modseq;
@@ -1458,15 +1490,15 @@ export class ImapServer {
             const failed: number[] = []; // seq/uid of messages that failed UNCHANGEDSINCE
             {
               const mode = op === '+FLAGS' ? 'add' : op === '-FLAGS' ? 'remove' : 'replace';
-              for (const { seq, msg } of resolveForConn(set, uidMode)) {
+              for (const { seq, meta } of resolveForConn(set, uidMode)) {
                 // UNCHANGEDSINCE: a message modified since `unchangedSince` is left
                 // untouched and reported in the MODIFIED response (optimistic-concurrency
                 // guard against a change another client made first).
-                if (unchangedSince !== null && msg.modseq > unchangedSince) {
-                  failed.push(uidMode ? msg.uid : seq);
+                if (unchangedSince !== null && meta.modseq > unchangedSince) {
+                  failed.push(uidMode ? meta.uid : seq);
                   continue;
                 }
-                selected.storeFlags(msg.uid, mode, flags);
+                selected.storeFlags(meta.uid, mode, flags);
                 storeChanged = true;
                 // After storeFlags, highestModseq is exactly this message's new mod-seq.
                 const newModseq = selected.highestModseq;
@@ -1475,19 +1507,19 @@ export class ImapServer {
                 // bulk STORE would be O(n²) and stall the single-threaded event loop for
                 // seconds. storeFlags stores flags verbatim (dedup only), so this mirrors
                 // the persisted result exactly.
-                const now = new Set(mode === 'replace' ? [] : msg.flags);
+                const now = new Set(mode === 'replace' ? [] : meta.flags);
                 if (mode === 'remove') for (const f of flags) now.delete(f);
                 else for (const f of flags) now.add(f);
                 // Record our own change so syncSelected does not later echo it back to us
                 // as if a peer had made it.
-                knownFlags.set(msg.uid, flagKey(now));
+                knownFlags.set(meta.uid, flagKey(now));
                 // A conditional STORE echoes the FETCH even under .SILENT, so the client
                 // learns the new MODSEQ it needs for its next UNCHANGEDSINCE (RFC 7162
                 // §3.1.3); an unconditional .SILENT store stays silent.
                 if (!silent || unchangedSince !== null) {
                   const parts2 = [`FLAGS (${[...now].join(' ')})`];
                   if (condstore) parts2.push(`MODSEQ (${newModseq})`);
-                  if (uidMode) parts2.push(`UID ${msg.uid}`);
+                  if (uidMode) parts2.push(`UID ${meta.uid}`);
                   write(sock, `* ${seq} FETCH (${parts2.join(' ')})`);
                 }
               }
@@ -1529,12 +1561,17 @@ export class ImapServer {
             // UIDPLUS COPYUID: report the source and destination UIDs, in order.
             const srcUids: number[] = [];
             const dstUids: number[] = [];
-            for (const { msg } of entries) {
-              srcUids.push(msg.uid);
+            for (const { meta } of entries) {
+              // Fetch the one body being copied on demand (never the whole mailbox). If it
+              // vanished from under us it is skipped entirely — not copied, and (for MOVE)
+              // not expunged — keeping COPYUID's src/dst lists aligned.
+              const body = selected.raw(meta.uid);
+              if (body === undefined) continue;
               // RFC 9051 §6.4.7: a copied message keeps its flags AND its internal date.
-              dstUids.push(target.append(msg.raw, [...msg.flags], msg.internalDate));
+              srcUids.push(meta.uid);
+              dstUids.push(target.append(body, [...meta.flags], meta.internalDate));
             }
-            if (cmd === 'MOVE') for (const { msg } of entries) selected.expunge(msg.uid);
+            if (cmd === 'MOVE') for (const uid of srcUids) selected.expunge(uid);
             // Announce the peer's EXPUNGE(s) AND (for MOVE) our own removals in one consistent
             // renumber against the client's view (VANISHED under QRESYNC, else descending EXPUNGE).
             syncSelected();
@@ -1558,12 +1595,12 @@ export class ImapServer {
             // EXPUNGE command, RFC 9051 §7.4.1), so our own sequence numbers are computed
             // against a view the client agrees with and no peer removal is swallowed.
             syncSelected();
-            const before = selected.messages.map((m) => ({ uid: m.uid, deleted: m.flags.has('\\Deleted') }));
+            const before = selected.index().map((m) => ({ uid: m.uid, deleted: m.flags.has('\\Deleted') }));
             // UID EXPUNGE <set> (RFC 4315): restrict to \Deleted messages within
             // the set; plain EXPUNGE removes every \Deleted message.
             let removedUids: Set<number>;
             if (uidMode && arg(1) !== '') {
-              const inSet = new Set(this.#resolveSet(selected, arg(1), true).map((e) => e.msg.uid));
+              const inSet = new Set(this.#resolveSet(selected, arg(1), true).map((e) => e.meta.uid));
               removedUids = new Set(before.filter((m) => m.deleted && inSet.has(m.uid)).map((m) => m.uid));
               for (const uid of removedUids) selected.expunge(uid);
             } else {
@@ -1575,7 +1612,7 @@ export class ImapServer {
             emitExpunged([...removedUids], seqs.reverse().map((e) => e.seq));
             // We just told this client about these removals; keep its view in step so a
             // later NOOP/CHECK does not re-announce them as if another connection acted.
-            knownUids = selected.messages.map((m) => m.uid);
+            knownUids = selected.index().map((m) => m.uid);
             // Wake other connections idling on this mailbox so they drop the same messages.
             if (removedUids.size > 0 && selectedName !== null) connNotifier?.notify(selectedName);
             write(sock, `${tag} OK EXPUNGE completed`);

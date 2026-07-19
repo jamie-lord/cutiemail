@@ -25,6 +25,24 @@ export interface StoredMessage {
   readonly modseq: number;
 }
 
+/**
+ * Per-message metadata — everything a command needs EXCEPT the body bytes: flags, dates,
+ * sizes, UID and mod-sequence. The IMAP server's cheap whole-mailbox view (index()), so a
+ * metadata-only command never materialises a single message body. Defined here in the
+ * storage layer (not the server) so both mailbox implementations can produce it without
+ * a store→server import cycle. See docs/PERFORMANCE.md for why this split exists.
+ */
+export interface MessageMeta {
+  readonly uid: number;
+  readonly flags: ReadonlySet<string>;
+  /** INTERNALDATE as epoch-millis (0 = unknown). */
+  readonly internalDate: number;
+  /** The per-message mod-sequence (RFC 7162 CONDSTORE); monotonic within a mailbox. */
+  readonly modseq: number;
+  /** RFC822.SIZE in octets — so SIZE / STATUS SIZE never load the body. */
+  readonly size: number;
+}
+
 /** The system flag marking a message for removal by EXPUNGE. */
 export const DELETED = '\\Deleted';
 
@@ -110,6 +128,21 @@ export class Mailbox {
   /** The messages currently in the mailbox, in arrival order. */
   get messages(): readonly StoredMessage[] {
     return this.#messages;
+  }
+
+  /**
+   * Per-message metadata in mailbox (arrival = ascending-UID) order, WITHOUT body bytes —
+   * the ServableMailbox view the IMAP server drives. The reference stores whole messages
+   * in memory, so this is a cheap projection; the SQLite counterpart is what makes the
+   * "no BLOBs for a metadata command" guarantee matter (docs/PERFORMANCE.md).
+   */
+  index(): readonly MessageMeta[] {
+    return this.#messages.map((m) => ({ uid: m.uid, flags: m.flags, internalDate: m.internalDate, modseq: m.modseq, size: m.raw.length }));
+  }
+
+  /** One message's raw bytes by UID, or undefined if it is not present. */
+  raw(uid: number): Buffer | undefined {
+    return this.#messages.find((m) => m.uid === uid)?.raw;
   }
 
   /** Append a message, assigning it a UID. Returns the assigned UID. */

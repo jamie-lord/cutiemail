@@ -15,6 +15,7 @@ import { deliver } from '../client/deliver.ts';
 import { AccountRegistry } from '../store/account-registry.ts';
 import { openMailDb } from '../store/open-mail-db.ts';
 import { TEST_CERT, TEST_KEY } from '../testing/tls-test-cert.ts';
+import { readMessages } from '../testing/read-messages.ts';
 
 const DOMAIN = 'mail.example.test';
 
@@ -59,13 +60,13 @@ test('mail to an alias and to a subaddress lands in the owner mailbox; an unknow
       assert.ok(c.ok, `login subaddress should succeed: ${c.failure}`);
 
       // All three landed in alice's single mailbox (server.mailbox is the sole account's INBOX).
-      assert.equal(server.mailbox.messages.length, 3, 'alias + both subaddresses all filed to the owner INBOX');
+      assert.equal(readMessages(server.mailbox).length, 3, 'alias + both subaddresses all filed to the owner INBOX');
 
       // NEGATIVE CONTROL: an address that is neither a login nor an alias is refused — the
       // alias feature must not become a catch-all.
       const bad = await sendTo(server.inbound.port, `unknown@${DOMAIN}`, 'nobody');
       assert.ok(!bad.ok, 'an unknown local address is still rejected (no catch-all)');
-      assert.equal(server.mailbox.messages.length, 3, 'the rejected message was not stored anywhere');
+      assert.equal(readMessages(server.mailbox).length, 3, 'the rejected message was not stored anywhere');
     } finally {
       await server.close();
     }
