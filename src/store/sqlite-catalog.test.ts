@@ -48,30 +48,33 @@ test('each mailbox has an independent UID sequence', () => {
   assert.equal(trash.uidNext, 2);
 });
 
-test('RENAME INBOX preserves highest_modseq and the expunge log (RFC 7162 invariant)', () => {
-  // Audit run-2 finding 2: the INBOX-rename special case moved messages (keeping their
-  // mod_seq) into a NEW mailbox row whose highest_modseq defaulted to 1 — violating
-  // HIGHESTMODSEQ >= every message's MODSEQ and silently desyncing CONDSTORE/QRESYNC.
+test('RENAME INBOX gives the target a fresh, self-consistent mod-sequence (RFC 7162 invariant, ADR 0016)', () => {
+  // Audit run-2 finding 2: the INBOX-rename target must never have HIGHESTMODSEQ below a moved
+  // message's MODSEQ (that silently desyncs CONDSTORE/QRESYNC). Under the fresh-target semantics
+  // (ADR 0016) the target is renumbered from scratch — UIDs from 1, mod_seq 2..N+1 — so
+  // HIGHESTMODSEQ (= N+1) >= every message's MODSEQ by construction, and the target starts with
+  // an EMPTY expunge log (its messages are all live). INBOX's own tombstones stay on INBOX.
   const cat = SqliteCatalog.open(new DatabaseSync(':memory:'));
   const inbox = cat.get('INBOX')!;
   const uid1 = inbox.append(Buffer.from('a'));
   inbox.append(Buffer.from('b'));
   inbox.storeFlags(uid1, 'add', ['\\Seen']); // bump modseq above 1
-  inbox.expunge(uid1); // an entry in the expunge log to prove it moves
-  const beforeModseq = inbox.highestModseq;
-  assert.ok(beforeModseq > 1, 'precondition: modseq advanced past the default');
+  inbox.expunge(uid1); // an INBOX tombstone that must STAY on INBOX, not migrate to the target
 
   assert.equal(cat.rename('INBOX', 'Foo'), 'ok');
   const foo = cat.get('Foo')!;
-  // The invariant: HIGHESTMODSEQ carried over, NOT reset to 1 (negative control: the old
-  // code left it at the column DEFAULT 1, below the moved messages' mod_seq).
-  assert.equal(foo.highestModseq, beforeModseq, 'highest_modseq carried onto the renamed mailbox');
-  // Monotonicity holds: a further change climbs above the carried value.
-  const remaining = inbox === foo ? uid1 : 2;
-  foo.storeFlags(remaining, 'add', ['\\Flagged']);
-  assert.ok(foo.highestModseq > beforeModseq, 'a later change gets a higher modseq');
-  // The expunge log moved with the messages (QRESYNC VANISHED history preserved).
-  assert.ok(foo.expungedSince(1).includes(uid1), 'the pre-rename expunge is visible on the renamed mailbox');
+  // The invariant holds: HIGHESTMODSEQ >= every message's MODSEQ (the run-2 concern).
+  const maxMsgModseq = Math.max(0, ...foo.messages.map((m) => m.modseq));
+  assert.ok(foo.highestModseq >= maxMsgModseq, 'target HIGHESTMODSEQ covers every message MODSEQ');
+  // Fresh target: the one surviving message (b) is reassigned to UID 1, with a clean expunge log.
+  assert.deepEqual(foo.messages.map((m) => m.uid), [1], 'the surviving message is renumbered from 1');
+  assert.deepEqual(foo.expungedSince(0), [], 'the target starts with a clean expunge log (its messages are live)');
+  // Monotonicity holds: a further change climbs above the target's value.
+  const beforeFoo = foo.highestModseq;
+  foo.storeFlags(1, 'add', ['\\Flagged']);
+  assert.ok(foo.highestModseq > beforeFoo, 'a later change gets a higher modseq');
+  // The INBOX tombstone for uid1 stayed on INBOX — it did not migrate to the target.
+  assert.ok(cat.get('INBOX')!.expungedSince(0).includes(uid1), 'INBOX keeps its own vanished history');
 });
 
 test('RENAME INBOX reports the moved messages as VANISHED on the now-empty INBOX (run-7 QRESYNC)', () => {

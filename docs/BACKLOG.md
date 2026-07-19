@@ -36,21 +36,6 @@ can't fill in all four isn't on the list; it's in the ledger.
 
 ## Open work
 
-### 3. RENAME-INBOX catalog-parity reconciliation — *correctness; dedicated pass*
-
-- **Evidence:** the residual from security-audit run-8 (recorded LOW, no disk data loss). The
-  defensible silent-vanish bug is *fixed* (commit 22a40ae bumps INBOX modseq + logs moved UIDs),
-  but `MemoryCatalog` (the test oracle) and `SqliteCatalog` (production) still diverge on the
-  semantics of a *second* consecutive INBOX rename: keeps-UIDs vs reassigns-from-1, and where the
-  old tombstones land. A narrow window can re-open a QRESYNC desync.
-- **Mission fit:** the reference model and the real store must agree, or the whole
-  differential-testing guarantee is hollow for this path — this is the reference-vs-prod
-  divergence class the audit kept surfacing.
-- **Shape:** a deliberate decision on rename semantics (target keeps UIDs vs reassigns; tombstone
-  locality), then make both catalogs implement it identically, validated differentially.
-- **Testing:** extend the QRESYNC/CONDSTORE differential harness to a double-rename sequence run
-  against both catalogs — results must be identical, closing the run-8 second-rename residual.
-
 ### 4. Password minimum-length policy — *small security/usability*
 
 - **Evidence:** noted on the production-readiness menu — `account add` / `init` / `set-password`
