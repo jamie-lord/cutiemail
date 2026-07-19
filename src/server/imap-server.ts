@@ -120,6 +120,19 @@ const PREAUTH_COMMANDS = new Set(['CAPABILITY', 'NOOP', 'LOGOUT', 'LOGIN', 'AUTH
 /** Cap on an APPEND literal's declared size (octets) — bounds server memory. */
 const MAX_APPEND_LITERAL = 26_214_400; // 25 MiB, matching the SMTP SIZE default
 
+/**
+ * Server-wide ceiling on APPEND-literal octets buffered across all connections. An APPEND uploads a
+ * message as a literal, and the server buffers the whole thing in the connection's receive buffer
+ * before it can store it. A client that declares a big literal then sends it slowly (or withholds
+ * the terminating CRLF) pins ~its size in memory — and, summed across connections that each need
+ * only ONE such APPEND (so MAX_CONNECTIONS doesn't help), that OOMs the process, the read-side twin
+ * of the FETCH slow-consumer OOM (docs/PERFORMANCE.md). Since a literal's size is DECLARED up front,
+ * we bound it cleanly: a new APPEND is refused (transient NO) once accepting it would push the total
+ * reserved over this budget, so at most ~budget/25 MB uploads are ever in flight. Generous vs any
+ * personal-scale concurrent upload, tiny vs modern RAM.
+ */
+const MAX_APPEND_INFLIGHT = 268_435_456; // 256 MiB
+
 /** Inactivity autologout (RFC 9051 §5.4 requires a timer of at least 30 minutes). */
 const AUTOLOGOUT_MS = 1_800_000;
 const MAX_SEARCH_KEYS = 64; // top-level SEARCH keys; a real query uses a handful (DoS bound)
@@ -608,6 +621,10 @@ export class ImapServer {
   readonly #autologoutMs: number;
   readonly #throttle: AuthThrottle | undefined;
   readonly #maxWriteBacklog: number;
+  readonly #maxAppendInflight: number;
+  /** Bytes reserved for in-flight APPEND literals, per connection, and the running total. */
+  readonly #appendReserved = new Map<net.Socket, number>();
+  #appendInflight = 0;
 
   private constructor(
     server: net.Server,
@@ -619,6 +636,7 @@ export class ImapServer {
     resolveAccount?: (login: string) => { catalog: ServableCatalog; notifier?: MailboxNotifier } | undefined,
     throttle?: AuthThrottle,
     maxWriteBacklog = MAX_WRITE_BACKLOG,
+    maxAppendInflight = MAX_APPEND_INFLIGHT,
   ) {
     this.#server = server;
     this.port = port;
@@ -629,6 +647,27 @@ export class ImapServer {
     this.#autologoutMs = autologoutMs;
     this.#throttle = throttle;
     this.#maxWriteBacklog = maxWriteBacklog;
+    this.#maxAppendInflight = maxAppendInflight;
+  }
+
+  /**
+   * Reserve `size` octets against the server-wide in-flight-APPEND budget. Returns false (reserving
+   * nothing) when accepting the upload would exceed it — the caller then refuses the APPEND. A
+   * connection holds at most one reservation at a time (one pending APPEND).
+   */
+  #reserveAppend(sock: net.Socket, size: number): boolean {
+    if (this.#appendInflight + size > this.#maxAppendInflight) return false;
+    this.#appendInflight += size;
+    this.#appendReserved.set(sock, size);
+    return true;
+  }
+
+  /** Release a connection's APPEND reservation (on completion, error, or disconnect). Idempotent. */
+  #releaseAppend(sock: net.Socket): void {
+    const reserved = this.#appendReserved.get(sock);
+    if (reserved === undefined) return;
+    this.#appendInflight -= reserved;
+    this.#appendReserved.delete(sock);
   }
 
   /**
@@ -666,6 +705,8 @@ export class ImapServer {
       throttle?: AuthThrottle;
       /** Server-wide slow-consumer write-backlog budget in bytes (default 256 MiB). Tests set it small. */
       maxWriteBacklog?: number;
+      /** Server-wide in-flight-APPEND-literal budget in bytes (default 256 MiB). Tests set it small. */
+      maxAppendInflight?: number;
     } = {},
   ): Promise<ImapServer> {
     const catalog: ServableCatalog = 'listNames' in target ? target : inboxOnly(target);
@@ -679,11 +720,14 @@ export class ImapServer {
       server.listen(options.port ?? 0, options.host ?? '127.0.0.1', () => {
         const addr = server.address();
         const port = typeof addr === 'object' && addr !== null ? addr.port : 0;
-        const imap = new ImapServer(server, port, catalog, options.authenticate, options.notifier, options.autologoutMs, options.resolveAccount, options.throttle, options.maxWriteBacklog);
+        const imap = new ImapServer(server, port, catalog, options.authenticate, options.notifier, options.autologoutMs, options.resolveAccount, options.throttle, options.maxWriteBacklog, options.maxAppendInflight);
         const event = options.tls !== undefined ? 'secureConnection' : 'connection';
         server.on(event, (sock: net.Socket) => {
           imap.#sockets.add(sock);
-          sock.on('close', () => imap.#sockets.delete(sock));
+          sock.on('close', () => {
+            imap.#sockets.delete(sock);
+            imap.#releaseAppend(sock); // free any reservation held by an APPEND cut off mid-upload
+          });
           imap.#handle(sock);
         });
         resolve(imap);
@@ -1002,6 +1046,7 @@ export class ImapServer {
             // Wake connections idling on this mailbox so the new message shows up.
             connNotifier?.notify(canonicalMailboxName(pendingAppend.mailboxName));
           }
+          this.#releaseAppend(sock); // literal received and stored — free its budget reservation
           pendingAppend = null;
           continue;
         }
@@ -1232,6 +1277,18 @@ export class ImapServer {
             // a non-synchronizing literal is already streaming, so drop the link.
             if (size > MAX_APPEND_LITERAL) {
               write(sock, `${tag} NO [LIMIT] APPEND literal exceeds the ${MAX_APPEND_LITERAL}-octet limit`);
+              if (m[5] !== undefined) {
+                sock.end();
+                return;
+              }
+              break;
+            }
+            // Reserve the literal against the server-wide in-flight budget BEFORE the "+" go-ahead,
+            // so many slow uploaders cannot pin memory without bound (docs/PERFORMANCE.md). A
+            // synchronizing literal is refused with a transient NO (the client never sends the data
+            // and may retry); a non-synchronizing literal is already streaming, so drop the link.
+            if (!this.#reserveAppend(sock, size)) {
+              write(sock, `${tag} NO [LIMIT] too much APPEND data in flight; retry shortly`);
               if (m[5] !== undefined) {
                 sock.end();
                 return;
