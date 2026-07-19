@@ -5,11 +5,17 @@ code paths (`SqliteMailbox`, the IMAP + SMTP servers) — they are measurement r
 so `npm test` and `tsc` ignore them. Two machines: **laptop** (8-core, 16 GB, NVMe) and **box**
 (the live target: Hetzner cx23, 2 vCPU, 3.7 GB, the hardware this is actually deployed on).*
 
+> **Status: fixed (2026-07-19).** The lazy-storage refactor below landed (commits `3ec1a2b`,
+> `97d26cc`). On the box, a single-message body fetch on a 50k mailbox went **1825 ms → 0.53 ms**,
+> per-command heap churn **195 MB → 1.3 MB**, and greeting latency under load **4.6 s → 0.44 s**.
+> The [Fixed](#what-was-fixed) section carries the full before/after. The diagnosis below is kept
+> as the record of *why* — read it in the past tense.
+
 ## TL;DR
 
-The server is correct and fine at rest, but **one moderately-large mailbox being read makes
+The server was correct and fine at rest, but **one moderately-large mailbox being read made
 the whole server unresponsive for every other user and for all inbound mail.** Two root causes
-compound:
+compounded:
 
 1. **Every IMAP command materialises the entire mailbox** — all message bytes + an N+1 flag
    query — even to answer `FETCH 1 (FLAGS)`. Cost is O(total mailbox bytes), not O(what was asked).
@@ -105,52 +111,78 @@ Memory per user is *reasonable* — RAM is not the first wall. Two sharper limit
 - **Unbounded cache.** No cap, no idle close. A busy day's worth of distinct senders/logins is a
   monotonic leak of handles until restart.
 
-## What to change — prioritised
+## What was fixed
 
-### 1. [HIGH] Make the storage layer fetch only what a command needs
+### 1. [DONE] The storage layer fetches only what a command needs
 
-The one high-value change. Replace the all-or-nothing `messages` getter with lazy accessors on
-`ServableMailbox`, and push aggregates into SQL:
+The `ServableMailbox.messages` getter — which loaded every message BLOB and ran a flag query per
+message on every access — is replaced by two accessors ([`MessageMeta`](../src/store/mailbox.ts),
+[`imap-server.ts`](../src/server/imap-server.ts)):
 
-- `uids()` → `SELECT uid … ORDER BY uid` (no BLOBs) for sequence-set resolution, `EXISTS`, and
-  `sequenceNumber` — the common metadata path stops reading bodies entirely.
-- `rawForUid(uid)` → fetch a **single** BLOB, only when a FETCH actually asks for a body/part.
-- `flagsFor(uid)` / batched flags → drop the N+1.
-- `STATUS` → `COUNT(*)`, `COUNT(*) WHERE NOT \Seen`, `SUM(length(raw))` in SQL, not a JS map/reduce
-  over materialised rows.
-- `SEARCH` on flags/uid/size → SQL `WHERE`; only body/header text criteria need to stream BLOBs,
-  and those can be fetched one row at a time rather than all at once.
+- **`index()`** — ordered per-message metadata (uid, flags, internalDate, modseq, **size**) with
+  **no body bytes**. Two queries regardless of mailbox size: the message rows carry `LENGTH(raw)`
+  (SQLite reads the octet count from the record header, never the BLOB), and all flags come in one
+  grouped query joined in memory (no N+1). This is what FETCH FLAGS / STATUS / SELECT / EXPUNGE /
+  STORE / sequence-set resolution read.
+- **`raw(uid)`** — one message body, a single row, fetched only when a command actually needs it
+  (BODY[…]/RFC822/ENVELOPE, a body/header SEARCH, COPY).
 
-This turns `FETCH 1 (FLAGS)` from O(mailbox) into O(1), which is the whole ballgame: a bounded,
-sub-millisecond query doesn't stall the event loop, so it also dissolves most of finding (2).
-It is a contained change — one interface (`ServableMailbox`), its two implementations
-(`SqliteMailbox`, `MemoryCatalog`/reference), and the ~15 `.messages` call sites in
-`imap-server.ts` — gated by the existing catalog-parity differential oracle and the full suite.
+`STATUS` sums `meta.size` (no BLOBs); a `LARGER`/`SMALLER` SEARCH uses `meta.size` too; a
+flag/date/uid SEARCH loads nothing. A new guard, `imap-fetch-laziness.test.ts`, asserts over the
+wire that a metadata command loads **zero** bodies and a single-message body fetch loads **exactly
+one** — so a regression to eager loading fails the suite. Behaviour is identical: the full suite
+(1025) stays green, including the `SqliteCatalog`↔`MemoryCatalog` catalog-parity oracle.
 
-### 2. [MED] Keep every synchronous DB op small (and revisit only if one can't be)
+**Measured (box, 50k / 221 MB mailbox), old `.messages` → new:**
 
-Once (1) lands, no single common operation is large, so the synchronous `node:sqlite` model is
-fine at this scale — the honest "SQLite of email" answer is *bounded operations*, not a thread
-pool. The one op that can still be inherently large is a body/header `SEARCH` of a huge mailbox;
-if that proves painful in practice, stream it row-by-row with a periodic yield, or offload to a
-worker thread. Not needed on the evidence so far — recorded as the trigger, not built.
+| operation | before | after | change |
+|---|--:|--:|--:|
+| single-message body fetch (`raw(uid)`) | 1825 ms | **0.53 ms** | ~3200× |
+| metadata read (`index()`; FETCH FLAGS / STATUS) | 1695 ms | **424 ms** | 4× |
+| heap churned per command | 195 MB | **1.3 MB** | 153× |
+| greeting latency under 3 readers | 4616 ms | **435 ms** | 10.6× |
+| inbound delivery under 3 readers | 24,751 ms | **6825 ms** | 3.6× |
 
-### 3. [MED] Bound and evict the `MailStores` cache; raise the fd limit
+### 2. [DONE — insurance] fd headroom; cache eviction deliberately not built
 
-- Add an LRU cap that closes idle stores — but only those with **zero live connections and no
-  in-flight delivery** (the shared-instance invariant in `mail-stores.ts` is load-bearing for
-  IDLE and multi-connection sync). Ref-count, evict at zero.
-- Set `LimitNOFILE` in the systemd unit well above the per-user fd math (e.g. 65536), so the cap
-  is a policy choice, not an accidental crash at ulimit.
+`LimitNOFILE=65536` is set in the systemd unit ([`deploy/hetzner-up.sh`](../deploy/hetzner-up.sh)):
+each open user DB holds ~3 fds and the default 1024 would wall before memory.
 
-### 4. [LOW] Stop re-running DDL on every mailbox resolution
+Refcounted `MailStores` eviction is **deliberately not built.** The cache is keyed by *login* and
+only ever opens a store for a **real account** — both delivery (`deliverTo(login)`) and IMAP resolve
+addresses/aliases/`+tags` to a bounded set of real logins before touching a store — so its size is
+bounded by the account count, which is small at the project's personal scale (ADR 0009). Adding
+refcounted eviction would put the load-bearing shared-instance/IDLE invariant (`mail-stores.ts`) at
+risk to defend a limit (hundreds of accounts) the project does not target. **Revisit** if the
+project ever grows a multi-tenant story. This corrects the earlier note above: the floor grows with
+*account count*, not with distinct senders.
 
-`SqliteCatalog.get()` → `SqliteMailbox.open()` re-executes `CREATE TABLE IF NOT EXISTS` ×4, three
-`pragma_table_info` migration probes, and `CREATE INDEX IF NOT EXISTS` on **every** access. Cheap
-per call, but pure overhead on the hot path — run schema/migrations once at catalog open and cache
-the mailbox handle per id.
+### 3. [DONE] No DDL on the mailbox hot path
+
+`SqliteCatalog.get()` (run on every SELECT/STATUS/COPY) now calls `SqliteMailbox.attach()` — a bare
+constructor — instead of `open()`, which had re-executed `CREATE TABLE IF NOT EXISTS` ×4, three
+`pragma_table_info` probes, and `CREATE INDEX` every time. The catalog runs schema + migrations once
+at open; `open()` stays for tests that create a bare mailbox.
+
+### Deferred — a real lever, higher risk, only bites the extreme case
+
+**Make a *bounded* fetch sub-linear.** `resolveForConn` still calls `index()` (all metadata) to map
+sequence numbers, so even opening one message pays the metadata read (424 ms on the box for a 50k
+mailbox; ~80 ms on a normal server). It could instead resolve the set to UIDs first — from the
+in-memory client view for sequence mode, a cheap `MAX(uid)` for `*` in UID mode — and batch-fetch
+metadata for only the matched messages, making `FETCH <one message>` O(matched) not O(mailbox). It
+is **not built**: it touches the RFC 9051 §7.4.1 client-view sequence logic that is heavily tested
+and has been a source of subtle bugs (audit runs 5–7), and the residual only hurts very large
+mailboxes on very slow hardware — disproportionate risk for the mission. Recorded as the next lever
+if a large-mailbox latency complaint ever materialises.
+
+### Body/header SEARCH of a huge mailbox
+
+Still inherently O(mailbox) — it must stream each candidate body — but now one row at a time (via
+`raw(uid)`), never a single 195 MB allocation, and only for HEADER/BODY/TEXT criteria. Bounded by
+the existing authenticated-only SEARCH-key DoS guards. Left as-is; the personal-scale answer.
 
 ### Not a problem (measured, so it isn't guessed at)
 
-`sequenceNumber` (indexed COUNT, <2 ms at 50k); append throughput (~550/s on the box, disk-bound,
-ample for personal scale); per-user memory (176 KB). Don't spend effort here.
+`sequenceNumber` (indexed COUNT, <2 ms at 50k); append throughput (~550/s on the box, disk-fsync-
+bound, ample for personal scale); per-user memory (176 KB). No effort spent here.
