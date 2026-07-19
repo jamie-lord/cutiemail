@@ -29,6 +29,13 @@ CREATE TABLE IF NOT EXISTS accounts (
   mail_db_path TEXT NOT NULL,
   enabled      INTEGER NOT NULL DEFAULT 1
 );
+-- Aliases are control-plane routing, not identity (ADR 0014): an additional address whose
+-- mail lands in the owning login's mailbox. Stored lower-cased so the PRIMARY KEY IS the
+-- case-insensitive uniqueness constraint. No per-alias storage — a user is still one file.
+CREATE TABLE IF NOT EXISTS aliases (
+  alias TEXT PRIMARY KEY,
+  login TEXT NOT NULL
+);
 `;
 
 /** A resolved account's routing — what the server needs after (or independent of) auth. */
@@ -114,6 +121,73 @@ export class AccountRegistry {
       enabled: number;
     }>;
     return rows.map((r) => ({ login: r.login, mailDbPath: r.mail_db_path, enabled: r.enabled === 1 }));
+  }
+
+  // -- Aliases (ADR 0014) ------------------------------------------------------------------
+
+  /** The enabled account this login names, or undefined (case-insensitive). */
+  #enabledLoginFor(lcLocal: string): string | undefined {
+    const r = this.#db.prepare('SELECT login FROM accounts WHERE lower(login) = ? AND enabled = 1').get(lcLocal) as
+      | { login: string }
+      | undefined;
+    return r?.login;
+  }
+
+  /** The enabled owner of this alias, or undefined. `lcAlias` is already lower-cased. */
+  #enabledOwnerOfAlias(lcAlias: string): string | undefined {
+    const r = this.#db.prepare('SELECT login FROM aliases WHERE alias = ?').get(lcAlias) as { login: string } | undefined;
+    if (r === undefined) return undefined;
+    return this.lookup(r.login)?.enabled === true ? r.login : undefined;
+  }
+
+  /**
+   * Resolve a recipient LOCAL-part to the owning ENABLED login, or undefined (ADR 0014).
+   * The single routing chokepoint: an exact login, then an exact alias, then a `base+tag`
+   * subaddress whose base is a login or alias. Case-insensitive throughout. undefined means
+   * "not one of ours" → the caller rejects it (no catch-all, no backscatter).
+   */
+  resolveLocalPart(local: string): string | undefined {
+    const lc = local.toLowerCase();
+    const direct = this.#enabledLoginFor(lc);
+    if (direct !== undefined) return direct;
+    const viaAlias = this.#enabledOwnerOfAlias(lc);
+    if (viaAlias !== undefined) return viaAlias;
+    // Subaddressing: `base+tag` (one '+', non-empty base) delivers to `base`'s mailbox.
+    const plus = lc.indexOf('+');
+    if (plus > 0) {
+      const base = lc.slice(0, plus);
+      return this.#enabledLoginFor(base) ?? this.#enabledOwnerOfAlias(base);
+    }
+    return undefined;
+  }
+
+  /** Whether a name is already a login or an alias (case-insensitive) — enforces one-namespace uniqueness. */
+  nameTaken(name: string): 'login' | 'alias' | undefined {
+    const lc = name.toLowerCase();
+    if (this.#db.prepare('SELECT 1 FROM accounts WHERE lower(login) = ?').get(lc) !== undefined) return 'login';
+    if (this.#db.prepare('SELECT 1 FROM aliases WHERE alias = ?').get(lc) !== undefined) return 'alias';
+    return undefined;
+  }
+
+  /** Add an alias (stored lower-cased) pointing at an owning login. Callers check collisions first. */
+  addAlias(alias: string, login: string): void {
+    this.#db.prepare('INSERT INTO aliases (alias, login) VALUES (?, ?)').run(alias.toLowerCase(), login);
+  }
+
+  /** Remove an alias; true if a row was deleted. */
+  removeAlias(alias: string): boolean {
+    return this.#db.prepare('DELETE FROM aliases WHERE alias = ?').run(alias.toLowerCase()).changes > 0;
+  }
+
+  /** The aliases owned by a login, sorted. */
+  aliasesFor(login: string): readonly string[] {
+    const rows = this.#db.prepare('SELECT alias FROM aliases WHERE login = ? ORDER BY alias').all(login) as Array<{ alias: string }>;
+    return rows.map((r) => r.alias);
+  }
+
+  /** Every alias with its owner, for `alias list`. */
+  allAliases(): ReadonlyArray<{ readonly alias: string; readonly login: string }> {
+    return this.#db.prepare('SELECT alias, login FROM aliases ORDER BY login, alias').all() as Array<{ alias: string; login: string }>;
   }
 
   /**

@@ -268,3 +268,68 @@ test('seedAccounts advises removing redundant plaintext seeds once the account e
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test('alias: add routes an address to an account, list shows it, remove clears it', async () => {
+  const dir = tmp();
+  try {
+    const dbPath = join(dir, 'control.db');
+    const env = { MAIL_CONTROL_DB: dbPath };
+    // Create the owning account.
+    assert.equal(await runAccount(['add', 'jamie'], capture().io, env, secrets('pw', 'pw')), 0);
+    // Add two aliases.
+    assert.equal(await runAccount(['alias', 'add', 'jamie', 'sales'], capture().io, env), 0);
+    assert.equal(await runAccount(['alias', 'add', 'jamie', 'Support'], capture().io, env), 0); // normalises to lower
+
+    // They resolve in the registry (what inbound routing uses).
+    const db = openMailDb(dbPath);
+    const reg = AccountRegistry.open(db);
+    assert.equal(reg.resolveLocalPart('sales'), 'jamie');
+    assert.equal(reg.resolveLocalPart('support'), 'jamie');
+    assert.equal(reg.resolveLocalPart('jamie+tag'), 'jamie');
+    db.close();
+
+    // account list shows aliases inline.
+    const listCap = capture();
+    await runAccount(['list'], listCap.io, env);
+    assert.match(listCap.out.join('\n'), /jamie.*aliases: sales, support/);
+
+    // Remove one.
+    assert.equal(await runAccount(['alias', 'remove', 'SALES'], capture().io, env), 0);
+    const db2 = openMailDb(dbPath);
+    assert.equal(AccountRegistry.open(db2).resolveLocalPart('sales'), undefined);
+    db2.close();
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('alias: rejects a missing account, collisions with a login/alias, and bad local-parts', async () => {
+  const dir = tmp();
+  try {
+    const dbPath = join(dir, 'control.db');
+    const env = { MAIL_CONTROL_DB: dbPath };
+    await runAccount(['add', 'jamie'], capture().io, env, secrets('pw', 'pw'));
+    await runAccount(['add', 'bob'], capture().io, env, secrets('pw', 'pw'));
+    await runAccount(['alias', 'add', 'jamie', 'sales'], capture().io, env);
+
+    // Owning account must exist.
+    assert.equal(await runAccount(['alias', 'add', 'ghost', 'x'], capture().io, env), 1);
+    // An alias cannot shadow a login...
+    assert.equal(await runAccount(['alias', 'add', 'jamie', 'bob'], capture().io, env), 1);
+    // ...nor an existing alias.
+    assert.equal(await runAccount(['alias', 'add', 'bob', 'sales'], capture().io, env), 1);
+    // Bad local-parts: a full address, and the reserved '+'.
+    assert.equal(await runAccount(['alias', 'add', 'jamie', 'sales@example.com'], capture().io, env), 2);
+    assert.equal(await runAccount(['alias', 'add', 'jamie', 'a+b'], capture().io, env), 2);
+    // Usage errors.
+    assert.equal(await runAccount(['alias', 'add', 'jamie'], capture().io, env), 2);
+    assert.equal(await runAccount(['alias', 'frobnicate'], capture().io, env), 2);
+
+    // And the reverse direction: a new login cannot collide with an existing alias.
+    const addCap = capture();
+    assert.equal(await runAccount(['add', 'sales'], addCap.io, env, secrets('pw', 'pw')), 1);
+    assert.match(addCap.err.join('\n'), /already an alias/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

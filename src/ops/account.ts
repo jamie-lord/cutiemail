@@ -45,11 +45,76 @@ const USAGE = [
   '  disable <login>       refuse auth + inbound delivery for the account (reversible;',
   '                        the mailbox database is never touched)',
   '  enable <login>        re-enable a disabled account',
-  '  list                  every account, its state, and its mailbox database',
+  '  list                  every account, its state, mailbox database, and aliases',
+  '  alias add <login> <local-part>   route another address to that account (ADR 0014)',
+  '  alias remove <local-part>        remove an alias',
+  '  alias list [login]               every alias (or one account\'s)',
   '',
   'The control database is MAIL_CONTROL_DB (default control.db), or --db.',
   'When stdin is not a terminal, the password is read as one line from stdin.',
 ].join('\n');
+
+/** `account alias add|remove|list` — aliases are routing, not identity (ADR 0014). */
+function runAlias(args: readonly string[], io: OpsIo, registry: AccountRegistry): number {
+  const [sub, arg1, arg2] = args;
+  switch (sub) {
+    case 'add': {
+      const login = arg1;
+      const local = arg2;
+      if (login === undefined || local === undefined) {
+        io.err('usage: account alias add <login> <local-part>  (e.g. account alias add jamie sales)');
+        return 2;
+      }
+      if (local.includes('@')) {
+        io.err(`alias add: give the local-part only (e.g. sales), not the full address — the domain is the server's MAIL_DOMAIN.`);
+        return 2;
+      }
+      if (!validLogin(local)) {
+        io.err(`alias add: "${local}" is not a valid address local-part — letters/digits then letters/digits/._- (no '+', which is reserved for subaddressing).`);
+        return 2;
+      }
+      if (registry.lookup(login) === undefined) {
+        io.err(`alias add: no account "${login}" — create it first with \`account add ${login}\`.`);
+        return 1;
+      }
+      const taken = registry.nameTaken(local);
+      if (taken !== undefined) {
+        io.err(`alias add: "${local}" is already a ${taken} — an address resolves to one account.`);
+        return 1;
+      }
+      registry.addAlias(local, login);
+      io.out(`alias ${local.toLowerCase()} -> ${login} added. The running daemon delivers to it immediately — no restart.`);
+      return 0;
+    }
+    case 'remove': {
+      const local = arg1;
+      if (local === undefined) {
+        io.err('usage: account alias remove <local-part>');
+        return 2;
+      }
+      if (!registry.removeAlias(local)) {
+        io.err(`alias remove: no alias "${local.toLowerCase()}".`);
+        return 1;
+      }
+      io.out(`alias ${local.toLowerCase()} removed.`);
+      return 0;
+    }
+    case 'list': {
+      const login = arg1;
+      if (login !== undefined && registry.lookup(login) === undefined) {
+        io.err(`alias list: no account "${login}".`);
+        return 1;
+      }
+      const rows = login !== undefined ? registry.aliasesFor(login).map((alias) => ({ alias, login })) : registry.allAliases();
+      if (rows.length === 0) io.out(login !== undefined ? `no aliases for ${login}.` : 'no aliases.');
+      for (const r of rows) io.out(`${r.alias.padEnd(24)} -> ${r.login}`);
+      return 0;
+    }
+    default:
+      io.err('usage: account alias add <login> <local-part> | remove <local-part> | list [login]');
+      return 2;
+  }
+}
 
 /**
  * Where passwords come from. `interactive` decides whether a confirmation prompt
@@ -156,7 +221,8 @@ export async function runAccount(
     io.err(USAGE);
     return 2;
   }
-  const needsLogin = verb !== 'list';
+  // 'list' takes no login; 'alias' parses its own sub-arguments (see runAlias).
+  const needsLogin = verb !== 'list' && verb !== 'alias';
   if (needsLogin && (login === undefined || !validLogin(login))) {
     io.err(`account ${verb}: a login is required — letters/digits then letters/digits/._- (max 64); it names the mailbox database file.`);
     return 2;
@@ -166,9 +232,17 @@ export async function runAccount(
   try {
     const registry = AccountRegistry.open(db);
     switch (verb) {
+      case 'alias':
+        return runAlias(positional.slice(1), io, registry);
       case 'add': {
         if (registry.lookup(login!) !== undefined) {
           io.err(`account add: ${login} already exists — use set-password to change its password.`);
+          return 1;
+        }
+        // A login and an alias share one namespace — an address resolves to one account
+        // (ADR 0014). Refuse a login that an alias already claims.
+        if (registry.nameTaken(login!) === 'alias') {
+          io.err(`account add: "${login}" is already an alias — remove it first (\`account alias remove ${login}\`) or pick another login.`);
           return 1;
         }
         // Reject a login that case-folds to an existing one: it maps to the same
@@ -221,7 +295,11 @@ export async function runAccount(
       case 'list': {
         const rows = registry.list();
         if (rows.length === 0) io.out('no accounts.');
-        for (const r of rows) io.out(`${r.enabled ? 'enabled ' : 'DISABLED'}  ${r.login.padEnd(16)} ${r.mailDbPath}`);
+        for (const r of rows) {
+          const aliases = registry.aliasesFor(r.login);
+          const suffix = aliases.length > 0 ? `  aliases: ${aliases.join(', ')}` : '';
+          io.out(`${r.enabled ? 'enabled ' : 'DISABLED'}  ${r.login.padEnd(16)} ${r.mailDbPath}${suffix}`);
+        }
         return 0;
       }
       default:

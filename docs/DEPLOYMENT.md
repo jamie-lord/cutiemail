@@ -189,6 +189,23 @@ restart. There is deliberately no `remove`: `disable` refuses auth and delivery 
 touching the user's mailbox database; deleting mail is an explicit `rm` of that file,
 never a management-verb side effect (ADR 0012).
 
+**Aliases and `+tag` subaddressing** — an account can answer to more than one address
+(ADR 0014). An alias is a second address whose mail lands in the same mailbox — it adds no
+database (a user is still one file), and it is a delivery address only: you can't log in as
+one (and sending *as* one is a separate, not-yet-shipped step). Subaddressing is on by
+default: `you+anything@your.domain` delivers to `you` with no setup, handy for per-service
+filtering.
+
+```sh
+node src/main.ts account alias add you sales    # sales@your.domain now reaches "you"
+node src/main.ts account alias list             # every alias and its owner
+node src/main.ts account alias remove sales
+```
+
+Give the local-part only (`sales`, not `sales@your.domain`). An address is a login *or* an
+alias, never both; unknown addresses are still refused at RCPT (no catch-all). New aliases
+receive immediately — no restart.
+
 **Backups** — the whole server's state is the control database plus one mailbox database
 per user, so a backup is one command (safe while the daemon runs — it uses SQLite's
 `VACUUM INTO`, a transactionally consistent snapshot; a bare `cp` of a live WAL database

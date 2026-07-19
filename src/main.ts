@@ -252,20 +252,16 @@ export async function startServer(cfg: MailServerConfig): Promise<RunningServer>
     return { catalog: userCatalog, notifier: new MailboxNotifier(), close: () => udb.close() };
   });
 
-  // Which local account (if any) a recipient address belongs to. Only our own domain,
-  // and the local-part is matched case-insensitively against the login (a modern
-  // convenience — RFC 5321 §2.4 leaves local-part case to the destination, and that is
-  // us). An unknown local recipient returns undefined → the caller rejects it (no
-  // catch-all, ADR 0009), which is also what stops us being backscatter for mail we
-  // cannot deliver.
+  // Which local account (if any) a recipient address belongs to. Only our own domain; the
+  // local-part is resolved (case-insensitively, RFC 5321 §2.4) to the owning ENABLED login
+  // through the registry's single chokepoint — an exact login, an alias, or a `base+tag`
+  // subaddress (ADR 0014). undefined → the caller rejects it at RCPT (550): no catch-all
+  // (ADR 0009), which is what stops us being backscatter for mail we cannot deliver, and a
+  // disabled owner is rejected rather than accepted-then-silently-dropped.
   const loginForLocalAddress = (address: string): string | undefined => {
     const at = address.lastIndexOf('@');
     if (at === -1 || address.slice(at + 1).toLowerCase() !== cfg.domain.toLowerCase()) return undefined;
-    const local = address.slice(0, at).toLowerCase();
-    // Only an ENABLED account is a deliverable recipient — a disabled account is rejected at
-    // RCPT (550) rather than accepted-then-silently-dropped (matching the CLI's "inbound
-    // delivery now refuses it"), so mail to it is never lost without the sender learning.
-    return registry.list().find((r) => r.enabled && r.login.toLowerCase() === local)?.login;
+    return registry.resolveLocalPart(address.slice(0, at));
   };
   // Append a message to a local user's mailbox (INBOX unless a DMARC failure quarantines it
   // to Junk) and wake the connections idling on that mailbox.
