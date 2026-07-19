@@ -126,6 +126,48 @@ const MAX_SEARCH_KEYS = 64; // top-level SEARCH keys; a real query uses a handfu
 const MAX_SEARCH_NODES = 256; // TOTAL keys across the tree incl. nested OR/NOT (recursion DoS bound)
 const MAX_CONNECTIONS = 512; // concurrent-connection ceiling per listener (pre-auth DoS bound)
 
+/**
+ * Server-wide ceiling on bytes queued for slow-reading clients. The server frames a whole FETCH
+ * response and hands it to the socket; a client that stops reading — deliberately, or on a slow
+ * link — leaves that response buffered in memory with no OS/Node bound. Summed across connections
+ * this is an OOM: ~112 connections each stalling on a 25 MB body killed a 3.7 GB box (an
+ * authenticated read-slowloris — docs/PERFORMANCE.md). MAX_CONNECTIONS (512) does not help, since
+ * each connection needs only one big fetch. When the total queued across ALL connections exceeds
+ * this budget, the slowest-draining connections are dropped until back under it — a client reading
+ * promptly holds ~0 and is never chosen, so normal use is untouched. Sized to hold a healthy burst
+ * of concurrent large fetches while bounding total write memory far below any modern server's RAM.
+ */
+const MAX_WRITE_BACKLOG = 256 * 1024 * 1024; // 256 MiB
+
+/** A socket enough of, for the slow-consumer guard: how much it has buffered, and how to drop it. */
+export interface Sheddable {
+  readonly writableLength: number;
+  destroy(): void;
+}
+
+/**
+ * Enforce the slow-consumer write-backlog budget. If the summed `writableLength` across `sockets`
+ * exceeds `budget`, destroy the biggest-backlog sockets (the slowest-draining consumers) until the
+ * total is back under it, and return how many were dropped. A promptly-reading client has
+ * `writableLength` ~0, so it sorts last and is never chosen — the guard only ever sheds connections
+ * that are failing to consume their data. Pure and deterministic, so it can be tested without
+ * depending on real kernel socket buffering (which varies by platform).
+ */
+export function shedToBudget(sockets: Iterable<Sheddable>, budget: number): number {
+  const all = [...sockets];
+  let total = 0;
+  for (const s of all) total += s.writableLength;
+  if (total <= budget) return 0;
+  let shed = 0;
+  for (const s of all.sort((a, b) => b.writableLength - a.writableLength)) {
+    if (total <= budget) break;
+    total -= s.writableLength;
+    s.destroy(); // a client not draining won't receive a BYE anyway — just reclaim the memory
+    shed++;
+  }
+  return shed;
+}
+
 /** Special-use attributes by conventional folder name (RFC 6154 / 9051 §7.3.1). */
 const SPECIAL_USE: Record<string, string> = {
   Trash: '\\Trash',
@@ -565,6 +607,7 @@ export class ImapServer {
   readonly #resolveAccount: ((login: string) => { catalog: ServableCatalog; notifier?: MailboxNotifier } | undefined) | undefined;
   readonly #autologoutMs: number;
   readonly #throttle: AuthThrottle | undefined;
+  readonly #maxWriteBacklog: number;
 
   private constructor(
     server: net.Server,
@@ -575,6 +618,7 @@ export class ImapServer {
     autologoutMs = AUTOLOGOUT_MS,
     resolveAccount?: (login: string) => { catalog: ServableCatalog; notifier?: MailboxNotifier } | undefined,
     throttle?: AuthThrottle,
+    maxWriteBacklog = MAX_WRITE_BACKLOG,
   ) {
     this.#server = server;
     this.port = port;
@@ -584,6 +628,18 @@ export class ImapServer {
     this.#resolveAccount = resolveAccount;
     this.#autologoutMs = autologoutMs;
     this.#throttle = throttle;
+    this.#maxWriteBacklog = maxWriteBacklog;
+  }
+
+  /**
+   * Cap total memory held for slow-reading clients. When the summed socket write backlog exceeds
+   * the budget, drop the biggest-backlog (slowest-draining) connections until back under it — a
+   * client reading promptly holds ~0 bytes and is never chosen. Called after each big (FETCH-body)
+   * write. This is the backstop against the read-slowloris OOM; the connections it drops are, by
+   * construction, ones not consuming their data.
+   */
+  #shedIfOverBudget(): void {
+    shedToBudget(this.#sockets, this.#maxWriteBacklog);
   }
 
   /**
@@ -608,6 +664,8 @@ export class ImapServer {
       autologoutMs?: number;
       resolveAccount?: (login: string) => { catalog: ServableCatalog; notifier?: MailboxNotifier } | undefined;
       throttle?: AuthThrottle;
+      /** Server-wide slow-consumer write-backlog budget in bytes (default 256 MiB). Tests set it small. */
+      maxWriteBacklog?: number;
     } = {},
   ): Promise<ImapServer> {
     const catalog: ServableCatalog = 'listNames' in target ? target : inboxOnly(target);
@@ -621,7 +679,7 @@ export class ImapServer {
       server.listen(options.port ?? 0, options.host ?? '127.0.0.1', () => {
         const addr = server.address();
         const port = typeof addr === 'object' && addr !== null ? addr.port : 0;
-        const imap = new ImapServer(server, port, catalog, options.authenticate, options.notifier, options.autologoutMs, options.resolveAccount, options.throttle);
+        const imap = new ImapServer(server, port, catalog, options.authenticate, options.notifier, options.autologoutMs, options.resolveAccount, options.throttle, options.maxWriteBacklog);
         const event = options.tls !== undefined ? 'secureConnection' : 'connection';
         server.on(event, (sock: net.Socket) => {
           imap.#sockets.add(sock);
@@ -752,6 +810,9 @@ export class ImapServer {
       text(`UID ${meta.uid}`);
     }
     sock.write(Buffer.concat([Buffer.from(`* ${seq} FETCH (`, 'latin1'), ...out, Buffer.from(')\r\n', 'latin1')]));
+    // A body response can be large; if slow readers have let the server-wide queue exceed budget,
+    // shed the slowest so many stalled fetchers cannot OOM the process (docs/PERFORMANCE.md).
+    this.#shedIfOverBudget();
   }
 
   #handle(sock: net.Socket): void {
