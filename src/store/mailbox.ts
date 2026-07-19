@@ -145,6 +145,16 @@ export class Mailbox {
     return this.#messages.find((m) => m.uid === uid)?.raw;
   }
 
+  /**
+   * Run `fn` as one atomic batch. The in-memory reference has no real transaction (and
+   * each mutation is already atomic), so this just runs `fn`; it exists to satisfy the
+   * ServableMailbox contract the SQLite backing uses to collapse a bulk STORE/COPY/EXPUNGE
+   * into a single fsync (docs/PERFORMANCE.md). Kept in lockstep by the catalog-parity oracle.
+   */
+  transaction<T>(fn: () => T): T {
+    return fn();
+  }
+
   /** Append a message, assigning it a UID. Returns the assigned UID. */
   append(raw: Buffer, flags: readonly string[] = [], internalDate = 0): number {
     const uid = this.#uidNext;

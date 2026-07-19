@@ -45,6 +45,9 @@ class CountingMailbox implements ServableMailbox {
     this.rawCalls++;
     return this.inner.raw(uid);
   }
+  transaction<T>(fn: () => T): T {
+    return this.inner.transaction(fn);
+  }
   append(raw: Buffer, flags?: readonly string[], internalDate?: number): number {
     return this.inner.append(raw, flags, internalDate);
   }

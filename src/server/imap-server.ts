@@ -67,6 +67,12 @@ export interface ServableMailbox {
   index(): readonly MessageMeta[];
   /** One message's raw bytes by UID (undefined if absent) — fetched a single row at a time. */
   raw(uid: number): Buffer | undefined;
+  /**
+   * Run `fn` as one atomic batch: every append/storeFlags/expunge it makes on this mailbox
+   * commits at a single fsync. Wrap a bulk STORE/COPY/EXPUNGE loop in this so it costs one
+   * transaction, not one per message (docs/PERFORMANCE.md).
+   */
+  transaction<T>(fn: () => T): T;
   append(raw: Buffer, flags?: readonly string[], internalDate?: number): number;
   expunge(uid: number): void;
   storeFlags(uid: number, mode: 'add' | 'remove' | 'replace', flags: readonly string[]): void;
@@ -1488,7 +1494,12 @@ export class ImapServer {
             }
             let storeChanged = false;
             const failed: number[] = []; // seq/uid of messages that failed UNCHANGEDSINCE
-            {
+            // One transaction for the whole set: a bulk STORE (mark a folder read) is N
+            // flag updates, and without this each was its own fsync — ~37 s for a 20k folder
+            // on the box, freezing the server (docs/PERFORMANCE.md). The per-message FETCH
+            // responses are buffered writes, fast enough to emit inside the transaction.
+            const selForStore = selected; // non-null (guarded at case entry); const so the closure keeps the narrowing
+            selForStore.transaction(() => {
               const mode = op === '+FLAGS' ? 'add' : op === '-FLAGS' ? 'remove' : 'replace';
               for (const { seq, meta } of resolveForConn(set, uidMode)) {
                 // UNCHANGEDSINCE: a message modified since `unchangedSince` is left
@@ -1498,10 +1509,10 @@ export class ImapServer {
                   failed.push(uidMode ? meta.uid : seq);
                   continue;
                 }
-                selected.storeFlags(meta.uid, mode, flags);
+                selForStore.storeFlags(meta.uid, mode, flags);
                 storeChanged = true;
                 // After storeFlags, highestModseq is exactly this message's new mod-seq.
-                const newModseq = selected.highestModseq;
+                const newModseq = selForStore.highestModseq;
                 // Compute the resulting flag set from the pre-store snapshot rather
                 // than re-reading the store — a re-read per message is O(n) each, so a
                 // bulk STORE would be O(n²) and stall the single-threaded event loop for
@@ -1523,7 +1534,7 @@ export class ImapServer {
                   write(sock, `* ${seq} FETCH (${parts2.join(' ')})`);
                 }
               }
-            }
+            });
             // Wake other connections on this mailbox so they pick up the flag change.
             if (storeChanged && selectedName !== null) connNotifier?.notify(selectedName);
             // MODIFIED lists the messages left unchanged because they failed UNCHANGEDSINCE.
@@ -1558,20 +1569,33 @@ export class ImapServer {
             // EXPUNGE made a sequence COPY/MOVE hit — and, for MOVE, destructively remove — the
             // wrong message.
             const entries = resolveForConn(set, uidMode);
+            // Read each body being copied first (one row at a time, never the whole mailbox);
+            // a message that vanished from under us is skipped entirely — not copied, and
+            // (for MOVE) not expunged — keeping COPYUID's src/dst lists aligned.
+            const toCopy: Array<{ uid: number; flags: string[]; internalDate: number; body: Buffer }> = [];
+            for (const { meta } of entries) {
+              const body = selected.raw(meta.uid);
+              if (body === undefined) continue;
+              toCopy.push({ uid: meta.uid, flags: [...meta.flags], internalDate: meta.internalDate, body });
+            }
             // UIDPLUS COPYUID: report the source and destination UIDs, in order.
             const srcUids: number[] = [];
             const dstUids: number[] = [];
-            for (const { meta } of entries) {
-              // Fetch the one body being copied on demand (never the whole mailbox). If it
-              // vanished from under us it is skipped entirely — not copied, and (for MOVE)
-              // not expunged — keeping COPYUID's src/dst lists aligned.
-              const body = selected.raw(meta.uid);
-              if (body === undefined) continue;
-              // RFC 9051 §6.4.7: a copied message keeps its flags AND its internal date.
-              srcUids.push(meta.uid);
-              dstUids.push(target.append(body, [...meta.flags], meta.internalDate));
+            // One transaction for all appends (and, for MOVE, one for all expunges): COPY/MOVE
+            // 1:* was one fsync PER message — ~37 s to archive a 20k folder on the box
+            // (docs/PERFORMANCE.md). RFC 9051 §6.4.7: a copy keeps flags AND internal date.
+            target.transaction(() => {
+              for (const c of toCopy) {
+                srcUids.push(c.uid);
+                dstUids.push(target.append(c.body, c.flags, c.internalDate));
+              }
+            });
+            if (cmd === 'MOVE') {
+              const selForMove = selected; // non-null (guarded at case entry)
+              selForMove.transaction(() => {
+                for (const uid of srcUids) selForMove.expunge(uid);
+              });
             }
-            if (cmd === 'MOVE') for (const uid of srcUids) selected.expunge(uid);
             // Announce the peer's EXPUNGE(s) AND (for MOVE) our own removals in one consistent
             // renumber against the client's view (VANISHED under QRESYNC, else descending EXPUNGE).
             syncSelected();
@@ -1602,7 +1626,12 @@ export class ImapServer {
             if (uidMode && arg(1) !== '') {
               const inSet = new Set(this.#resolveSet(selected, arg(1), true).map((e) => e.meta.uid));
               removedUids = new Set(before.filter((m) => m.deleted && inSet.has(m.uid)).map((m) => m.uid));
-              for (const uid of removedUids) selected.expunge(uid);
+              // One transaction for the whole UID EXPUNGE set (plain EXPUNGE is already batched
+              // in expungeDeleted) — otherwise one fsync per removed message (docs/PERFORMANCE.md).
+              const selForExpunge = selected; // non-null (guarded at case entry)
+              selForExpunge.transaction(() => {
+                for (const uid of removedUids) selForExpunge.expunge(uid);
+              });
             } else {
               removedUids = new Set(selected.expungeDeleted());
             }

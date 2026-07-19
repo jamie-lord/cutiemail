@@ -167,13 +167,27 @@ export class SqliteMailbox {
     return row === undefined ? undefined : Buffer.from(row.raw);
   }
 
+  /** >0 while a transaction is open on this instance, so #tx is reentrant (see below). */
+  #txDepth = 0;
+
   /**
    * Run `fn` in a single transaction: a multi-statement mutation commits all-or-
    * nothing (a crash mid-way can't leave half a message stored) and costs one
-   * fsync instead of one per statement. Not nested — our callers never nest.
+   * fsync instead of one per statement.
+   *
+   * Reentrant: if a transaction is already open on THIS instance (a caller wrapped a
+   * batch in `transaction()`), the nested #tx just runs `fn` and lets the outer BEGIN/
+   * COMMIT own it — so N per-message append/storeFlags/expunge calls inside one
+   * transaction() cost ONE fsync, not N. Without this a `STORE 1:*` / `COPY 1:*` was one
+   * transaction PER message: ~37 s to mark a 20k folder read on the box, freezing the
+   * whole (single-threaded) server for that time (docs/PERFORMANCE.md). Reentrancy is
+   * per-instance and must only nest calls on the SAME instance (sibling mailboxes share
+   * one DB connection, so a nested BEGIN across instances would throw) — our callers do.
    */
   #tx<T>(fn: () => T): T {
+    if (this.#txDepth > 0) return fn();
     this.#db.exec('BEGIN IMMEDIATE');
+    this.#txDepth = 1;
     try {
       const result = fn();
       this.#db.exec('COMMIT');
@@ -185,7 +199,18 @@ export class SqliteMailbox {
         /* already rolled back / no active tx */
       }
       throw e;
+    } finally {
+      this.#txDepth = 0;
     }
+  }
+
+  /**
+   * Run `fn` as one transaction, so every append/storeFlags/expunge it makes ON THIS
+   * mailbox commits together at one fsync. The server wraps its bulk STORE/COPY/EXPUNGE
+   * loops in this — turning O(mailbox) synchronous fsyncs into one.
+   */
+  transaction<T>(fn: () => T): T {
+    return this.#tx(fn);
   }
 
   /** Delete a message and its flags (no transaction — callers wrap). */
