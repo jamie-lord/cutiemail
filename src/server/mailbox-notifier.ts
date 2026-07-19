@@ -35,6 +35,17 @@ export class MailboxNotifier {
     };
   }
 
+  /**
+   * Total live subscriptions across all mailboxes. For leak diagnostics / ops visibility: this must
+   * return to its baseline after idling connections disconnect — a monotonic climb means IDLE
+   * subscriptions are not being cleaned up on connection close.
+   */
+  get subscriberCount(): number {
+    let n = 0;
+    for (const set of this.#listeners.values()) n += set.size;
+    return n;
+  }
+
   /** Notify all subscribers of a mailbox that it changed. */
   notify(mailbox: string): void {
     const set = this.#listeners.get(canonicalMailboxName(mailbox));

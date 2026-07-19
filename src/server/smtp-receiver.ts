@@ -565,6 +565,11 @@ export class SmtpReceiver {
     this.#sockets = sockets;
   }
 
+  /** Live connection count — for observability / leak diagnostics (must return to baseline after churn). */
+  get connectionCount(): number {
+    return this.#sockets.size;
+  }
+
   static start(handler: DeliveryHandler, options: ReceiverOptions = {}): Promise<SmtpReceiver> {
     const domain = options.domain ?? 'mail.example.com';
     const server = net.createServer();

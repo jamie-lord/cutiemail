@@ -612,6 +612,14 @@ interface PendingAppend {
 
 export class ImapServer {
   readonly port: number;
+  /** Live connection count — for observability / leak diagnostics (must return to baseline after churn). */
+  get connectionCount(): number {
+    return this.#sockets.size;
+  }
+  /** Bytes currently reserved for in-flight APPEND literals — must return to 0 when no upload is active. */
+  get appendReservedBytes(): number {
+    return this.#appendInflight;
+  }
   readonly #server: net.Server;
   readonly #catalog: ServableCatalog;
   readonly #sockets = new Set<net.Socket>();
