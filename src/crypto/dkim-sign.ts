@@ -19,7 +19,15 @@ export interface SignParams {
   readonly selector: string; // s=
   readonly headerCanon: HeaderCanon;
   readonly bodyCanon: 'simple' | 'relaxed';
+  /** The header fields whose octets are hashed, in order (each present header once). */
   readonly signedHeaders: readonly SignedField[];
+  /**
+   * The `h=` NAME list, if it must differ from `signedHeaders` — used to OVERSIGN (list a name
+   * more times than it is hashed, so a prepended instance breaks the signature; RFC 6376
+   * §5.4.2 makes the excess entry select the null input at sign time). Defaults to one entry
+   * per signed field, which is the ordinary 1:1 case.
+   */
+  readonly headerNames?: readonly string[];
   readonly body: Buffer;
   readonly privateKey: KeyObject;
 }
@@ -42,7 +50,7 @@ export function signMessage(params: SignParams, defects: SignDefects = {}): Sign
   const algorithm = defects.useUnknownAlgorithm === true ? 'rsa-md5' : 'rsa-sha256';
   const canonTag = `${params.headerCanon}/${params.bodyCanon}`;
   const bh = computeBodyHash(params.body, params.bodyCanon, 'sha256');
-  const h = params.signedHeaders.map((f) => f.name.toLowerCase()).join(':');
+  const h = (params.headerNames ?? params.signedHeaders.map((f) => f.name)).map((n) => n.toLowerCase()).join(':');
 
   // Assemble the tag-list with an empty b=, sign over it, then fill b= in.
   const sigValue =

@@ -17,7 +17,7 @@
 
 import { createPrivateKey, createPublicKey, type KeyObject } from 'node:crypto';
 import { signMessage } from '../crypto/dkim-sign.ts';
-import type { SignedField } from '../crypto/dkim-verify.ts';
+import { selectSignedFields } from '../crypto/dkim-verify.ts';
 import { parseMessage } from '../message/parse.ts';
 
 export interface DkimSigner {
@@ -44,19 +44,22 @@ export function dkimSign(raw: Buffer, signer: DkimSigner): Buffer {
   const body = raw.subarray(sep + 4);
 
   const headers = parseMessage(raw).headers;
-  const signedFields: SignedField[] = [];
-  for (const want of SIGN_HEADERS) {
-    const h = headers.find((f) => f.name.toString('latin1').trim().toLowerCase() === want);
-    if (h !== undefined) {
-      signedFields.push({ name: h.name.toString('latin1').trim(), value: h.value.toString('latin1').trim() });
-    }
-  }
+  // The h= NAME list: the present standard headers in conventional order, with From OVERSIGNED
+  // — listed once more than it appears — so a downstream that PREPENDS a second From breaks our
+  // signature (RFC 6376 §5.4.2: the excess h=from selects the null input here, but binds a
+  // forged second From at a verifier). A submitted/generated message carries exactly one From
+  // (submission enforces it, ADR 0015), so this lists From twice.
+  const present = SIGN_HEADERS.filter((want) => headers.some((f) => f.name.toString('latin1').trim().toLowerCase() === want));
+  // Never emit a signature that does not cover From (mirrors the inbound guard, dkim-inbound.ts):
+  // a From-less signed message (e.g. a MAIL FROM:<> submission with no From header) lets a
+  // downstream append ANY From under our d= authority. Fail open — send it unsigned rather than
+  // sign a spoofable message (audit run-6).
+  if (!present.includes('from')) return raw;
+  const headerNames = [...present, 'from']; // oversign From
+  // Build the hashed fields through the SAME §5.4.2 selector the verifier uses, so our own
+  // round-trip is consistent by construction (the trailing oversign `from` selects null here).
+  const signedFields = selectSignedFields(headers, headerNames);
   if (signedFields.length === 0) return raw;
-  // Never emit a signature that does not cover From (mirrors the inbound guard,
-  // dkim-inbound.ts): a From-less signed message (e.g. a MAIL FROM:<> submission with no From
-  // header) lets a downstream append ANY From under our d= authority. Fail open — send it
-  // unsigned rather than sign a spoofable message (audit run-6).
-  if (!signedFields.some((f) => f.name.toLowerCase() === 'from')) return raw;
 
   const result = signMessage({
     domain: signer.domain,
@@ -64,6 +67,7 @@ export function dkimSign(raw: Buffer, signer: DkimSigner): Buffer {
     headerCanon: 'relaxed',
     bodyCanon: 'relaxed',
     signedHeaders: signedFields,
+    headerNames,
     body,
     privateKey: signer.privateKey,
   });

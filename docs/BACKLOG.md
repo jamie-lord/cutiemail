@@ -36,24 +36,6 @@ can't fill in all four isn't on the list; it's in the ledger.
 
 ## Open work
 
-### 2. Oversign `From` — DKIM prepended-`From` replay — *security; dedicated pass*
-
-- **Evidence:** parked across security-audit runs 6–8 as the top item for a dedicated pass. A
-  message signed with a single `h=…:from` can have a **second `From:` header prepended** by an
-  attacker and still verify, because our signer doesn't oversign and our inbound `h=`
-  reconstruction isn't yet RFC 6376 §5.4.2-strict. (DMARC's single-`From` check already fails
-  the two-`From` replay at strict verifiers, which is why this is MED, not HIGH.)
-- **Mission fit:** correctness-first applies to the crypto we emit — a signature an attacker can
-  replay under a forged header is *wrong*, and we own both the signer and the verifier.
-- **Shape:** sign with `h=from:from` (oversign — a prepended duplicate then breaks the hash),
-  **paired** with making the inbound verifier's `h=` reconstruction §5.4.2-compliant (bottom-up,
-  excess header instances → empty) so our own round-trip still verifies. The two must land
-  together or the round-trip breaks.
-- **Testing:** reproduce the replay first (a signed message + a prepended `From:` that currently
-  verifies); then the oversign + verifier fix, with the round-trip green and the replay now
-  rejected. Live Gmail deliverability re-validation — oversigning changes the wire signature, so
-  confirm Gmail still accepts.
-
 ### 3. RENAME-INBOX catalog-parity reconciliation — *correctness; dedicated pass*
 
 - **Evidence:** the residual from security-audit run-8 (recorded LOW, no disk data loss). The

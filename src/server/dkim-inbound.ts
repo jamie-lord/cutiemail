@@ -18,7 +18,7 @@ import { parseDkimSignature } from '../crypto/dkim-signature.ts';
 import { bodyCanonOf, hashAlgoOf, type BodyCanon, type HashAlgo } from '../crypto/dkim-bodyhash.ts';
 import { simpleBody, relaxedBody } from '../crypto/dkim-canon.ts';
 import { parseDkimKeyRecord } from '../crypto/dkim-keyrecord.ts';
-import { buildSigningInput, verifySignature, type SignedField, type HeaderCanon } from '../crypto/dkim-verify.ts';
+import { buildSigningInput, selectSignedFields, verifySignature, type HeaderCanon } from '../crypto/dkim-verify.ts';
 import { importEd25519PublicKey, verifyEd25519 } from '../crypto/dkim-ed25519.ts';
 
 export type DkimVerdict = 'pass' | 'fail' | 'none' | 'temperror' | 'permerror';
@@ -168,17 +168,10 @@ async function verifyOneSignature(rawValue: string, headers: ReturnType<typeof p
   // Step 3: build the header-hash input and verify the signature. RSA (rsa-sha256,
   // most senders) and Ed25519 (ed25519-sha256, RFC 8463) share the input; only the
   // public-key import and the verify primitive differ.
-  const signedFields: SignedField[] = [];
-  for (const name of sig.signedHeaders) {
-    const lower = name.trim().toLowerCase();
-    const h = headers.find((x) => x.name.toString('latin1').trim().toLowerCase() === lower);
-    if (h !== undefined) {
-      // Carry the verbatim field octets (name : value, original whitespace/folds) so `simple`
-      // header canon hashes them byte-for-byte (RFC 6376 §3.4.1) instead of a trimmed rebuild.
-      const raw = Buffer.concat([h.name, Buffer.from(':', 'latin1'), h.value]);
-      signedFields.push({ name: h.name.toString('latin1').trim(), value: h.value.toString('latin1').trim(), raw });
-    }
-  }
+  // RFC 6376 §5.4.2: select each h= field from the bottom of the header block up, consuming
+  // instances — so an oversigned name binds the absence of a further instance (a prepended
+  // From then fails to verify). The shared selector is the SAME one the signer hashes through.
+  const signedFields = selectSignedFields(headers, sig.signedHeaders);
   const input = buildSigningInput(signedFields, sigValue, headerCanon);
 
   let ok: boolean;

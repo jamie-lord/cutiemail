@@ -77,6 +77,50 @@ export function buildSigningInput(
   return Buffer.concat(parts);
 }
 
+/** A raw header field as parsed from a message — name and value octets, verbatim. */
+export interface RawHeaderField {
+  readonly name: Buffer;
+  readonly value: Buffer;
+}
+
+/**
+ * Select the header fields to hash for an `h=` list, per RFC 6376 §5.4.2: walk the names left
+ * to right and, for each, take the NEXT UNUSED instance of that field from the BOTTOM of the
+ * header block upward. A name listed in `h=` more times than it occurs (or not at all)
+ * contributes the null input for each excess — nothing is hashed for it. Both the signer and
+ * the verifier build their header-hash input through THIS one function, so they can never
+ * disagree on which bytes are covered.
+ *
+ * This bottom-up, instance-consuming selection is what makes OVERSIGNING sound. A signer that
+ * lists `from` once more than it appears binds "there is no second From" into the signature:
+ * an attacker who PREPENDS a second From makes the excess `h=from` consume that forged header
+ * (instead of the null input), so the hash no longer matches and the replay fails. The former
+ * top-down, non-consuming `find` picked the same first instance for every `h=` entry and
+ * hashed nothing for exhausted names, so a prepended From verified against the original — the
+ * bug this fixes.
+ */
+export function selectSignedFields(headers: readonly RawHeaderField[], hNames: readonly string[]): SignedField[] {
+  // Instance indices per lower-cased name, in document (top-to-bottom) order.
+  const remaining = new Map<string, number[]>();
+  headers.forEach((h, i) => {
+    const key = h.name.toString('latin1').trim().toLowerCase();
+    const list = remaining.get(key);
+    if (list === undefined) remaining.set(key, [i]);
+    else list.push(i);
+  });
+  const out: SignedField[] = [];
+  for (const rawName of hNames) {
+    const idxs = remaining.get(rawName.trim().toLowerCase());
+    if (idxs === undefined || idxs.length === 0) continue; // exhausted / absent → null input (§5.4.2)
+    const h = headers[idxs.pop()!]!; // pop = the next instance from the bottom up
+    // Carry the verbatim octets (name : value, original whitespace/folds) so `simple` header
+    // canon hashes them byte-for-byte (§3.4.1); `relaxed` rebuilds from the trimmed name/value.
+    const raw = Buffer.concat([h.name, Buffer.from(':', 'latin1'), h.value]);
+    out.push({ name: h.name.toString('latin1').trim(), value: h.value.toString('latin1').trim(), raw });
+  }
+  return out;
+}
+
 export interface SignatureDefects {
   /** Accept without actually checking the signature. Violates R-6376-3.7-b. */
   readonly skipSignatureCheck?: boolean;

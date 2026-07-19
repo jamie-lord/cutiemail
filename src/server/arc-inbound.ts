@@ -20,7 +20,7 @@ import { validateArcChainStructure, type ArcSet, type ChainValidation } from '..
 import { computeBodyHash } from '../crypto/dkim-bodyhash.ts';
 import { buildAmsInput } from '../crypto/arc-ams.ts';
 import { buildSealInput, verifySeal, type ArcSetHeaders } from '../crypto/arc-seal.ts';
-import { verifySignature } from '../crypto/dkim-verify.ts';
+import { verifySignature, selectSignedFields } from '../crypto/dkim-verify.ts';
 import { verifyEd25519, importEd25519PublicKey } from '../crypto/dkim-ed25519.ts';
 import { parseDkimKeyRecord } from '../crypto/dkim-keyrecord.ts';
 import { createPublicKey } from 'node:crypto';
@@ -125,12 +125,9 @@ async function verifyNewestAms(
   if (computeBodyHash(body, bodyCanon, 'sha256', lengthLimit) !== stripWsp(bh)) return false;
 
   // Step 2: build the header-hash input over h= plus the AMS field (b= emptied) and verify.
-  const signedFields = h
-    .split(':')
-    .map((name) => name.trim().toLowerCase())
-    .map((lower) => headers.find((x) => x.name.toString('latin1').trim().toLowerCase() === lower))
-    .filter((x): x is NonNullable<typeof x> => x !== undefined)
-    .map((x) => ({ name: x.name.toString('latin1').trim(), value: x.value.toString('latin1').trim() }));
+  // Same RFC 6376 §5.4.2 bottom-up, instance-consuming selection as DKIM (shared selector) —
+  // so an oversigned AMS field is verified soundly and there is one header-selection code path.
+  const signedFields = selectSignedFields(headers, h.split(':'));
   const input = buildAmsInput(signedFields, ams, headerCanon);
 
   const key = await resolvePublicKey(d, s, resolveKey);
