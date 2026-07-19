@@ -19,12 +19,15 @@ Two whole bodies of work are complete and live-verified, so they are out of this
   (registry-owned accounts) and [ADR 0013](decisions/0013-no-http-listener.md) (no HTTP
   listener). Evidence is in the commit messages (`git log --grep "(B[1-6]"`).
 
-Beyond those, aliases + `+tag` subaddressing shipped as [ADR 0014](decisions/0014-aliases-and-subaddressing.md),
-**send-as / submission sender-authorization** shipped as [ADR 0015](decisions/0015-submission-sender-authorization.md)
-(closing the cross-account spoof), and eight security-audit runs + two live pentest sessions
-converged (find rate 8→6→7→7→4→5→4→0). The residue of *that* work — two delicate items each
-held back for a dedicated, live-verified pass rather than an audit-loop patch — is items 2 and
-3 below.
+Beyond those, a sweep of production-readiness and parked-security work shipped together:
+aliases + `+tag` subaddressing ([ADR 0014](decisions/0014-aliases-and-subaddressing.md));
+**send-as / submission sender-authorization** ([ADR 0015](decisions/0015-submission-sender-authorization.md),
+closing the cross-account spoof); **DKIM From oversigning** against prepended-From replay
+(one shared RFC 6376 §5.4.2 header selector for DKIM + ARC); **INBOX-rename fresh-target
+semantics** with a catalog-level differential oracle ([ADR 0016](decisions/0016-rename-inbox-fresh-target.md),
+closing the run-8 QRESYNC residual); an **8-character password floor**; and **app-specific
+passwords** ([ADR 0017](decisions/0017-app-specific-passwords.md)). Plus eight security-audit
+runs + two live pentest sessions that converged (find rate 8→6→7→7→4→5→4→0).
 
 ## How an item earns its place here
 
@@ -36,30 +39,14 @@ can't fill in all four isn't on the list; it's in the ledger.
 
 ## Open work
 
-### 5. App-specific passwords — *usability/security; needs a decision*
-
-- **Evidence:** the production-readiness menu's remaining feature. Auth is SCRAM /
-  PLAIN-over-TLS only, and 2FA is ecosystem-blocked (IMAP/SMTP clients + SASL don't support it —
-  [BACKLOG ledger](#considered-and-not-on-the-queue--with-reasons)), so a revocable per-device
-  credential is the nearest modern auth-hygiene win.
-- **Mission fit:** letting an operator revoke one lost phone without resetting every device is
-  the modern-mailbox expectation the vision targets — but it is a feature, not a bug fix, so it
-  is flagged for a decision, not pre-approved.
-- **Shape (if built):** N named, independently-revocable credentials per account in the registry
-  (each its own SCRAM material), authenticating exactly like the primary; the primary can be
-  reserved for management. An ADR records the model (do app-passwords bypass the throttle? can
-  they be scoped to IMAP vs submission?).
-- **Testing:** registry round-trip + a negative control that a revoked credential no longer
-  authenticates while its siblings still do; live IMAPS/submission auth on the box with an
-  app-password and no primary password in play.
-
----
+The correctness/usability/security queue is **empty** — items 1–5 shipped (see the pointer
+above). What remains is test-bed completeness, all either environment-blocked or marginal
+against coverage already achieved.
 
 ## Test-bed completeness — recorded, lower priority
 
 The test suite is the one place completeness is the goal, so these stay listed — but each is
-either environment-blocked or marginal against coverage already achieved, so none outranks the
-correctness work above.
+either environment-blocked or marginal against coverage already achieved.
 
 ### 6. Real-MTA (Postfix) calibration #23/#24 — *environment-blocked*
 

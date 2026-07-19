@@ -49,6 +49,9 @@ const USAGE = [
   '  alias add <login> <local-part>   route another address to that account (ADR 0014)',
   '  alias remove <local-part>        remove an alias',
   '  alias list [login]               every alias (or one account\'s)',
+  '  app-password add <login> <name>  create a revocable per-device password (ADR 0017)',
+  '  app-password remove <login> <name>  revoke one',
+  '  app-password list <login>        every app password (names + dates, never the secret)',
   '',
   'The control database is MAIL_CONTROL_DB (default control.db), or --db.',
   'When stdin is not a terminal, the password is read as one line from stdin.',
@@ -112,6 +115,70 @@ function runAlias(args: readonly string[], io: OpsIo, registry: AccountRegistry)
     }
     default:
       io.err('usage: account alias add <login> <local-part> | remove <local-part> | list [login]');
+      return 2;
+  }
+}
+
+/** `account app-password add|list|remove` — named, revocable per-device credentials (ADR 0017). */
+function runAppPassword(args: readonly string[], io: OpsIo, registry: AccountRegistry): number {
+  const [sub, login, name] = args;
+  switch (sub) {
+    case 'add': {
+      if (login === undefined || name === undefined) {
+        io.err('usage: account app-password add <login> <name>  (e.g. account app-password add jamie phone)');
+        return 2;
+      }
+      if (!validLogin(name)) {
+        io.err(`app-password add: "${name}" is not a valid name — letters/digits then letters/digits/._- (max 64).`);
+        return 2;
+      }
+      if (registry.lookup(login) === undefined) {
+        io.err(`app-password add: no account "${login}" — create it first with \`account add ${login}\`.`);
+        return 1;
+      }
+      if (registry.appPasswordNameTaken(login, name)) {
+        io.err(`app-password add: "${login}" already has an app password named "${name}" — remove it first or pick another name.`);
+        return 1;
+      }
+      // The registry generates the secret, stores only its SCRAM material, and hands the
+      // plaintext back once — argv never carries it (and neither does the DB).
+      const secret = registry.addAppPassword(login, name, Date.now());
+      io.out(`app password "${name}" created for ${login}. Use it as this account's password on one device:`);
+      io.out('');
+      io.out(`    ${secret}`);
+      io.out('');
+      io.out('Shown ONCE and unrecoverable — copy it now. The primary password still works everywhere;');
+      io.out(`revoke just this one any time with \`account app-password remove ${login} ${name}\` (honoured live).`);
+      return 0;
+    }
+    case 'remove': {
+      if (login === undefined || name === undefined) {
+        io.err('usage: account app-password remove <login> <name>');
+        return 2;
+      }
+      if (!registry.removeAppPassword(login, name)) {
+        io.err(`app-password remove: no app password "${name}" for "${login}".`);
+        return 1;
+      }
+      io.out(`app password "${name}" for ${login} revoked — it no longer authenticates.`);
+      return 0;
+    }
+    case 'list': {
+      if (login === undefined) {
+        io.err('usage: account app-password list <login>');
+        return 2;
+      }
+      if (registry.lookup(login) === undefined) {
+        io.err(`app-password list: no account "${login}".`);
+        return 1;
+      }
+      const rows = registry.listAppPasswords(login);
+      if (rows.length === 0) io.out(`no app passwords for ${login}.`);
+      for (const r of rows) io.out(`${r.name.padEnd(24)} created ${new Date(r.created).toISOString().slice(0, 10)}`);
+      return 0;
+    }
+    default:
+      io.err('usage: account app-password add <login> <name> | remove <login> <name> | list <login>');
       return 2;
   }
 }
@@ -237,8 +304,8 @@ export async function runAccount(
     io.err(USAGE);
     return 2;
   }
-  // 'list' takes no login; 'alias' parses its own sub-arguments (see runAlias).
-  const needsLogin = verb !== 'list' && verb !== 'alias';
+  // 'list' takes no login; 'alias'/'app-password' parse their own sub-arguments.
+  const needsLogin = verb !== 'list' && verb !== 'alias' && verb !== 'app-password';
   if (needsLogin && (login === undefined || !validLogin(login))) {
     io.err(`account ${verb}: a login is required — letters/digits then letters/digits/._- (max 64); it names the mailbox database file.`);
     return 2;
@@ -250,6 +317,8 @@ export async function runAccount(
     switch (verb) {
       case 'alias':
         return runAlias(positional.slice(1), io, registry);
+      case 'app-password':
+        return runAppPassword(positional.slice(1), io, registry);
       case 'add': {
         if (registry.lookup(login!) !== undefined) {
           io.err(`account add: ${login} already exists — use set-password to change its password.`);
@@ -323,8 +392,10 @@ export async function runAccount(
         if (rows.length === 0) io.out('no accounts.');
         for (const r of rows) {
           const aliases = registry.aliasesFor(r.login);
-          const suffix = aliases.length > 0 ? `  aliases: ${aliases.join(', ')}` : '';
-          io.out(`${r.enabled ? 'enabled ' : 'DISABLED'}  ${r.login.padEnd(16)} ${r.mailDbPath}${suffix}`);
+          const aliasSuffix = aliases.length > 0 ? `  aliases: ${aliases.join(', ')}` : '';
+          const apCount = registry.listAppPasswords(r.login).length;
+          const apSuffix = apCount > 0 ? `  app-passwords: ${apCount}` : '';
+          io.out(`${r.enabled ? 'enabled ' : 'DISABLED'}  ${r.login.padEnd(16)} ${r.mailDbPath}${aliasSuffix}${apSuffix}`);
         }
         return 0;
       }

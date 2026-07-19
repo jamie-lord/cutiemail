@@ -389,3 +389,66 @@ test('alias: rejects a missing account, collisions with a login/alias, and bad l
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test('app-password: add prints a working secret ONCE, list shows it, remove revokes it', async () => {
+  const dir = tmp();
+  try {
+    const dbPath = join(dir, 'control.db');
+    const env = { MAIL_CONTROL_DB: dbPath };
+    await runAccount(['add', 'jamie'], capture().io, env, secrets('primary-password', 'primary-password'));
+
+    // add: prints the generated secret exactly once.
+    const addCap = capture();
+    assert.equal(await runAccount(['app-password', 'add', 'jamie', 'phone'], addCap.io, env), 0);
+    // The secret is the indented line in the output; recover it to prove it authenticates.
+    const secret = addCap.out.map((l) => l.trim()).find((l) => /^[A-Za-z0-9_-]{20,}$/.test(l));
+    assert.ok(secret !== undefined, 'a generated secret was printed');
+    assert.match(addCap.out.join('\n'), /ONCE|once/, 'the operator is told it is shown once');
+
+    // The secret authenticates as jamie via the real verify path; the primary still works too.
+    const db = openMailDb(dbPath);
+    const reg = AccountRegistry.open(db);
+    assert.equal(reg.verifyPassword('jamie', secret!), true, 'the printed app password authenticates');
+    assert.equal(reg.verifyPassword('jamie', 'primary-password'), true, 'the primary is unaffected');
+    db.close();
+
+    // list shows the name (never the secret); account list shows the count.
+    const listCap = capture();
+    await runAccount(['app-password', 'list', 'jamie'], listCap.io, env);
+    assert.match(listCap.out.join('\n'), /phone/);
+    assert.ok(!listCap.out.join('\n').includes(secret!), 'list never reveals the secret');
+    const acctList = capture();
+    await runAccount(['list'], acctList.io, env);
+    assert.match(acctList.out.join('\n'), /app-passwords: 1/);
+
+    // remove revokes it — it stops authenticating.
+    assert.equal(await runAccount(['app-password', 'remove', 'jamie', 'phone'], capture().io, env), 0);
+    const db2 = openMailDb(dbPath);
+    assert.equal(AccountRegistry.open(db2).verifyPassword('jamie', secret!), false, 'the revoked secret no longer authenticates');
+    db2.close();
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('app-password: rejects a missing account, a duplicate name, and bad usage', async () => {
+  const dir = tmp();
+  try {
+    const dbPath = join(dir, 'control.db');
+    const env = { MAIL_CONTROL_DB: dbPath };
+    await runAccount(['add', 'jamie'], capture().io, env, secrets('primary-password', 'primary-password'));
+    assert.equal(await runAccount(['app-password', 'add', 'jamie', 'phone'], capture().io, env), 0);
+
+    assert.equal(await runAccount(['app-password', 'add', 'ghost', 'x'], capture().io, env), 1, 'no such account');
+    const dupCap = capture();
+    assert.equal(await runAccount(['app-password', 'add', 'jamie', 'phone'], dupCap.io, env), 1, 'duplicate name');
+    assert.match(dupCap.err.join('\n'), /already has an app password/);
+    assert.equal(await runAccount(['app-password', 'add', 'jamie', 'bad name'], capture().io, env), 2, 'invalid name');
+    assert.equal(await runAccount(['app-password', 'add', 'jamie'], capture().io, env), 2, 'missing name');
+    assert.equal(await runAccount(['app-password', 'remove', 'jamie', 'nope'], capture().io, env), 1, 'revoke a missing one');
+    assert.equal(await runAccount(['app-password', 'list', 'ghost'], capture().io, env), 1, 'list for no account');
+    assert.equal(await runAccount(['app-password', 'frobnicate'], capture().io, env), 2, 'unknown subcommand');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

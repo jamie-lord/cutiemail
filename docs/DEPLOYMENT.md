@@ -194,6 +194,20 @@ and `account set-password` refuse a shorter one. A weak password seeded through 
 deprecated `MAIL_PASS`/`MAIL_ACCOUNTS` env path is only *warned* about (a boot must not fail
 on it) — provision real credentials with `init`/`account` instead.
 
+**App-specific passwords** (ADR 0017) — a revocable per-device credential, so a lost phone
+doesn't mean rotating your one password everywhere. Each is server-generated and shown once:
+
+```sh
+node src/main.ts account app-password add you phone     # prints a strong secret ONCE — copy it
+node src/main.ts account app-password list you          # names + dates, never the secret
+node src/main.ts account app-password remove you phone  # revoke that one; honoured live
+```
+
+Use the printed secret as this account's password on one device. Your primary password still
+works everywhere; the recommended practice is to put app passwords on your devices and keep the
+primary for `account` management only, so no device ever holds your primary. A revoked app
+password stops authenticating immediately, and disabling the account disables all of them.
+
 **Aliases and `+tag` subaddressing** — an account can answer to more than one address
 (ADR 0014). An alias is a second address whose mail lands in the same mailbox — it adds no
 database (a user is still one file), and you can't log in as one. Subaddressing is on by

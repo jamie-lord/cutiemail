@@ -70,6 +70,61 @@ test('credentials and routing survive a close/reopen of the same database file',
   }
 });
 
+test('app passwords: each authenticates like the primary, is independently revocable (ADR 0017)', () => {
+  const reg = AccountRegistry.open(new DatabaseSync(':memory:'));
+  reg.upsert('alice', 'primary-password', 'mail-alice.db');
+  const phone = reg.addAppPassword('alice', 'phone', 1000);
+  const laptop = reg.addAppPassword('alice', 'laptop', 2000);
+  assert.notEqual(phone, laptop, 'each app password is a distinct generated secret');
+
+  // Every credential authenticates as the same account.
+  assert.equal(reg.verifyPassword('alice', 'primary-password'), true, 'the primary still works');
+  assert.equal(reg.verifyPassword('alice', phone), true, 'the phone app password authenticates');
+  assert.equal(reg.verifyPassword('alice', laptop), true, 'the laptop app password authenticates');
+  // A wrong secret and another account are still refused.
+  assert.equal(reg.verifyPassword('alice', 'not-a-real-secret'), false);
+  assert.equal(reg.verifyPassword('bob', phone), false, 'the app password is scoped to its owner');
+
+  // Revoke ONE: it stops working; the others (and the primary) are untouched.
+  assert.equal(reg.removeAppPassword('alice', 'phone'), true);
+  assert.equal(reg.verifyPassword('alice', phone), false, 'the revoked app password no longer authenticates');
+  assert.equal(reg.verifyPassword('alice', laptop), true, 'a sibling app password still works');
+  assert.equal(reg.verifyPassword('alice', 'primary-password'), true, 'the primary is unaffected');
+
+  // list shows names + created, never the secret; revoking a missing one is false.
+  assert.deepEqual(reg.listAppPasswords('alice'), [{ name: 'laptop', created: 2000 }]);
+  assert.equal(reg.removeAppPassword('alice', 'phone'), false, 'already revoked');
+  assert.equal(reg.appPasswordNameTaken('alice', 'laptop'), true);
+  assert.equal(reg.appPasswordNameTaken('alice', 'phone'), false);
+});
+
+test('app passwords: a disabled account fails auth on the app password too', () => {
+  const reg = AccountRegistry.open(new DatabaseSync(':memory:'));
+  reg.upsert('alice', 'primary-password', 'mail-alice.db');
+  const secret = reg.addAppPassword('alice', 'phone', 1000);
+  assert.equal(reg.verifyPassword('alice', secret), true);
+  reg.setEnabled('alice', false);
+  assert.equal(reg.verifyPassword('alice', secret), false, 'disabling the account disables its app passwords');
+  reg.setEnabled('alice', true);
+  assert.equal(reg.verifyPassword('alice', secret), true, 're-enabling restores them');
+});
+
+test('negative control: an app password secret is never written to the database', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'acctreg-'));
+  const path = join(dir, 'control.db');
+  try {
+    const db = new DatabaseSync(path);
+    const reg = AccountRegistry.open(db);
+    reg.upsert('alice', 'primary-password', 'mail-alice.db');
+    const secret = reg.addAppPassword('alice', 'phone', 1000);
+    db.close();
+    const bytes = readFileSync(path);
+    assert.ok(!bytes.includes(Buffer.from(secret, 'latin1')), 'the app password secret must never reach disk — only SCRAM material');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test('negative control: the database never contains the plaintext password', () => {
   const dir = mkdtempSync(join(tmpdir(), 'acctreg-'));
   const path = join(dir, 'control.db');
