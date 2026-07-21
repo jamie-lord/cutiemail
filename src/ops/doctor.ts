@@ -1,7 +1,7 @@
 /**
- * `doctor` — the live preflight / drift check (backlog B2).
+ * `doctor` — the live preflight / drift check.
  *
- * The evidence (docs/BACKLOG.md): the deepest fear in self-hosted email is drift —
+ * The deepest fear in self-hosted email is drift —
  * "Gmail accepted my emails fine... until one day it didn't" — and the classic
  * first-deploy failure is an outbound port 25 the provider silently blocks. Mox
  * pre-flights these once, at quickstart; `doctor` is re-runnable at any time and

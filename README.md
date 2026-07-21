@@ -6,11 +6,11 @@ desktop and phone) drive, storing everything in SQLite. No mail libraries: the S
 MIME parser, and the DKIM/SPF/DMARC crypto are all hand-built on the byte layer. **Zero runtime dependencies** —
 Node runs the TypeScript directly, and the only thing in `node_modules` is the type-checker.
 
-The design goal is the one behind the name we use for it internally, the *SQLite of email*:
+The design goal is best said as the *SQLite of email*:
 correct, minimal, and embeddable rather than a sprawling MTA. Scope is chosen deliberately and
-every omission is a recorded decision, not a gap — see [docs/WORKING-AGREEMENT.md](docs/WORKING-AGREEMENT.md)
-for the philosophy, [docs/TESTING-ROADMAP.md](docs/TESTING-ROADMAP.md) for what is done versus
-deliberately left out, and [docs/BACKLOG.md](docs/BACKLOG.md) for what comes next and why.
+every omission is a recorded decision, not a gap — see [the working agreement](docs/WORKING-AGREEMENT.md)
+for the philosophy, [how it's tested](docs/TESTING.md) for what is done versus
+deliberately left out, and [the backlog](docs/BACKLOG.md) for what's still open and what was declined, with reasons.
 
 It is deployed and live: the daemon runs on a small box under real DNS and exchanges
 authenticated mail with Gmail (SPF, DKIM, and DMARC all passing), read back over IMAPS.
@@ -24,15 +24,15 @@ query with stock `sqlite3`, and a from-scratch implementation where every protoc
 this repo — built correctness-first, with the test bed (reference-model storage proofs,
 mutant-server negative controls, security-reviewed hostile-input surfaces) as the star of the
 show. Deliberately **not**
-here, each recorded as a decision with reasons ([docs/TESTING-ROADMAP.md](docs/TESTING-ROADMAP.md),
-[docs/BACKLOG.md](docs/BACKLOG.md)): POP3, JMAP, Sieve, webmail, a spam filter beyond DMARC
+here, each recorded as a decision with reasons ([how it's tested](docs/TESTING.md),
+[the backlog](docs/BACKLOG.md)): POP3, JMAP, Sieve, webmail, a spam filter beyond DMARC
 enforcement, multiple domains per instance, and clustering. One domain, a handful of humans, on a
 small box you own — that's the shape it serves best.
 
 **Maturity:** young (v0, one maintainer) but held to an unusually high verification bar — 1,000+
 tests including negative controls, security-reviewed hostile-input surfaces, and a production
 instance exchanging authenticated mail with Gmail daily. Run it for mail you care about only after
-reading the honest limitations in [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md).
+reading the honest limitations in [the deployment guide](docs/DEPLOYMENT.md).
 
 **Platforms:** developed and tested on Linux and macOS; on Windows use WSL2 (the daemon itself is
 plain Node, but the 0600/0700 file-permission hardening is a no-op on NTFS and the deployment
@@ -63,7 +63,7 @@ PowerShell, set variables as `$env:MAIL_DOMAIN='...'` before `npm start` (the `V
 one-liners below are POSIX-shell syntax).
 
 New to running mail? Start with the picture in
-[docs/DEPLOYMENT.md — "The shape of it"](docs/DEPLOYMENT.md#the-shape-of-it) for a plain-English
+[the deployment guide's "The shape of it"](docs/DEPLOYMENT.md#the-shape-of-it) for a plain-English
 map of the moving parts (MX, SPF, DKIM, DMARC) before touching a real domain.
 
 | Variable | Default | Meaning |
@@ -79,7 +79,7 @@ map of the moving parts (MX, SPF, DKIM, DMARC) before touching a real domain.
 | `MAIL_DKIM_KEY` / `MAIL_DKIM_SELECTOR` | unset | PEM RSA key + selector to sign outbound mail |
 | `MAIL_TRUSTED_ARC_SEALERS` | unset | comma-separated forwarder domains whose valid ARC chain may rescue a DMARC failure to the inbox |
 | `MAIL_MAX_SIZE` | `26214400` | max accepted message size in octets (25 MiB) — applied to SMTP `SIZE` and the IMAP `APPEND` literal alike |
-| `MAIL_OUTBOUND` | `deliver` | set `hold` for a dev/test sink: remote mail is queued (inspect with `queue list`) but **never relayed** — nothing can escape a test instance (ADR 0020). Any other value refuses to boot. |
+| `MAIL_OUTBOUND` | `deliver` | set `hold` for a dev/test sink: remote mail is queued (inspect with `queue list`) but **never relayed** — nothing can escape a test instance (ADR 0019). Any other value refuses to boot. |
 | `MAIL_DEBUG` | unset | `1` logs every received SMTP/IMAP command line to stderr (credentials redacted) — the protocol-level debugging view |
 
 ### Send yourself the first email
@@ -145,10 +145,10 @@ object directly, with the same knobs plus injection seams (DNS resolvers, the au
 DMARC sampler) that the test suite uses.
 
 To put it on a real box with real DNS and send mail to your own inbox, follow
-[docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) — the DNS, systemd, and client walkthrough, with an
+[the deployment guide](docs/DEPLOYMENT.md) — the DNS, systemd, and client walkthrough, with an
 honest list of what is intentionally naive. Prefer containers? A `Dockerfile` and
 `docker-compose.yml` are at the repo root (`docker compose up -d`) — zero runtime deps and no
-build step make the image just the Node runtime plus the source ([ADR 0021](docs/decisions/0021-container-image.md)).
+build step make the image just the Node runtime plus the source ([ADR 0020](docs/decisions/0020-container-image.md)).
 
 ### Use it as a dev/test mail server
 
@@ -170,7 +170,7 @@ Mail is stored byte-exact, so leaving is as easy as arriving: copy mailboxes out
 any tool (imapsync, a desktop client), read the plain SQLite files directly with stock `sqlite3`,
 or dump a single message as a `.eml` with `mail show <login> <uid> --raw`. Importing 15 years of
 history *in* works the same way — see "Migrating your existing mail" in
-[docs/DEPLOYMENT.md](docs/DEPLOYMENT.md).
+[the deployment guide](docs/DEPLOYMENT.md).
 
 ## What it does
 
@@ -210,7 +210,7 @@ strings" rule is what lets a delivered message be read back byte-exact.
 ## How it's built
 
 The tree is really two programs sharing one spine — the runnable server, and a conformance test
-bed that drives *the same code* the daemon runs. [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) is
+bed that drives *the same code* the daemon runs. [The architecture guide](docs/ARCHITECTURE.md) is
 the guided tour: the layering from octet primitives up to the daemon, and a byte-by-byte trace of
 one message from SMTP in to IMAP out. Start there to read the codebase.
 
@@ -235,7 +235,7 @@ independent disciplines back the 1,000+ tests:
   regression-tested against the attacks that matter — auth-header spoofing, DMARC display-spoofing,
   a TLS hang that could wedge the send queue, MX SSRF, and cross-connection desync — each covered
   by a test that fails on the vulnerable code. Coverage and status are in
-  [docs/TESTING-ROADMAP.md](docs/TESTING-ROADMAP.md).
+  [how it's tested](docs/TESTING.md).
 
 ```sh
 npm test          # the whole suite, including the negative-control proofs
@@ -270,7 +270,7 @@ makes SMTP conformance harder than IMAP — see [src/conformance/fixture.ts](src
 The flagship coverage is the CRLF/SMTP-smuggling corpus (the `<LF>.<LF>`, `<LF>.<CR><LF>`, and
 `<CR>.<CR>` end-of-data variants) and the RFC 3207 STARTTLS session-security class (pre-handshake
 injection, smuggle-into-TLS, and the §4.2 post-handshake reset). The wire-level attack detail is
-distilled, with sources, in [docs/research/smtp-divergence.md](docs/research/smtp-divergence.md).
+distilled, with sources, in [the SMTP divergence notes](docs/research/smtp-divergence.md).
 
 **Calibration before trust.** The runner is our own code, so its verdicts are only trustworthy
 once calibrated against known-good MTAs, with every disagreement triaged to *our bug*, *our
@@ -282,15 +282,15 @@ implementations — Exim, mox, and aiosmtpd — with zero false positives**; the
 
 ## Design decisions
 
-Recorded in [docs/decisions/](docs/decisions/): why RFC 5321 rather than the unpublished 5321bis,
+Recorded as ADRs in [docs/decisions/](docs/decisions/): why RFC 5321 rather than the unpublished 5321bis,
 why a from-scratch TypeScript runner, and what the deliberately minimal toolchain leaves out. To
-add a corpus module, [src/corpus/AUTHORING.md](src/corpus/AUTHORING.md) is the contract.
+add a corpus module, [the corpus authoring guide](src/corpus/AUTHORING.md) is the contract.
 
 ## Contributing & security
 
-Contributions are welcome — read [CONTRIBUTING.md](CONTRIBUTING.md) first; the project is
+Contributions are welcome — read [the contributing guide](CONTRIBUTING.md) first; the project is
 deliberately scoped, so the "why it earns its place" bar matters. Found a security bug? Please
-report it privately per [SECURITY.md](SECURITY.md), not in a public issue.
+report it privately per [the security policy](SECURITY.md), not in a public issue.
 
 ## License
 

@@ -3,7 +3,7 @@
 # There is no build step and nothing to install: Node runs the .ts files directly (type
 # stripping, ≥ 22.18), and node_modules holds only the type-checker, which the runtime does
 # not need. So this image is just "the official Node runtime + the source" — no `npm install`,
-# no compile, no multi-stage dance. That smallness is the point (ADR 0021).
+# no compile, no multi-stage dance. That smallness is the point (ADR 0020).
 FROM node:22-slim
 
 # Run as the unprivileged `node` user the base image ships (uid 1000). The container binds

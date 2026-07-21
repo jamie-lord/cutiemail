@@ -108,7 +108,7 @@ a routing feature's clothes:
   meaningless until that gate exists.
 - The right shape is: submission verifies `From`'s local-part is the authenticated login *or
   one of its aliases*, over our own domain. That closes the multi-account cross-account spoof
-  (the parked submission sender-authz item) **and** enables legitimate send-as in one stroke —
+  (submission never checked `From` — see ADR 0015) **and** enables legitimate send-as in one stroke —
   but it is a security-policy decision that deserves its own ADR and its own live deliverability
   re-validation, not a rider on this one.
 
@@ -124,4 +124,4 @@ addresses filter); this ADR ships that, and names send-as as the deliberate foll
 - There is no `alias`-owns-a-mailbox concept to later regret: an alias is always a pointer,
   and removing it never touches mail.
 - The next step is scoped and written down (submission sender-authorization / send-as), and
-  the parked cross-account-spoof concern now has a concrete home.
+  the cross-account-spoof concern has a concrete home (ADR 0015).

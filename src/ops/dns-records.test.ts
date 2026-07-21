@@ -1,5 +1,5 @@
 /**
- * The DNS record plan (backlog B1) — exact-output tests.
+ * The DNS record plan — exact-output tests.
  *
  * The plan is a pure function, so the tests pin it exactly: which records exist,
  * their owner names, their values, and the rendering rules that matter on the wire

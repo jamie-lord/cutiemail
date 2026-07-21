@@ -1,8 +1,8 @@
 # Deploying to a small server and using it with real email
 
-This is the walkthrough for the thing the project is now capable of: put the
-daemon on a little Linux box, point DNS at it, and send mail to and receive mail
-from your existing inbox (Gmail, Fastmail, whatever) through one or more accounts.
+This walkthrough puts the daemon on a little Linux box, points DNS at it, and
+gets mail flowing to and from your existing inbox (Gmail, Fastmail, whatever)
+through one or more accounts.
 
 It is a **test bench, not a production MTA** — naive on purpose (see
 [Known limitations](#known-limitations)). The point is to get it into the real
@@ -116,7 +116,7 @@ sudo ufw allow 22/tcp && sudo ufw allow 25/tcp && sudo ufw allow 587/tcp && sudo
 ## Running it in a container
 
 If you deploy in containers rather than on bare-metal systemd, the repo ships a `Dockerfile`
-and `docker-compose.yml` at the root ([ADR 0021](decisions/0021-container-image.md)). Because the
+and `docker-compose.yml` at the root ([ADR 0020](decisions/0020-container-image.md)). Because the
 project has zero runtime dependencies and no build step, the image is just the Node runtime plus
 `src/` — nothing to compile.
 
@@ -343,8 +343,10 @@ sudo -u mail env MAIL_DOMAIN=mail.example.com MAIL_SUBMISSION_PORT=587 MAIL_IMAP
 the registry whose mailbox file is missing from the backup comes back as an empty mailbox (its
 credentials and aliases are intact) rather than failing the restore.
 
-**"Did my mail actually leave?"** — the outbound queue and the dead-letter store (messages
-delivery permanently gave up on, retained instead of dropped) are inspectable:
+**"Did my mail actually leave?"** — the outbound queue (transient failures retry on an
+exponential backoff for ~5 days before giving up; the queue survives a restart) and the
+dead-letter store (messages delivery permanently gave up on, retained instead of dropped)
+are inspectable:
 
 ```sh
 node src/main.ts queue list --db /var/lib/mailserver/control.db
@@ -408,7 +410,7 @@ CapabilityBoundingSet=CAP_NET_BIND_SERVICE
 LimitNOFILE=65536
 Restart=on-failure
 
-# Defense-in-depth sandboxing (systemd-analyze security: 9.3 UNSAFE -> 1.6 OK).
+# Defense-in-depth sandboxing (systemd-analyze security scores this unit ~1.6 / OK).
 # MemoryDenyWriteExecute is deliberately OMITTED — the V8 JIT needs W+X memory and
 # Node will not start with it. RestrictAddressFamilies keeps AF_INET/AF_INET6 (SMTP/
 # IMAP + c-ares DNS) and AF_UNIX; verify outbound relay still works after any change.
@@ -462,7 +464,7 @@ sudo -u mail env MAIL_DOMAIN=mail.example.com MAIL_SUBMISSION_PORT=587 MAIL_IMAP
 ```
 
 A green run means the mail path is sound; a failure names the step that broke (auth, delivery, or
-IMAP). If the daemon can't start at all, it now prints a specific reason — a port already in use,
+IMAP). If the daemon can't start at all, it prints a specific reason — a port already in use,
 or a privileged port without the capability — rather than a stack trace. If a test message you
 sent from elsewhere seems to vanish, check the **Junk** folder and read its `Authentication-Results`
 header: DMARC enforcement files a failing message there rather than the inbox (a common surprise
@@ -533,7 +535,7 @@ problem — do it in this order so nothing is lost in the window:
 6. **Keep the old mailbox reachable** for a week or two before decommissioning; stragglers and
    slow-retrying senders trickle in after the cutover.
 
-There is deliberately no backup-MX support (recorded in [docs/BACKLOG.md](docs/BACKLOG.md)) — the
+There is deliberately no backup-MX support (recorded in [the backlog](BACKLOG.md)) — the
 sender-retry behaviour above is what covers a short outage, so a second MX isn't needed at this
 scale.
 
@@ -592,29 +594,25 @@ sequenceDiagram
 ```
 
 Both paths are the real code — the same `smtp-receiver`, `sqlite-mailbox`,
-`imap-server`, and the new `outbound` relay that `daemon.integration.test.ts` and
+`imap-server`, and `outbound` relay that `daemon.integration.test.ts` and
 `outbound.integration.test.ts` exercise end to end.
 
 ## Known limitations
 
-These are deliberate, recorded, and roughly in priority order for closing:
+These are deliberate and recorded:
 
-- **DKIM signing is wired in** (opt-in). Set `MAIL_DKIM_KEY` (a PEM private key,
-  RSA ≥1024-bit or Ed25519) and `MAIL_DKIM_SELECTOR`, and publish the matching
-  public key as a TXT record at `<selector>._domainkey.<domain>`. The easy path
-  is `node src/main.ts setup` (see [DNS](#dns)), which generates the key and
-  prints the record; the openssl equivalent, if you prefer to see the moving parts:
+- **DKIM signing is opt-in.** Without `MAIL_DKIM_KEY` (a PEM private key, RSA
+  ≥1024-bit or Ed25519) and `MAIL_DKIM_SELECTOR` set, outbound delivery relies
+  on SPF alone — accepted by the big providers, but reliably spam-foldered. The
+  easy path is `node src/main.ts setup` (see [DNS](#dns)), which generates the
+  key and prints the TXT record for `<selector>._domainkey.<domain>`; the
+  openssl equivalent, if you prefer to see the moving parts:
   ```sh
   openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 -out dkim.key
   echo "v=DKIM1; k=rsa; p=$(openssl rsa -in dkim.key -pubout -outform DER 2>/dev/null | base64 -w0)"
   ```
-  Outbound mail is then signed after the §6409 fix-up. Without it, delivery
-  relies on SPF alone (accepted, but spam-foldered). Signing is fail-open: a key
-  problem sends the message unsigned rather than dropping it.
-- **Retry queue is persistent.** A transient failure (greylist `4xx`, MX down,
-  DNS hiccup) is queued in SQLite and retried on an exponential backoff until it
-  delivers or the give-up window (~5 days) passes; a `5xx` bounces at once. The
-  queue survives a restart. `MAIL_*` needs no extra config for this.
+  Signing is fail-open: a key problem sends the message unsigned rather than
+  dropping it — deliverability degrades, mail is never lost.
 - **`MAIL_DOMAIN` does double duty** as both the SMTP greeting/HELO name and the
   local mail domain. That's why this guide uses one name for host and domain
   (`you@mail.example.com`): a split like greeting `mail.example.com` + addresses

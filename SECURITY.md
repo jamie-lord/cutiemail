@@ -8,7 +8,7 @@ This is a personal, correctness-focused project, not a funded security programme
 bounty, and responses are best-effort by one maintainer. What there *is* is a real appetite to fix
 exploitable bugs, and a codebase built to be reproduced against — every hostile-input surface has
 been through security review, with a regression test for each defended attack (see
-[docs/TESTING-ROADMAP.md](docs/TESTING-ROADMAP.md)).
+[docs/TESTING.md](docs/TESTING.md)).
 
 ## Reporting a vulnerability
 
@@ -55,7 +55,7 @@ already a recorded decision:
   `src/testing/`). That's intended for local development only, and the daemon **refuses to boot**
   with it on a non-loopback interface. "The dev cert key is in the repo" is by design, not a leak.
 - Choices flagged as intentionally minimal in [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) ("Known
-  limitations") and [docs/TESTING-ROADMAP.md](docs/TESTING-ROADMAP.md) — read those first.
+  limitations") and [docs/TESTING.md](docs/TESTING.md) — read those first.
 - Findings that require having already compromised the host (local root reading `0600` databases
   the owner can read anyway), or that depend on the operator misconfiguring against the docs.
 

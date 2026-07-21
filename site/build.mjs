@@ -42,7 +42,7 @@ const NAV = [
   ]},
   { group: 'How it works', items: [
     { src: 'docs/ARCHITECTURE.md', url: '/docs/architecture/', title: 'Architecture' },
-    { src: 'docs/TESTING-ROADMAP.md', url: '/docs/testing-roadmap/', title: 'What is tested, and why' },
+    { src: 'docs/TESTING.md', url: '/docs/testing/', title: 'How it’s tested' },
     { src: 'docs/PERFORMANCE.md', url: '/docs/performance/', title: 'Performance' },
     { src: 'docs/research/smtp-divergence.md', url: '/docs/smtp-divergence/', title: 'SMTP divergence notes' },
   ]},
@@ -161,8 +161,14 @@ function sidebar(activeUrl) {
     const items = g.items.map((it) => `<li><a href="${it.url}"${it.url === activeUrl ? ' class="active"' : ''}>${esc(it.title)}</a></li>`).join('');
     return `<div class="sidebar__group"><p class="sidebar__title">${esc(g.group)}</p><ul>${items}</ul></div>`;
   }).join('');
-  return `<aside class="sidebar">${groups}</aside>`;
+  // A <details> so small screens can fold the nav away; a script opens it on wide screens.
+  return `<details class="sidebar" id="sidebar" open><summary class="sidebar__summary">browse the docs</summary>${groups}</details>`;
 }
+
+const sidebarScript = `<script>
+const sb=document.getElementById('sidebar');
+if(sb&&matchMedia('(max-width: 900px)').matches)sb.removeAttribute('open');
+</script>`;
 
 /* ---------- page writers ---------- */
 function writePage(outUrl, html) {
@@ -201,6 +207,7 @@ ${nav()}
 <div class="docs">${sidebar(item.url)}${doc}</div>
 ${footer()}
 ${navScript}
+${sidebarScript}
 ${env.hasMermaid ? mermaidScript() : ''}
 </body></html>`;
   writePage(item.url, html);

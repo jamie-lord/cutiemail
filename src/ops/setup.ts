@@ -1,8 +1,8 @@
 /**
- * `setup` — DKIM keygen + annotated DNS record generation (backlog B1).
+ * `setup` — DKIM keygen + annotated DNS record generation.
  *
- * The single most-praised feature of Mox in the evidence base (docs/BACKLOG.md) is
- * that it *tells you the exact DNS records*. This is our version, derived from the
+ * The single most-praised feature of Mox among self-hosting operators is that it
+ * *tells you the exact DNS records*. This is our version, derived from the
  * same configuration the daemon runs on: generate a DKIM keypair if none exists
  * (never overwriting one that does — the public half may already be published),
  * derive the DKIM TXT value from the private key with the same primitives the

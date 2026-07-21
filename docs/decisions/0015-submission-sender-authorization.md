@@ -90,7 +90,7 @@ identity. (A future multi-domain story would widen "our domain" here; recorded, 
 
 - Sending as any address you own (login, alias, `+tag`) now works and is DKIM-signed as us;
   impersonating another account, or any foreign/unauthorized address, is refused 550.
-- The cross-account spoof parked since the multi-account work is closed, at the one chokepoint,
+- The cross-account spoof open since the multi-account work (ADR 0009) is closed, at the one chokepoint,
   fail-closed (a disabled/removed account mid-session resolves to nothing → refused).
 - DMARC and send-as share one hardened `From` parser, so the spoof surface has a single
   source of truth.

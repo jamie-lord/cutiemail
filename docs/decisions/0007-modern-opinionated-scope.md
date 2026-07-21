@@ -17,7 +17,7 @@ spec corner when a cleaner solution is bought by dropping them.
 That principle only works if every cut is an *intentional, recorded* decision, not
 a silent gap. This ADR records the scope cuts so they are first-class and
 revisitable, exactly as the RFC-5321-not-5321bis (0001) and own-runner (0002)
-decisions are. The full testing map lives in `docs/TESTING-ROADMAP.md`; this
+decisions are. The full testing map lives in `docs/TESTING.md`; this
 records the *choices*, with reasons.
 
 ## Decision

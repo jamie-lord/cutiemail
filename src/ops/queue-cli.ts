@@ -1,8 +1,8 @@
 /**
- * `queue` + `dead-letter` — the operator's view of outbound mail (backlog B5).
+ * `queue` + `dead-letter` — the operator's view of outbound mail.
  *
- * The evidence (docs/BACKLOG.md): the silent-drop fear — "how could you know if
- * any emails you send are getting silently dropped?" Dead-letter retention was
+ * The fear this answers: "how could you know if any emails you send are
+ * getting silently dropped?" Dead-letter retention was
  * built so no message is ever lost silently, but retention without
  * inspectability is a promise the operator can't check. This is the thin
  * presentation layer over the existing store API:

@@ -1,5 +1,5 @@
 /**
- * The operator CLI dispatch — `node src/main.ts <command>` (docs/BACKLOG.md).
+ * The operator CLI dispatch — `node src/main.ts <command>`.
  *
  * One entry point, mox-style: with no argument main.ts runs the daemon; with a
  * command it runs an operator tool against the same environment configuration.

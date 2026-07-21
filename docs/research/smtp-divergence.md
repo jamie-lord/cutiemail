@@ -48,15 +48,12 @@ CHUNKING inbound; disabling either trips a synchronisation check.
 - `smtpd_forbid_unauth_pipelining`: as of 3.9 defaults to `yes` (disconnects RFC 2920
   violators). Backported to 3.8.1/3.7.6/3.6.10/3.5.20.
 
-### RFC 5321bis status on smuggling (verified, and a REFUTED claim to not repeat)
+### RFC 5321bis status on smuggling
 
 draft-ietf-emailcore-rfc5321bis-44 (31 Jul 2025) reaffirms CRLF as the only terminator and
 that implementations MUST NOT recognise any other sequence — but **receiver-side rejection of
 bare CR/LF remains discretionary (MAY), not mandatory**, so the bis does NOT close smuggling
 at the spec level. §7 (Security Considerations) of the draft does not mention smuggling.
-(A verification pass REFUTED 0-3 a stronger phrasing claiming the bis "requires clients to
-transmit CR/LF only as CRLF but stops short" — the constraint framing was wrong; don't repeat
-that wording. The substance above survived.)
 
 ## 2. USENIX Security 2025 (Wang Chuhan et al) — 13-payload smuggling corpus
 
@@ -64,9 +61,9 @@ Defines a 13-payload end-of-data test corpus (Table 1, A1–A13) of `\n`/`\r`/`\
 permutations around the dot. As of the 2025 study, latest Postfix/Sendmail/Exim mitigate the
 classic forms, but measurement still found 19 of 22 public services and 1,577 private services
 vulnerable to some variant, and ~512 email security gateways amplifying it. 13 of the tested
-sending services applied dot-stuffing. The A1–A13 permutation set is worth reconstructing
-exactly from the paper PDF (gangw.cs.illinois.edu/smtp-usenix25.pdf) when building the
-exhaustive smuggling corpus.
+sending services applied dot-stuffing. The full A1–A13 permutation set is in the paper PDF
+(gangw.cs.illinois.edu/smtp-usenix25.pdf); the suite's smuggling corpus covers the
+high-signal variants below.
 
 ## 3. STARTTLS command injection — NO STARTTLS (Poddebniak et al, USENIX Sec 2021; CVE-2011-0411)
 
@@ -86,7 +83,7 @@ command-injection-tester.
 **Testable directly by us:** our transport already flags bytes buffered before the TLS
 handshake (`transport.ts` startTls). A corpus test sends `STARTTLS\r\nNOOP\r\n` in one write
 and asserts the server does NOT answer the NOOP inside TLS. Maps to RFC 3207, tested under the
-extensions corpus (task #19).
+extensions corpus.
 
 ## 4. Sender-spoofing taxonomy (Shen et al, USENIX Sec 2021) — the 5321/5322-level cases
 
@@ -110,10 +107,9 @@ transport/parsing divergence, worth encoding where they touch RFC 5321:
 ABNF-grammar-driven header fuzzer. `pre_fuzz.py` extracts RFC ABNF rules (e.g. RFC 5322 `from`)
 and mutates via header repetition, space insertion, Unicode injection, RFC 2047 encoded-word
 encoding, and case variation; samples in `config/fuzz.json`. **No licence stated** — so treat
-as a reference for mutation *techniques*, not a corpus to vendor. Directly relevant to task #28
-(ABNF-driven generation): the mutation catalogue (space-before-colon, CRLF injection,
-encoded-word, case variation, repetition) is a ready-made checklist for the argument-syntax
-corpus.
+as a reference for mutation *techniques*, not a corpus to vendor. The mutation catalogue
+(space-before-colon, CRLF injection, encoded-word, case variation, repetition) is a
+ready-made checklist for ABNF-driven generation in the argument-syntax corpus.
 
 ## 6. EAI / SMTPUTF8 (RFC 6531) divergence — Postfix as the documented baseline
 
@@ -125,15 +121,15 @@ corpus.
   IDN/UTF-8↔ASCII conversion. This is the exact non-EAI-hop divergence to test.
 - Defaults: `smtputf8_enable` on; `smtputf8_autodetect_classes = sendmail, verify`.
 
-## What this changes in the suite
+## What the suite encodes from this research
 
-1. **Expand the smuggling corpus** (done for `<LF>.<LF>`; add `<LF>.<CR><LF>`, `<CR>.<CR>`,
-   `<CR><CR><LF>.<CR><CR><LF>`) — §1 above. `<LF>.<CR><LF>` is the priority.
-2. **Add STARTTLS injection** to the extensions corpus (§3) — we already have the transport
-   primitive.
-3. **Argument-syntax corpus** should encode the ESpoofing mutation catalogue (§5) and the A6
+1. **The smuggling corpus** covers the end-of-data variants above — `<LF>.<LF>`,
+   `<LF>.<CR><LF>`, `<CR>.<CR>`, and the `<CR><CR><LF>` form (§1).
+2. **STARTTLS injection** is in the extensions corpus (§3): pre-handshake injection,
+   smuggle-into-TLS, and the post-handshake reset.
+3. **The argument-syntax corpus** encodes the ESpoofing mutation catalogue (§5) and the A6
    parsing-inconsistency cases (§4).
-4. **SMTPUTF8 corpus** should test the gating condition and the non-downgrade DSN (§6).
-5. **Message-format (RFC 5322) attacks** (A4/A5/A7) are noted as out of scope for this
-   transport suite but belong in a future message corpus — recorded so they are a deferred
-   decision, not a forgotten gap.
+4. **The SMTPUTF8 corpus** tests the gating condition and the non-downgrade DSN (§6).
+5. **Message-format (RFC 5322) attacks** (A4/A5/A7) are out of scope for this transport
+   suite and belong in a message-level corpus — recorded so the omission is a decision, not
+   a forgotten gap.

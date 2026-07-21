@@ -1,11 +1,11 @@
 /**
- * The DNS record plan for a cutiemail deployment (backlog B1).
+ * The DNS record plan for a cutiemail deployment.
  *
  * A pure function from deployment parameters to the zone records an operator must
  * publish — MX, A/AAAA, SPF, the DKIM public key, DMARC — plus the out-of-band
- * notes (reverse DNS) that are records in someone else's zone. The evidence behind
- * this feature (docs/BACKLOG.md): hand-assembling the deliverability DNS cluster is
- * where first-time operators fail, and generating the records from the same config
+ * notes (reverse DNS) that are records in someone else's zone. Hand-assembling the
+ * deliverability DNS cluster is where first-time operators fail, and generating
+ * the records from the same config
  * the server runs on removes the transcription step entirely.
  *
  * Deterministic: same parameters, same output, so a re-run is diffable against

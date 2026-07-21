@@ -2,13 +2,12 @@
 
 ## Status
 
-Accepted (2026-07-18). Resolves backlog item B6 (docs/BACKLOG.md), which was
-deliberately flagged "decision required" rather than pre-approved.
+Accepted (2026-07-18).
 
 ## Context
 
-Two operator-experience features from the Mox evidence base want an HTTPS
-responder inside the mail server:
+Two operator-experience features that comparable servers ship (Mox has both)
+want an HTTPS responder inside the mail server:
 
 - **Inbound MTA-STS publication** (RFC 8461): without a published policy, mail
   sent *to* this server can be downgraded to plaintext by an active attacker

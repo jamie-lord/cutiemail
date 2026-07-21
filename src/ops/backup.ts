@@ -1,5 +1,5 @@
 /**
- * `backup` + `verify` — the SQLite payoff (backlog B4).
+ * `backup` + `verify` — the SQLite payoff.
  *
  * The whole server's state is n SQLite files: the control database (accounts +
  * outbound queue + dead letters) and one mailbox database per user. `backup`

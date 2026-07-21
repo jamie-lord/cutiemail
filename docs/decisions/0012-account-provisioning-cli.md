@@ -2,9 +2,8 @@
 
 ## Status
 
-Accepted (2026-07-18). Backlog item B3 (docs/BACKLOG.md), evidence-based: the SCRAM
-registry was designed to store only StoredKey/ServerKey, and this closes the hole
-that undermined it.
+Accepted (2026-07-18). The SCRAM registry was designed to store only
+StoredKey/ServerKey, and this closes the hole that undermined it.
 
 ## Context
 
@@ -53,7 +52,7 @@ The careful key-derivation design was only as strong as its weakest input path.
 - Operators who previously rotated passwords by editing `MAIL_PASS` and
   restarting will see a warning telling them the env password is now ignored —
   the behaviour change is visible, not silent.
-- Live-verified (2026-07-18, mailtest box): an account added by CLI while the
+- Live-verified on a deployed instance: an account added by CLI while the
   daemon was running authenticated over IMAPS immediately, no restart, no
   password anywhere in the environment.
 

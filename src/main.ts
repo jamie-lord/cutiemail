@@ -84,7 +84,7 @@ export interface MailServerConfig {
   /** Max queued outbound messages before submission returns a transient 451 (default 10000). */
   readonly maxQueueDepth?: number;
   /**
-   * Outbound relay mode (ADR 0020). 'deliver' (default): queue remote mail and relay it
+   * Outbound relay mode (ADR 0019). 'deliver' (default): queue remote mail and relay it
    * to its MX. 'hold': queue remote mail but NEVER relay — the dev/test sink mode, so a
    * staging run fed real-looking fixtures cannot actually email anyone; held messages
    * are inspectable with `queue list` and are relayed on the next boot without hold.
@@ -441,7 +441,7 @@ export async function startServer(cfg: MailServerConfig): Promise<RunningServer>
   // runaway sender can consume. Generous vs any personal-scale backlog (incl. a downstream MX being
   // down and messages legitimately retrying), tiny vs the drain rate × a sane outage window.
   const maxQueueDepth = cfg.maxQueueDepth ?? 10_000;
-  // HOLD mode (ADR 0020): everything up to the queue behaves identically — submission
+  // HOLD mode (ADR 0019): everything up to the queue behaves identically — submission
   // still authorizes, signs, and durably enqueues — but the relay loop never runs, so
   // no byte leaves for a remote MX. One switch, checked at the only two places a relay
   // tick is ever triggered, rather than threaded through the relay internals.

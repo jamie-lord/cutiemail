@@ -1,5 +1,5 @@
 /**
- * `backup` + `verify` (backlog B4).
+ * `backup` + `verify`.
  *
  * The claims under test, each with its negative control:
  *   - a backup taken WHILE a separate OS process is appending messages is a

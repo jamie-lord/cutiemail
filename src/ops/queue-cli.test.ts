@@ -1,5 +1,5 @@
 /**
- * `queue` + `dead-letter` CLI (backlog B5) — presentation over the tested store.
+ * `queue` + `dead-letter` CLI — presentation over the tested store.
  *
  * The store semantics (transactional dead-letter move, requeue, purge) are
  * proven in dead-letter.test.ts; here the claims are the CLI's own: every

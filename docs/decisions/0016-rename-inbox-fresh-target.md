@@ -2,8 +2,8 @@
 
 ## Status
 
-Accepted (2026-07-19). Closes a RENAME-INBOX catalog-parity gap — a second-consecutive-rename
-QRESYNC residual.
+Accepted (2026-07-19). Fixes a QRESYNC desync triggered by renaming INBOX twice in a row,
+and adds the catalog-level differential test whose absence let it through.
 
 ## Context
 
@@ -73,7 +73,7 @@ behavior.
 
 ## Consequences
 
-- The second-rename residual is closed: INBOX's tombstones no longer migrate, so any number
+- The second-rename bug is closed: INBOX's tombstones no longer migrate, so any number
   of consecutive INBOX renames each report VANISHED correctly.
 - A new **catalog-level differential harness** (`catalog-parity.test.ts`) serialises every
   mailbox after a nasty CREATE/DELETE/RENAME sequence (including the double INBOX rename) and

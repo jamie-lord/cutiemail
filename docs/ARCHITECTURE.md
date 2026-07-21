@@ -315,7 +315,7 @@ These aren't style preferences; break one and something real breaks.
   `testing/mutant-server.ts`.
 - **To understand the philosophy:** `docs/WORKING-AGREEMENT.md` is how the project
   is meant to be built (scope discipline, the "no test that passes for the wrong
-  reason" rule); `docs/TESTING-ROADMAP.md` is the map of every pillar and its status;
+  reason" rule); `docs/TESTING.md` is the map of every pillar and its status;
   `docs/IMPLEMENTING-A-CONFORMANT-SERVER.md` is the hard-won guidance on the
   requirements that are easy to get wrong.
 

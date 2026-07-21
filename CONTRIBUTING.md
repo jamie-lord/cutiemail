@@ -5,7 +5,7 @@ self-contained, and deliberately scoped. Contributions are welcome, but the proj
 strong philosophy — reading it first will save us both time.
 
 - **The mission and the bar:** [docs/WORKING-AGREEMENT.md](docs/WORKING-AGREEMENT.md).
-- **What's done vs. deliberately left open:** [docs/TESTING-ROADMAP.md](docs/TESTING-ROADMAP.md).
+- **What's done vs. deliberately left open:** [docs/TESTING.md](docs/TESTING.md).
 - **How the pieces fit:** [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 - **Why things are the way they are:** [docs/decisions/](docs/decisions/) (the ADRs).
 
@@ -76,7 +76,7 @@ Correctness is the point, so the test bed is held to a high bar:
 
 - A meaningful design choice gets an **ADR** in `docs/decisions/` (see the existing ones for the
   shape) — that's how "why" survives.
-- When a change makes a statement in the README, ARCHITECTURE, DEPLOYMENT, or TESTING-ROADMAP wrong,
+- When a change makes a statement in the README, ARCHITECTURE, DEPLOYMENT, or TESTING wrong,
   stale, or newly relevant, **fixing that doc is part of the same change**, not a follow-up. Use
   **mermaid** for diagrams, never ASCII art.
 

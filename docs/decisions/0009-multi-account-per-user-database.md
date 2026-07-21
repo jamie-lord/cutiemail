@@ -119,7 +119,7 @@ live Apple Mail client.**
      stays independently consistent and the registry survives.
   4. **Differential** — the per-user `SqliteCatalog` still passes the reference-vs-SQLite
      differential harness (unchanged schema, just one file each).
-  5. **Live** — 2–3 real accounts provisioned on the box, each driven with Apple Mail;
+  5. **Live** — 2–3 real accounts provisioned on a live deployment, each driven with Apple Mail;
      isolation and per-user delivery verified end to end.
 - Config grows from `{user, pass}[]` to accounts that may name a mail-DB path (default
   `mail-<login>.db` beside the control DB).
@@ -133,7 +133,7 @@ Built, tested, deployed, and live-verified. The verification above landed as:
 
 1. **Isolation** — `imap-multiaccount.integration.test.ts` (resolver level, with a negative
    control proving a mis-wired resolver leaks) and `daemon-multiaccount.integration.test.ts`
-   (end-to-end through the real SQLite stores). **Live:** on the box, a second account
+   (end-to-end through the real SQLite stores). **Live:** on the deployed server, a second account
    `alice` was provisioned beside `test`; `test`→`alice` and `alice`→`test` submissions each
    landed only in the recipient's mailbox, invisible to the other.
 2. **Concurrency** — a same-user two-connection sync test (a phone and desktop on one
@@ -147,7 +147,7 @@ Built, tested, deployed, and live-verified. The verification above landed as:
    proven by `account-registry.test.ts`'s close/reopen test. Recorded as a reasoned omission.
 4. **Differential** — the per-user catalog is the unchanged `SqliteCatalog`, still covered by
    the existing reference-vs-SQLite differential harness.
-5. **Live migration** — the box's existing `mail.db` became user `test`'s store with **zero
+5. **Live migration** — the deployment's existing `mail.db` became user `test`'s store with **zero
    data loss** (all 25 messages + custom folders preserved) and **no re-sync for Apple Mail**,
    which reconnected transparently. `control.db` (registry + queue) and `mail-alice.db` are
    separate files, as designed. Unknown local recipients are rejected `550` at RCPT.

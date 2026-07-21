@@ -34,7 +34,7 @@ and features outside the stated scope (POP3, JMAP, Sieve, ARC signing, and so on
 - **Prove meaningful changes.** Run the suite; for internet-facing behaviour, verify it against a
   live deployment and record what was observed.
 - **Docs are part of the change, not a follow-up.** When a change makes a statement in the
-  README, ARCHITECTURE, DEPLOYMENT, or TESTING-ROADMAP wrong, stale, or newly relevant, correcting
+  README, ARCHITECTURE, DEPLOYMENT, or TESTING wrong, stale, or newly relevant, correcting
   that doc is part of the same change — and *correct* means fit for purpose (restructure so the
   doc still leads with what matters), not just appending a paragraph.
 
@@ -47,12 +47,11 @@ and features outside the stated scope (POP3, JMAP, Sieve, ARC signing, and so on
 - **Out-of-scope is named explicitly** (POP3, JMAP, Sieve, ARC signing, multiple domains per
   instance) so "adjacent" ideas can't pass themselves off as progress. Proposing a scope change is
   fine — open an issue first, and the decision becomes an ADR.
-- **Docs are part of the increment, not a separate chore.** The core docs drifted once (the README
-  led with the test suite while claiming DKIM and the retry queue didn't exist yet) precisely
+- **Docs are part of the increment, not a separate chore.** The core docs drifted once, precisely
   because doc upkeep was treated as optional follow-up. Making it part of "done" for any meaningful
   change is what stops that recurring — and "fit for purpose" is the bar, so a doc that buries its
   own headline gets restructured, not just topped up.
 
-See also: [TESTING-ROADMAP.md](TESTING-ROADMAP.md) for what's done vs. deliberately open,
-[BACKLOG.md](BACKLOG.md) for the evidence-based queue of what's next, and
+See also: [TESTING.md](TESTING.md) for what's done vs. deliberately open,
+[BACKLOG.md](BACKLOG.md) for what's still open and what was deliberately declined, and
 [ARCHITECTURE.md](ARCHITECTURE.md) for how the pieces fit.

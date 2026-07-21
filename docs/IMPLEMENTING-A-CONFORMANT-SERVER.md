@@ -1,13 +1,14 @@
 # Implementing a conformant SMTP receiver — what this suite has learned
 
-This is the bridge from the conformance suite to the server it exists to enable. It distils,
-into actionable guidance, what building and hardening the suite surfaced: the RFC 5321
-requirements that are easy to get wrong, the places implementations have historically diverged
-(with real CVEs), and the latitude the spec grants that a naive implementer over-constrains.
+If you are building an SMTP receiver — whether it's this one or your own — read this first.
+It distils, into actionable guidance, what building and hardening the conformance suite
+surfaced: the RFC 5321 requirements that are easy to get wrong, the places implementations
+have historically diverged (with real CVEs), and the latitude the spec grants that a naive
+implementer over-constrains.
 
 Every point here traces to a register requirement, a corpus test, or the divergence research
-in `docs/research/`. Read it before writing the server, and run the suite against the server
-as you build.
+in `docs/research/`. Run the suite against your server as you build — that is what it was
+made for (and how cutiemail's own receiver was built).
 
 ## 1. Line endings are the whole ballgame — get `<CRLF>` exactly right
 

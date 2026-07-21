@@ -1,5 +1,5 @@
 /**
- * `setup` (backlog B1) — keygen safety + the round-trip proof.
+ * `setup` — keygen safety + the round-trip proof.
  *
  * The load-bearing claim of `setup` is that its printed DKIM TXT value is exactly
  * what our own inbound verifier needs: the record must parse with

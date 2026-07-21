@@ -1,5 +1,5 @@
 /**
- * MAIL_OUTBOUND=hold — the dev/test sink mode (ADR 0020).
+ * MAIL_OUTBOUND=hold — the dev/test sink mode (ADR 0019).
  *
  * Without it, a dev/staging instance fed real-looking fixture addresses genuinely emails
  * them: authenticated submission to any external domain queues for real MX relay with days

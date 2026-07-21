@@ -1,4 +1,4 @@
-# 0020 — `MAIL_OUTBOUND=hold`: the outbound sink mode
+# 0019 — `MAIL_OUTBOUND=hold`: the outbound sink mode
 
 ## Status
 

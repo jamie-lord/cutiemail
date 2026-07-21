@@ -2,8 +2,7 @@
 
 ## Status
 
-Accepted (2026-07-19). A production-readiness item; the reachable modern auth-hygiene win while
-2FA stays ecosystem-blocked.
+Accepted (2026-07-19).
 
 ## Context
 
@@ -38,8 +37,8 @@ flowchart TD
 
 `account app-password add <login> <name>` **generates** a strong secret (144 bits, base64url),
 stores only its SCRAM material, and prints the plaintext **once**. The operator never chooses it
-(so it sidesteps the human-password length policy of the previous ADR entirely — it is far
-stronger by construction) and it is never taken on argv (which `ps` exposes) nor stored anywhere
+(so it sidesteps the human-password length policy — the NIST SP 800-63B 8-character floor —
+entirely; it is far stronger by construction) and it is never taken on argv (which `ps` exposes) nor stored anywhere
 recoverable. `list` shows names and dates, never secrets; `remove` revokes one, honoured live.
 
 ### One verification chokepoint — no protocol changes
@@ -71,4 +70,4 @@ by the same per-IP brute-force throttle — with **no change** to the IMAP or SM
   cannot enumerate whether an account has app passwords beyond a coarse timing signal, which is
   not the password. Accepted at this scale.
 - Revisitable — the obvious future trigger is per-credential scope (IMAP vs submission) and a
-  per-credential last-used timestamp (more useful than the parked per-account one).
+  per-credential last-used timestamp (more useful than a per-account one would be).

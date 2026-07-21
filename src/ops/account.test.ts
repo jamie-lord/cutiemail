@@ -1,5 +1,5 @@
 /**
- * `account` (backlog B3) — provisioning without passwords in the environment.
+ * `account` — provisioning without passwords in the environment.
  *
  * The security property under test, both directions:
  *   - the CLI-provisioned password authenticates (via the registry's real

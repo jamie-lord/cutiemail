@@ -1,5 +1,5 @@
 /**
- * `doctor` (backlog B2) — every check driven in BOTH directions through fake
+ * `doctor` — every check driven in BOTH directions through fake
  * dependencies: it must detect the broken state (the negative control) AND pass
  * the healthy one (no false alarms — the project's core discipline: a check that
  * cries wolf on a healthy deployment is as useless as one that misses drift).

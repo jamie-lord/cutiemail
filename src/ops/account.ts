@@ -1,5 +1,5 @@
 /**
- * `account` — provision accounts without passwords in the environment (backlog B3).
+ * `account` — provision accounts without passwords in the environment.
  *
  * The SCRAM registry was designed to store only StoredKey/ServerKey, never the
  * password — but until now every boot re-fed plaintext passwords through
