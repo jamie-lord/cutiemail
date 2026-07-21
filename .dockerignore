@@ -1,0 +1,14 @@
+# The image needs only src/ and package.json (see Dockerfile). Keep everything else out so
+# a local checkout's state, git history, and the type-checker never bloat the build context.
+node_modules
+.git
+*.db
+*.db-wal
+*.db-shm
+*.pem
+*.key
+backup
+docs
+reference-servers
+deploy
+.github

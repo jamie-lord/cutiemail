@@ -79,16 +79,32 @@ export async function runInit(
     const domain = env.MAIL_DOMAIN ?? 'mail.example.com';
     io.out(`account ${login} created — the control database is now the source of truth for credentials.`);
     io.out('');
-    io.out('Run the daemon with NO password in the environment. A minimal unit:');
-    io.out('');
-    io.out('  [Service]');
-    io.out('  ExecStart=/usr/bin/node src/main.ts');
-    io.out(`  Environment=MAIL_DOMAIN=${domain}`);
-    io.out('  Environment=MAIL_HOST=0.0.0.0');
-    io.out(`  Environment=MAIL_CONTROL_DB=${dbPath}`);
-    io.out('  Environment=MAIL_TLS_CERT=/var/lib/mailserver/tls/cert.pem');
-    io.out('  Environment=MAIL_TLS_KEY=/var/lib/mailserver/tls/key.pem');
-    io.out('  # No MAIL_USER / MAIL_PASS / MAIL_ACCOUNTS — the registry holds the credentials.');
+    // The daemon runs anywhere Node does; the systemd unit is a LINUX deployment convenience,
+    // so frame it as one rather than printing a bare [Service] block on macOS/Windows where it
+    // is unexplained noise. The environment variables it sets are the portable part, so name
+    // them either way.
+    if (process.platform === 'linux') {
+      io.out('Run the daemon with NO password in the environment. A minimal systemd unit');
+      io.out('(full hardened unit in docs/DEPLOYMENT.md):');
+      io.out('');
+      io.out('  [Service]');
+      io.out('  ExecStart=/usr/bin/node src/main.ts');
+      io.out(`  Environment=MAIL_DOMAIN=${domain}`);
+      io.out('  Environment=MAIL_HOST=0.0.0.0');
+      io.out(`  Environment=MAIL_CONTROL_DB=${dbPath}`);
+      io.out('  Environment=MAIL_TLS_CERT=/var/lib/mailserver/tls/cert.pem');
+      io.out('  Environment=MAIL_TLS_KEY=/var/lib/mailserver/tls/key.pem');
+      io.out('  # No MAIL_USER / MAIL_PASS / MAIL_ACCOUNTS — the registry holds the credentials.');
+    } else {
+      io.out('Run the daemon with NO password in the environment — set these and start it');
+      io.out('(the deployment guide, docs/DEPLOYMENT.md, has the Linux/systemd unit):');
+      io.out('');
+      io.out(`  MAIL_DOMAIN=${domain}`);
+      io.out('  MAIL_HOST=0.0.0.0');
+      io.out(`  MAIL_CONTROL_DB=${dbPath}`);
+      io.out('  MAIL_TLS_CERT=/path/to/cert.pem  MAIL_TLS_KEY=/path/to/key.pem');
+      io.out('  # No MAIL_USER / MAIL_PASS / MAIL_ACCOUNTS — the registry holds the credentials.');
+    }
     io.out('');
     io.out(`Add more accounts with \`account add <login>\`; change this one with \`account set-password ${login}\`.`);
     io.out('The running daemon picks all of these up immediately — no restart needed.');

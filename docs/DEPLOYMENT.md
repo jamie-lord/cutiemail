@@ -113,6 +113,29 @@ sudo ufw allow 22/tcp && sudo ufw allow 25/tcp && sudo ufw allow 587/tcp && sudo
 > by `root` is `root:root` and the `mail`-user daemon gets a permission error at boot. This applies
 > to `init`, `setup`, `account`, and `backup` alike.
 
+## Running it in a container
+
+If you deploy in containers rather than on bare-metal systemd, the repo ships a `Dockerfile`
+and `docker-compose.yml` at the root ([ADR 0021](decisions/0021-container-image.md)). Because the
+project has zero runtime dependencies and no build step, the image is just the Node runtime plus
+`src/` — nothing to compile.
+
+```sh
+# edit docker-compose.yml — set MAIL_DOMAIN, mount a real certificate — then:
+docker compose up -d
+docker compose exec mail node src/main.ts setup       # DKIM key + DNS records to publish
+docker compose exec mail node src/main.ts account add you
+docker compose logs -f                                 # the per-message + auth-failure trail
+```
+
+One named volume (`/data`) holds every database; the container binds the unprivileged ports
+internally and maps them to 25/587/993 on the host, so nothing inside needs a privileged-port
+capability. The **one thing not to miss**: a real certificate is required for the public bind —
+the daemon refuses to serve the bundled dev cert off loopback — so mount yours and point
+`MAIL_TLS_CERT`/`MAIL_TLS_KEY` at it (the compose file's comments walk through this). The rest of
+this guide — DNS, TLS, backups, the account CLI — applies unchanged; just prefix CLI commands with
+`docker compose exec mail`.
+
 ## DNS
 
 The A and MX get mail flowing; PTR + the SPF/DKIM/DMARC trifecta are what earn a

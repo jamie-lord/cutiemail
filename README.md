@@ -145,7 +145,9 @@ DMARC sampler) that the test suite uses.
 
 To put it on a real box with real DNS and send mail to your own inbox, follow
 [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) — the DNS, systemd, and client walkthrough, with an
-honest list of what is intentionally naive.
+honest list of what is intentionally naive. Prefer containers? A `Dockerfile` and
+`docker-compose.yml` are at the repo root (`docker compose up -d`) — zero runtime deps and no
+build step make the image just the Node runtime plus the source ([ADR 0021](docs/decisions/0021-container-image.md)).
 
 ### Use it as a dev/test mail server
 
