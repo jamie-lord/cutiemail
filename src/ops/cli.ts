@@ -14,6 +14,7 @@ import { runSetup } from './setup.ts';
 import { runDoctor } from './doctor.ts';
 import { runAccount } from './account.ts';
 import { runInit } from './init.ts';
+import { runSelftest } from './selftest.ts';
 import { runBackup, runVerify } from './backup.ts';
 import { runQueue, runDeadLetter } from './queue-cli.ts';
 
@@ -29,6 +30,7 @@ const USAGE = [
   '  init     first-run: create the primary account (passwordless bootstrap)',
   '  setup    generate the DKIM key (if missing) and print the DNS records to publish',
   '  doctor   check the deployment against live DNS and the network (drift, cert, port 25)',
+  '  selftest end-to-end check: submit + deliver + read back a message via the running daemon',
   '  account  add/list accounts, change passwords, enable/disable — no passwords in env',
   '  backup   consistent online snapshot of every database into a directory',
   '  verify   integrity + store-invariant check of database files (read-only)',
@@ -46,6 +48,8 @@ export async function runOps(argv: readonly string[], io: OpsIo, env: Record<str
       return runSetup(rest, io, env);
     case 'doctor':
       return runDoctor(rest, io, env);
+    case 'selftest':
+      return runSelftest(rest, io, env);
     case 'account':
       return runAccount(rest, io, env);
     case 'backup':
