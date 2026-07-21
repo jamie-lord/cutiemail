@@ -584,6 +584,9 @@ export async function startServer(cfg: MailServerConfig): Promise<RunningServer>
       return s === undefined ? undefined : { catalog: s.catalog, notifier: s.notifier };
     },
     log,
+    // One size limit for the whole server: a message importable over SMTP must be
+    // importable over IMAP APPEND too (imapsync migrations move large legacy mail).
+    ...(cfg.maxMessageSize !== undefined ? { maxAppendLiteral: cfg.maxMessageSize } : {}),
   });
 
   // Drain the queue on a timer, and once now to recover anything left by a crash.

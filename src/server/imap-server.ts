@@ -118,7 +118,7 @@ const CAPABILITIES = 'IMAP4rev1 IMAP4rev2 IDLE UIDPLUS SPECIAL-USE CONDSTORE QRE
 const PREAUTH_COMMANDS = new Set(['CAPABILITY', 'NOOP', 'LOGOUT', 'LOGIN', 'AUTHENTICATE', 'ID', 'STARTTLS']);
 
 /** Cap on an APPEND literal's declared size (octets) — bounds server memory. */
-const MAX_APPEND_LITERAL = 26_214_400; // 25 MiB, matching the SMTP SIZE default
+const MAX_APPEND_LITERAL = 26_214_400; // 25 MiB default, matching the SMTP SIZE default
 
 /**
  * Server-wide ceiling on APPEND-literal octets buffered across all connections. An APPEND uploads a
@@ -639,6 +639,7 @@ export class ImapServer {
   readonly #throttle: AuthThrottle | undefined;
   readonly #maxWriteBacklog: number;
   readonly #maxAppendInflight: number;
+  readonly #maxAppendLiteral: number;
   readonly #log: ((line: string) => void) | undefined;
   /** Bytes reserved for in-flight APPEND literals, per connection, and the running total. */
   readonly #appendReserved = new Map<net.Socket, number>();
@@ -656,6 +657,7 @@ export class ImapServer {
     maxWriteBacklog = MAX_WRITE_BACKLOG,
     maxAppendInflight = MAX_APPEND_INFLIGHT,
     log?: (line: string) => void,
+    maxAppendLiteral = MAX_APPEND_LITERAL,
   ) {
     this.#server = server;
     this.port = port;
@@ -668,6 +670,7 @@ export class ImapServer {
     this.#maxWriteBacklog = maxWriteBacklog;
     this.#maxAppendInflight = maxAppendInflight;
     this.#log = log;
+    this.#maxAppendLiteral = maxAppendLiteral;
   }
 
   /**
@@ -729,6 +732,13 @@ export class ImapServer {
       maxAppendInflight?: number;
       /** Operational log sink: auth failures + throttle engagement (fail2ban raw material). */
       log?: (line: string) => void;
+      /**
+       * Max APPEND literal in octets (default 25 MiB). The daemon passes the SAME
+       * configured maxMessageSize as the SMTP listeners — a raised MAIL_MAX_SIZE must
+       * raise the IMAP import path too, or an imapsync migration of a large legacy
+       * message (Gmail accepts up to 50 MB) hits an invisible second ceiling.
+       */
+      maxAppendLiteral?: number;
     } = {},
   ): Promise<ImapServer> {
     const catalog: ServableCatalog = 'listNames' in target ? target : inboxOnly(target);
@@ -747,7 +757,7 @@ export class ImapServer {
         server.removeListener('error', reject);
         const addr = server.address();
         const port = typeof addr === 'object' && addr !== null ? addr.port : 0;
-        const imap = new ImapServer(server, port, catalog, options.authenticate, options.notifier, options.autologoutMs, options.resolveAccount, options.throttle, options.maxWriteBacklog, options.maxAppendInflight, options.log);
+        const imap = new ImapServer(server, port, catalog, options.authenticate, options.notifier, options.autologoutMs, options.resolveAccount, options.throttle, options.maxWriteBacklog, options.maxAppendInflight, options.log, options.maxAppendLiteral);
         const event = options.tls !== undefined ? 'secureConnection' : 'connection';
         server.on(event, (sock: net.Socket) => {
           imap.#sockets.add(sock);
@@ -1311,8 +1321,8 @@ export class ImapServer {
             // unbounded blob (a one-command OOM). A synchronizing literal waits
             // for our "+", so refusing it means the client never sends the data;
             // a non-synchronizing literal is already streaming, so drop the link.
-            if (size > MAX_APPEND_LITERAL) {
-              write(sock, `${tag} NO [LIMIT] APPEND literal exceeds the ${MAX_APPEND_LITERAL}-octet limit`);
+            if (size > this.#maxAppendLiteral) {
+              write(sock, `${tag} NO [LIMIT] APPEND literal exceeds the ${this.#maxAppendLiteral}-octet limit`);
               if (m[5] !== undefined) {
                 sock.end();
                 return;
