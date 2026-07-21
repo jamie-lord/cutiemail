@@ -17,6 +17,7 @@ import { runInit } from './init.ts';
 import { runSelftest } from './selftest.ts';
 import { runBackup, runVerify } from './backup.ts';
 import { runQueue, runDeadLetter } from './queue-cli.ts';
+import { runMail } from './mail-cli.ts';
 
 export interface OpsIo {
   out(line: string): void;
@@ -36,6 +37,7 @@ const USAGE = [
   '  verify   integrity + store-invariant check of database files (read-only)',
   '  queue    list what is waiting to go out; retry a deferred message now; cancel one',
   '  dead-letter  inspect / requeue / purge messages delivery gave up on',
+  '  mail     read a delivered mailbox: list messages, show one (read-only)',
   '  help     this text',
 ].join('\n');
 
@@ -60,6 +62,8 @@ export async function runOps(argv: readonly string[], io: OpsIo, env: Record<str
       return runQueue(rest, io, env);
     case 'dead-letter':
       return runDeadLetter(rest, io, env);
+    case 'mail':
+      return runMail(rest, io, env);
     case 'help':
     case '--help':
     case '-h':
