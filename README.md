@@ -17,12 +17,17 @@ authenticated mail with Gmail (SPF, DKIM, and DMARC all passing), read back over
 
 ## Run it
 
-Requires Node ≥ 22.18 (no build step — it executes the `.ts` files).
+Requires Node ≥ 22.18 (it runs the `.ts` files directly — no build step; an older Node fails with
+an unknown-file-extension loader error rather than a friendly message).
 
 ```sh
 npm install     # only the type-checker; no runtime deps
 npm start       # launch the daemon with dev-friendly defaults
 ```
+
+(The storage layer uses Node's built-in `node:sqlite`, so a direct `node src/main.ts …` prints a
+harmless `ExperimentalWarning: SQLite …`. The `npm` scripts silence it with
+`--disable-warning=ExperimentalWarning`.)
 
 `npm start` opens the databases and starts three listeners: inbound SMTP, submission SMTP (SASL
 PLAIN AUTH over TLS), and IMAPS. There is no config file — everything is configured by environment
@@ -33,26 +38,55 @@ variable, and the SQLite files are created on first run (no schema step):
 | `MAIL_DOMAIN` | `mail.example.com` | the local mail domain *and* the SMTP greeting/HELO name |
 | `MAIL_HOST` | `127.0.0.1` | bind address (`0.0.0.0` in production) |
 | `MAIL_SMTP_PORT` / `MAIL_SUBMISSION_PORT` / `MAIL_IMAP_PORT` | `2525` / `5587` / `5993` | listener ports (use 25 / 587 / 993 in production) |
-| `MAIL_USER` / `MAIL_PASS` | `demo` / `demo` | the **primary** account — creates it if missing; an existing account's password is managed with `account`, not env (ADR 0012) |
+| `MAIL_USER` (+ `MAIL_PASS`) | unset | set **both** to seed a primary account at boot (create-only, ADR 0012); `MAIL_PASS` is ignored unless `MAIL_USER` is set. Prefer `init`/`account` (below), which keep no password in the environment. With neither set and an empty registry, a `demo`/`demo` dev account is seeded so `npm start` just works. |
 | `MAIL_ACCOUNTS` | unset | additional accounts, `"user:pass,user2:pass2"` (each gets its own `mail-<user>.db`); create-only, like `MAIL_USER` |
-| `MAIL_CONTROL_DB` | `control.db` | the control database — account registry + outbound queue |
-| `MAIL_DB` | `mail.db` | the **primary** account's mailbox database (`:memory:` for ephemeral) |
+| `MAIL_CONTROL_DB` | `control.db` | the control database — account registry + outbound queue (created in the **current directory** unless you give a path; point it somewhere real for a deployment) |
+| `MAIL_DB` | `mail.db` | the primary account's mailbox database — only read together with `MAIL_USER`. Created by `init` as `mail-<login>.db` beside the control DB. For a fully ephemeral run set `MAIL_CONTROL_DB=:memory:` (every mail DB then defaults to `:memory:`). |
 | `MAIL_TLS_CERT` / `MAIL_TLS_KEY` | bundled dev cert | PEM cert/key paths. Unset falls back to a bundled dev cert — but **only on a loopback bind**: the daemon refuses to boot with the dev cert on a non-loopback `MAIL_HOST` (its private key is public), so production must set these (`MAIL_ALLOW_DEV_CERT=1` forces it for a throwaway test). |
 | `MAIL_DKIM_KEY` / `MAIL_DKIM_SELECTOR` | unset | PEM RSA key + selector to sign outbound mail |
 | `MAIL_TRUSTED_ARC_SEALERS` | unset | comma-separated forwarder domains whose valid ARC chain may rescue a DMARC failure to the inbox |
 | `MAIL_MAX_SIZE` | `26214400` | max accepted message size in octets (25 MiB) |
 
+### Send yourself the first email
+
+With no config, `npm start` seeds a `demo`/`demo` account. To prove the whole path works —
+authenticated submission, local delivery, read-back — run the built-in check against the running
+daemon (in a second terminal):
+
+```sh
+node src/main.ts selftest demo   # enter the password: demo
+```
+
+A green run means the mail path itself works, not just that a banner printed. To point a real
+client (Thunderbird, Apple Mail) at the local dev instance:
+
+- **IMAP** — `127.0.0.1`, port **5993**, security **SSL/TLS** (implicit).
+- **SMTP (submission)** — `127.0.0.1`, port **5587**, security **STARTTLS** (not implicit TLS;
+  AUTH is only offered after STARTTLS).
+- **Username** — the account login exactly (`demo`), **not** `demo@mail.example.com`; it is
+  case-sensitive and is not the email address.
+- The bundled dev certificate is self-signed, so accept the one-time security exception.
+
 The same entry point is the operator toolbox (`node src/main.ts <command>`):
 
+- **`init <login>`** — first-run bootstrap: creates the primary account (prompts for the
+  password, writes SCRAM to the control DB, prints a ready-to-paste systemd unit that carries
+  **no** password), and refuses if any account already exists. This is the recommended first
+  step; `MAIL_USER`/`MAIL_PASS` are a legacy dev shortcut.
 - **`setup`** — generates a DKIM key (if none exists) and prints the exact DNS records to
   publish — MX, SPF, DKIM, DMARC, reverse-DNS — as annotated zone lines derived from the
   server's own configuration.
 - **`doctor`** — re-runnable drift check against live DNS and the network: MX, FCrDNS, SPF
   (evaluated by the server's own RFC 7208 evaluator), the published DKIM key matching the
   local private key, DMARC, certificate validity/expiry, and an outbound port-25 probe.
-- **`account add|set-password|enable|disable|list`** — accounts managed in the control
-  database; passwords prompted (or piped), never in argv or the environment, and the running
-  daemon picks changes up with no restart (ADR 0012).
+- **`selftest <login>`** — end-to-end proof against the *running* daemon: authenticates,
+  submits a tagged message to the account, reads it back over IMAPS, and deletes it again.
+  `doctor` checks the outside (DNS, cert, port 25); `selftest` checks the mail path itself.
+- **`account add|set-password|enable|disable|list`**, plus **`account alias …`** (route extra
+  addresses to an account, ADR 0014) and **`account app-password …`** (revocable per-device
+  credentials, ADR 0017) — all managed in the control database; passwords prompted (or piped),
+  never in argv or the environment, and the running daemon picks changes up with no restart
+  (ADR 0012).
 - **`backup <dir>` / `verify`** — a transactionally consistent snapshot of every database
   while the daemon runs, and a read-only proof that a backup (or the live files) passes
   integrity plus the store's own invariants.
@@ -93,7 +127,11 @@ honest list of what is intentionally naive.
   phone and a desktop on the same mailbox stay in agreement.
 - **Multiple accounts** — one SQLite database per user (a control database holds the SCRAM
   credential registry and the outbound queue; each user gets their own `mail-<user>.db`), with the
-  IMAP and submission auth paths behind a per-IP brute-force throttle.
+  IMAP and submission auth paths behind a per-IP brute-force throttle. Each account can have
+  **aliases** and `base+tag` **subaddressing** (extra addresses routed to it, ADR 0014) and
+  revocable per-device **app passwords** (ADR 0017); submission is **sender-authorized** — an
+  authenticated account can only send *as* an address it owns, so one account can never spoof
+  another's `From` (ADR 0015).
 
 The wire between every layer is raw bytes: message content is a `Buffer` from the socket to the
 SQLite `BLOB` and back, never round-tripped through a JavaScript string. That "bytes, never
@@ -109,7 +147,7 @@ one message from SMTP in to IMAP out. Start there to read the codebase.
 ## How it's tested, and why that's trustworthy
 
 Correctness is the point of the project, so the test bed is not an afterthought. Several
-independent disciplines back the 850+ tests:
+independent disciplines back the 1,000+ tests:
 
 - **The persistent store is proven against a reference model.** The SQLite mailbox and an
   in-memory reference mailbox are driven through one shared invariant harness and must agree
@@ -177,3 +215,7 @@ implementations — Exim, mox, and aiosmtpd — with zero false positives**; the
 Recorded in [docs/decisions/](docs/decisions/): why RFC 5321 rather than the unpublished 5321bis,
 why a from-scratch TypeScript runner, and what the deliberately minimal toolchain leaves out. To
 add a corpus module, [src/corpus/AUTHORING.md](src/corpus/AUTHORING.md) is the contract.
+
+## License
+
+[MIT](LICENSE) © Jamie Lord.

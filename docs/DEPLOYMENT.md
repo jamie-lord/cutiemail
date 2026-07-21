@@ -87,7 +87,11 @@ if you want to do it by hand or on another provider.
   hostname and the mail domain (so your address is `you@mail.example.com`) — that
   keeps every name consistent, which matters for deliverability. See the
   [double-duty note](#known-limitations) on why one name is used for both.
-- Node ≥ 22.18 on the box. No build, no dependencies — copy the repo and run it.
+- Node ≥ 22.18 on the box. No build, no dependencies — copy the repo and run it. Install from
+  [NodeSource](https://github.com/nodesource/distributions) so it lands at `/usr/bin/node` (the
+  path the unit's `ExecStart` uses); an `nvm`/`snap` install puts `node` elsewhere, so adjust
+  `ExecStart` accordingly. Copy the repo somewhere stable (the unit uses `/opt/mailserver` as
+  its `WorkingDirectory`).
 
 ## DNS
 
@@ -96,11 +100,21 @@ receiver's trust and keep you out of the spam folder.
 
 **You don't have to assemble these by hand.** The server generates them from its
 own configuration — including deriving the DKIM public key from the private key
-(generating one first if none exists):
+(generating one first if none exists). Give the DKIM key a **stable path** and run
+`setup` as the daemon's user, so the daemon later signs with the *same* key the
+published record verifies (without `MAIL_DKIM_KEY`, `setup` writes `dkim-<selector>.key`
+into the current directory — a moving target, and re-running from elsewhere would mint a
+second key that no longer matches DNS):
 
 ```sh
-MAIL_DOMAIN=mail.example.com node src/main.ts setup --ip <your-ip>
+sudo -u mail env MAIL_DOMAIN=mail.example.com \
+  MAIL_DKIM_KEY=/var/lib/mailserver/dkim/mail.key MAIL_DKIM_SELECTOR=s1 \
+  node src/main.ts setup --ip <your-ip>
 ```
+
+The daemon signs outbound mail **only when both `MAIL_DKIM_KEY` and `MAIL_DKIM_SELECTOR` are set**
+— set the same two values in the unit (below), or mail goes out unsigned (SPF-only) and big
+receivers spam-folder it.
 
 prints every record below as annotated, copy-pasteable zone lines. Re-run it any
 time to reprint them from the existing key (the output is deterministic, so you can
@@ -109,8 +123,19 @@ the whole deployment — live DNS, reverse DNS, SPF evaluation, DKIM key match, 
 certificate, and whether your provider actually allows outbound port 25 — with:
 
 ```sh
-node src/main.ts doctor
+# doctor reads the same env the daemon does: MAIL_DOMAIN is required, and the DKIM-match
+# and certificate checks only run when the DKIM/TLS vars are present. Give it the deployment's
+# environment (easiest: run it on the box with the unit's values):
+MAIL_DOMAIN=mail.example.com \
+  MAIL_TLS_CERT=/var/lib/mailserver/tls/cert.pem \
+  MAIL_DKIM_KEY=/var/lib/mailserver/dkim/mail.key MAIL_DKIM_SELECTOR=<selector> \
+  node src/main.ts doctor
 ```
+
+`doctor` checks the *outside* (DNS, cert, outbound 25). Once the daemon is running, prove the
+*mail path itself* — authenticated submission, local delivery, IMAP read-back — with
+`node src/main.ts selftest <login>` (below). Note that `doctor` does **not** test *inbound* port 25
+reachability from the internet — see the firewall note under Running it.
 
 It exits 1 on any failure, so it works as a cron'd health check; re-run it whenever
 deliverability "suddenly" changes, because the usual cause is drift in exactly the
@@ -124,12 +149,13 @@ explains what each record is *for*:
 | **PTR** (reverse DNS) | your IP | `mail.example.com` | set at your VPS provider; Gmail checks the connecting IP resolves back to its HELO name |
 | **TXT (SPF)** | `mail.example.com` | `v=spf1 ip4:<your-ip> -all` | authorises *this host's* IP to send for the domain |
 | **TXT (DKIM)** | `<selector>._domainkey.mail.example.com` | `v=DKIM1; k=rsa; p=<pubkey>` | the public key that verifies your DKIM signatures (see Running it) |
-| **TXT (DMARC)** | `_dmarc.mail.example.com` | `v=DMARC1; p=none; rua=mailto:you@mail.example.com` | the policy receivers apply; `p=none` monitors without quarantining |
+| **TXT (DMARC)** | `_dmarc.mail.example.com` | `v=DMARC1; p=quarantine` | the policy receivers apply. `setup` emits `p=quarantine` by default; pass `--dmarc-policy none` while you're still testing (monitor only), then tighten. (No `rua=` is generated — add one yourself if you want aggregate reports.) |
 
 All three align because the From domain, the DKIM `d=`, and the SPF domain are the
 same name — so a receiver checking DMARC sees SPF *and* DKIM pass for the sending
-domain, which is what moves mail from spam to the inbox. `p=none` is right while
-you're testing; tighten to `quarantine`/`reject` once you trust your setup.
+domain, which is what moves mail from spam to the inbox. `setup` publishes `p=quarantine`;
+use `--dmarc-policy none` (monitor only) while you're still testing, then move to
+`quarantine`/`reject` once you trust your setup.
 
 `setup` also prints an **optional inbound MTA-STS** section: the exact policy file to
 host at `https://mta-sts.<domain>/.well-known/mta-sts.txt` (any static HTTPS host — this
@@ -149,7 +175,7 @@ SQLite databases are created on first run:
 | `MAIL_USER` / `MAIL_PASS` | the **primary** account — used to *create* it on first boot; after that the registry is the source of truth and a changed env password is ignored with a warning (ADR 0012) |
 | `MAIL_ACCOUNTS` | additional accounts as `"user:pass,user2:pass2"` — create-only, same rule; the clean way to manage accounts is `node src/main.ts account` (below) |
 | `MAIL_CONTROL_DB` | `/var/lib/mailserver/control.db` — the control database (account registry + outbound queue) |
-| `MAIL_DB` | `/var/lib/mailserver/mail.db` — the **primary** account's mailbox database (a durable path, not `:memory:`) |
+| `MAIL_DB` | only used **with** `MAIL_USER` (legacy bootstrap). Under the recommended `init` flow, each account's mailbox is `mail-<login>.db` beside the control DB — leave `MAIL_DB` unset |
 | `MAIL_TLS_CERT` / `MAIL_TLS_KEY` | paths to a real certificate (Let's Encrypt) |
 | `MAIL_DKIM_KEY` / `MAIL_DKIM_SELECTOR` | PEM key path + selector to sign outbound (see below) |
 | `MAIL_TRUSTED_ARC_SEALERS` | comma-separated forwarder domains whose valid ARC chain may rescue a DMARC failure to the inbox (e.g. a mailing list you subscribe to); omit for none |
@@ -160,13 +186,32 @@ credential registry (which stores only the derived StoredKey/ServerKey, never th
 persistent outbound queue. Inbound mail is delivered into the addressed account's mailbox; a
 recipient that isn't a known local account is rejected at `RCPT` (no catch-all, no backscatter).
 
+**Prepare the box first.** Create the data directory owned by the user the daemon runs as (the
+unit below uses `mail`, which already exists on Debian/Ubuntu; create a system user otherwise),
+and open the firewall:
+
+```sh
+# data + secrets directories, owned by the daemon's user, owner-only
+sudo install -d -o mail -g mail -m 700 /var/lib/mailserver /var/lib/mailserver/tls /var/lib/mailserver/dkim
+
+# open the ports (host firewall). Also check your PROVIDER's cloud firewall — many block
+# inbound 25 by default, and `doctor` only tests OUTBOUND 25, so blocked inbound is silent.
+sudo ufw allow 22/tcp && sudo ufw allow 25/tcp && sudo ufw allow 587/tcp && sudo ufw allow 993/tcp
+# add 80/tcp if you use certbot's standalone HTTP challenge (needed at renewal too, not just issuance)
+```
+
+> **Run every CLI command as the daemon's user** (`sudo -u mail node src/main.ts …`). The CLI
+> creates files `0600` owned by whoever runs it (`UMask=0077`); a `control.db` or DKIM key created
+> by `root` is `root:root` and the `mail`-user daemon gets a permission error at boot. This applies
+> to `init`, `setup`, `account`, and `backup` alike.
+
 **Recommended first run: `init` (no password in the environment).** Instead of putting a
 password in the unit file, create the primary account with a hidden prompt that writes SCRAM
 straight to the registry — so no plaintext password ever lands in the unit or
 `/proc/<pid>/environ`:
 
 ```sh
-node src/main.ts init you --db /var/lib/mailserver/control.db
+sudo -u mail node src/main.ts init you --db /var/lib/mailserver/control.db
 # prompts (twice, hidden) for the password, then prints a passwordless unit to run
 ```
 
@@ -288,16 +333,24 @@ ExecStart=/usr/bin/node src/main.ts
 Environment=MAIL_DOMAIN=mail.example.com
 Environment=MAIL_HOST=0.0.0.0
 Environment=MAIL_CONTROL_DB=/var/lib/mailserver/control.db
-Environment=MAIL_DB=/var/lib/mailserver/mail.db
 Environment=MAIL_SMTP_PORT=25 MAIL_SUBMISSION_PORT=587 MAIL_IMAP_PORT=993
 # No MAIL_USER/MAIL_PASS: create the primary account with `init` (above), which writes
 # SCRAM to the registry — the unit carries no password. (MAIL_USER/MAIL_PASS still work
 # as a create-only bootstrap for dev, but the daemon warns when they linger unnecessarily.)
+# No MAIL_DB either: it is only read alongside MAIL_USER. With `init`, each account's mailbox
+# is mail-<login>.db beside the control DB, created automatically.
 Environment=MAIL_TLS_CERT=/var/lib/mailserver/tls/cert.pem
 Environment=MAIL_TLS_KEY=/var/lib/mailserver/tls/key.pem
+# DKIM signing — the same key + selector `setup` generated (see DNS). Omit these and outbound
+# mail is unsigned (SPF-only) and gets spam-foldered:
+Environment=MAIL_DKIM_KEY=/var/lib/mailserver/dkim/mail.key
+Environment=MAIL_DKIM_SELECTOR=s1
 # Bind privileged ports (25/587/993) without root, and nothing more:
 AmbientCapabilities=CAP_NET_BIND_SERVICE
 CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+# Headroom for open mail DBs (~3 fds each) + one fd per IMAP connection; the 1024 default
+# is a hard wall under load (docs/PERFORMANCE.md).
+LimitNOFILE=65536
 Restart=on-failure
 
 # Defense-in-depth sandboxing (systemd-analyze security: 9.3 UNSAFE -> 1.6 OK).
@@ -332,16 +385,27 @@ UMask=0077
 WantedBy=multi-user.target
 ```
 
-Keep the data directory owner-only — `chmod 700 /var/lib/mailserver` (and its `tls/`
-and `dkim/` subdirs). The daemon writes each database `0600` and re-tightens every
-*registered* account's database to `0600` at boot (so even a disabled account's mailbox
-can't linger world-readable), but a `700` directory is the belt-and-braces that keeps a
-stray file unreachable by other local users in the first place.
+The data directory is owner-only (`mode 700`, set in *Prepare the box* above). The daemon writes
+each database `0600` and re-tightens every *registered* account's database to `0600` at boot (so
+even a disabled account's mailbox can't linger world-readable), but the `700` directory is the
+belt-and-braces that keeps a stray file unreachable by other local users in the first place.
 
 `systemctl enable --now mailserver`, then `journalctl -fu mailserver` to watch it
 — including the queue lines that report each relay attempt, its result, and any
 retry or give-up. A transient failure is retried on a backoff from the persistent
 SQLite queue (below); a `5xx` bounces at once.
+
+**Verify it actually works**, end to end, before pointing a client at it — authenticated
+submission, local delivery, and IMAP read-back, in one command against the running daemon:
+
+```sh
+sudo -u mail env MAIL_DOMAIN=mail.example.com MAIL_SUBMISSION_PORT=587 MAIL_IMAP_PORT=993 \
+  node src/main.ts selftest you
+```
+
+A green run means the mail path is sound; a failure names the step that broke (auth, delivery, or
+IMAP). If the daemon can't start at all, it now prints a specific reason — a port already in use,
+or a privileged port without the capability — rather than a stack trace.
 
 ### TLS: getting the certificate to the daemon, and keeping it fresh
 
@@ -381,6 +445,9 @@ In Thunderbird (or any client), add an account for `you@mail.example.com`:
   password.
 - **Outgoing — SMTP:** `mail.example.com`, port `587`, STARTTLS, *same* username +
   password (auth required).
+- **Username:** the account **login** exactly as you created it (`you`), **not** the
+  full email address `you@mail.example.com`, and case-sensitive. Clients pre-fill the
+  address as the username; change it to the bare login or auth fails on both ports.
 
 The daemon **refuses to boot** if you bind a non-loopback `MAIL_HOST` without a real
 certificate (`MAIL_TLS_CERT`/`MAIL_TLS_KEY`): the bundled dev cert's private key is
