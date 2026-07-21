@@ -161,7 +161,7 @@ test('runSetup refuses to run without a real domain (exit 2, nothing generated)'
   assert.deepEqual(cap.out, []);
 });
 
-test('runSetup rejects a DKIM selector that would traverse the key-file path (run-6)', () => {
+test('runSetup rejects a DKIM selector that would traverse the key-file path', () => {
   const cap = capture();
   // The selector defaults into the key filename `dkim-<selector>.key`; a traversal value must
   // be refused (exit 2) before any file is written, not steer the writeFileSync location.

@@ -46,7 +46,7 @@ export function resolveMxHosts(domain: string, dns: DnsResolver, defects: MxDefe
   // accepts NO mail. Node's resolver surfaces the root target as an EMPTY host (''), not the
   // literal '.', so normalise both to the reserved '.' sentinel the caller bounces on. Left
   // as '' it would reach net.connect({host:''}), which dials localhost — an RFC 7505 violation
-  // AND a loopback SSRF/mail-loop (audit run-3).
+  // AND a loopback SSRF/mail-loop.
   if (mx.length === 1 && (mx[0]!.host === '' || mx[0]!.host === '.')) {
     return { hosts: ['.'], anomalies: ['null-mx'] };
   }

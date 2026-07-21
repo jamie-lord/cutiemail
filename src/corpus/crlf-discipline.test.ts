@@ -1,13 +1,12 @@
 /**
- * CRLF-discipline corpus: negative-control verification, plus the regression the
- * pressure test demanded.
+ * CRLF-discipline corpus: negative-control verification, plus a regression guard.
  *
  * Beyond the standard clean-vs-defect proofs, this module carries an extra
  * assertion that a HARDENED server — one that rejects a bare LF with a 500, the
  * Postfix smtpd_forbid_bare_newline behaviour — is reported CONFORMANT, not
- * failed. That is the exact false positive the pressure test caught: the earlier
- * tests treated any reply to a bare LF as "the server acted on it", which would
- * have failed precisely the smuggling-safe servers the suite exists to bless.
+ * failed. That is the exact false positive this guards against: treating any
+ * reply to a bare LF as "the server acted on it" would have failed precisely
+ * the smuggling-safe servers the suite exists to bless.
  */
 
 import { test } from 'node:test';

@@ -74,7 +74,7 @@ test('run against a smuggling-vulnerable server exits 1 and names the finding', 
 });
 
 test('run against an unreachable target exits 2 and says so — never a false green', async () => {
-  // The UX-pressure-test trap: nothing listening at the target meant 68/68 inconclusive,
+  // The false-green trap: nothing listening at the target meant 68/68 inconclusive,
   // "No substantive divergences", and exit 0 — a typo'd host or a server that failed to
   // boot passed CI forever. All-inconclusive now exits 2 with the reasons printed.
   const dir = mkdtempSync(join(tmpdir(), 'smtp-cli-dead-'));

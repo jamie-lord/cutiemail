@@ -1,5 +1,5 @@
 /**
- * `mail list/show` — the read-only mailbox view (UX pressure test: the only way to answer
+ * `mail list/show` — the read-only mailbox view (without it, the only way to answer
  * "did it arrive, what was the subject" was a full IMAP client). The claims here are the
  * CLI's own: listing shows the acting fields (uid/date/size/flags/from/subject), show is
  * headers-only unless --raw, --raw is byte-exact and refuses a TTY, reading NEVER mutates

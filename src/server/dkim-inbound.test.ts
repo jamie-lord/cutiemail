@@ -95,7 +95,7 @@ test('RFC 8301: a valid rsa-sha1 DKIM signature is rejected (SHA-1 is broken), s
   assert.equal((await verifyDkim(build('sha256'), async () => keyRecord(der))).verdict, 'pass', 'sha256 still verifies');
 });
 
-test('DKIM simple header canon is verbatim: no false-pass on whitespace-tampered headers, no false-fail on legit spacing (run-4)', async () => {
+test('DKIM simple header canon is verbatim: no false-pass on whitespace-tampered headers, no false-fail on legit spacing', async () => {
   const { createSign } = await import('node:crypto');
   const { buildSigningInput } = await import('../crypto/dkim-verify.ts');
   const der = signKeys.publicKey.export({ type: 'spki', format: 'der' }).toString('base64');

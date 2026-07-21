@@ -28,7 +28,7 @@ test('sanity: no MX but an address record yields the domain as an implicit MX', 
 
 test('RFC 7505 null MX: a single empty/root MX target bounces (never dials host "")', () => {
   // The real resolver surfaces "MX 0 ." as an empty exchange (''); a bare '' host would reach
-  // net.connect and dial localhost (audit run-3). Both '' and '.' must normalise to the '.'
+  // net.connect and dial localhost. Both '' and '.' must normalise to the '.'
   // sentinel the relay bounces on — and it must be exactly one MX (a real MX alongside is not
   // a null MX).
   assert.deepEqual([...resolveMxHosts('nomail.example', dns({ 'nomail.example': [{ host: '', preference: 0 }] })).hosts], ['.'], 'empty exchange → null-MX sentinel');

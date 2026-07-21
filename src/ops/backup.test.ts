@@ -63,7 +63,7 @@ async function makeWorld(dir: string): Promise<{ controlPath: string; mailPath: 
   return { controlPath, mailPath };
 }
 
-test('a backup snapshot is written private (0600) — it is a copy of all secrets (run-4)', async () => {
+test('a backup snapshot is written private (0600) — it is a copy of all secrets', async () => {
   const dir = tmp();
   try {
     const { controlPath } = await makeWorld(dir);

@@ -13,9 +13,9 @@ from config on each boot. The IMAP server takes one fixed catalog at constructio
 serves it to whoever logs in.
 
 That is the right *minimum* for proving the protocols, but it is not the product. The
-north star (ADR 0007, `project_mail_server_vision`) is a **modern "SQLite of email"** a
+north star (ADR 0007) is a **modern "SQLite of email"** a
 person spins up and actually uses — which means more than one mailbox. This ADR records
-how multi-account is added, and the one strong opinion the maintainer set: **one SQLite
+how multi-account is added, and the one strong opinion behind it: **one SQLite
 database file per user, if it can be done cleanly** — because a user then *is* a file you
 can back up, move, or delete, which is the most literal expression of the "SQLite of
 email" idea.
@@ -42,8 +42,7 @@ flowchart TD
   persistent form of `AccountStore`: login name, SCRAM salt/iterations/hash/StoredKey/
   ServerKey, the path to that user's mail DB, and an `enabled` flag) **and the global
   outbound queue**. The queue stays server-global — one relay identity, one spool — with
-  each row already carrying its return-path; per-user queues would buy nothing here
-  (decision confirmed with the maintainer).
+  each row already carrying its return-path; per-user queues would buy nothing here.
 - **`mail-<user>.db`** — one file per user, each a `SqliteCatalog` with today's exact
   schema (mailboxes, messages, flags, modseq, expunge log). No schema change: the
   per-user DB is byte-for-byte what a single-account `mail.db` is today. Isolation is
@@ -87,8 +86,8 @@ scoped to one user. No change to `MailboxNotifier` itself; we simply hold one pe
 ### Delivery routing
 
 - **Inbound (port 25):** `acceptRecipient` accepts `local@domain` **only if `local` is a
-  known, enabled account — an unknown local recipient is rejected** (`550`, no catch-all;
-  confirmed with the maintainer). A message to N local recipients is appended to each
+  known, enabled account — an unknown local recipient is rejected** (`550`, no catch-all).
+  A message to N local recipients is appended to each
   recipient's own INBOX and each user's notifier fired.
 - **Submission (587):** local recipients are delivered to their account's INBOX (not one
   shared mailbox); remote recipients queue to the global spool as today.
@@ -109,8 +108,8 @@ live Apple Mail client.**
 
 ## Consequences
 
-- **Pressure tests are owned by this change** (maintainer's explicit mandate — "design it
-  carefully and pressure-test it yourself"):
+- **Verification is owned by this change** — the design is only sound if each of these holds,
+  so each is proven:
   1. **Isolation** — a session authenticated as A cannot LIST/SELECT/FETCH/STATUS any of
      B's mailboxes or messages; a negative control proves the test detects a leak.
   2. **Concurrency** — many users connected at once, *and* multiple sessions for one user
@@ -130,7 +129,7 @@ live Apple Mail client.**
 
 ## Outcome (2026-07-17)
 
-Built, tested, deployed, and live-verified. The pressure tests above landed as:
+Built, tested, deployed, and live-verified. The verification above landed as:
 
 1. **Isolation** — `imap-multiaccount.integration.test.ts` (resolver level, with a negative
    control proving a mis-wired resolver leaks) and `daemon-multiaccount.integration.test.ts`

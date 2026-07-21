@@ -191,14 +191,14 @@ test('exit-code policy: warnings exit 0, any failure exits 1', () => {
   assert.equal(reportChecks([{ name: 'a', status: 'ok', detail: '' }, { name: 'b', status: 'fail', detail: '' }], silent), 1);
 });
 
-test('reportChecks neutralises terminal escape sequences in remote-derived detail (run-6)', () => {
+test('reportChecks neutralises terminal escape sequences in remote-derived detail', () => {
   const out: string[] = [];
   const io = { out: (l: string): void => void out.push(l), err: (): void => {} };
   // An MX SMTP greeting / DMARC TXT record / PTR name is remote and spoofable — an OSC 52
   // clipboard write + a CSI screen-clear + a lone-CR overwrite in a detail must not reach the
   // operator's terminal raw (the same class queue-cli already neutralises).
   // Includes a raw newline: a one-line detail must not split into an extra line that could be
-  // byte-identical to a genuine "ok" verdict (run-7 completes the run-6 fix — LF was passed).
+  // byte-identical to a genuine "ok" verdict (an LF must be neutralised too, not just ESC/CSI).
   reportChecks([{ name: 'mx', status: 'warn', detail: 'greeting \x1b]52;c;ZXZpbA==\x07\x1b[2J\n  ok   dkim   FORGED\rX' }], io);
   const checkLine = out[0]!; // the single check line; reportChecks then adds a blank + summary
   assert.equal(checkLine.includes('\x1b'), false, 'no ESC byte reaches the terminal');

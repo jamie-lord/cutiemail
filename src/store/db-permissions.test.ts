@@ -1,7 +1,7 @@
 /**
  * Mail-database file permissions. A mail DB holds SCRAM credential material and raw
- * message bytes, so it must be owner-only (0600) — never group/world readable. A live
- * audit found a DISABLED account's mail-<user>.db lingering at 0644: openMailDb heals
+ * message bytes, so it must be owner-only (0600) — never group/world readable. A
+ * DISABLED account's mail-<user>.db can linger at 0644: openMailDb heals
  * perms only when a handle is opened, and the lazy store manager never opens a dormant
  * account's DB, so the on-open heal never fired for it. The daemon now enforces 0600 on
  * every REGISTERED account's DB at boot (main.ts), which these tests pin down.

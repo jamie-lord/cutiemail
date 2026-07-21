@@ -37,7 +37,7 @@ export function snapshotDatabase(sourcePath: string, destPath: string): void {
   try {
     db.exec(`VACUUM INTO ${sqlString(destPath)}`);
     // The snapshot is a byte-exact copy of the source's secrets (SCRAM material + raw mail) —
-    // make it private explicitly, not only via the caller's umask (audit run-4).
+    // make it private explicitly, not only via the caller's umask.
     chmodSync(destPath, 0o600);
   } finally {
     db.close();

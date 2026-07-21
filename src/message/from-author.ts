@@ -22,8 +22,8 @@ import { stripComments } from './cfws.ts';
  * `local@domain` as written (surrounding WSP removed), or null if there is no `@`.
  */
 export function authorAddrSpec(value: string): string | null {
-  // Comments first (a nested comment must be O(n), not O(depth²) — a crafted one froze the
-  // event loop, DMARC audit run-3), then quoted-string display-names.
+  // Comments first (a nested comment must be O(n), not O(depth²) — a crafted one can freeze
+  // the event loop), then quoted-string display-names.
   let v = stripComments(value);
   v = v.replace(/"(?:[^"\\]|\\.)*"/g, ' ').trim();
   const open = v.lastIndexOf('<');

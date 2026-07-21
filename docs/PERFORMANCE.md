@@ -8,10 +8,10 @@ so `npm test` and `tsc` ignore them. Two machines: **laptop** (8-core, 16 GB, NV
 > **Status: fixed (2026-07-19).** The lazy-storage refactor below landed (commits `3ec1a2b`,
 > `97d26cc`). On the box, a single-message body fetch on a 50k mailbox went **1825 ms → 0.53 ms**,
 > per-command heap churn **195 MB → 1.3 MB**, and greeting latency under load **4.6 s → 0.44 s**.
-> A second stress round (`ad27034`) then found and fixed a matching freeze on the **write** path —
-> bulk `STORE`/`COPY` ran one transaction per message (**~37 s → ~3 s** for a 20k folder). A third,
-> adversarial round (`93de573`) found and fixed a real **OOM** — an authenticated read-slowloris
-> that killed the box (now bounded by a write-backlog budget). The
+> Further stress testing (`ad27034`) then found and fixed a matching freeze on the **write** path —
+> bulk `STORE`/`COPY` ran one transaction per message (**~37 s → ~3 s** for a 20k folder), and a
+> deliberate break-it pass (`93de573`) found and fixed a real **OOM** — an authenticated
+> read-slowloris that killed the box (now bounded by a write-backlog budget). The
 > [Fixed](#what-was-fixed), [stress](#pushing-harder--stress-findings-2026-07-19) and
 > [red-team](#red-team--deliberately-trying-to-break-it-2026-07-19) sections carry the details. The
 > diagnosis below is kept as the record of *why* — read it in the past tense.
@@ -171,7 +171,7 @@ at open; `open()` stays for tests that create a bare mailbox.
 
 ## Pushing harder — stress findings (2026-07-19)
 
-After the read-path fix, a second round pushed bigger mailboxes (up to 100k / 442 MB), bulk
+After the read-path fix, further stress testing pushed bigger mailboxes (up to 100k / 442 MB), bulk
 whole-mailbox commands, large attachments, and concurrent load (`perf/stress.bench.ts`,
 `perf/large-messages.bench.ts`, `perf/inbound-burst.bench.ts`). One new bug, three characterised
 ceilings.
@@ -217,7 +217,7 @@ under the 8-reader load above. It could instead resolve the set to UIDs first �
 client view for sequence mode, a cheap `MAX(uid)` for `*` in UID mode — and batch-fetch metadata for
 only the matched messages, making `FETCH <one message>` O(matched) not O(mailbox). It is **not
 built**: it touches the RFC 9051 §7.4.1 client-view sequence logic that is heavily tested and has
-been a source of subtle bugs (audit runs 5–7), and the residual only hurts very large mailboxes
+been a source of subtle bugs, and the residual only hurts very large mailboxes
 under heavy concurrent load on slow hardware — disproportionate risk for the mission. Recorded as
 the next lever if a large-mailbox latency complaint ever materialises.
 
@@ -234,7 +234,7 @@ bound, ample for personal scale); per-user memory (176 KB). No effort spent here
 
 ## Red-team — deliberately trying to break it (2026-07-19)
 
-A third round stopped measuring and tried to crash, hang, or OOM the server
+A deliberate break-it pass stopped measuring and tried to crash, hang, or OOM the server
 (`perf/abuse.bench.ts`, `perf/oom.bench.ts`). One real OOM, now fixed; the parser held.
 
 ### 5. [DONE] Authenticated read-slowloris OOM
@@ -297,7 +297,7 @@ it in ≤64 KB reads, which the cap catches), not worth hardening.
 
 ## Outbound + mixed load — the send leg and everything at once (2026-07-19)
 
-A fourth round measured the *outbound* path and then ran inbound + outbound + IMAP together to the
+A further pass measured the *outbound* path and then ran inbound + outbound + IMAP together to the
 edge of what the box sustains (`perf/outbound.bench.ts`, `perf/mixed-load.bench.ts`). One real bug,
 one hardening, and a clean bill on robustness.
 

@@ -1,5 +1,5 @@
 /**
- * Outbound-queue backpressure (found under mixed load). The relay drains serially (~11/s on a
+ * Outbound-queue backpressure. The relay drains serially (~11/s on a
  * small VM); without a bound, an authenticated account submitting faster grows the queue — and,
  * since each row holds the whole signed body, the disk — without limit. Submission now returns a
  * transient 451 once the queue is at capacity, so a well-behaved sender retries and no mail is lost

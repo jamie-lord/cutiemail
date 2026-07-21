@@ -48,7 +48,7 @@ The server — and therefore the test bed that must cover it — makes these cut
    > is the recorded, accepted gap.
 3. **MTA-STS (RFC 8461), not DANE (RFC 7672),** for outbound TLS policy. DANE
    needs a validating DNSSEC stub resolver, which Node does not provide (no TLSA,
-   no AD-bit access — see `project_mail_server` memory). MTA-STS achieves the
+   no AD-bit access). MTA-STS achieves the
    same protection over the DNS/HTTPS we *can* do well.
 4. **Modern message parsing.** Parse RFC 5322 + MIME strictly for what modern
    mail produces; **reject** rather than heroically repair ancient malformations.

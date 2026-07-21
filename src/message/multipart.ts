@@ -89,10 +89,10 @@ export function parseMultipart(body: Buffer, boundary: string, defects: Multipar
 
   // Walk the body line by line, retaining ONLY the delimiter lines' offsets. A multipart body
   // has at most a handful of delimiters but can carry millions of content lines, so we must not
-  // materialise a Line object per physical line: that whole-body allocation is the run-4-class
+  // materialise a Line object per physical line: that whole-body allocation is a memory-exhaustion
   // OOM that parse.ts's forEachLine already removed, and it was never applied here — a 25 MiB
   // all-CRLF body spiked ~1.5 GB and froze the (single-threaded) event loop for over a second
-  // when a client FETCHed BODYSTRUCTURE (audit run-9). This scan is O(body) time, O(delims) space.
+  // when a client FETCHed BODYSTRUCTURE. This scan is O(body) time, O(delims) space.
   const delims: Delim[] = [];
   {
     let i = 0;

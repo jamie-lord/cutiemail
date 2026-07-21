@@ -11,16 +11,16 @@
  * trailing `(` (malformed) is treated as a comment to end-of-value and dropped
  * (fail-closed).
  *
- * History — this is a security-critical locus that has regressed twice:
- *  - The original iterated `do { v = v.replace(/\([^()]*\)/g, ' ') } while (v !== prev)`
- *    was O(depth^2): a deeply nested comment in From/Authentication-Results froze the
- *    single-threaded event loop on one unauthenticated message (run-3 HIGH DoS).
- *  - Its first replacement was linear but NOT quote-aware and ran BEFORE the caller's
- *    separate quoted-string strip, so a `(` planted inside a From display-name
- *    quoted-string was mis-read as a comment — which unbalanced the closing `"` and
- *    re-exposed an attacker angle-addr, reopening the DMARC From-domain differential
- *    (`From: "<a@attacker.com>(" <victim@bank.com>` aligned DMARC on attacker.com while
- *    every MUA displays victim@bank.com — run-4 HIGH). Two sequential phases cannot match
+ * Why a single quote-aware pass, and not something simpler — two naive approaches are unsafe:
+ *  - Iterating `do { v = v.replace(/\([^()]*\)/g, ' ') } while (v !== prev)`
+ *    is O(depth^2): a deeply nested comment in From/Authentication-Results freezes the
+ *    single-threaded event loop on one unauthenticated message (a DoS).
+ *  - A linear strip that is NOT quote-aware and runs BEFORE the caller's
+ *    separate quoted-string strip mis-reads a `(` planted inside a From display-name
+ *    quoted-string as a comment — which unbalances the closing `"` and
+ *    re-exposes an attacker angle-addr, reopening the DMARC From-domain differential
+ *    (`From: "<a@attacker.com>(" <victim@bank.com>` aligns DMARC on attacker.com while
+ *    every MUA displays victim@bank.com). Two sequential phases cannot match
  *    RFC 5322 lexing; this single interleaved pass can.
  *
  * O(n) in the value length regardless of nesting depth.

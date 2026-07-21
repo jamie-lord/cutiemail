@@ -140,7 +140,7 @@ export class RelayLoop {
     // transition (remove / deadLetter / reschedule) commits — never before. If we bounced first
     // and the settle then threw (disk-full, a write lock held past busy_timeout, a crash), the
     // row would stay due and be re-processed next tick — RE-SENDING the message and RE-EMITTING
-    // backscatter to the (forgeable) sender every ~60 s until the fault cleared (audit run-5).
+    // backscatter to the (forgeable) sender every ~60 s until the fault cleared.
     const toBounce: BouncedRecipient[] = [...permanentFailures]; // 5yz rejections are final
     try {
       if (retryLater.length === 0) {
@@ -174,7 +174,7 @@ export class RelayLoop {
         // Defer everything NOT durably settled: the transient (retryLater) recipients AND the
         // permanent-failure recipients whose bounce has not committed (the bounce is emitted only
         // after a clean settle, so a permanent recipient must stay on the row to be re-relayed and
-        // bounced on a later tick — dropping it silently loses its bounce, audit run-7). Delivered
+        // bounced on a later tick — dropping it silently loses its bounce). Delivered
         // recipients are excluded (never re-sent). Fall back to the full list only if that set is
         // empty (all delivered), so the row still persists for the operator rather than vanishing.
         const unsettled = [...retryLater, ...permanentFailures.map((f) => f.recipient)];
@@ -211,9 +211,9 @@ export class RelayLoop {
 
   /**
    * Stop ticking and AWAIT any in-flight tick, so a caller can then close the queue's database
-   * without a running tick racing it to a "database is not open" crash (found under mixed load:
-   * a tick draining a backed-up queue outlived close(), which had cleared the timer but not waited
-   * for the tick). A tick mid-drain bails at the next entry boundary (≤ one message), leaving the
+   * without a running tick racing it to a "database is not open" crash: a tick draining a
+   * backed-up queue could outlive close(), which had cleared the timer but not waited for the
+   * tick. A tick mid-drain bails at the next entry boundary (≤ one message), leaving the
    * rest durably queued. Idempotent and safe to await.
    */
   async stop(): Promise<void> {

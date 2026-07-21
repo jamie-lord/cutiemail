@@ -33,7 +33,7 @@ test('sanity: a well-formed message parses into headers + body', () => {
   assert.deepEqual(msg.anomalies, []);
 });
 
-test('a large all-CRLF message parses with bounded memory/time (run-4 HIGH DoS regression)', () => {
+test('a large all-CRLF message parses with bounded memory/time', () => {
   // The old parser materialised one object per physical line over the WHOLE message, so a
   // ~10 MiB all-CRLF body (~5M lines) cost hundreds of MiB and, parsed 3x per inbound message,
   // stalled/OOM-killed the process. The streaming parser is O(1) in line objects. Assert it

@@ -22,16 +22,17 @@ groupware stack or JMAP, use them. cutie-mail's bet is different: **radical smal
 actually read**. One process, one language, zero runtime dependencies, plain SQLite files you can
 query with stock `sqlite3`, and a from-scratch implementation where every protocol byte is code in
 this repo — built correctness-first, with the test bed (reference-model storage proofs,
-mutant-server negative controls, adversarial audits) as the star of the show. Deliberately **not**
+mutant-server negative controls, security-reviewed hostile-input surfaces) as the star of the
+show. Deliberately **not**
 here, each recorded as a decision with reasons ([docs/TESTING-ROADMAP.md](docs/TESTING-ROADMAP.md),
 [docs/BACKLOG.md](docs/BACKLOG.md)): POP3, JMAP, Sieve, webmail, a spam filter beyond DMARC
 enforcement, multiple domains per instance, and clustering. One domain, a handful of humans, on a
 small box you own — that's the shape it serves best.
 
 **Maturity:** young (v0, one maintainer) but held to an unusually high verification bar — 1,000+
-tests including negative controls, eight adversarial audit rounds, two live pentest sessions, and
-a production instance exchanging authenticated mail with Gmail daily. Run it for mail you care
-about only after reading the honest limitations in [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md).
+tests including negative controls, security-reviewed hostile-input surfaces, and a production
+instance exchanging authenticated mail with Gmail daily. Run it for mail you care about only after
+reading the honest limitations in [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md).
 
 **Platforms:** developed and tested on Linux and macOS; on Windows use WSL2 (the daemon itself is
 plain Node, but the 0600/0700 file-permission hardening is a no-op on NTFS and the deployment
@@ -229,11 +230,11 @@ independent disciplines back the 1,000+ tests:
   [four-state outcome model](src/conformance/outcome.ts) grades each result by RFC 2119 level: a
   declined SHOULD is *permitted-latitude*, an inconclusive check is neither pass nor fail, and
   only a violated MUST is a finding.
-- **Adversarial audits, per subsystem.** Every hostile-input surface (inbound SMTP + auth,
-  outbound relay, the IMAP sync/extension surface, and the RFC 5322/MIME parsers) has been put
-  through an independent break-it review; the real bugs it found — auth-header spoofing, a
-  DMARC display-spoof, a TLS hang that could wedge the send queue, an MX SSRF, a cross-connection
-  desync — were each fixed with a reproduce-first regression test. Findings and status are in
+- **Hostile-input hardening, per subsystem.** Every hostile-input surface (inbound SMTP + auth,
+  outbound relay, the IMAP sync/extension surface, and the RFC 5322/MIME parsers) is defended and
+  regression-tested against the attacks that matter — auth-header spoofing, DMARC display-spoofing,
+  a TLS hang that could wedge the send queue, MX SSRF, and cross-connection desync — each covered
+  by a test that fails on the vulnerable code. Coverage and status are in
   [docs/TESTING-ROADMAP.md](docs/TESTING-ROADMAP.md).
 
 ```sh

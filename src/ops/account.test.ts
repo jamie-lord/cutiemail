@@ -66,7 +66,7 @@ test('add provisions a working account and the password never touches the disk',
   }
 });
 
-test('a new account uses a modern PBKDF2 iteration count and rejects a case-folding login (run-4)', async () => {
+test('a new account uses a modern PBKDF2 iteration count and rejects a case-folding login', async () => {
   const dir = tmp();
   try {
     const dbPath = join(dir, 'control.db');
@@ -88,7 +88,7 @@ test('a new account uses a modern PBKDF2 iteration count and rejects a case-fold
   }
 });
 
-test('a mail database is created private (0600), never world/group readable (run-4)', () => {
+test('a mail database is created private (0600), never world/group readable', () => {
   const dir = tmp();
   try {
     const dbPath = join(dir, 'perms.db');
@@ -225,8 +225,7 @@ test('a piped (non-interactive) password is read exactly once — echo "pw" | ac
   const dir = tmp();
   try {
     const dbPath = join(dir, 'control.db');
-    // One entry only; a second read would get '' and wrongly report a mismatch —
-    // this is the exact failure observed on the first live run.
+    // One entry only; a second read would get '' and wrongly report a mismatch.
     const piped: PasswordSource = { interactive: false, read: () => Promise.resolve('piped-pw') };
     assert.equal(await runAccount(['add', 'scripted', '--db', dbPath], capture().io, {}, piped), 0);
     const db = openMailDb(dbPath);

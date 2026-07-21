@@ -1,9 +1,9 @@
 # SMTP implementation divergence — encodable findings
 
-Source: a deep-research pass (July 2026, ~105 agents, adversarially verified against
-primary sources). Raw verified claims in `smtp-divergence-raw-findings.txt`. This file is
-the actionable distillation: each entry is something the corpus can test, with the exact
-wire primitive, the affected implementations, and the RFC clause at stake.
+Source: a survey of the SMTP-divergence and email-security literature (2023–2026), verified
+against primary sources. This file is the actionable distillation: each entry is something the
+corpus can test, with the exact wire primitive, the affected implementations, and the RFC clause
+at stake.
 
 The point of this document is the thing a suite built only from the RFC would miss: the spec
 text on line endings was *clear*, and implementations diverged anyway. That gap is the whole

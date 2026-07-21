@@ -2,22 +2,20 @@
  * The mutant server: a minimal SMTP receiver whose conformance can be broken on
  * purpose, one defect at a time.
  *
- * This is the most important piece of test infrastructure in the project, and it
- * was missing from the original plan. Everything else proves the suite RUNS.
- * Only this proves the suite DETECTS. A conformance suite that has never been
- * shown to catch a violation is faith dressed as evidence — and the
- * fabricated-quote incident is a standing reminder of how confident wrongness
- * looks from the inside.
+ * This is the most important piece of test infrastructure in the project.
+ * Everything else proves the suite RUNS. Only this proves the suite DETECTS. A
+ * conformance suite that has never been shown to catch a violation is faith
+ * dressed as evidence.
  *
- * How it is used (task #25): for each planted defect, the corpus test for the
+ * How it is used: for each planted defect, the corpus test for the
  * violated requirement must report `non-conformant` against exactly that
  * requirement — and must NOT report findings against the requirements the
  * mutant does not violate. That second half matters as much as the first: a
  * test that fires on everything is as useless as one that fires on nothing.
  *
  * This is emphatically NOT a reference server. Its "conformant" baseline is only
- * as correct as this file, which is why real ground truth is Postfix and Exim
- * (task #13). The mutant's job is narrow: be conformant enough that a single
+ * as correct as this file, which is why real ground truth is Postfix and Exim.
+ * The mutant's job is narrow: be conformant enough that a single
  * switched-on defect is the ONLY thing a good test could find.
  *
  * It is deliberately built directly on the byte DSL and raw sockets — not on any

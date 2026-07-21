@@ -75,7 +75,7 @@ function bodyText(raw: Buffer): string {
 
 /** Per-message lowercased text/body, memoised for the duration of one message's SEARCH so a
  * command with many TEXT/BODY keys re-uses one lowercasing instead of re-serialising the whole
- * message per key (the O(keys × messages × size) blow-up — audit run-5). */
+ * message per key (the O(keys × messages × size) blow-up). */
 interface TextMemo {
   text?: string;
   body?: string;

@@ -62,8 +62,8 @@ type LineFn = (buf: Buffer, start: number, end: number, terminator: Terminator, 
  * The prior version materialised a `PhysLine[]` over the ENTIRE message. A 25 MiB message
  * (the SIZE default) is ~13M lines ≈ ~2 GB of live objects, and the inbound path parses each
  * message THREE times (DKIM + DMARC + ARC), so one unauthenticated all-CRLF message stalled
- * the event loop for seconds and a few concurrent ones OOM-killed the process (audit run-4
- * HIGH). The body region is never turned into line objects.
+ * the event loop for seconds and a few concurrent ones OOM-killed the process. The body region
+ * is never turned into line objects.
  */
 function forEachLine(buf: Buffer, cb: LineFn): void {
   let start = 0;

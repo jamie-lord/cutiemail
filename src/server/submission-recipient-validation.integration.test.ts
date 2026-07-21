@@ -1,6 +1,5 @@
 /**
- * Submission local-recipient validation, end to end (UX pressure-test finding #1 — the
- * submission black hole).
+ * Submission local-recipient validation, end to end (the submission black-hole class).
  *
  * Before this gate, the submission listener set no acceptRecipient, so RCPT accepted ANY
  * address; the delivery loop then silently skipped a local recipient that didn't resolve

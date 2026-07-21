@@ -60,7 +60,7 @@ test('DELETE and RENAME manage mailboxes; INBOX is protected', async () => {
 test('LIST/STATUS serialise a mailbox name as a proper astring (quote/special chars escaped)', async () => {
   // A folder name containing a " or a non-space special used to be emitted as `"a b"c"` (the
   // embedded quote closes the quoted-string early) or as a raw atom — either desyncs a strict
-  // client's parse (audit run-3). The name must be a correctly-escaped quoted-string.
+  // client's parse. The name must be a correctly-escaped quoted-string.
   const cat = SqliteCatalog.open(new DatabaseSync(':memory:'));
   cat.create('a b"c'); // space AND an embedded double-quote
   cat.create('foo)bar'); // a special char but NO space (old code emitted a bare atom)

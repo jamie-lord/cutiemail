@@ -2,11 +2,11 @@
 
 ## Status
 
-Accepted (2026-07-21). From the ten-persona UX pressure test: the homelab/NAS persona — who
-deploys everything as `docker compose up` — found no container story at all (no Dockerfile, no
-compose, no mention), and none of the existing ADRs recorded the absence. For an audience that
-deploys nothing else by hand, that read as "not built for people like me", and it broke the
-project's own "every omission is a recorded decision" promise.
+Accepted (2026-07-21). A container-native deployment path was missing: someone who deploys
+everything as `docker compose up` found no container story at all (no Dockerfile, no compose, no
+mention), and none of the existing ADRs recorded the absence. For an audience that deploys nothing
+else by hand, that reads as "not built for people like me", and it broke the project's own "every
+omission is a recorded decision" promise.
 
 ## Context
 

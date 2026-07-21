@@ -137,7 +137,7 @@ async function verifyOneSignature(rawValue: string, headers: ReturnType<typeof p
   const algo = hashAlgoOf(sig);
   // RFC 8301: rsa-sha1 (and any sha1 body hash) MUST be treated as a verification failure.
   // SHA-1 is broken — chosen-prefix collisions are practical ("SHA-1 is a Shambles", 2020) —
-  // so a sha1 DKIM must never yield a pass that then flows into DMARC alignment (audit run-3).
+  // so a sha1 DKIM must never yield a pass that then flows into DMARC alignment.
   if (algo === 'sha1') return { verdict: 'fail', domain: sig.domain };
   const lTag = sig.tags.get('l');
   const lengthLimit = lTag !== undefined && /^\d+$/.test(lTag) ? Number(lTag) : undefined;

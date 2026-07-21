@@ -168,18 +168,17 @@ What the assembled daemon (`npm start`) does, all live-verified:
   Full **SPF + DKIM + DMARC** trifecta published and aligned; Gmail accepts on the primary MX.
 - **Store** — `SqliteCatalog`/`SqliteMailbox` on `node:sqlite`, transactional writes, WAL journaling,
   differentially validated against the reference model, persistent across restart.
-- **Robustness** — the internet-facing parsers are fuzzed (deterministic harness, ~30k adversarial
+- **Robustness** — the internet-facing parsers are fuzzed (deterministic harness, ~30k generated
   inputs) and the command dispatch is crash-guarded; three memory-exhaustion DoS vectors
   (sequence-set range, APPEND literal, unterminated command line) found and closed.
-- **Adversarial audit sweep** — every hostile-input subsystem (IMAP multi-connection sync, CONDSTORE/
-  QRESYNC, inbound SMTP + SPF/DKIM/DMARC, outbound relay/queue/bounce, and the RFC 5322/MIME parsers)
-  has had an independent adversarial correctness/security audit. Real bugs found and fixed with
-  reproduce-first regression tests, e.g.: an `Authentication-Results` method-injection via MAIL FROM
+- **Hostile-input hardening, per subsystem** — every hostile-input subsystem (IMAP multi-connection
+  sync, CONDSTORE/QRESYNC, inbound SMTP + SPF/DKIM/DMARC, outbound relay/queue/bounce, and the
+  RFC 5322/MIME parsers) has been security-reviewed, and each defended attack carries a
+  reproduce-first regression test, e.g.: an `Authentication-Results` method-injection via MAIL FROM
   and two `stripOwnAuthResults` bypasses (forged auth verdicts under our authserv-id); a duplicate-`From`
   DMARC display-spoof; a TLS-handshake hang that could wedge the whole outbound queue; an MX SSRF to
   loopback/private targets; a cross-connection EXPUNGE-swallow desync; a quadratic FETCH-BODYSTRUCTURE
-  CPU DoS; and an unbounded-RCPT memory DoS. The pattern — a fresh adversarial reviewer per subsystem —
-  found defects that the passing suite and fuzzers had missed.
+  CPU DoS; and an unbounded-RCPT memory DoS — defects a passing suite and fuzzers alone would miss.
 - **Federation** — two daemons exchange a signed, dual-`Received`-traced message end to end.
 
 The IMAP server has now been calibrated against **Dovecot's `imaptest`** (built from vanilla
@@ -243,7 +242,7 @@ only what earns its place; record — don't silently skip — what does not). La
 - **Pre-existing `tsc` debt fixed** — 6 type errors the strip-types test runner never caught;
   the typecheck is now clean.
 
-Recorded as **environment-blocked, not skipped** (verified this session, not assumed):
+Recorded as **environment-blocked, not skipped** (verified, not assumed):
 
 - **Postfix calibration of the receiver suite (#1).** Postfix is installed, but its `master`
   will not start as a non-root user in this sandbox (confirmed: no listener comes up). The

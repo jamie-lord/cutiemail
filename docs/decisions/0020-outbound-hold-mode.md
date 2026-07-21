@@ -2,10 +2,10 @@
 
 ## Status
 
-Accepted (2026-07-21). From the ten-persona UX pressure test: the app-developer persona — using
-cutie-mail as a local dev/test mail server, a use the project turns out to be accidentally good
-at — found that a staging instance fed realistic fixture data **actually emails the addresses in
-the fixtures**. Authenticated submission to any external domain queues for real MX relay with
+Accepted (2026-07-21). Using cutie-mail as a local dev/test mail server — a use the project turns
+out to be accidentally good at — exposes a real hazard: a staging instance fed realistic fixture
+data **actually emails the addresses in the fixtures**. Authenticated submission to any external
+domain queues for real MX relay with
 days of retries, and there was no off switch.
 
 ## Context

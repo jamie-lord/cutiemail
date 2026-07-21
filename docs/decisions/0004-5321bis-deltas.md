@@ -9,7 +9,7 @@ so a corpus author knows where the two disagree and which reading we assert. It 
 per-requirement annotation of all 570 register entries — that is deferred until the bis
 publishes and the diff stabilises. It captures the load-bearing cases.
 
-Source: the verified deep-research pass (docs/research/smtp-divergence.md), checked against
+Source: the SMTP-divergence research (docs/research/smtp-divergence.md), checked against
 draft-ietf-emailcore-rfc5321bis-44 (31 Jul 2025).
 
 ## The one that matters most: line endings and smuggling

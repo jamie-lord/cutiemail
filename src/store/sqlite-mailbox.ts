@@ -82,7 +82,7 @@ export class SqliteMailbox {
    * probes — the catalog already ensured both at open() and has confirmed this row's id.
    * This is the hot path: SqliteCatalog.get() runs on every SELECT/STATUS/COPY, and the
    * old code re-executed CREATE TABLE IF NOT EXISTS ×4 + three pragma_table_info probes
-   * + CREATE INDEX on every one of those (docs/PERFORMANCE.md finding 4). attach() is a
+   * + CREATE INDEX on every one of those (docs/PERFORMANCE.md). attach() is a
    * bare constructor call.
    */
   static attach(db: DatabaseSync, id: number): SqliteMailbox {
@@ -328,7 +328,7 @@ export class SqliteCatalog {
     const canon = canonicalMailboxName(name);
     const row = this.#db.prepare('SELECT id FROM mailbox WHERE name = ?').get(canon) as { id: number } | undefined;
     // attach() (not open()): the schema/migrations ran once at catalog open, and the row
-    // exists — so a per-command get() does no DDL (docs/PERFORMANCE.md finding 4).
+    // exists — so a per-command get() does no DDL (docs/PERFORMANCE.md).
     return row === undefined ? undefined : SqliteMailbox.attach(this.#db, Number(row.id));
   }
 
@@ -356,8 +356,8 @@ export class SqliteCatalog {
       // Delete the expunge tombstones too (as invalidate() does). create() reuses a freed
       // internal id via MAX(id)+1, so an orphaned expunge log would leak into the next mailbox
       // that reuses this id — a QRESYNC client would be told a LIVE message it just received in
-      // the new mailbox had VANISHED, and HIGHESTMODSEQ >= every tombstone's mod_seq breaks
-      // (audit run-7). MemoryCatalog builds a fresh log, so the test suite was blind to this.
+      // the new mailbox had VANISHED, and HIGHESTMODSEQ >= every tombstone's mod_seq breaks.
+      // MemoryCatalog builds a fresh log, so the test suite was blind to this.
       this.#db.prepare('DELETE FROM expunged WHERE mailbox_id = ?').run(id);
       this.#db.prepare('DELETE FROM mailbox WHERE id = ?').run(id);
       this.#db.exec('COMMIT');
@@ -390,7 +390,7 @@ export class SqliteCatalog {
         // (kept UIDs, carried INBOX's high modseq) and, worse, MOVED INBOX's expunge log onto the
         // target — so on a second consecutive INBOX rename the pre-existing tombstones migrated
         // away and INBOX was left telling a QRESYNC client "nothing vanished" while its cached
-        // UIDs were gone (audit run-8 residual). Both bugs die with the fresh-target rebuild.
+        // UIDs were gone. Both bugs die with the fresh-target rebuild.
         const nextId = Number((this.#db.prepare('SELECT COALESCE(MAX(id), 0) + 1 AS id FROM mailbox').get() as { id: number }).id);
         const inbox = this.#db.prepare('SELECT uid_validity, highest_modseq FROM mailbox WHERE id = ?').get(Number(src.id)) as { uid_validity: number; highest_modseq: number };
         const moving = this.#db.prepare('SELECT uid, internal_date, raw FROM message WHERE mailbox_id = ? ORDER BY uid').all(Number(src.id)) as Array<{ uid: number; internal_date: number; raw: Uint8Array }>;
@@ -411,7 +411,7 @@ export class SqliteCatalog {
         this.#db.prepare('DELETE FROM message WHERE mailbox_id = ?').run(Number(src.id));
         // Report the moved (ORIGINAL) UIDs as VANISHED on the now-empty source INBOX: bump INBOX's
         // highest_modseq and log each as expunged, so a QRESYNC/CONDSTORE client reconnecting to
-        // INBOX learns its cached messages are gone (audit run-7). INBOX's PRE-EXISTING tombstones
+        // INBOX learns its cached messages are gone. INBOX's PRE-EXISTING tombstones
         // are left untouched — they are part of INBOX's vanished history and must not migrate.
         let modseq = Number(inbox.highest_modseq);
         const logVanished = this.#db.prepare('INSERT OR REPLACE INTO expunged (mailbox_id, uid, mod_seq) VALUES (?, ?, ?)');

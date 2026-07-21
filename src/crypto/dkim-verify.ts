@@ -27,7 +27,7 @@ export interface SignedField {
    * byte-for-byte. Without it, `simple` canon was reconstructed from the trimmed `name`/`value`
    * with one forced post-colon space — which both rejected legitimate simple-canon signatures
    * (non-single-space/trailing-WSP headers) AND let a verifier re-collapse a whitespace-tampered
-   * signed header back to the signed form and PASS it (audit run-4). `relaxed` canon ignores it
+   * signed header back to the signed form and PASS it. `relaxed` canon ignores it
    * (it normalises whitespace itself), so signers/ARC that omit it are unaffected.
    */
   readonly raw?: Buffer;

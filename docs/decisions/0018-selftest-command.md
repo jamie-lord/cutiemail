@@ -2,8 +2,8 @@
 
 ## Status
 
-Accepted (2026-07-21). A usability item surfaced while pressure-testing the getting-started
-experience for open-sourcing: `doctor` proves the *outside* is right, but nothing proved the
+Accepted (2026-07-21). A usability gap in the getting-started experience:
+`doctor` proves the *outside* is right, but nothing proved the
 *inside* — the mail path through the running server — actually works.
 
 ## Context

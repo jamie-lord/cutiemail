@@ -1,5 +1,5 @@
 /**
- * IMAP debug-log credential redaction (audit run-1, finding 7). MAIL_DEBUG logs each
+ * IMAP debug-log credential redaction. MAIL_DEBUG logs each
  * received line; the redactor must cover BOTH auth forms and the SASL continuation, or a
  * base64 that decodes to \0user\0password lands in the journal. Each redaction is paired
  * with a non-credential line that must pass through unchanged (no over-redaction).

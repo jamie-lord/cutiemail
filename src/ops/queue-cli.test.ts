@@ -108,7 +108,7 @@ test('dead-letter show sanitises terminal escape sequences in attacker-controlle
     const text = show.out.join('\n');
     assert.equal(text.includes('\x1b'), false, 'no ESC byte reaches the terminal');
     assert.equal(/[\x00-\x08\x0e-\x1f\x7f-\x9f]/.test(text), false, 'no C0/C1 controls reach the terminal');
-    // A lone CR (line-overwrite forgery) is neutralised too (run-2 finding 5).
+    // A lone CR (line-overwrite forgery) is neutralised too.
     assert.equal(/\r(?!\n)/.test(text), false, 'no lone CR reaches the terminal');
     assert.match(text, /Subject: /); // the header is still shown, just neutralised
     // The escapes are also neutralised in the `list` line (lastError can carry remote bytes).

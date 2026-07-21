@@ -269,7 +269,7 @@ test('a peer expunge is not swallowed when this connection then runs its own MOV
   }
 });
 
-test('a SEQUENCE-mode COPY/MOVE under a concurrent peer EXPUNGE never hits the WRONG message (run-5)', async () => {
+test('a SEQUENCE-mode COPY/MOVE under a concurrent peer EXPUNGE never hits the WRONG message', async () => {
   // COPY/MOVE used to resolve the LIVE list AFTER announcing the peer's EXPUNGE, so a bare
   // sequence number addressed whatever message slid into the expunged slot — for MOVE,
   // DESTRUCTIVELY removing a message the user never referenced. It must resolve against the

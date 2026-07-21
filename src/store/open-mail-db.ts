@@ -30,7 +30,7 @@ export const BUSY_TIMEOUT_MS = 5000;
  * Force a mail-database file to owner-only (0600) permissions. The DB holds SCRAM
  * credential material (salt/iterations/stored_key/server_key) and raw message bytes —
  * never group/world readable. The daemon's 0o077 umask makes NEW files 0600, but this
- * also fixes an ALREADY-DEPLOYED 0644 file (audit run-4). Best-effort and idempotent:
+ * also fixes an ALREADY-DEPLOYED 0644 file. Best-effort and idempotent:
  * :memory:, a missing file, a read-only FS, or a foreign owner are all non-fatal.
  */
 export function secureMailDbFile(path: string): void {

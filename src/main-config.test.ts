@@ -1,5 +1,5 @@
 /**
- * configFromEnv — the boot-time TLS fail-closed guard (audit run-1, finding 3).
+ * configFromEnv — the boot-time TLS fail-closed guard.
  *
  * The bundled dev certificate's private key is committed, so the daemon must refuse to
  * serve it on a non-loopback interface. Each case pairs the refusal with the control that

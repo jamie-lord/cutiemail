@@ -1,5 +1,5 @@
 /**
- * The daemon's operational log trail (UX pressure-test findings #2 and #3). Before this,
+ * The daemon's operational log trail. Before this,
  * accepted mail, submissions, and — worst — failed authentication produced ZERO log output:
  * an operator could not see a credential-stuffing run at all, and DEPLOYMENT.md promised
  * journalctl lines that did not exist. These tests pin the trail end to end through

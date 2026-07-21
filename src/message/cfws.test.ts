@@ -1,7 +1,7 @@
 /**
  * Linear CFWS comment-stripping (src/message/cfws.ts). The correctness cases pin the RFC
  * 5322 §3.2.2 semantics both DoS sinks (From alignment, Authentication-Results id) depend
- * on; the reproduce-first case is the run-3 HIGH: the previous iterated-regex stripper was
+ * on; the DoS case covers the previous iterated-regex stripper, which was
  * O(depth²), so a deeply nested comment froze the event loop. The linear scan handles the
  * same input in microseconds — the wall-clock bound below fails hard against the old code
  * (seconds) with a ~100x margin, so it is a real regression guard, not a flaky timer.
@@ -26,7 +26,7 @@ test('the address survives when a comment precedes/follows it (the DMARC/AR use)
 });
 
 test('quote-aware: a ( inside a quoted-string is literal, and quoted-strings are preserved', () => {
-  // The run-4 regression guard: a `(` inside a quoted display-name must NOT be treated as a
+  // The regression guard: a `(` inside a quoted display-name must NOT be treated as a
   // comment (which would unbalance the closing `"`). Quoted-strings are preserved verbatim so
   // the caller can strip/interpret them itself with correct boundaries.
   assert.equal(stripComments('"a(b)c" x'), '"a(b)c" x'); // the ( ) inside quotes are qtext, kept
@@ -43,7 +43,7 @@ test('a stray unmatched ) outside a comment is kept; an unterminated ( is fail-c
   assert.equal(stripComments('keep(dropped to end'), 'keep '); // the comment collapses to its space, tail dropped
 });
 
-test('reproduce-first: deep nesting is linear, not quadratic (run-3 HIGH DoS)', () => {
+test('deep nesting is linear, not quadratic', () => {
   // 200k-deep balanced comment. The old fixed-point regex is O(depth²) — seconds to minutes
   // and an event-loop freeze; the linear scan is instant. Assert a generous 500ms bound: the
   // old code needs many seconds at this depth, so the margin makes this non-flaky.

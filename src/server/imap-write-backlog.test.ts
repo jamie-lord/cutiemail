@@ -1,8 +1,8 @@
 /**
  * Slow-consumer memory guard (docs/PERFORMANCE.md). The server frames a whole FETCH body and
  * hands it to the socket; a client that stops reading leaves it buffered in the process with no
- * bound, so many stalled readers OOM it — reproduced live: ~112 connections each stalling on a
- * 25 MB body triggered the Linux OOM-killer on the 3.7 GB box. The fix caps the SUMMED write
+ * bound, so many stalled readers OOM it: ~112 connections each stalling on a
+ * 25 MB body triggers the Linux OOM-killer on a 3.7 GB box. The fix caps the SUMMED write
  * backlog and drops the slowest-draining connections when it is exceeded.
  *
  * The shedding decision is a pure function so it can be tested deterministically — the alternative
@@ -64,8 +64,8 @@ test('total exceeds budget only via many mid-size backlogs: sheds enough of them
   assert.ok(shed >= 8 && shed < 20, `shed enough but not all (${shed})`);
 });
 
-test('shed-the-victim: the socket that just wrote (exempt) is never dropped for others', () => {
-  // The abuse from audit run-9: an attacker holds many modest, genuinely-stalled sockets, each kept
+test('the socket that just wrote (exempt) is never dropped for others', () => {
+  // The abuse scenario: an attacker holds many modest, genuinely-stalled sockets, each kept
   // below a victim's transient peak; the victim's OWN large FETCH is what pushes the total over
   // budget. Because the shed samples writableLength synchronously right after the victim's write —
   // before the kernel drains a byte — the victim's socket shows its full pre-drain size and would be

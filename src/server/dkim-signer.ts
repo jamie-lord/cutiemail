@@ -53,7 +53,7 @@ export function dkimSign(raw: Buffer, signer: DkimSigner): Buffer {
   // Never emit a signature that does not cover From (mirrors the inbound guard, dkim-inbound.ts):
   // a From-less signed message (e.g. a MAIL FROM:<> submission with no From header) lets a
   // downstream append ANY From under our d= authority. Fail open — send it unsigned rather than
-  // sign a spoofable message (audit run-6).
+  // sign a spoofable message.
   if (!present.includes('from')) return raw;
   const headerNames = [...present, 'from']; // oversign From
   // Build the hashed fields through the SAME §5.4.2 selector the verifier uses, so our own

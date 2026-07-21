@@ -624,9 +624,9 @@ These are deliberate, recorded, and roughly in priority order for closing:
   the v4 address, so the relay pins `family: 4`. Revisit if you set up full
   IPv6 forward-confirmed rDNS.
 - **Hardened at the protocol and OS layers, but not fully operationally.** The wire surface
-  has been adversarially audited — SMTP-smuggling defence, DoS caps (recipient count, DATA
+  is hardened — SMTP-smuggling defence, DoS caps (recipient count, DATA
   scan, reply framing, a per-connection command-error limit that drops a peer streaming
-  junk), auth-header spoofing and DMARC display-spoof fixes, an MX SSRF guard, a bounded
+  junk), auth-header spoofing and DMARC display-spoof defences, an MX SSRF guard, a bounded
   TLS handshake — and the auth paths carry a **per-IP brute-force throttle** (submission +
   IMAP; over the threshold, auth is refused without checking the password). The systemd unit
   is **sandboxed** (`systemd-analyze security` ≈ 1.6/OK: no-new-privileges, read-only

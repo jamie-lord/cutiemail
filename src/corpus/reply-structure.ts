@@ -37,7 +37,7 @@
  *   - R-5321-4.2.1-e (a multiline reply must be terminable) and the "final line
  *     must be marked" half of R-5321-4.2.1-f both fail in only one observable way:
  *     a reply whose continuation never ends. To the reader that is bytes that
- *     never frame — a TIMEOUT — and the hard-won rule from six pressure rounds is
+ *     never frame — a TIMEOUT — and the rule here is
  *     that a timeout is `inconclusive`, never `violated` (§4.5.3.2 permits minutes;
  *     a slow server is not a broken one). So a standalone conviction here would
  *     either convict on a timeout (forbidden) or desync silently. The
@@ -291,7 +291,7 @@ export const MUTANTS: readonly Mutant[] = [
     ],
   },
   {
-    // Proves the primary §4.2.1-i code-EQUALITY rule. The reviewer correctly noted
+    // Proves the primary §4.2.1-i code-EQUALITY rule. Note
     // this is NOT §4.2.1-f: each line here is well-FORMED (code + "-"/SP); only the
     // codes DIFFER, which is 4.2.1-i, a separate requirement. No 4.2.1-f alsoProves.
     catches: 'multiline-reply-code-consistent',

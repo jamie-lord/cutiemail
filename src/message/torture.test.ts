@@ -3,7 +3,7 @@
  * for whatever bytes arrive from the open internet, inside the IMAP response stream.
  * If a builder emits a raw CR/LF or an unbalanced quote/paren into that stream, it
  * desyncs the client's parser for the rest of the connection — the exact bug class
- * the message-parser audit found (a zero-child multipart serialised as a bare string,
+ * this guards against (a zero-child multipart serialised as a bare string,
  * NUL bytes reaching a quoted string).
  *
  * The parser fuzz (fuzz.test.ts) proves the PARSERS never throw on hostile input.

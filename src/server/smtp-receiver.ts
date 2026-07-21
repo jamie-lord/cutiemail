@@ -1,6 +1,5 @@
 /**
- * A minimal, conformant SMTP receiver — a live server assembled from the test bed —
- * with optional STARTTLS and submission AUTH.
+ * A minimal, conformant SMTP receiver with optional STARTTLS and submission AUTH.
  *
  * It accepts a mail transaction (EHLO / MAIL / RCPT / DATA / QUIT) over a socket,
  * un-stuffs the DATA payload (RFC 5321 §4.5.2), and hands the delivered message to a
@@ -590,7 +589,7 @@ export class SmtpReceiver {
     const domain = options.domain ?? 'mail.example.com';
     const server = net.createServer();
     // Bound concurrent connections against a pre-auth flood / slowloris (no per-IP accounting on
-    // the single-threaded daemon, so a global ceiling is the backstop — audit run-5). Far above
+    // the single-threaded daemon, so a global ceiling is the backstop). Far above
     // any real sending pattern.
     server.maxConnections = MAX_CONNECTIONS;
     const sockets = new Set<net.Socket>();

@@ -102,7 +102,7 @@ test('NEGATIVE: the newest seal carries cv=fail → cv=fail immediately (§5.2 s
   assert.equal(out.cv, 'fail');
 });
 
-test('NEGATIVE: the newest AMS does not sign From → cv=fail (mirror the DKIM From guard, run-3)', async () => {
+test('NEGATIVE: the newest AMS does not sign From → cv=fail (mirror the DKIM From guard)', async () => {
   // ARC-Seal signs only the ARC sets, not From; if the AMS h= omits From then a cv=pass chain
   // leaves the displayed sender unprotected — a spoof could ride the ARC rescue past a
   // p=reject DMARC failure. The AMS must sign From, exactly as the inbound DKIM path requires.

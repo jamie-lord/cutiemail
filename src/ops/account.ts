@@ -332,8 +332,8 @@ export async function runAccount(
         }
         // Reject a login that case-folds to an existing one: it maps to the same
         // mail-<login>.db file on a case-insensitive filesystem (macOS default, some container
-        // volumes), silently sharing one mailbox between two distinct-credential accounts
-        // (audit run-4). Logins must be unique regardless of case.
+        // volumes), silently sharing one mailbox between two distinct-credential accounts.
+        // Logins must be unique regardless of case.
         const lc = login!.toLowerCase();
         const clash = registry.list().find((a) => a.login.toLowerCase() === lc);
         if (clash !== undefined) {

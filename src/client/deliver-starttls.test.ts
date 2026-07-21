@@ -37,7 +37,7 @@ test('opportunistic STARTTLS: the transaction runs over TLS when the peer advert
 });
 
 test('MTA-STS enforce: an EHLO refusal must NOT downgrade to a cleartext HELO transaction', async () => {
-  // Active-attacker downgrade (audit run-3, HIGH): a MITM refuses the EHLO verb so the
+  // Active-attacker downgrade: a MITM refuses the EHLO verb so the
   // STARTTLS-offer branch is never reached; the client used to fall back to HELO and send the
   // whole message in the clear even under requireValidCert. Under enforce that MUST be terminal.
   await withPeer({ ehloStatus: 500 }, async (peer) => {

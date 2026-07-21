@@ -1,6 +1,6 @@
 /**
- * The APPEND literal cap follows the configured message-size limit (UX pressure test:
- * MAX_APPEND_LITERAL was a hardcoded 25 MiB while MAIL_MAX_SIZE made the SMTP side
+ * The APPEND literal cap follows the configured message-size limit
+ * (MAX_APPEND_LITERAL was a hardcoded 25 MiB while MAIL_MAX_SIZE made the SMTP side
  * configurable — so an operator who raised the limit for an imapsync migration of large
  * legacy messages hit an invisible second ceiling on the IMAP import path).
  */

@@ -4,8 +4,7 @@
  * CREATE / DELETE / RENAME — exactly as `sqlite-mailbox.test.ts` already proves for the per-
  * mailbox operations. That harness never called the catalog-only methods, so RENAME (and its
  * QRESYNC-critical tombstone/mod-sequence effects) had no differential oracle at all — which is
- * how the INBOX-rename bugs (audit run-7 and the run-8 second-rename residual) reached
- * production while the suite stayed green.
+ * how the INBOX-rename bugs reached production while the suite stayed green.
  *
  * `exerciseCatalog` runs one deliberately-nasty sequence and returns a fully-serialised view of
  * every mailbox: names, live UID/flag/mod_seq per message, uid_next, highest_modseq, and the
@@ -71,7 +70,7 @@ function exerciseCatalog(cat: CatalogLike): Record<string, MailboxView> {
   // First INBOX rename → fresh target 'Archive'; INBOX keeps its tombstone + gains the moved-out
   // UIDs as VANISHED.
   assert.equal(cat.rename('INBOX', 'Archive'), 'ok');
-  // Second consecutive INBOX rename on the now-empty INBOX → the run-8 residual. INBOX's expunge
+  // Second consecutive INBOX rename on the now-empty INBOX. INBOX's expunge
   // log must survive; 'Backup' must be a clean empty mailbox.
   assert.equal(cat.rename('INBOX', 'Backup'), 'ok');
 
@@ -88,7 +87,7 @@ test('SqliteCatalog and MemoryCatalog are observably identical across CREATE/DEL
   assert.deepEqual(sql, mem);
 });
 
-test('the double INBOX rename does not strand INBOX tombstones (run-8 residual, both implementations)', () => {
+test('the double INBOX rename does not strand INBOX tombstones (both implementations)', () => {
   // Focused assertion on the exact residual: after two consecutive INBOX renames, a QRESYNC
   // client that synced INBOX before either rename must still be told its cached UIDs VANISHED.
   for (const cat of [new MemoryCatalog(1) as CatalogLike, SqliteCatalog.open(new DatabaseSync(':memory:'), 1)]) {

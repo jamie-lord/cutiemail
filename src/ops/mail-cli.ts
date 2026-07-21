@@ -1,5 +1,5 @@
 /**
- * `mail` — read a delivered mailbox from the operator CLI (UX pressure test).
+ * `mail` — read a delivered mailbox from the operator CLI.
  *
  * The only read path was a full IMAPS client, so the everyday operator/CI question —
  * "did it arrive, and what was the subject" — needed an IMAP library or a hand-rolled

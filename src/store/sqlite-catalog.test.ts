@@ -49,7 +49,7 @@ test('each mailbox has an independent UID sequence', () => {
 });
 
 test('RENAME INBOX gives the target a fresh, self-consistent mod-sequence (RFC 7162 invariant, ADR 0016)', () => {
-  // Audit run-2 finding 2: the INBOX-rename target must never have HIGHESTMODSEQ below a moved
+  // The INBOX-rename target must never have HIGHESTMODSEQ below a moved
   // message's MODSEQ (that silently desyncs CONDSTORE/QRESYNC). Under the fresh-target semantics
   // (ADR 0016) the target is renumbered from scratch — UIDs from 1, mod_seq 2..N+1 — so
   // HIGHESTMODSEQ (= N+1) >= every message's MODSEQ by construction, and the target starts with
@@ -63,7 +63,7 @@ test('RENAME INBOX gives the target a fresh, self-consistent mod-sequence (RFC 7
 
   assert.equal(cat.rename('INBOX', 'Foo'), 'ok');
   const foo = cat.get('Foo')!;
-  // The invariant holds: HIGHESTMODSEQ >= every message's MODSEQ (the run-2 concern).
+  // The invariant holds: HIGHESTMODSEQ >= every message's MODSEQ.
   const maxMsgModseq = Math.max(0, ...foo.messages.map((m) => m.modseq));
   assert.ok(foo.highestModseq >= maxMsgModseq, 'target HIGHESTMODSEQ covers every message MODSEQ');
   // Fresh target: the one surviving message (b) is reassigned to UID 1, with a clean expunge log.
@@ -77,7 +77,7 @@ test('RENAME INBOX gives the target a fresh, self-consistent mod-sequence (RFC 7
   assert.ok(cat.get('INBOX')!.expungedSince(0).includes(uid1), 'INBOX keeps its own vanished history');
 });
 
-test('RENAME INBOX reports the moved messages as VANISHED on the now-empty INBOX (run-7 QRESYNC)', () => {
+test('RENAME INBOX reports the moved messages as VANISHED on the now-empty INBOX (QRESYNC)', () => {
   // The production path emptied INBOX but left its HIGHESTMODSEQ unchanged and its expunge log
   // empty, so a QRESYNC/CONDSTORE client reconnecting to INBOX was told "nothing changed" while
   // every cached message had silently moved out — a desync MemoryCatalog does not exhibit.
@@ -93,7 +93,7 @@ test('RENAME INBOX reports the moved messages as VANISHED on the now-empty INBOX
   assert.equal(cat.get('Archive')!.messages.length, 3, 'the messages landed in Archive');
 });
 
-test('DELETE clears the expunge tombstones so a reused mailbox id does not inherit them (run-7 QRESYNC)', () => {
+test('DELETE clears the expunge tombstones so a reused mailbox id does not inherit them (QRESYNC)', () => {
   // create() reuses a freed internal id (MAX(id)+1); delete() must clear the expunge log or the
   // next mailbox reusing that id inherits the dead folder's tombstones — a QRESYNC client would
   // be told a LIVE message it just received had VANISHED. The MemoryCatalog oracle builds a fresh

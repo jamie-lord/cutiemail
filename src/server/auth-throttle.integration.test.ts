@@ -130,7 +130,7 @@ test('IMAP: after the failure threshold, even the CORRECT password is refused wi
 });
 
 test('IMAP: a success does NOT reset the throttle — brute force cannot be laundered through a login', async () => {
-  // The security fix (audit run-1, finding 2): a success prunes only EXPIRED failures.
+  // The security fix: a success prunes only EXPIRED failures.
   // If a success wiped recent ones, an attacker holding one valid credential could reset
   // the guessing budget against other accounts. Here maxFailures=3 at a fixed clock:
   // 2 failures + a success (keeps both) + 1 failure = 3 → blocked, so even the correct

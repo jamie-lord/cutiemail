@@ -23,7 +23,7 @@
  *
  * Every byte in and out, plus every lifecycle event, lands in the transcript
  * with a monotonic timestamp. The transcript is what the report renders and what
- * a human reads when triaging a disagreement — see task #23.
+ * a human reads when triaging a disagreement.
  */
 
 import net from 'node:net';
@@ -251,8 +251,7 @@ export class Wire {
    * so its bytes are consumed from #buffer: a reply is surfaced exactly once, and
    * the next read reports the true close with an empty partial. (A previous fix
    * reframed a peek() copy in the caller, which never advanced the buffer and made
-   * every subsequent read re-deliver the same phantom reply — a regression the
-   * second pressure-test pass caught.)
+   * every subsequent read re-deliver the same phantom reply.)
    */
   async read<T>(framer: Framer<T>, timeoutMs: number, eofFramer?: Framer<T>): Promise<ReadResult<T>> {
     const deadline = this.#now() + timeoutMs;
@@ -317,8 +316,8 @@ export class Wire {
    * peer sent that the caller has not framed yet (e.g. a second reply that
    * coalesced with the first into one TCP segment). Baselining on the current
    * buffer length would treat that already-buffered second reply as silence — a
-   * bug the new-module pressure test caught: it let a double-reply
-   * (desynchronised/smuggling) server pass the §4.2-a "exactly one reply" check
+   * bug that let a double-reply (desynchronised/smuggling) server pass the
+   * §4.2-a "exactly one reply" check
    * ~33% of the time. So we report non-quiet immediately if anything is buffered
    * at entry, and otherwise wait for new bytes. Safe for every caller, since an
    * unconsumed buffered byte always means the peer already spoke.
@@ -347,7 +346,7 @@ export class Wire {
    *
    * Note for the corpus: RFC 3207 §4 requires the server to discard all state
    * learned before the handshake. Testing that means re-issuing EHLO after this
-   * returns and comparing, which is a corpus concern (task #19), not a transport
+   * returns and comparing, which is a corpus concern, not a transport
    * one. The transport's only job is to not lose the buffered bytes — and in
    * fact any bytes buffered here are themselves a finding, since a server that
    * sends before the handshake completes is vulnerable to command injection

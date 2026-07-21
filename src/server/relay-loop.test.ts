@@ -55,7 +55,7 @@ test('a permanent failure bounces immediately, no retry', async () => {
   assert.equal(queue.size, 0, 'a 5yz recipient is bounced, not retried');
 });
 
-test('a durable settle fault does not re-send or re-bounce every tick (run-5 relay/backscatter storm)', async () => {
+test('a durable settle fault does not re-send or re-bounce every tick', async () => {
   const queue = SqliteQueue.open(new DatabaseSync(':memory:'));
   let relayCalls = 0;
   const relay = async (m: { recipients: readonly string[] }): Promise<readonly RelayResult[]> => {
@@ -121,7 +121,7 @@ test('past the give-up window, the still-failing recipients are bounced to the s
   assert.equal(bounces[0]!.failures[0]!.status, '5.4.7', 'the status is delivery-time-expired');
 });
 
-test('a settle fault on a mixed permanent+transient give-up keeps (does not drop) the permanent recipient (run-7)', async () => {
+test('a settle fault on a mixed permanent+transient give-up keeps (does not drop) the permanent recipient', async () => {
   const queue = SqliteQueue.open(new DatabaseSync(':memory:'));
   const relay = async (m: { recipients: readonly string[] }): Promise<readonly RelayResult[]> =>
     m.recipients.map((rc) => r(rc, rc === 'perm@x.test' ? 'permanent' : 'transient'));
@@ -257,7 +257,7 @@ test('a corrupt queue row does not halt due(): the rest of the queue still drain
   assert.equal(due[0]!.recipients[0], 'good@y.test', 'and it is the good one');
 });
 
-test('a deferral is logged — the everyday retry is visible, not silent (UX pressure-test)', async () => {
+test('a deferral is logged — the everyday retry is visible, not silent', async () => {
   const queue = SqliteQueue.open(new DatabaseSync(':memory:'));
   const relay = async (m: { recipients: readonly string[] }): Promise<readonly RelayResult[]> =>
     m.recipients.map((rc) => ({ recipient: rc, ok: false, classification: 'transient' as const, detail: '451 4.7.1 greylisted, try later' }));

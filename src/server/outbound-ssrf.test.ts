@@ -1,5 +1,5 @@
 /**
- * SSRF guard on outbound MX targets (audit finding). An attacker who controls a
+ * SSRF guard on outbound MX targets. An attacker who controls a
  * recipient domain's DNS can publish "MX 0 127.0.0.1" (or a private/link-local address,
  * or "localhost") to make the relay open a port-25 connection to an internal host. A
  * public domain's MX is never legitimately loopback/private, so those targets are
@@ -22,7 +22,7 @@ test('loopback, private, link-local, and localhost MX targets are refused', () =
   }
 });
 
-test('IPv4-mapped / -compatible IPv6 forms of a private address are refused (live-pentest finding)', () => {
+test('IPv4-mapped / -compatible IPv6 forms of a private address are refused', () => {
   // ::ffff:169.254.169.254 & friends are valid IPv6 literals whose last 32 bits carry a
   // private/loopback/metadata IPv4; a dual-stack socket routes them to that IPv4. The guard
   // previously classified them by the IPv6 prefix alone and let them through.
@@ -44,7 +44,7 @@ test('a mapped IPv6 carrying a PUBLIC IPv4 is still allowed (no over-blocking)',
   }
 });
 
-test('an empty / null-MX host is refused (net.connect would dial localhost — run-3 backstop)', () => {
+test('an empty / null-MX host is refused (net.connect would dial localhost)', () => {
   // The resolver normalises a null MX to '.', but this is the last line of defence: any empty,
   // whitespace, or '.' host must never reach net.connect (which resolves '' to 127.0.0.1).
   for (const h of ['', ' ', '.', '\t', '  ']) {
@@ -76,7 +76,7 @@ test('a vetted public host pins its FIRST resolved address as the connect target
   assert.equal(pinnedIp(await vetMxHost('mx1.example.com', resolvesTo(['93.184.216.34', '93.184.216.35']))), '93.184.216.34', 'first address pinned');
 });
 
-test('CGNAT and reserved/documentation ranges are refused (run-2 finding 4)', async () => {
+test('CGNAT and reserved/documentation ranges are refused', async () => {
   const resolvesTo = (addrs: string[]) => async (): Promise<readonly string[]> => addrs;
   // 100.64/10 CGNAT is the one of real internal-reach concern in cloud/carrier nets.
   for (const cgnat of ['100.64.0.1', '100.100.5.5', '100.127.255.254']) {

@@ -129,7 +129,7 @@ test('read frames a reply that arrived immediately before a close', async () => 
 });
 
 test('an EOF-framer surfaces a bare-CR final reply exactly once, then reports close', async () => {
-  // Regression for the second-pass finding: a server sends "221 Bye\r" (bare CR,
+  // Regression: a server sends "221 Bye\r" (bare CR,
   // no LF) then closes. The eofFramer must surface the 221 ONCE and consume it,
   // so the NEXT read reports the real close — not the same phantom reply again.
   const { frameReplyAtEof, replyFramer } = await import('./reply.ts');
@@ -180,7 +180,7 @@ test('an RST is reported distinctly from an orderly close', async () => {
 });
 
 test('expectQuiet treats already-buffered bytes as non-quiet (coalesced second reply)', async () => {
-  // Regression for the new-module pressure-test finding: two replies coalesced
+  // Regression: two replies coalesced
   // into one TCP segment. After framing the first, the second sits unconsumed in
   // the buffer. expectQuiet must report NON-quiet immediately — it is data the
   // peer sent, not silence — or a double-reply/desync server passes the

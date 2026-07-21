@@ -178,7 +178,7 @@ export function shedToBudget(sockets: Iterable<Sheddable>, budget: number, exemp
   // alone is indistinguishable from a stalled backlog. Dropping it would let an attacker holding
   // many modest, genuinely-stalled sockets (each kept below the victim's transient peak) push a
   // promptly-reading victim's own FETCH over budget and get the VICTIM destroyed while the abuser
-  // survives — cross-tenant, since one listener serves every account (audit run-9). `exempt` still
+  // survives — cross-tenant, since one listener serves every account. `exempt` still
   // counts toward `total`, so we shed the genuinely-accumulated backlog of OTHERS until under it.
   const candidates = all.filter((s) => s !== exempt).sort((a, b) => b.writableLength - a.writableLength);
   for (const s of candidates) {
@@ -205,7 +205,7 @@ const SPECIAL_USE: Record<string, string> = {
  * initial response), and — when `isSaslContinuation` is set — a standalone base64 line that
  * is the response to an `AUTHENTICATE` continuation (it decodes to \0user\0password).
  * Missing the AUTHENTICATE forms wrote recoverable passwords to the log despite the
- * "credentials redacted" contract (audit run-1, finding 7). Exported for its unit test.
+ * "credentials redacted" contract. Exported for its unit test.
  */
 export function redactImapDebugLine(line: string, isSaslContinuation: boolean): string {
   if (isSaslContinuation) return '<SASL response redacted>';
@@ -233,15 +233,14 @@ const unquote = (s: string): string => s.replace(/^"|"$/g, '');
  * closes the quoted-string early and desyncs a strict client's LIST/STATUS parse) and emits a
  * raw atom for a name with a non-space special. Quote and escape `\`/`"`; a control octet forces
  * a literal — the same discipline envelope.imapString / body-structure.qstr already apply
- * (audit run-3: mailbox names are owner-created, so this is an interop-correctness fix, not a
+ * (mailbox names are owner-created, so this is an interop-correctness fix, not a
  * cross-trust-boundary bypass).
  */
 function imapMailboxAstring(name: string): string {
   // A control octet OR an 8-bit byte can appear in neither an atom nor a quoted-string (both are
   // 7-bit) → emit a literal. The declared length must be the octet count ACTUALLY written:
   // write() serialises with latin1 (one byte per JS char), so it is name.length — NOT
-  // Buffer.byteLength(name,'utf8'), which over-counts an 8-bit char and desyncs the client
-  // (audit run-4 fix to the run-3 astring change).
+  // Buffer.byteLength(name,'utf8'), which over-counts an 8-bit char and desyncs the client.
   if (/[^\x20-\x7e]/.test(name)) return `{${name.length}}\r\n${name}`;
   // A valid atom (RFC 9051 ABNF: printable ASCII, none of the atom-specials SP ( ) { % * " \ ])
   // goes bare — the common case (Work, Sent, INBOX) is unchanged, so simple names stay readable.
@@ -334,8 +333,8 @@ function parseSearchKeys(tokens: readonly string[], ctx: SearchContext): SearchK
   // Total parsed nodes across the WHOLE key tree, incremented on every (recursive) parseOne.
   // The top-level MAX_SEARCH_KEYS cap alone is bypassable: OR/NOT recurse and push nothing onto
   // keys[], so a deeply nested `OR TEXT a (OR TEXT b (...))` is a single top-level key with
-  // thousands of TEXT leaves — the same O(keys×messages×size) freeze the cap was meant to stop
-  // (audit run-6, an incomplete run-5 fix). Bound the total node count too.
+  // thousands of TEXT leaves — the same O(keys×messages×size) freeze the cap was meant to stop.
+  // Bound the total node count too.
   let nodeCount = 0;
   const parseOne = (): SearchKey | null => {
     if (++nodeCount > MAX_SEARCH_NODES) return null;
@@ -445,8 +444,8 @@ function parseSearchKeys(tokens: readonly string[], ctx: SearchContext): SearchK
   while (i < tokens.length) {
     // Cap the number of top-level keys: a legitimate SEARCH uses a handful, but an
     // authenticated client could send thousands of `TEXT x` keys, each scanning every message —
-    // O(keys × messages × size) work that freezes the single-threaded server for all accounts
-    // (audit run-5). 64 is far above any real query; beyond it, reject.
+    // O(keys × messages × size) work that freezes the single-threaded server for all accounts.
+    // 64 is far above any real query; beyond it, reject.
     if (keys.length >= MAX_SEARCH_KEYS) return null;
     const key = parseOne();
     if (key === null) return null;
@@ -745,8 +744,8 @@ export class ImapServer {
     const server = options.tls !== undefined ? tls.createServer({ key: options.tls.key, cert: options.tls.cert }) : net.createServer();
     // Bound concurrent connections so a pre-auth flood / slowloris (connections that dribble
     // bytes to dodge the inactivity timeout) cannot exhaust file descriptors or memory — the
-    // single-threaded daemon has no per-IP accounting, so a global ceiling is the backstop
-    // (audit run-5). Far above any real client fan-out (a few clients × a handful each).
+    // single-threaded daemon has no per-IP accounting, so a global ceiling is the backstop.
+    // Far above any real client fan-out (a few clients × a handful each).
     server.maxConnections = MAX_CONNECTIONS;
     return new Promise((resolve, reject) => {
       // Reject cleanly on a bind failure (EADDRINUSE / EACCES on privileged 993 without
@@ -894,7 +893,7 @@ export class ImapServer {
     // A body response can be large; if slow readers have let the server-wide queue exceed budget,
     // shed the slowest so many stalled fetchers cannot OOM the process (docs/PERFORMANCE.md).
     // Exempt THIS socket: its writableLength is at a same-tick pre-drain peak from the write above,
-    // not a stall, so it must not be the one dropped (audit run-9 shed-the-victim).
+    // not a stall, so it must not be the one dropped.
     this.#shedIfOverBudget(sock);
   }
 

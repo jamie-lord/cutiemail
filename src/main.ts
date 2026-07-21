@@ -241,8 +241,8 @@ export async function startServer(cfg: MailServerConfig): Promise<RunningServer>
   // Enforce owner-only (0600) permissions on EVERY registered account's mail DB at boot —
   // including a disabled/dormant account whose DB the lazy store manager never opens (so
   // openMailDb's on-open heal never fires for it). Without this, a disabled account's DB
-  // that predates the 0600 hardening lingers world-readable (found in an audit: a disabled
-  // account's mail-<user>.db left at 0644). Best-effort; :memory: and missing files skipped.
+  // that predates the 0600 hardening lingers world-readable (a disabled account's
+  // mail-<user>.db left at 0644). Best-effort; :memory: and missing files skipped.
   for (const acct of registry.list()) secureMailDbFile(acct.mailDbPath);
   // Dev out-of-box default: with NOTHING configured and NOTHING in the registry, seed a
   // demo/demo account so `npm start` just works. A real deployment provisions with
@@ -502,8 +502,8 @@ export async function startServer(cfg: MailServerConfig): Promise<RunningServer>
     }
     // Backpressure: the outbound queue drains serially (~11/s on a small VM), so a runaway or
     // compromised authenticated account submitting faster than that would grow the queue — and,
-    // since each row stores the whole signed body, the DISK — without bound (found under mixed
-    // load). Reject a message needing outbound queuing once the queue is at capacity, with a
+    // since each row stores the whole signed body, the DISK — without bound.
+    // Reject a message needing outbound queuing once the queue is at capacity, with a
     // TRANSIENT 451 (RFC 3463 4.3.1) so a well-behaved sender retries and no mail is lost.
     // Checked BEFORE local delivery so a rejected message isn't half-delivered then retried.
     if (remote.length > 0 && queue.size >= maxQueueDepth) {
@@ -600,7 +600,7 @@ export async function startServer(cfg: MailServerConfig): Promise<RunningServer>
   // Expose an INBOX for the single-account integration harness — ANY enabled account's,
   // scanning the configured accounts rather than fixing on accounts[0]. Otherwise disabling
   // the primary (MAIL_USER) account would brick the whole daemon on the next boot, taking
-  // down every OTHER enabled account too (audit run-2 robustness note). Only a genuinely
+  // down every OTHER enabled account too. Only a genuinely
   // empty/all-disabled registry is fatal.
   // Scan the REGISTRY (the source of truth, ADR 0012), not the env seeds — a passwordless
   // deployment has an empty cfg.accounts but a populated registry, and this must still find
@@ -683,7 +683,7 @@ export function configFromEnv(): MailServerConfig & { usingDevCert: boolean; dev
   // WARNING in main(), reusing the refusal's language) — the same gentle dev-cert NOTE as
   // a loopback run would let the override normalise in a copy-pasted unit file.
   const devCertForcedPublic = usingDevCert && !isLoopbackHost(host) && process.env.MAIL_ALLOW_DEV_CERT === '1';
-  // Fail closed (audit run-1, finding 3): the bundled dev certificate's private key is
+  // Fail closed: the bundled dev certificate's private key is
   // committed in the repo (src/testing/tls-test-cert.ts), so serving it on a non-loopback
   // interface lets a trivial MITM present the same cert and capture AUTH credentials on
   // 587/993. Refuse to boot rather than silently serve it publicly. MAIL_ALLOW_DEV_CERT=1
@@ -878,7 +878,7 @@ if (import.meta.url === `file://${process.argv[1]}`) {
   // Every file this process creates — the control DB and per-user mail DBs (with SCRAM
   // credential material + raw message bytes), their WAL sidecars, and backup artifacts —
   // is private to the mail user. A 0o077 umask makes new files 0600 and new dirs 0700 by
-  // default, closing the local-disclosure gap (audit run-4). Applies to the daemon and every
+  // default, closing the local-disclosure gap. Applies to the daemon and every
   // operator subcommand (backup, account, setup) since they share this one entry point.
   process.umask(0o077);
   const opsArgs = process.argv.slice(2);

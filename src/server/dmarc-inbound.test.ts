@@ -39,7 +39,7 @@ test('a message with TWO From headers cannot pass DMARC (display-spoof defence, 
 });
 
 test('DMARC aligns on the DISPLAYED From address, not a decoy hidden in a quoted display-name', async () => {
-  // The full-DMARC-bypass class (audit run-2, finding 1): the attacker owns evil.com (DKIM
+  // The full-DMARC-bypass class: the attacker owns evil.com (DKIM
   // d=evil.com passes) and buries <x@evil.com> in the quoted display-name, while the real
   // angle-addr every MUA shows is victim@bank.com. The old first-`<...>` match aligned on
   // evil.com → forged dmarc=pass. The fix aligns on the displayed bank.com.
@@ -50,9 +50,9 @@ test('DMARC aligns on the DISPLAYED From address, not a decoy hidden in a quoted
   assert.equal(out.verdict, 'fail', "the attacker's evil.com auth is not aligned with bank.com — no forged pass");
 });
 
-test('a ( planted inside the quoted display-name does not reopen the From-domain spoof (run-4 regression)', async () => {
-  // The run-3 CFWS DoS fix stripped comments BEFORE quoted-strings, so a `(` inside the quoted
-  // display-name was mis-read as a comment — unbalancing the closing `"` and re-exposing the
+test('a ( planted inside the quoted display-name does not reopen the From-domain spoof', async () => {
+  // Stripping comments BEFORE quoted-strings would let a `(` inside the quoted
+  // display-name be mis-read as a comment — unbalancing the closing `"` and re-exposing the
   // attacker angle-addr. Both variants must align on the DISPLAYED bank.com.
   const rec = dmarcAt({ '_dmarc.attacker.com': 'v=DMARC1; p=none', '_dmarc.bank.com': 'v=DMARC1; p=reject' });
   // Variant A: decoy angle-addr + a stray ( inside the quoted display-name.
@@ -84,7 +84,7 @@ test('a legitimate display-name with an angle-addr still aligns and passes (no o
 });
 
 test('a duplicate-From fail reports the published policy so it is enforced to Junk, not INBOX', async () => {
-  // Audit run-2 finding 3: the fromCount>1 path used to short-circuit with policy=null, so
+  // The fromCount>1 path used to short-circuit with policy=null, so
   // main.ts (which enforces on a quarantine/reject policy) delivered it to INBOX — the
   // more deceptive duplicate-From spoof evading the enforcement a single-From spoof hit.
   const rec = dmarcAt({ '_dmarc.bank.test': 'v=DMARC1; p=reject' });

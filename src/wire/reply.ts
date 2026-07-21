@@ -27,7 +27,7 @@
  *    the ABNF says `[ SP textstring ]` — optional. Both readings are defensible
  *    from the same section. We record `no-text` / `bare-code` as anomalies and
  *    let the expectation layer decide severity; we do NOT get to resolve an
- *    ambiguity the IETF hasn't. Candidate for a bisNote (task #3).
+ *    ambiguity the IETF hasn't. Candidate for a bisNote.
  *
  * 3. **`textstring` is 7-bit.** `%d09 / %d32-126`. An 8-bit octet in reply text
  *    is ungrammatical, which matters because reply text is where servers most
@@ -375,8 +375,7 @@ export const replyFramer: Framer<Reply> = (buf) => frame(buf, false);
  * EOF-aware framer: use on a partial buffer after the peer has CLOSED, so that a
  * final reply terminated by a bare CR (which the normal framer leaves pending,
  * waiting for a next byte that will never arrive) is framed and its
- * bare-cr-terminator anomaly observed rather than silently dropped. See the
- * pressure-test finding on reply.ts:145.
+ * bare-cr-terminator anomaly observed rather than silently dropped.
  */
 export function frameReplyAtEof(buf: Buffer): { value: Reply; consumed: number } | null {
   return frame(buf, true);

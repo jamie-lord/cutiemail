@@ -63,7 +63,7 @@ export function authservIdOf(unfoldedHeader: string): string | null {
   const m = /^Authentication-Results:(.*)$/is.exec(unfoldedHeader);
   if (m === null) return null;
   // Remove RFC 5322 comments in one linear pass (nesting-aware; a fixed-point regex peel was
-  // O(depth²) and froze the event loop on a crafted header — audit run-3).
+  // O(depth²) and froze the event loop on a crafted header).
   let v = stripComments(m[1]!).replace(/^[ \t]+/, '');
   let id: string;
   if (v.startsWith('"')) {

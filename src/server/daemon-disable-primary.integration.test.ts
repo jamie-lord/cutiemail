@@ -1,6 +1,6 @@
 /**
  * Disabling the primary (MAIL_USER / accounts[0]) account must NOT brick the daemon
- * (audit run-2 robustness note). The startup "at least one account" check used to fix on
+ * The startup "at least one account" check used to fix on
  * accounts[0], whose store resolves to undefined when disabled — so the whole server
  * (including every OTHER enabled account) failed to boot. It now scans for any enabled
  * account, and only a genuinely all-disabled registry is fatal (and then it fails closed

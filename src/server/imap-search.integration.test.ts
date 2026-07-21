@@ -80,7 +80,7 @@ test('SEARCH SUBJECT with a quoted multi-word phrase matches the whole phrase', 
   }
 });
 
-test('SEARCH rejects an over-long key list instead of doing O(keys×messages) work (run-5 DoS bound)', async () => {
+test('SEARCH rejects an over-long key list instead of doing O(keys×messages) work', async () => {
   const cat = new MemoryCatalog();
   cat.get('INBOX')!.append(Buffer.from('From: a@x.test\r\nSubject: hi\r\n\r\nbody\r\n', 'latin1'));
   const server = await ImapServer.start(cat, { authenticate: () => true });
@@ -98,7 +98,7 @@ test('SEARCH rejects an over-long key list instead of doing O(keys×messages) wo
     await s.ready('a4 BAD'); // ready() throws on timeout, so reaching here proves the rejection
     assert.match(s.snapshot().slice(s.snapshot().lastIndexOf('a4 ')), /^a4 BAD/m);
     // The cap must also count through OR/NOT recursion: a deeply nested single top-level key
-    // with hundreds of TEXT leaves would otherwise bypass the top-level count (run-6).
+    // with hundreds of TEXT leaves would otherwise bypass the top-level count.
     s.send(`a5 SEARCH ${Array.from({ length: 300 }, () => 'OR TEXT a').join(' ')} TEXT a\r\n`);
     await s.ready('a5 BAD');
     assert.match(s.snapshot().slice(s.snapshot().lastIndexOf('a5 ')), /^a5 BAD/m);

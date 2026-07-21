@@ -85,7 +85,7 @@ test('tampering with the signed body breaks verification', () => {
   assert.equal(verifySigned(tampered, txt), false, 'a modified body must fail the body hash');
 });
 
-test('a From-less message is NOT signed (never lend d= authority to an unsigned From — run-6)', () => {
+test('a From-less message is NOT signed (never lend d= authority to an unsigned From)', () => {
   const { privateKey } = generateKeyPairSync('rsa', { modulusLength: 2048 });
   const signer = makeSigner('mailtest.example', 'sel', privateKey.export({ type: 'pkcs8', format: 'pem' }) as string);
   // A submission with MAIL FROM:<> and no From header (fixup adds Date/Message-ID but no From).

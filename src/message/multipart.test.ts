@@ -97,9 +97,9 @@ test('a multipart with no closing delimiter is flagged', () => {
   assert.ok(!r.closed && hasMultipartAnomaly(r, 'no-closing-delimiter'), 'a missing close is surfaced');
 });
 
-test('a huge body is split without allocating a per-line object over the whole body (run-9 OOM)', () => {
+test('a huge body is split without allocating a per-line object over the whole body', () => {
   // parseMultipart must retain only the delimiter lines' offsets, never a Line object per physical
-  // line. The old code built a Line[] over the ENTIRE body (the run-4-class pattern parse.ts had
+  // line. The old code built a Line[] over the ENTIRE body (the pattern parse.ts had
   // already removed), so a 25 MiB all-CRLF body — declaring boundary="X" is enough; the boundary
   // need never appear — spiked ~1.5 GB and froze the single-threaded event loop for over a second
   // when a client FETCHed BODYSTRUCTURE. This is a differential guard: an 8 MiB all-CRLF body is

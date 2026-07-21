@@ -24,15 +24,13 @@ aliases + `+tag` subaddressing ([ADR 0014](decisions/0014-aliases-and-subaddress
 **send-as / submission sender-authorization** ([ADR 0015](decisions/0015-submission-sender-authorization.md),
 closing the cross-account spoof); **DKIM From oversigning** against prepended-From replay
 (one shared RFC 6376 §5.4.2 header selector for DKIM + ARC); **INBOX-rename fresh-target
-semantics** with a catalog-level differential oracle ([ADR 0016](decisions/0016-rename-inbox-fresh-target.md),
-closing the run-8 QRESYNC residual); an **8-character password floor**; and **app-specific
-passwords** ([ADR 0017](decisions/0017-app-specific-passwords.md)). Plus eight security-audit
-runs + two live pentest sessions that converged (find rate 8→6→7→7→4→5→4→0).
+semantics** with a catalog-level differential oracle ([ADR 0016](decisions/0016-rename-inbox-fresh-target.md));
+an **8-character password floor**; and **app-specific passwords**
+([ADR 0017](decisions/0017-app-specific-passwords.md)). Every hostile-input surface has been
+security-reviewed, with a reproduce-first regression test for each defended attack.
 
-A **ten-persona UX pressure test** (simulated new users, from a nervous first-timer to a
-15-year Postfix admin, each running the project hands-on before open-sourcing) then drove one
-more sweep — the getting-started and configuration experience, not the protocols. It found one
-correctness blocker and a set of observability/usability gaps, all now shipped: the **submission
+A subsequent review of the getting-started and configuration experience — the operator's first
+hour, not the protocols — shipped a set of correctness and usability fixes: the **submission
 black hole** (mail to an unresolvable local address was accepted `250` then silently dropped —
 now refused `550 5.1.1` at RCPT and re-validated atomically at delivery); a full **operational
 log trail** (accepted messages, relay deferrals, and — the biggest gap — failed authentication
@@ -40,8 +38,8 @@ with source IP, the raw material for fail2ban); **boot-UX** fixes (absolute DB p
 banner, a cert-expiry warning, a loud dev-cert-override warning, SIGHUP survives); the
 conformance runner **no longer exits 0 against an unreachable target**; `queue retry`/`cancel`
 and a read-only `mail list`/`show`; the `:memory:` honesty fix; `MAIL_OUTBOUND=hold` for a
-dev/test sink ([ADR 0020](decisions/0020-outbound-hold-mode.md)); and the doc rewrites the
-personas' confusion pointed to (migration, restore, cutover, positioning). Suite 1063.
+dev/test sink ([ADR 0020](decisions/0020-outbound-hold-mode.md)); and the doc improvements those
+gaps pointed to (migration, restore, cutover, positioning). Suite 1063.
 
 ## How an item earns its place here
 
@@ -86,7 +84,7 @@ either environment-blocked or marginal against coverage already achieved.
   a prebuilt `imaptest` is available.
 
 *Optional, not a gap:* continuous coverage-guided fuzzing. The parsers (SMTP/MIME/IMAP/address)
-already have deterministic fuzz harnesses (~30k adversarial inputs) plus the audit sweeps; a
+already have deterministic fuzz harnesses (~30k generated inputs) plus security review; a
 coverage-guided corpus would go deeper but is an addition, not a missing floor.
 
 ---
@@ -113,7 +111,7 @@ not clear the bar. These were weighed and declined; most carry a revisit trigger
 - **ValiMail `arc_test_suite` external vector pin.** ARC's offline sign/verify round-trips + a golden signing-input already cover the scope; an external pin is marginal. Recorded nice-to-have.
 - **Unified project-wide coverage percentage (ADR 0008).** Rolling the outbound-client and receiver coverage into one number is cosmetic reporting, not correctness — fails the bar.
 
-**Operational cuts (recorded during the UX pressure test):**
+**Operational cuts:**
 
 - **Live config / certificate reload.** SIGHUP is caught, logged, and ignored (rather than
   killing the daemon, Node's default); a renewed cert or changed config is picked up by a

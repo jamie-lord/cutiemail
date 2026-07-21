@@ -73,8 +73,8 @@ async function reachData(conn: Conn): Promise<Judgement | null> {
 /**
  * Classify a server's response to a bare-LF-terminated command.
  *
- * This is the corrected heart of the bare-LF tests (a false positive the pressure
- * test caught). The forbidden act is EXECUTING the LF-terminated command, not
+ * This is the corrected heart of the bare-LF tests (it fixes a false positive).
+ * The forbidden act is EXECUTING the LF-terminated command, not
  * replying to it. So:
  *
  *   - silence               -> conformant (never recognised a complete line)

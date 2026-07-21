@@ -2,8 +2,8 @@
 
 ## Status
 
-Accepted (2026-07-19). Closes the RENAME-INBOX catalog-parity item parked after security-audit
-run-8 (the second-consecutive-rename QRESYNC residual).
+Accepted (2026-07-19). Closes a RENAME-INBOX catalog-parity gap — a second-consecutive-rename
+QRESYNC residual.
 
 ## Context
 
@@ -16,15 +16,15 @@ differential test** to catch it (the existing differential harness only exercise
 operations, never RENAME). That gap is how two INBOX-rename bugs reached production while the
 suite stayed green:
 
-- run-7: the source INBOX kept an unchanged HIGHESTMODSEQ and empty expunge log after the move,
-  so a QRESYNC client was told "nothing changed" while every cached message had moved out.
-- run-8 residual: production **moved INBOX's whole expunge log onto the new target**, so a
+- The first bug: the source INBOX kept an unchanged HIGHESTMODSEQ and empty expunge log after the
+  move, so a QRESYNC client was told "nothing changed" while every cached message had moved out.
+- A second, subtler bug: production **moved INBOX's whole expunge log onto the new target**, so a
   *second* consecutive INBOX rename stranded the tombstones the first rename created — INBOX
   again told a client nothing had vanished, the same desync one level deeper.
 
-The run-7 half was fixed; the run-8 residual and the underlying divergence (production
-*reparented* messages keeping their UIDs and INBOX's high mod-sequence, while the reference
-built a *fresh* mailbox) were parked for this dedicated pass.
+The first was fixed earlier; the second, and the underlying divergence (production *reparented*
+messages keeping their UIDs and INBOX's high mod-sequence, while the reference built a *fresh*
+mailbox), are addressed here.
 
 ## Decision
 
@@ -38,7 +38,7 @@ behavior is the decided semantics, and production now conforms to it:
   history.
 - **Mod-sequence starts fresh** (the moved messages get `mod_seq` 2..N+1, HIGHESTMODSEQ = N+1),
   so the RFC 7162 §3.1.2.1 invariant HIGHESTMODSEQ ≥ every message's MODSEQ holds by
-  construction — the run-2 concern, satisfied by renumbering rather than by carrying INBOX's
+  construction, satisfied by renumbering rather than by carrying INBOX's
   value.
 - **Empty expunge log.** Nothing has been expunged *from* the target — its messages are all
   live — so it carries no tombstones. INBOX's tombstones stay on INBOX.
@@ -73,7 +73,7 @@ behavior.
 
 ## Consequences
 
-- The run-8 second-rename residual is closed: INBOX's tombstones no longer migrate, so any number
+- The second-rename residual is closed: INBOX's tombstones no longer migrate, so any number
   of consecutive INBOX renames each report VANISHED correctly.
 - A new **catalog-level differential harness** (`catalog-parity.test.ts`) serialises every
   mailbox after a nasty CREATE/DELETE/RENAME sequence (including the double INBOX rename) and

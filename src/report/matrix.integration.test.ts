@@ -88,14 +88,14 @@ for (const [profile, defects] of [
 // policy" reply (the rset-returns-250 over-narrow was one such regression) would
 // light up here against the whole corpus, not just its own negative control.
 // Each of these is a CONFORMANT server posture that a naive corpus would
-// false-positive — and each corresponds to a false-positive class the suite's
-// history actually hit and fixed. Codifying them as whole-corpus zero-finding
+// false-positive — and each corresponds to a real false-positive class.
+// Codifying them as whole-corpus zero-finding
 // invariants means a future regression that re-convicts any of these postures
 // lights up HERE (against all 68 cases), not merely in one test's own control:
 //   - tlsRequired530: 530 to non-exempt commands (RFC 3207 policy) — the class the
 //     rset-returns-250 over-narrow was in.
 //   - rejectBareLf: a smuggling-hardened server that REJECTS a bare LF — the exact
-//     Postfix-hardened posture finding #29 was about; the suite must bless it.
+//     Postfix-hardened posture; the suite must bless it.
 //   - multilineProseHelo: a multiline PROSE banner to HELO (no extension keywords),
 //     which is NOT the forbidden EHLO-style response — the HELO-prose FP class.
 //   - greetingAddressLiteral: a "220 [192.0.2.1]" greeting (address-literal identity
