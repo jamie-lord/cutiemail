@@ -83,6 +83,13 @@ export interface MailServerConfig {
   readonly relayIntervalMs?: number;
   /** Max queued outbound messages before submission returns a transient 451 (default 10000). */
   readonly maxQueueDepth?: number;
+  /**
+   * Outbound relay mode (ADR 0020). 'deliver' (default): queue remote mail and relay it
+   * to its MX. 'hold': queue remote mail but NEVER relay — the dev/test sink mode, so a
+   * staging run fed real-looking fixtures cannot actually email anyone; held messages
+   * are inspectable with `queue list` and are relayed on the next boot without hold.
+   */
+  readonly outboundMode?: 'deliver' | 'hold';
   /** Max accepted message size in octets (RFC 1870 SIZE). Undefined = no limit. */
   readonly maxMessageSize?: number;
   /** Reject a message with at least this many Received hops as a loop (default 100). */
@@ -434,6 +441,11 @@ export async function startServer(cfg: MailServerConfig): Promise<RunningServer>
   // runaway sender can consume. Generous vs any personal-scale backlog (incl. a downstream MX being
   // down and messages legitimately retrying), tiny vs the drain rate × a sane outage window.
   const maxQueueDepth = cfg.maxQueueDepth ?? 10_000;
+  // HOLD mode (ADR 0020): everything up to the queue behaves identically — submission
+  // still authorizes, signs, and durably enqueues — but the relay loop never runs, so
+  // no byte leaves for a remote MX. One switch, checked at the only two places a relay
+  // tick is ever triggered, rather than threaded through the relay internals.
+  const holdOutbound = cfg.outboundMode === 'hold';
   const relayLoop = new RelayLoop(queue, (m) => relayOutbound(m, outboundOpts), {
     log,
     // RFC 5321 §6.1: notify the sender when we permanently give up. Build the bounce
@@ -530,7 +542,7 @@ export async function startServer(cfg: MailServerConfig): Promise<RunningServer>
       // attempt is immediate; failures are retried, not dropped.
       const outData = signer !== undefined ? dkimSign(traced, signer) : traced;
       queuedAs = queue.enqueue(m.from, remote, outData, Date.now());
-      void relayLoop.tick(Date.now());
+      if (!holdOutbound) void relayLoop.tick(Date.now());
     }
     // One line per accepted submission, correlating the message id with the queue row
     // (the id `queue list` shows). MAIL FROM is authorized-owned but still sanitised.
@@ -575,8 +587,12 @@ export async function startServer(cfg: MailServerConfig): Promise<RunningServer>
   });
 
   // Drain the queue on a timer, and once now to recover anything left by a crash.
-  relayLoop.start(cfg.relayIntervalMs ?? 60_000);
-  void relayLoop.tick(Date.now());
+  // In HOLD mode the loop never starts: held mail (including anything left over from a
+  // previous run) stays durably queued until a boot without hold relays it.
+  if (!holdOutbound) {
+    relayLoop.start(cfg.relayIntervalMs ?? 60_000);
+    void relayLoop.tick(Date.now());
+  }
 
   // Expose an INBOX for the single-account integration harness — ANY enabled account's,
   // scanning the configured accounts rather than fixing on accounts[0]. Otherwise disabling
@@ -727,6 +743,7 @@ export function configFromEnv(): MailServerConfig & { usingDevCert: boolean; dev
     // `len > NaN` size check is false and the DATA size cap silently disappears —
     // removing the last bound on a multi-signature-flood DoS (see MAX_DKIM_SIGNATURES).
     maxMessageSize: posIntEnv(process.env.MAIL_MAX_SIZE, 26_214_400),
+    outboundMode: parseOutboundMode(process.env.MAIL_OUTBOUND),
     // Forwarders (e.g. a mailing list) whose valid ARC chain may rescue a DMARC failure to
     // the INBOX (ADR 0011). Comma-separated domains; empty = ARC is recorded but never
     // overrides DMARC (the safe default).
@@ -737,6 +754,17 @@ export function configFromEnv(): MailServerConfig & { usingDevCert: boolean; dev
     usingDevCert,
     devCertForcedPublic,
   };
+}
+
+/**
+ * MAIL_OUTBOUND: 'deliver' (default) or 'hold'. FAIL LOUD on anything else — an operator
+ * who typed 'holdd' believing no mail can escape must not get a silently really-relaying
+ * server; this is the one env var where a fallback default inverts a safety property.
+ */
+function parseOutboundMode(raw: string | undefined): 'deliver' | 'hold' {
+  if (raw === undefined || raw === '' || raw === 'deliver') return 'deliver';
+  if (raw === 'hold') return 'hold';
+  throw new Error(`MAIL_OUTBOUND must be "deliver" or "hold", got ${JSON.stringify(raw)} — refusing to guess (a typo here could mean real mail leaves a test instance).`);
 }
 
 /** The bundled self-signed certificate, for local development only. */
@@ -813,7 +841,11 @@ async function main(): Promise<void> {
   log(`  submission (AUTH) ${cfg.host}:${server.submission.port}`);
   log(`  IMAPS            ${cfg.host}:${server.imap.port}`);
   log(`  accounts: ${server.logins.join(', ')}`);
-  log(`  outbound: remote mail is queued and relayed to its MX, with retry${cfg.dkim !== undefined ? ' and DKIM signing' : ''}.`);
+  if (cfg.outboundMode === 'hold') {
+    log('  outbound: HOLD (MAIL_OUTBOUND=hold) — remote mail is queued locally and NEVER relayed. Inspect with `node src/main.ts queue list`; restart without hold to release.');
+  } else {
+    log(`  outbound: remote mail is queued and relayed to its MX, with retry${cfg.dkim !== undefined ? ' and DKIM signing' : ''}.`);
+  }
   if (cfg.devCertForcedPublic) {
     log(`  WARNING: MAIL_ALLOW_DEV_CERT=1 is serving the bundled DEV certificate on ${cfg.host} — its private key is PUBLIC (committed to the repo), so anyone can MITM these listeners and capture account credentials. Throwaway tests only; never production.`);
   } else if (cfg.usingDevCert) {

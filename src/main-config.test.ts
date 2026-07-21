@@ -136,3 +136,10 @@ test(':memory: control DB keeps the env-seeded primary mailbox in memory too (no
     assert.equal(configFromEnv().accounts[0]?.mailDbPath, 'mail.db', 'the persistent-run default is unchanged (single-account migration path)');
   });
 });
+
+test('MAIL_OUTBOUND parses deliver/hold and fails loud on anything else', () => {
+  withEnv({}, () => assert.equal(configFromEnv().outboundMode, 'deliver'));
+  withEnv({ MAIL_OUTBOUND: 'hold' }, () => assert.equal(configFromEnv().outboundMode, 'hold'));
+  // A typo must never silently become a really-relaying server.
+  withEnv({ MAIL_OUTBOUND: 'holdd' }, () => assert.throws(() => configFromEnv(), /MAIL_OUTBOUND must be/));
+});
