@@ -216,6 +216,12 @@ Recorded in [docs/decisions/](docs/decisions/): why RFC 5321 rather than the unp
 why a from-scratch TypeScript runner, and what the deliberately minimal toolchain leaves out. To
 add a corpus module, [src/corpus/AUTHORING.md](src/corpus/AUTHORING.md) is the contract.
 
+## Contributing & security
+
+Contributions are welcome — read [CONTRIBUTING.md](CONTRIBUTING.md) first; the project is
+deliberately scoped, so the "why it earns its place" bar matters. Found a security bug? Please
+report it privately per [SECURITY.md](SECURITY.md), not in a public issue.
+
 ## License
 
 [MIT](LICENSE) © Jamie Lord.
