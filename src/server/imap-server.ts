@@ -733,8 +733,13 @@ export class ImapServer {
     // single-threaded daemon has no per-IP accounting, so a global ceiling is the backstop
     // (audit run-5). Far above any real client fan-out (a few clients × a handful each).
     server.maxConnections = MAX_CONNECTIONS;
-    return new Promise((resolve) => {
+    return new Promise((resolve, reject) => {
+      // Reject cleanly on a bind failure (EADDRINUSE / EACCES on privileged 993 without
+      // root/setcap) instead of letting an unhandled 'error' event crash the process while this
+      // Promise hangs; hand error handling back to the app once we're listening.
+      server.once('error', reject);
       server.listen(options.port ?? 0, options.host ?? '127.0.0.1', () => {
+        server.removeListener('error', reject);
         const addr = server.address();
         const port = typeof addr === 'object' && addr !== null ? addr.port : 0;
         const imap = new ImapServer(server, port, catalog, options.authenticate, options.notifier, options.autologoutMs, options.resolveAccount, options.throttle, options.maxWriteBacklog, options.maxAppendInflight);

@@ -681,12 +681,41 @@ function loadDevCert(): { key: string; cert: string } {
   return { key: DEV_KEY, cert: DEV_CERT };
 }
 
+/**
+ * Turn a listener bind failure into an actionable line instead of a raw stack trace. EADDRINUSE
+ * and EACCES on ports 25/587/993 are the two most common first-run failures (a system MTA or a
+ * stale instance already on the port; a privileged port without root/setcap), so name the cause
+ * and the fix rather than dumping a Node error object. Returns null for anything else.
+ */
+function describeBindError(err: unknown): string | null {
+  const e = err as { code?: string; port?: number; syscall?: string };
+  if (e.syscall !== 'listen') return null;
+  const port = e.port !== undefined ? String(e.port) : 'a listener port';
+  if (e.code === 'EADDRINUSE') {
+    return `cannot start: port ${port} is already in use. Another mail server or a previous instance of this one is running — stop it, or set MAIL_SMTP_PORT / MAIL_SUBMISSION_PORT / MAIL_IMAP_PORT to free ports.`;
+  }
+  if (e.code === 'EACCES') {
+    return `cannot start: not permitted to bind port ${port}. Ports below 1024 (25/587/993) need privilege — run as root, grant node the capability once with \`sudo setcap 'cap_net_bind_service=+ep' $(command -v node)\`, or set MAIL_SMTP_PORT / MAIL_SUBMISSION_PORT / MAIL_IMAP_PORT to high ports (≥1024).`;
+  }
+  return null;
+}
+
 async function main(): Promise<void> {
   const cfg = configFromEnv();
   const log = (s: string): void => {
     process.stdout.write(`${s}\n`);
   };
-  const server = await startServer({ ...cfg, onEvent: log });
+  let server: RunningServer;
+  try {
+    server = await startServer({ ...cfg, onEvent: log });
+  } catch (err) {
+    const friendly = describeBindError(err);
+    if (friendly !== null) {
+      process.stderr.write(`${friendly}\n`);
+      process.exit(1);
+    }
+    throw err;
+  }
   log(`mail server "${cfg.domain}" started (db: ${cfg.dbPath})`);
   log(`  inbound SMTP     ${cfg.host}:${server.inbound.port}`);
   log(`  submission (AUTH) ${cfg.host}:${server.submission.port}`);

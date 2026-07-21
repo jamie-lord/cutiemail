@@ -578,8 +578,15 @@ export class SmtpReceiver {
     // any real sending pattern.
     server.maxConnections = MAX_CONNECTIONS;
     const sockets = new Set<net.Socket>();
-    return new Promise((resolve) => {
+    return new Promise((resolve, reject) => {
+      // A bind failure (EADDRINUSE — a stale instance or a system MTA already on the port;
+      // EACCES — a privileged port 25/587 without root/setcap) otherwise emits an unhandled
+      // 'error' event that crashes the process with a raw stack trace, and this Promise never
+      // settles. Reject cleanly so the caller can report it; hand error handling back to the
+      // app once we're listening.
+      server.once('error', reject);
       server.listen(options.port ?? 0, options.host ?? '127.0.0.1', () => {
+        server.removeListener('error', reject);
         const addr = server.address();
         const port = typeof addr === 'object' && addr !== null ? addr.port : 0;
         server.on('connection', (sock) => {
