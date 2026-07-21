@@ -15,6 +15,28 @@ deliberately left out, and [docs/BACKLOG.md](docs/BACKLOG.md) for what comes nex
 It is deployed and live: the daemon runs on a small box under real DNS and exchanges
 authenticated mail with Gmail (SPF, DKIM, and DMARC all passing), read back over IMAPS.
 
+## Why this — and when to use something else
+
+Stalwart, Maddy, Mox, and Mailcow are all good software, and if you want a batteries-included
+groupware stack or JMAP, use them. cutie-mail's bet is different: **radical smallness you can
+actually read**. One process, one language, zero runtime dependencies, plain SQLite files you can
+query with stock `sqlite3`, and a from-scratch implementation where every protocol byte is code in
+this repo — built correctness-first, with the test bed (reference-model storage proofs,
+mutant-server negative controls, adversarial audits) as the star of the show. Deliberately **not**
+here, each recorded as a decision with reasons ([docs/TESTING-ROADMAP.md](docs/TESTING-ROADMAP.md),
+[docs/BACKLOG.md](docs/BACKLOG.md)): POP3, JMAP, Sieve, webmail, a spam filter beyond DMARC
+enforcement, multiple domains per instance, and clustering. One domain, a handful of humans, on a
+small box you own — that's the shape it serves best.
+
+**Maturity:** young (v0, one maintainer) but held to an unusually high verification bar — 1,000+
+tests including negative controls, eight adversarial audit rounds, two live pentest sessions, and
+a production instance exchanging authenticated mail with Gmail daily. Run it for mail you care
+about only after reading the honest limitations in [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md).
+
+**Platforms:** developed and tested on Linux and macOS; on Windows use WSL2 (the daemon itself is
+plain Node, but the 0600/0700 file-permission hardening is a no-op on NTFS and the deployment
+guide is Linux/systemd-only).
+
 ## Run it
 
 Requires Node ≥ 22.18 (it runs the `.ts` files directly — no build step; an older Node fails with
@@ -30,8 +52,18 @@ harmless `ExperimentalWarning: SQLite …`. The `npm` scripts silence it with
 `--disable-warning=ExperimentalWarning`.)
 
 `npm start` opens the databases and starts three listeners: inbound SMTP, submission SMTP (SASL
-PLAIN AUTH over TLS), and IMAPS. There is no config file — everything is configured by environment
-variable, and the SQLite files are created on first run (no schema step):
+PLAIN AUTH over TLS), and IMAPS. Stop it with Ctrl-C or SIGTERM any time — shutdown is graceful
+and the SQLite databases are crash-safe. **State lands in the directory you run from**: the
+control and mailbox databases are created in the current working directory (the startup banner
+prints the resolved path), so start it from the same directory each time — or set
+`MAIL_CONTROL_DB` to an absolute path. There is no config file — everything is configured by
+environment variable, and the SQLite files are created on first run (no schema step). On
+PowerShell, set variables as `$env:MAIL_DOMAIN='...'` before `npm start` (the `VAR=value command`
+one-liners below are POSIX-shell syntax).
+
+New to running mail? Start with the picture in
+[docs/DEPLOYMENT.md — "The shape of it"](docs/DEPLOYMENT.md#the-shape-of-it) for a plain-English
+map of the moving parts (MX, SPF, DKIM, DMARC) before touching a real domain.
 
 | Variable | Default | Meaning |
 |---|---|---|
@@ -45,7 +77,9 @@ variable, and the SQLite files are created on first run (no schema step):
 | `MAIL_TLS_CERT` / `MAIL_TLS_KEY` | bundled dev cert | PEM cert/key paths. Unset falls back to a bundled dev cert — but **only on a loopback bind**: the daemon refuses to boot with the dev cert on a non-loopback `MAIL_HOST` (its private key is public), so production must set these (`MAIL_ALLOW_DEV_CERT=1` forces it for a throwaway test). |
 | `MAIL_DKIM_KEY` / `MAIL_DKIM_SELECTOR` | unset | PEM RSA key + selector to sign outbound mail |
 | `MAIL_TRUSTED_ARC_SEALERS` | unset | comma-separated forwarder domains whose valid ARC chain may rescue a DMARC failure to the inbox |
-| `MAIL_MAX_SIZE` | `26214400` | max accepted message size in octets (25 MiB) |
+| `MAIL_MAX_SIZE` | `26214400` | max accepted message size in octets (25 MiB) — applied to SMTP `SIZE` and the IMAP `APPEND` literal alike |
+| `MAIL_OUTBOUND` | `deliver` | set `hold` for a dev/test sink: remote mail is queued (inspect with `queue list`) but **never relayed** — nothing can escape a test instance (ADR 0020). Any other value refuses to boot. |
+| `MAIL_DEBUG` | unset | `1` logs every received SMTP/IMAP command line to stderr (credentials redacted) — the protocol-level debugging view |
 
 ### Send yourself the first email
 
@@ -57,7 +91,9 @@ daemon (in a second terminal):
 node src/main.ts selftest demo   # enter the password: demo
 ```
 
-A green run means the mail path itself works, not just that a banner printed. To point a real
+Run `selftest` with the **same `MAIL_*` environment as the daemon** — it dials the configured
+ports (defaults otherwise), and it warns if the server's greeting doesn't match the expected
+domain. A green run means the mail path itself works, not just that a banner printed. To point a real
 client (Thunderbird, Apple Mail) at the local dev instance:
 
 - **IMAP** — `127.0.0.1`, port **5993**, security **SSL/TLS** (implicit).
@@ -72,7 +108,9 @@ The same entry point is the operator toolbox (`node src/main.ts <command>`):
 - **`init <login>`** — first-run bootstrap: creates the primary account (prompts for the
   password, writes SCRAM to the control DB, prints a ready-to-paste systemd unit that carries
   **no** password), and refuses if any account already exists. This is the recommended first
-  step; `MAIL_USER`/`MAIL_PASS` are a legacy dev shortcut.
+  step **for a fresh deployment directory** — note that a bare `npm start` has already seeded
+  `demo`/`demo`, which forecloses `init` there (just use `account add` instead);
+  `MAIL_USER`/`MAIL_PASS` are a legacy dev shortcut.
 - **`setup`** — generates a DKIM key (if none exists) and prints the exact DNS records to
   publish — MX, SPF, DKIM, DMARC, reverse-DNS — as annotated zone lines derived from the
   server's own configuration.
@@ -90,9 +128,16 @@ The same entry point is the operator toolbox (`node src/main.ts <command>`):
 - **`backup <dir>` / `verify`** — a transactionally consistent snapshot of every database
   while the daemon runs, and a read-only proof that a backup (or the live files) passes
   integrity plus the store's own invariants.
-- **`queue list` / `dead-letter list|show|requeue|purge`** — what's waiting to go out and
-  what delivery permanently gave up on, inspectable down to the retained bytes (`show --raw`
-  writes a replayable `.eml`), re-queueable, never silently dropped.
+- **`queue list|retry|cancel` / `dead-letter list|show|requeue|purge`** — what's waiting to go
+  out (with `retry <id>|--all` to skip the backoff after you've fixed a fault, and `cancel` to
+  pull a message — retained in dead-letter, never discarded) and what delivery permanently gave
+  up on, inspectable down to the retained bytes (`show --raw` writes a replayable `.eml`),
+  re-queueable, never silently dropped.
+- **`mail list|show <login>`** — read a delivered mailbox without an IMAP client: uid, date,
+  size, flags, From/Subject per message; `show <uid> --raw` streams the byte-exact `.eml`.
+  Read-only (nothing is marked seen) — the quick "did it arrive" check for a shell or CI.
+
+`node src/main.ts help` lists all of these; a bare `node src/main.ts` starts the daemon.
 
 Embedding it instead of running the daemon? `startServer(config)` takes a `MailServerConfig`
 object directly, with the same knobs plus injection seams (DNS resolvers, the auth throttle, the
@@ -101,6 +146,28 @@ DMARC sampler) that the test suite uses.
 To put it on a real box with real DNS and send mail to your own inbox, follow
 [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) — the DNS, systemd, and client walkthrough, with an
 honest list of what is intentionally naive.
+
+### Use it as a dev/test mail server
+
+It makes a surprisingly good Mailpit-style sink for developing an app that sends mail — a *real*
+SMTP/IMAP server, so your code exercises real protocol behaviour:
+
+```sh
+MAIL_CONTROL_DB=:memory: MAIL_OUTBOUND=hold npm start
+```
+
+`:memory:` keeps every database ephemeral, `hold` guarantees nothing is ever relayed to the real
+internet (fixtures with real-looking addresses stay on the box, visible in `queue list`), the
+seeded `demo`/`demo` account accepts submissions, `+tag` subaddressing gives each test its own
+address, and `mail list demo` / `selftest demo` are your assertions.
+
+### Your data, your exit
+
+Mail is stored byte-exact, so leaving is as easy as arriving: copy mailboxes out over IMAP with
+any tool (imapsync, a desktop client), read the plain SQLite files directly with stock `sqlite3`,
+or dump a single message as a `.eml` with `mail show <login> <uid> --raw`. Importing 15 years of
+history *in* works the same way — see "Migrating your existing mail" in
+[docs/DEPLOYMENT.md](docs/DEPLOYMENT.md).
 
 ## What it does
 

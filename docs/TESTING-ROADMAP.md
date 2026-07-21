@@ -99,7 +99,8 @@ Legend: **[have]** built · **[build]** must author · **[adopt]** vendor an exi
 ## Opinionated cuts (recorded decisions — revisit only with a reason)
 
 - **No POP3.** IMAP4rev2 serves every modern client; POP3 is a whole protocol + harness removed.
-- **IMAP4rev2 only**, plus a curated extension set. The legacy IMAP extension long tail is refused.
+- **IMAP4rev2 only** (an `IMAP4rev1` CAPABILITY is also advertised for client compatibility — the
+  server behaviour is rev2), plus a curated extension set. The legacy IMAP extension long tail is refused.
 - **MTA-STS, not DANE**, for outbound TLS policy (DNSSEC/DANE is impractical on Node).
 - **Modern message parsing**: reject rather than repair ancient malformations; no source routes,
   no obscure MIME recovery. Each rejection is a register-recorded decision, not silent.

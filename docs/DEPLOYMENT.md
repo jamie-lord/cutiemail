@@ -58,7 +58,7 @@ Once (per machine): install the [`hcloud` CLI](https://github.com/hetznercloud/c
 authenticate it (`export HCLOUD_TOKEN=...`), and upload an SSH key
 (`hcloud ssh-key create --name mykey --public-key-from-file ~/.ssh/id_ed25519.pub`).
 
-Then:
+Then (from a Unix shell — on Windows, use WSL2):
 
 ```sh
 MAIL_DOMAIN=mail.example.com \
@@ -93,6 +93,26 @@ if you want to do it by hand or on another provider.
   `ExecStart` accordingly. Copy the repo somewhere stable (the unit uses `/opt/mailserver` as
   its `WorkingDirectory`).
 
+**Prepare the box first.** Create the data directory owned by the user the daemon runs as (the
+unit below uses `mail`, which already exists on Debian/Ubuntu; create a system user otherwise),
+and open the firewall — do this **before** the DNS/`setup` step, which writes the DKIM key into
+`/var/lib/mailserver/dkim/`:
+
+```sh
+# data + secrets directories, owned by the daemon's user, owner-only
+sudo install -d -o mail -g mail -m 700 /var/lib/mailserver /var/lib/mailserver/tls /var/lib/mailserver/dkim
+
+# open the ports (host firewall). Also check your PROVIDER's cloud firewall — many block
+# inbound 25 by default, and `doctor` only tests OUTBOUND 25, so blocked inbound is silent.
+sudo ufw allow 22/tcp && sudo ufw allow 25/tcp && sudo ufw allow 587/tcp && sudo ufw allow 993/tcp
+# add 80/tcp if you use certbot's standalone HTTP challenge (needed at renewal too, not just issuance)
+```
+
+> **Run every CLI command as the daemon's user** (`sudo -u mail node src/main.ts …`). The CLI
+> creates files `0600` owned by whoever runs it (`UMask=0077`); a `control.db` or DKIM key created
+> by `root` is `root:root` and the `mail`-user daemon gets a permission error at boot. This applies
+> to `init`, `setup`, `account`, and `backup` alike.
+
 ## DNS
 
 The A and MX get mail flowing; PTR + the SPF/DKIM/DMARC trifecta are what earn a
@@ -116,7 +136,7 @@ The daemon signs outbound mail **only when both `MAIL_DKIM_KEY` and `MAIL_DKIM_S
 — set the same two values in the unit (below), or mail goes out unsigned (SPF-only) and big
 receivers spam-folder it.
 
-prints every record below as annotated, copy-pasteable zone lines. Re-run it any
+`setup` prints every record below as annotated, copy-pasteable zone lines. Re-run it any
 time to reprint them from the existing key (the output is deterministic, so you can
 diff it against what you actually published). And once the records are in, verify
 the whole deployment — live DNS, reverse DNS, SPF evaluation, DKIM key match, the
@@ -132,7 +152,9 @@ MAIL_DOMAIN=mail.example.com \
   node src/main.ts doctor
 ```
 
-`doctor` checks the *outside* (DNS, cert, outbound 25). Once the daemon is running, prove the
+By default `doctor`'s outbound-25 probe dials `gmail.com`'s MX; use `--probe <domain>` to dial
+a different one, or `--skip-dial` to skip it (e.g. offline). `doctor` checks the *outside* (DNS,
+cert, outbound 25). Once the daemon is running, prove the
 *mail path itself* — authenticated submission, local delivery, IMAP read-back — with
 `node src/main.ts selftest <login>` (below). Note that `doctor` does **not** test *inbound* port 25
 reachability from the internet — see the firewall note under Running it.
@@ -186,25 +208,6 @@ credential registry (which stores only the derived StoredKey/ServerKey, never th
 persistent outbound queue. Inbound mail is delivered into the addressed account's mailbox; a
 recipient that isn't a known local account is rejected at `RCPT` (no catch-all, no backscatter).
 
-**Prepare the box first.** Create the data directory owned by the user the daemon runs as (the
-unit below uses `mail`, which already exists on Debian/Ubuntu; create a system user otherwise),
-and open the firewall:
-
-```sh
-# data + secrets directories, owned by the daemon's user, owner-only
-sudo install -d -o mail -g mail -m 700 /var/lib/mailserver /var/lib/mailserver/tls /var/lib/mailserver/dkim
-
-# open the ports (host firewall). Also check your PROVIDER's cloud firewall — many block
-# inbound 25 by default, and `doctor` only tests OUTBOUND 25, so blocked inbound is silent.
-sudo ufw allow 22/tcp && sudo ufw allow 25/tcp && sudo ufw allow 587/tcp && sudo ufw allow 993/tcp
-# add 80/tcp if you use certbot's standalone HTTP challenge (needed at renewal too, not just issuance)
-```
-
-> **Run every CLI command as the daemon's user** (`sudo -u mail node src/main.ts …`). The CLI
-> creates files `0600` owned by whoever runs it (`UMask=0077`); a `control.db` or DKIM key created
-> by `root` is `root:root` and the `mail`-user daemon gets a permission error at boot. This applies
-> to `init`, `setup`, `account`, and `backup` alike.
-
 **Recommended first run: `init` (no password in the environment).** Instead of putting a
 password in the unit file, create the primary account with a hidden prompt that writes SCRAM
 straight to the registry — so no plaintext password ever lands in the unit or
@@ -239,13 +242,18 @@ and `account set-password` refuse a shorter one. A weak password seeded through 
 deprecated `MAIL_PASS`/`MAIL_ACCOUNTS` env path is only *warned* about (a boot must not fail
 on it) — provision real credentials with `init`/`account` instead.
 
+> Every `account`/`queue`/`mail`/`dead-letter` example passes `--db /var/lib/mailserver/control.db`.
+> Set `MAIL_CONTROL_DB` in your shell (or the unit's environment) to drop it — without either, the
+> CLI targets `./control.db` in the current directory, and a "no account" error there means you're
+> pointed at the wrong database, not that the account is gone (the error names the path it searched).
+
 **App-specific passwords** (ADR 0017) — a revocable per-device credential, so a lost phone
 doesn't mean rotating your one password everywhere. Each is server-generated and shown once:
 
 ```sh
-node src/main.ts account app-password add you phone     # prints a strong secret ONCE — copy it
-node src/main.ts account app-password list you          # names + dates, never the secret
-node src/main.ts account app-password remove you phone  # revoke that one; honoured live
+node src/main.ts account app-password add you phone --db /var/lib/mailserver/control.db  # prints a strong secret ONCE
+node src/main.ts account app-password list you --db /var/lib/mailserver/control.db
+node src/main.ts account app-password remove you phone --db /var/lib/mailserver/control.db  # revoke; honoured live
 ```
 
 Use the printed secret as this account's password on one device. Your primary password still
@@ -260,9 +268,9 @@ default: `you+anything@your.domain` delivers to `you` with no setup, handy for p
 filtering.
 
 ```sh
-node src/main.ts account alias add you sales    # sales@your.domain now reaches "you"
-node src/main.ts account alias list             # every alias and its owner
-node src/main.ts account alias remove sales
+node src/main.ts account alias add you sales --db /var/lib/mailserver/control.db  # sales@your.domain → "you"
+node src/main.ts account alias list --db /var/lib/mailserver/control.db           # every alias and its owner
+node src/main.ts account alias remove sales --db /var/lib/mailserver/control.db
 ```
 
 Give the local-part only (`sales`, not `sales@your.domain`). An address is a login *or* an
@@ -291,14 +299,38 @@ node src/main.ts verify /backups/mail-$(date +%F)   # a backup you haven't verif
 boundary: SQLite pages carry no checksums, so a bit flipped inside a message blob on disk
 is invisible to it — media-level assurance is the filesystem's job (ZFS/btrfs/restic).
 
+A backup is the **complete mail store plus the credential registry, in plaintext SQLite** — the
+SCRAM records aren't reversible to passwords, but message bodies are in the clear. Encrypt it
+before it leaves the box (`age`, `restic`, or your backup tool's own encryption).
+
+**Restoring from a backup** — stop the daemon, copy the snapshot files over the live ones beside
+`MAIL_CONTROL_DB`, restart, and confirm:
+
+```sh
+systemctl stop mailserver
+cp /backups/mail-2026-07-21/*.db /var/lib/mailserver/     # control.db + every mail-<login>.db
+sudo chown mail:mail /var/lib/mailserver/*.db
+systemctl start mailserver
+sudo -u mail node src/main.ts verify /var/lib/mailserver        # integrity + invariants
+sudo -u mail env MAIL_DOMAIN=mail.example.com MAIL_SUBMISSION_PORT=587 MAIL_IMAP_PORT=993 \
+  node src/main.ts selftest you                                 # the mail path end to end
+```
+
+`backup` copies the databases whole, so a restore is just putting them back. An account present in
+the registry whose mailbox file is missing from the backup comes back as an empty mailbox (its
+credentials and aliases are intact) rather than failing the restore.
+
 **"Did my mail actually leave?"** — the outbound queue and the dead-letter store (messages
 delivery permanently gave up on, retained instead of dropped) are inspectable:
 
 ```sh
 node src/main.ts queue list --db /var/lib/mailserver/control.db
+node src/main.ts queue retry <id> --db /var/lib/mailserver/control.db   # skip the backoff after fixing a fault (--all for every message)
+node src/main.ts queue cancel <id> --db /var/lib/mailserver/control.db  # pull a message (retained in dead-letter, never discarded)
 node src/main.ts dead-letter list --db /var/lib/mailserver/control.db
 node src/main.ts dead-letter show <id> --raw > message.eml   # the retained bytes, replayable
 node src/main.ts dead-letter requeue <id>                    # try delivery again
+node src/main.ts mail list you --db /var/lib/mailserver/control.db      # read a delivered mailbox without an IMAP client
 ```
 
 A permanently-failed message always does two things: the sender gets a `multipart/report`
@@ -390,10 +422,13 @@ each database `0600` and re-tightens every *registered* account's database to `0
 even a disabled account's mailbox can't linger world-readable), but the `700` directory is the
 belt-and-braces that keeps a stray file unreachable by other local users in the first place.
 
-`systemctl enable --now mailserver`, then `journalctl -fu mailserver` to watch it
-— including the queue lines that report each relay attempt, its result, and any
-retry or give-up. A transient failure is retried on a backoff from the persistent
-SQLite queue (below); a `5xx` bounces at once.
+`systemctl enable --now mailserver`, then `journalctl -fu mailserver` to watch it. The daemon logs
+one line per accepted inbound message (envelope, size, SPF/DKIM/DMARC verdicts, and which folder it
+was filed to), one per accepted submission (with the queue id), each relay deferral with its remote
+reason and next-attempt time, the final sent/bounced/gave-up outcome, and every failed
+authentication with its source IP — the raw material for spotting a credential-stuffing run (there
+is no built-in fail2ban integration; see [Known limitations](#known-limitations)). A transient
+failure is retried on a backoff from the persistent SQLite queue (below); a `5xx` bounces at once.
 
 **Verify it actually works**, end to end, before pointing a client at it — authenticated
 submission, local delivery, and IMAP read-back, in one command against the running daemon:
@@ -405,7 +440,10 @@ sudo -u mail env MAIL_DOMAIN=mail.example.com MAIL_SUBMISSION_PORT=587 MAIL_IMAP
 
 A green run means the mail path is sound; a failure names the step that broke (auth, delivery, or
 IMAP). If the daemon can't start at all, it now prints a specific reason — a port already in use,
-or a privileged port without the capability — rather than a stack trace.
+or a privileged port without the capability — rather than a stack trace. If a test message you
+sent from elsewhere seems to vanish, check the **Junk** folder and read its `Authentication-Results`
+header: DMARC enforcement files a failing message there rather than the inbox (a common surprise
+while DNS is still settling).
 
 ### TLS: getting the certificate to the daemon, and keeping it fresh
 
@@ -436,6 +474,45 @@ certbot renew --dry-run   # proves the renewal path works
 Serve `fullchain.pem` (not `cert.pem`) — clients need the intermediate. Without
 the hook, certbot renews into `/etc/letsencrypt` while the daemon keeps serving
 the stale copy until it expires ~30 days later.
+
+## Migrating your existing mail in
+
+cutie-mail speaks standard IMAP, so moving your existing mail in is a plain IMAP-to-IMAP copy with
+an off-the-shelf tool — there's nothing bespoke to learn. [`imapsync`](https://imapsync.lamiral.info/)
+is the usual choice:
+
+```sh
+imapsync \
+  --host1 imap.gmail.com --user1 you@gmail.com --passfile1 gmail.pass --ssl1 \
+  --host2 mail.example.com --user2 you --passfile2 cutie.pass --ssl2
+```
+
+Or, with no extra software: add both accounts in Thunderbird and drag folders from the old account
+to the new one. Either way the copy is byte-exact and preserves each message's original date
+(`INTERNALDATE`) and flags. One boundary: an individual message larger than `MAIL_MAX_SIZE`
+(25 MiB default) is refused on `APPEND` — raise `MAIL_MAX_SIZE` if your archive has very large
+messages (it raises the SMTP and IMAP limits together).
+
+## Cutting over a domain you already use
+
+Moving a domain that already receives real mail (rather than a fresh subdomain) is a sequencing
+problem — do it in this order so nothing is lost in the window:
+
+1. **Lower the TTL** on your current MX record to 300s a day ahead, so the switch propagates fast.
+2. **Stand the box up fully under a subdomain first** (`mx.example.com`) and get `doctor` and
+   `selftest` green there — DNS, TLS, DKIM, the mail path — while your real MX still serves the
+   domain.
+3. **Import first** (above), so your history is already present when you switch.
+4. **Publish `--dmarc-policy none`** during the overlap so a misalignment quarantines nothing while
+   you watch; tighten to `quarantine`/`reject` once `doctor` is clean and mail flows.
+5. **Switch the MX** to the new box. A well-behaved sender that connects mid-switch and gets no
+   answer **retries for days** — mail isn't lost, it's delayed — so a brief overlap is safe.
+6. **Keep the old mailbox reachable** for a week or two before decommissioning; stragglers and
+   slow-retrying senders trickle in after the cutover.
+
+There is deliberately no backup-MX support (recorded in [docs/BACKLOG.md](docs/BACKLOG.md)) — the
+sender-retry behaviour above is what covers a short outage, so a second MX isn't needed at this
+scale.
 
 ## Pointing your mail client at it
 

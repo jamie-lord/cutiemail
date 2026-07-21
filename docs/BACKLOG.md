@@ -29,6 +29,20 @@ closing the run-8 QRESYNC residual); an **8-character password floor**; and **ap
 passwords** ([ADR 0017](decisions/0017-app-specific-passwords.md)). Plus eight security-audit
 runs + two live pentest sessions that converged (find rate 8→6→7→7→4→5→4→0).
 
+A **ten-persona UX pressure test** (simulated new users, from a nervous first-timer to a
+15-year Postfix admin, each running the project hands-on before open-sourcing) then drove one
+more sweep — the getting-started and configuration experience, not the protocols. It found one
+correctness blocker and a set of observability/usability gaps, all now shipped: the **submission
+black hole** (mail to an unresolvable local address was accepted `250` then silently dropped —
+now refused `550 5.1.1` at RCPT and re-validated atomically at delivery); a full **operational
+log trail** (accepted messages, relay deferrals, and — the biggest gap — failed authentication
+with source IP, the raw material for fail2ban); **boot-UX** fixes (absolute DB path in the
+banner, a cert-expiry warning, a loud dev-cert-override warning, SIGHUP survives); the
+conformance runner **no longer exits 0 against an unreachable target**; `queue retry`/`cancel`
+and a read-only `mail list`/`show`; the `:memory:` honesty fix; `MAIL_OUTBOUND=hold` for a
+dev/test sink ([ADR 0020](decisions/0020-outbound-hold-mode.md)); and the doc rewrites the
+personas' confusion pointed to (migration, restore, cutover, positioning). Suite 1063.
+
 ## How an item earns its place here
 
 Ordered by value. Each states its evidence, its one-sentence mission fit, its shape, and how
@@ -98,6 +112,19 @@ not clear the bar. These were weighed and declined; most carry a revisit trigger
 - **Richer `account list` (created / last-login).** A marginal nicety with no correctness or security payoff. Its one real use — spotting a dormant/compromised account — is thin at personal scale. **Revisit** if app-passwords (item 5) land: a per-credential *last-used* is worth more than a per-account one, and would ride along.
 - **ValiMail `arc_test_suite` external vector pin.** ARC's offline sign/verify round-trips + a golden signing-input already cover the scope; an external pin is marginal. Recorded nice-to-have.
 - **Unified project-wide coverage percentage (ADR 0008).** Rolling the outbound-client and receiver coverage into one number is cosmetic reporting, not correctness — fails the bar.
+
+**Operational cuts (recorded during the UX pressure test):**
+
+- **Live config / certificate reload.** SIGHUP is caught, logged, and ignored (rather than
+  killing the daemon, Node's default); a renewed cert or changed config is picked up by a
+  restart, which clients reconnect from transparently. A true hot-reload that re-reads
+  `MAIL_TLS_CERT`/`MAIL_TLS_KEY` on SIGHUP without dropping IMAP sessions is a real feature with
+  real complexity (re-binding TLS contexts on live listeners). **Revisit** if certbot-restart
+  churn or dropped IDLE sessions become a felt problem.
+- **`account remove` verb.** Deliberately absent (ADR 0012): deleting the registry row would
+  strand the mailbox database with all its mail — a half-destruction pretending to be clean. The
+  CLI now surfaces the decommission recipe (`disable`, then `rm` the mailbox file) instead of a
+  bare usage error, so the decision is discoverable, not a gap.
 
 **Infrastructure / availability cuts:**
 
