@@ -144,6 +144,43 @@ export class SqliteQueue {
   }
 
   /**
+   * Make a live entry due immediately (`queue retry <id>`): the operator has fixed the
+   * fault (network back, DNS corrected) and should not wait out the backoff. Attempt
+   * count and give-up window are untouched — this only moves the due time. Returns
+   * false when no live entry has that id.
+   */
+  retryNow(id: string, now: number): boolean {
+    return Number(this.#db.prepare('UPDATE outbound_queue SET next_attempt = ? WHERE id = ?').run(now, id).changes) > 0;
+  }
+
+  /** Make EVERY live entry due immediately (`queue retry --all`). Returns how many. */
+  retryAllNow(now: number): number {
+    return Number(this.#db.prepare('UPDATE outbound_queue SET next_attempt = ?').run(now).changes);
+  }
+
+  /**
+   * Cancel a live entry (`queue cancel <id>`): move it to the dead-letter store rather
+   * than deleting it — cancellation must not be the one path that silently discards
+   * bytes (the never-silently-dropped invariant). The operator can still inspect,
+   * requeue, or purge it from there; purge is the only true discard. Same transactional
+   * insert-then-delete guarantee as deadLetter(). Returns false when no live entry
+   * has that id.
+   */
+  cancel(id: string, now: number): boolean {
+    const row = this.#db
+      .prepare('SELECT id, from_addr, recipients, data, first_queued, attempts, next_attempt FROM outbound_queue WHERE id = ?')
+      .get(id) as { id: string; from_addr: string; recipients: string; data: Uint8Array; first_queued: number; attempts: number; next_attempt: number } | undefined;
+    if (row === undefined) return false;
+    this.#tx(() => {
+      this.#db
+        .prepare('INSERT INTO dead_letter (id, from_addr, recipients, data, first_queued, attempts, last_error, dead_lettered) VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
+        .run(row.id, row.from_addr, row.recipients, row.data, row.first_queued, row.attempts, 'cancelled by operator (queue cancel)', now);
+      this.#db.prepare('DELETE FROM outbound_queue WHERE id = ?').run(id);
+    });
+    return true;
+  }
+
+  /**
    * Run `fn` in a single transaction — all-or-nothing. A crash mid-way rolls back,
    * so we never persist half a state change. (Same pattern as the mailbox store.)
    */

@@ -194,3 +194,69 @@ test('usage errors: bad verb / missing id / typo path exit 2; empty stores say s
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test('queue retry makes a deferred entry due now; unknown ids are clean errors', () => {
+  const dir = tmp();
+  try {
+    const { dbPath, pendingId } = makeWorld(dir);
+    // Push the pending entry far into the future (a long backoff the operator wants to skip).
+    {
+      const db = openMailDb(dbPath);
+      SqliteQueue.open(db).reschedule(pendingId, ['slow@there.example'], 3, Date.now() + 3_600_000);
+      db.close();
+    }
+    const c = capture();
+    assert.equal(runQueue(['retry', pendingId, '--db', dbPath], c.io, {}), 0);
+    assert.match(c.out.join('\n'), /made due now/);
+    const db = openMailDb(dbPath);
+    const entry = SqliteQueue.open(db).due(Date.now() + 1000).find((e) => e.id === pendingId);
+    db.close();
+    assert.ok(entry !== undefined, 'the entry is due immediately after retry');
+
+    const miss = capture();
+    assert.equal(runQueue(['retry', 'no-such-id', '--db', dbPath], miss.io, {}), 1);
+    assert.match(miss.err.join('\n'), /no pending message/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('queue retry --all touches every pending entry', () => {
+  const dir = tmp();
+  try {
+    const { dbPath, pendingId } = makeWorld(dir);
+    {
+      const db = openMailDb(dbPath);
+      SqliteQueue.open(db).reschedule(pendingId, ['slow@there.example'], 3, Date.now() + 3_600_000);
+      db.close();
+    }
+    const c = capture();
+    assert.equal(runQueue(['retry', '--all', '--db', dbPath], c.io, {}), 0);
+    assert.match(c.out.join('\n'), /1 message\(s\) made due now/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('queue cancel retains the message in dead-letter — cancellation is never a silent discard', () => {
+  const dir = tmp();
+  try {
+    const { dbPath, pendingId } = makeWorld(dir);
+    const c = capture();
+    assert.equal(runQueue(['cancel', pendingId, '--db', dbPath], c.io, {}), 0);
+    assert.match(c.out.join('\n'), /retained in dead-letter/);
+    const db = openMailDb(dbPath);
+    const queue = SqliteQueue.open(db);
+    assert.equal(queue.due(Number.MAX_SAFE_INTEGER).some((e) => e.id === pendingId), false, 'off the live queue');
+    const dead = queue.getDeadLetter(pendingId);
+    db.close();
+    assert.ok(dead !== undefined, 'retained as a dead letter');
+    assert.equal(dead.data.toString('latin1'), 'pending message', 'bytes retained exactly');
+    assert.match(dead.lastError, /cancelled by operator/);
+
+    const miss = capture();
+    assert.equal(runQueue(['cancel', 'no-such-id', '--db', dbPath], miss.io, {}), 1);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

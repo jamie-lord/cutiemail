@@ -40,10 +40,16 @@ function relative(ms: number, now: number): string {
 }
 
 const QUEUE_USAGE = [
-  'usage: node src/main.ts queue list [--db <control.db>]',
+  'usage: node src/main.ts queue <list|retry|cancel> [id|--all] [--db <control.db>]',
   '',
-  'Pending outbound messages: recipients, attempts so far, and when the next',
-  'delivery attempt is due. The control database is MAIL_CONTROL_DB or --db.',
+  'The live outbound queue (postqueue-style controls):',
+  '  list               recipients, attempts so far, and when the next attempt is due',
+  '  retry <id>|--all   make a deferred message due NOW (after fixing the fault) —',
+  '                     the daemon relays it on its next tick, within a minute',
+  '  cancel <id>        take a message off the live queue; it is RETAINED in',
+  '                     dead-letter (inspect/requeue/purge there), never discarded',
+  '',
+  'The control database is MAIL_CONTROL_DB or --db.',
 ].join('\n');
 
 const DL_USAGE = [
@@ -61,20 +67,23 @@ interface ParsedArgs {
   readonly positional: string[];
   readonly dbPath: string;
   readonly raw: boolean;
+  readonly all: boolean;
 }
 function parseArgs(args: string[], env: Record<string, string | undefined>): ParsedArgs | string {
   const positional: string[] = [];
   let dbPath = env.MAIL_CONTROL_DB ?? 'control.db';
   let raw = false;
+  let all = false;
   for (let i = 0; i < args.length; i++) {
     const a = args[i]!;
     if (a === '--db') dbPath = args[++i] ?? dbPath;
     else if (a === '--raw') raw = true;
+    else if (a === '--all') all = true;
     else if (a === '--help' || a === '-h') return 'help';
     else if (a.startsWith('--')) return `unknown argument ${a}`;
     else positional.push(a);
   }
-  return { positional, dbPath, raw };
+  return { positional, dbPath, raw, all };
 }
 
 /** Open the queue store, refusing to CREATE a database at a typo'd path. */
@@ -109,18 +118,54 @@ export function runQueue(args: string[], io: OpsIo, env: Record<string, string |
     io.err(QUEUE_USAGE);
     return 2;
   }
-  if (parsed.positional.length !== 1 || parsed.positional[0] !== 'list') {
+  const [verb, id] = parsed.positional;
+  if (verb === undefined || (verb !== 'list' && verb !== 'retry' && verb !== 'cancel')) {
     io.err(QUEUE_USAGE);
     return 2;
   }
   const queue = openQueue(parsed.dbPath, io);
   if (queue === undefined) return 2;
-  // due(∞) = every pending entry regardless of when its next attempt is.
-  const entries = queue.due(Number.MAX_SAFE_INTEGER);
   const now = Date.now();
-  for (const e of entries) io.out(queueLine(e, now));
-  io.out(entries.length === 0 ? 'queue: empty — nothing waiting to go out' : `queue: ${entries.length} message(s) pending`);
-  return 0;
+  switch (verb) {
+    case 'list': {
+      // due(∞) = every pending entry regardless of when its next attempt is.
+      const entries = queue.due(Number.MAX_SAFE_INTEGER);
+      for (const e of entries) io.out(queueLine(e, now));
+      io.out(entries.length === 0 ? 'queue: empty — nothing waiting to go out' : `queue: ${entries.length} message(s) pending`);
+      return 0;
+    }
+    case 'retry': {
+      if (parsed.all) {
+        const n = queue.retryAllNow(now);
+        io.out(n === 0 ? 'queue retry: nothing pending.' : `queue retry: ${n} message(s) made due now — the daemon relays them on its next tick (within a minute).`);
+        return 0;
+      }
+      if (id === undefined) {
+        io.err('usage: queue retry <id> | queue retry --all');
+        return 2;
+      }
+      if (!queue.retryNow(id, now)) {
+        io.err(`queue retry: no pending message with id ${id} (it may have delivered, bounced, or been cancelled — check dead-letter list).`);
+        return 1;
+      }
+      io.out(`queue ${id} made due now — the daemon relays it on its next tick (within a minute).`);
+      return 0;
+    }
+    case 'cancel': {
+      if (id === undefined) {
+        io.err('usage: queue cancel <id>');
+        return 2;
+      }
+      if (!queue.cancel(id, now)) {
+        io.err(`queue cancel: no pending message with id ${id}.`);
+        return 1;
+      }
+      io.out(`queue ${id} cancelled — retained in dead-letter (inspect with \`dead-letter show ${id}\`; \`dead-letter purge ${id}\` is the only true discard).`);
+      return 0;
+    }
+  }
+  io.err(QUEUE_USAGE);
+  return 2;
 }
 
 export function runDeadLetter(

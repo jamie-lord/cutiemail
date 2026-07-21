@@ -34,7 +34,7 @@ const USAGE = [
   '  account  add/list accounts, change passwords, enable/disable — no passwords in env',
   '  backup   consistent online snapshot of every database into a directory',
   '  verify   integrity + store-invariant check of database files (read-only)',
-  '  queue    what is waiting to go out, and when it retries',
+  '  queue    list what is waiting to go out; retry a deferred message now; cancel one',
   '  dead-letter  inspect / requeue / purge messages delivery gave up on',
   '  help     this text',
 ].join('\n');
