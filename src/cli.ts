@@ -98,6 +98,23 @@ async function cmdRun(args: string[]): Promise<number> {
     }
   }
 
+  // A run where EVERY case is inconclusive verified nothing — the usual cause is a target
+  // that isn't listening at all (typo'd host/port, a server that failed to boot). Per-case
+  // that is correctly "inconclusive, not non-conformant", but reporting the aggregate as a
+  // clean exit-0 run would be a permanent false green in CI (the README sells the exit-code
+  // contract). Print the reasons unconditionally and exit 2 (target/config error).
+  const allInconclusive = results.length > 0 && results.every((r) => r.outcome === 'inconclusive');
+  if (allInconclusive) {
+    stderr.write(`\nAll ${results.length} cases were inconclusive — nothing was verified. Is the target listening at ${target.host}:${target.port}?\n`);
+    const reasons = new Map<string, number>();
+    for (const r of results) {
+      const reason = r.judgement.kind === 'inconclusive' ? r.judgement.reason : '(unknown)';
+      reasons.set(reason, (reasons.get(reason) ?? 0) + 1);
+    }
+    for (const [reason, count] of reasons) stderr.write(`  ${count}x ${reason}\n`);
+    return 2;
+  }
+
   if (verbose) {
     const inconclusive = results.filter((r) => r.outcome === 'inconclusive');
     if (inconclusive.length > 0) {

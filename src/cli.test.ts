@@ -73,6 +73,33 @@ test('run against a smuggling-vulnerable server exits 1 and names the finding', 
   });
 });
 
+test('run against an unreachable target exits 2 and says so — never a false green', async () => {
+  // The UX-pressure-test trap: nothing listening at the target meant 68/68 inconclusive,
+  // "No substantive divergences", and exit 0 — a typo'd host or a server that failed to
+  // boot passed CI forever. All-inconclusive now exits 2 with the reasons printed.
+  const dir = mkdtempSync(join(tmpdir(), 'smtp-cli-dead-'));
+  const configPath = join(dir, 'target.json');
+  // Grab an ephemeral port that is then closed again — guaranteed unoccupied.
+  const probe = await MutantServer.start({ defects: {}, validRecipients: ['r@example.com'] });
+  const deadPort = probe.port;
+  await probe.close();
+  writeFileSync(
+    configPath,
+    JSON.stringify({
+      name: 'dead',
+      serverDomain: 'dead.test',
+      host: '127.0.0.1',
+      port: deadPort,
+      version: 'test',
+      fixture: { clientDomain: 'conformance-suite.invalid', validRecipient: 'r@example.com' },
+    }),
+  );
+  const r = await runCli(['run', '--config', configPath, '--now', '2026-07-15T00:00:00Z']);
+  assert.equal(r.code, 2, `expected exit 2 against a dead target, got ${r.code}\n${r.stdout}\n${r.stderr}`);
+  assert.match(r.stderr, /inconclusive — nothing was verified/i);
+  assert.match(r.stderr, /Is the target listening/i);
+});
+
 test('a missing config exits 2', async () => {
   const r = await runCli(['run', '--config', '/nonexistent/target.json']);
   assert.equal(r.code, 2);
