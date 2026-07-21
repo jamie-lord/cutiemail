@@ -47,6 +47,7 @@ import { SqliteQueue } from './store/sqlite-queue.ts';
 import { RelayLoop } from './server/relay-loop.ts';
 import { runOps } from './ops/cli.ts';
 import { validLogin, MIN_PASSWORD_LENGTH } from './ops/account.ts';
+import { sanitizeForTerminalLine } from './ops/terminal.ts';
 // Bundled self-signed certificate — local development default only.
 import { TEST_CERT as DEV_CERT, TEST_KEY as DEV_KEY } from './testing/tls-test-cert.ts';
 
@@ -351,12 +352,14 @@ export async function startServer(cfg: MailServerConfig): Promise<RunningServer>
     // Strip any forged Authentication-Results claiming our authserv-id before adding
     // our own (RFC 8601 §5) — otherwise a client cannot tell ours from the attacker's.
     const cleaned = stripOwnAuthResults(m.data, cfg.domain);
+    // One id correlates the log line below with the Received trace line in the message.
+    const msgId = randomUUID();
     const traced = prependReceived(cleaned, {
       helo: m.helo,
       remoteAddress: m.remoteAddress,
       by: cfg.domain,
       protocol: protocolFor(m.overTls, false),
-      id: randomUUID(),
+      id: msgId,
       ...(m.recipients.length === 1 ? { forRecipient: m.recipients[0]! } : {}),
       date: receivedAt,
     });
@@ -391,6 +394,9 @@ export async function startServer(cfg: MailServerConfig): Promise<RunningServer>
     // instant stamped into the Received trace line above. Deliver a copy to each of our
     // local recipients' mailbox (ADR 0009).
     for (const login of resolved) deliverTo(login, stamped, receivedAt.getTime(), targetMailbox);
+    // One line per accepted inbound message — the operator's answer to "did it arrive,
+    // and where was it filed". Envelope values are remote-controlled: sanitised, one line.
+    log(sanitizeForTerminalLine(`inbound ${msgId}: from=<${m.from}> to=${m.recipients.map((r) => `<${r}>`).join(',')} size=${m.data.length} dkim=${dkim.verdict} spf=${spf} dmarc=${dmarc.verdict} filed=${targetMailbox}`));
   }, {
     domain: cfg.domain,
     tls: cfg.tls,
@@ -403,6 +409,7 @@ export async function startServer(cfg: MailServerConfig): Promise<RunningServer>
     acceptRecipient: (address) => loginForLocalAddress(address) !== undefined,
     ...(cfg.maxMessageSize !== undefined ? { maxMessageSize: cfg.maxMessageSize } : {}),
     maxReceivedHops: cfg.maxReceivedHops ?? 100,
+    log,
   });
 
   // Submission (port 587, authenticated): our user sending out. Local recipients
@@ -506,23 +513,28 @@ export async function startServer(cfg: MailServerConfig): Promise<RunningServer>
     }
     // Stamp our Received trace line (§4.4), then sign — DKIM does not cover
     // Received, so the order is fix-up → Received → DKIM-Signature on top.
+    const msgId = randomUUID();
     const traced = prependReceived(fixed, {
       helo: m.helo,
       remoteAddress: m.remoteAddress,
       by: cfg.domain,
       protocol: protocolFor(m.overTls, m.authenticated),
-      id: randomUUID(),
+      id: msgId,
       ...(m.recipients.length === 1 ? { forRecipient: m.recipients[0]! } : {}),
       date: new Date(),
     });
     for (const login of localLogins) deliverTo(login, traced);
+    let queuedAs: string | null = null;
     if (remote.length > 0) {
       // Sign the outbound copy once, queue it, and kick the loop so the first
       // attempt is immediate; failures are retried, not dropped.
       const outData = signer !== undefined ? dkimSign(traced, signer) : traced;
-      queue.enqueue(m.from, remote, outData, Date.now());
+      queuedAs = queue.enqueue(m.from, remote, outData, Date.now());
       void relayLoop.tick(Date.now());
     }
+    // One line per accepted submission, correlating the message id with the queue row
+    // (the id `queue list` shows). MAIL FROM is authorized-owned but still sanitised.
+    log(sanitizeForTerminalLine(`submission ${msgId}: user=${authed} from=<${m.from}> local=${localLogins.length} remote=${remote.length}${queuedAs !== null ? ` queued=${queuedAs}` : ''} size=${m.data.length}`));
   };
   const submission = await SmtpReceiver.start(submissionHandler, {
     domain: cfg.domain,
@@ -542,6 +554,7 @@ export async function startServer(cfg: MailServerConfig): Promise<RunningServer>
       if (at === -1 || address.slice(at + 1).toLowerCase() !== cfg.domain.toLowerCase()) return true;
       return loginForLocalAddress(address) !== undefined;
     },
+    log,
     ...(cfg.maxMessageSize !== undefined ? { maxMessageSize: cfg.maxMessageSize } : {}),
     maxReceivedHops: cfg.maxReceivedHops ?? 100,
   });
@@ -558,6 +571,7 @@ export async function startServer(cfg: MailServerConfig): Promise<RunningServer>
       const s = stores.get(login);
       return s === undefined ? undefined : { catalog: s.catalog, notifier: s.notifier };
     },
+    log,
   });
 
   // Drain the queue on a timer, and once now to recover anything left by a crash.
@@ -731,8 +745,11 @@ function describeBindError(err: unknown): string | null {
 
 async function main(): Promise<void> {
   const cfg = configFromEnv();
+  // Every daemon log line carries its own ISO timestamp: under systemd journald adds one
+  // too (harmless), but a plain `npm start > daemon.log` would otherwise have no times at
+  // all — and "when did that bounce happen" is the first forensic question.
   const log = (s: string): void => {
-    process.stdout.write(`${s}\n`);
+    process.stdout.write(`${new Date().toISOString()} ${s}\n`);
   };
   let server: RunningServer;
   try {

@@ -639,6 +639,7 @@ export class ImapServer {
   readonly #throttle: AuthThrottle | undefined;
   readonly #maxWriteBacklog: number;
   readonly #maxAppendInflight: number;
+  readonly #log: ((line: string) => void) | undefined;
   /** Bytes reserved for in-flight APPEND literals, per connection, and the running total. */
   readonly #appendReserved = new Map<net.Socket, number>();
   #appendInflight = 0;
@@ -654,6 +655,7 @@ export class ImapServer {
     throttle?: AuthThrottle,
     maxWriteBacklog = MAX_WRITE_BACKLOG,
     maxAppendInflight = MAX_APPEND_INFLIGHT,
+    log?: (line: string) => void,
   ) {
     this.#server = server;
     this.port = port;
@@ -665,6 +667,7 @@ export class ImapServer {
     this.#throttle = throttle;
     this.#maxWriteBacklog = maxWriteBacklog;
     this.#maxAppendInflight = maxAppendInflight;
+    this.#log = log;
   }
 
   /**
@@ -724,6 +727,8 @@ export class ImapServer {
       maxWriteBacklog?: number;
       /** Server-wide in-flight-APPEND-literal budget in bytes (default 256 MiB). Tests set it small. */
       maxAppendInflight?: number;
+      /** Operational log sink: auth failures + throttle engagement (fail2ban raw material). */
+      log?: (line: string) => void;
     } = {},
   ): Promise<ImapServer> {
     const catalog: ServableCatalog = 'listNames' in target ? target : inboxOnly(target);
@@ -742,7 +747,7 @@ export class ImapServer {
         server.removeListener('error', reject);
         const addr = server.address();
         const port = typeof addr === 'object' && addr !== null ? addr.port : 0;
-        const imap = new ImapServer(server, port, catalog, options.authenticate, options.notifier, options.autologoutMs, options.resolveAccount, options.throttle, options.maxWriteBacklog, options.maxAppendInflight);
+        const imap = new ImapServer(server, port, catalog, options.authenticate, options.notifier, options.autologoutMs, options.resolveAccount, options.throttle, options.maxWriteBacklog, options.maxAppendInflight, options.log);
         const event = options.tls !== undefined ? 'secureConnection' : 'connection';
         server.on(event, (sock: net.Socket) => {
           imap.#sockets.add(sock);
@@ -886,9 +891,16 @@ export class ImapServer {
   #handle(sock: net.Socket): void {
     let buf = Buffer.alloc(0);
     const ip = sock.remoteAddress ?? '';
-    // Brute-force throttle helpers (no-ops when no throttle is configured).
+    // Brute-force throttle helpers (no-ops when no throttle is configured). Every failure
+    // is logged with the source IP — without this line an operator cannot see a
+    // credential-stuffing run at all, let alone feed fail2ban. The attempted login is
+    // attacker-controlled, so it is JSON-escaped (no raw control bytes into the log).
     const authBlocked = (): boolean => this.#throttle?.isBlocked(ip) === true;
-    const noteAuthFailure = (): void => this.#throttle?.recordFailure(ip);
+    const noteAuthFailure = (user?: string): void => {
+      this.#throttle?.recordFailure(ip);
+      this.#log?.(`imap auth failed${user !== undefined ? ` for ${JSON.stringify(user)}` : ''} from ${ip}`);
+      if (this.#throttle?.isBlocked(ip) === true) this.#log?.(`auth throttle engaged for ${ip} (imap) — refusing further attempts while the window drains`);
+    };
     const noteAuthSuccess = (): void => this.#throttle?.recordSuccess(ip);
     let selected: ServableMailbox | null = null;
     let selectedName: string | null = null;
@@ -1333,11 +1345,11 @@ export class ImapServer {
               // Too many recent failures from this IP — refuse without checking the password.
               write(sock, `${tag} NO [UNAVAILABLE] too many failed attempts, try again later`);
             } else if (this.#authenticate !== undefined && !this.#authenticate(user, pass)) {
-              noteAuthFailure();
+              noteAuthFailure(user);
               write(sock, `${tag} NO [AUTHENTICATIONFAILED] invalid credentials`);
             } else if (!bindAccount(user)) {
               // Credentials verified but the account is unknown or disabled (multi-account mode).
-              noteAuthFailure();
+              noteAuthFailure(user);
               write(sock, `${tag} NO [AUTHENTICATIONFAILED] invalid credentials`);
             } else {
               noteAuthSuccess();

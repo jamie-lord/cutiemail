@@ -91,6 +91,8 @@ export interface ReceiverOptions {
   readonly acceptRecipient?: (address: string) => boolean;
   /** Per-IP brute-force throttle for submission AUTH (shared with the IMAP server). */
   readonly throttle?: AuthThrottle;
+  /** Operational log sink: auth failures + throttle engagement (fail2ban raw material). */
+  readonly log?: (line: string) => void;
 }
 
 const addrOf = (line: string): string => /<([^>]*)>/.exec(line)?.[1] ?? '';
@@ -535,6 +537,12 @@ class Connection {
       this.#write('235 2.7.0 Authentication successful');
     } else {
       this.#opts.throttle?.recordFailure(this.#remoteAddress);
+      // Log every failure with the source IP (JSON-escaped attacker-controlled login) —
+      // the raw material for spotting a credential-stuffing run and for fail2ban.
+      this.#opts.log?.(`submission auth failed for ${JSON.stringify(username)} from ${this.#remoteAddress}`);
+      if (this.#opts.throttle?.isBlocked(this.#remoteAddress) === true) {
+        this.#opts.log?.(`auth throttle engaged for ${this.#remoteAddress} (submission) — refusing further attempts while the window drains`);
+      }
       this.#write('535 5.7.8 Authentication credentials invalid');
     }
   }

@@ -16,6 +16,7 @@
 import { decideRetry, type QueueDefects } from '../store/queue.ts';
 import type { SqliteQueue, QueueEntry } from '../store/sqlite-queue.ts';
 import type { RelayResult } from './outbound.ts';
+import { sanitizeForTerminalLine } from '../ops/terminal.ts';
 
 export interface RelayFn {
   (msg: { from: string; recipients: readonly string[]; data: Buffer }): Promise<readonly RelayResult[]>;
@@ -124,10 +125,12 @@ export class RelayLoop {
 
     const retryLater: string[] = [];
     const permanentFailures: BouncedRecipient[] = [];
+    // `detail` carries the remote MX's response bytes — sanitised before it reaches the
+    // operator's log/terminal, like every other remote-derived string we print.
     for (const r of results) {
       if (r.classification === 'transient') retryLater.push(r.recipient);
       else {
-        this.#log(`queue ${entry.id} ${r.recipient}: ${r.ok ? 'sent' : 'bounced'} — ${r.detail}`);
+        this.#log(sanitizeForTerminalLine(`queue ${entry.id} ${r.recipient}: ${r.ok ? 'sent' : 'bounced'} — ${r.detail}`));
         if (!r.ok) permanentFailures.push({ recipient: r.recipient, status: '5.0.0', detail: r.detail });
       }
     }
@@ -148,6 +151,11 @@ export class RelayLoop {
         const { decision, nextAttempt } = decideRetry(attempts, entry.firstQueued, 'transient', now, this.#defects);
         if (decision === 'retry') {
           this.#queue.reschedule(entry.id, retryLater, attempts, nextAttempt);
+          // The everyday operator question — "why hasn't it gone yet, and when is the
+          // next try" — was previously answered by NOTHING: deferrals were rescheduled
+          // silently and only the final sent/bounced/gave-up outcomes logged.
+          const why = results.find((r) => r.classification === 'transient')?.detail ?? 'transient failure';
+          this.#log(sanitizeForTerminalLine(`queue ${entry.id}: deferred for ${retryLater.length} recipient(s) (attempt ${attempts}) — ${why}; next attempt ${new Date(nextAttempt).toISOString()}`));
         } else {
           const gaveUp: BouncedRecipient[] = retryLater.map((recipient) => ({ recipient, status: '5.4.7', detail: `delivery time expired after ${attempts} attempts` }));
           for (const g of gaveUp) this.#log(`queue ${entry.id} ${g.recipient}: bounced (gave up after ${attempts} attempts)`);

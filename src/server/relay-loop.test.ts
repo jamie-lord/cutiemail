@@ -256,3 +256,32 @@ test('a corrupt queue row does not halt due(): the rest of the queue still drain
   assert.equal(due.length, 1, 'only the parseable row is returned');
   assert.equal(due[0]!.recipients[0], 'good@y.test', 'and it is the good one');
 });
+
+test('a deferral is logged — the everyday retry is visible, not silent (UX pressure-test)', async () => {
+  const queue = SqliteQueue.open(new DatabaseSync(':memory:'));
+  const relay = async (m: { recipients: readonly string[] }): Promise<readonly RelayResult[]> =>
+    m.recipients.map((rc) => ({ recipient: rc, ok: false, classification: 'transient' as const, detail: '451 4.7.1 greylisted, try later' }));
+  const lines: string[] = [];
+  const loop = new RelayLoop(queue, relay, { log: (l) => lines.push(l) });
+  const t0 = 1_000_000;
+  const id = queue.enqueue('me@x.test', ['friend@y.test'], Buffer.from('msg'), t0);
+  await loop.tick(t0);
+  const deferral = lines.find((l) => l.includes('deferred'));
+  assert.ok(deferral !== undefined, `a transient reschedule logs a deferral line (got: ${JSON.stringify(lines)})`);
+  assert.ok(deferral.includes(id), 'the line names the queue id');
+  assert.match(deferral, /greylisted/, 'the line carries the remote reason');
+  assert.match(deferral, /next attempt \d{4}-\d{2}-\d{2}T/, 'the line says when the next attempt is due');
+});
+
+test('a remote reason with terminal escapes is neutralised before logging', async () => {
+  const queue = SqliteQueue.open(new DatabaseSync(':memory:'));
+  const relay = async (m: { recipients: readonly string[] }): Promise<readonly RelayResult[]> =>
+    m.recipients.map((rc) => ({ recipient: rc, ok: false, classification: 'permanent' as const, detail: '550 \x1b[2Jgo away\r\nfake ok line' }));
+  const lines: string[] = [];
+  const loop = new RelayLoop(queue, relay, { log: (l) => lines.push(l) });
+  queue.enqueue('me@x.test', ['bad@y.test'], Buffer.from('msg'), 0);
+  await loop.tick(0);
+  const bounced = lines.find((l) => l.includes('bounced'));
+  assert.ok(bounced !== undefined, 'the permanent failure is logged');
+  assert.ok(!bounced.includes('\x1b') && !bounced.includes('\n'), 'ESC and newline from the remote MX never reach the log line');
+});
