@@ -5,3 +5,15 @@ node_modules/
 # Run artifacts — conformance results are generated, dated, and never
 # hand-edited. See docs/decisions/0001-spec-baseline.md on staleness.
 /results/
+
+# Runtime state and SECRETS — created on first run in the working directory
+# (`npm start`, `setup`, `init`, `account`). NEVER commit these: the control and
+# per-user databases hold SCRAM credentials + raw message bytes, and the DKIM key
+# is a private signing key. The bundled dev cert lives in src/testing as a .ts
+# string, so these globs don't touch any tracked source.
+*.db
+*.db-wal
+*.db-shm
+*.pem
+*.key
+/backup/

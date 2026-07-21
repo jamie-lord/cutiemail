@@ -1,18 +1,19 @@
 {
   "name": "cutie-mail",
   "version": "0.0.0",
-  "private": true,
   "type": "module",
   "description": "A small, self-contained mail server in TypeScript — SMTP send + receive, IMAP4rev2, SPF/DKIM/DMARC, SQLite storage, zero runtime dependencies. Ships an RFC 5321 conformance suite as a component.",
+  "license": "MIT",
+  "author": "Jamie Lord",
   "engines": {
     "node": ">=22.18.0"
   },
   "scripts": {
-    "start": "node src/main.ts",
-    "test": "node --test 'src/**/*.test.ts'",
+    "start": "node --disable-warning=ExperimentalWarning src/main.ts",
+    "test": "node --disable-warning=ExperimentalWarning --test 'src/**/*.test.ts'",
     "typecheck": "tsc --noEmit",
-    "conformance": "node src/cli.ts",
-    "coverage": "node src/cli.ts coverage",
+    "conformance": "node --disable-warning=ExperimentalWarning src/cli.ts",
+    "coverage": "node --disable-warning=ExperimentalWarning src/cli.ts coverage",
     "registry": "node -e \"import('./src/report/registry.ts').then(m => console.log(m.renderRegistrySummary(m.buildRegistrySummary())))\"",
     "library-coverage": "node -e \"import('./src/report/library-coverage.ts').then(m => console.log(m.renderLibraryCoverage(m.libraryCoverage())))\""
   },
