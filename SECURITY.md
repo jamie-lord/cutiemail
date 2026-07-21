@@ -1,6 +1,6 @@
 # Security policy
 
-Cutiemail is a from-scratch mail server: it hand-builds the SMTP and IMAP engines, the MIME
+cutiemail is a from-scratch mail server: it hand-builds the SMTP and IMAP engines, the MIME
 parser, and the SPF/DKIM/DMARC/ARC crypto on the byte layer. That makes it security-sensitive by
 nature — a parser or auth bug here is an internet-facing bug — so reports are genuinely welcome.
 

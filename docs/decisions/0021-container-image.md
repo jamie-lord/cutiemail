@@ -45,7 +45,7 @@ Ship a minimal `Dockerfile`, `docker-compose.yml`, and `.dockerignore` at the re
 ```mermaid
 flowchart LR
     subgraph HOST[container host]
-        subgraph C[Cutiemail container · non-root node user]
+        subgraph C[cutiemail container · non-root node user]
             D[node src/main.ts]
         end
         V[(named volume · /data<br/>control.db + mail-&lt;login&gt;.db)]

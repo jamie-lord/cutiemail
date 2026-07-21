@@ -7,7 +7,7 @@ Accepted (2026-07-18). Un-defers the inbound half of ARC that ADR 0007 parked an
 
 ## Context
 
-ADR 0010 made Cutiemail enforce inbound DMARC by filing failures to Junk. That is correct
+ADR 0010 made cutiemail enforce inbound DMARC by filing failures to Junk. That is correct
 for spoofs, but it has a known cost: a mailing list (or any forwarder) rewrites a message —
 appends a footer, tags the subject — which breaks the author's DKIM signature, and the
 list's own SMTP source is not in the author's SPF. The message now fails DMARC through no
@@ -57,7 +57,7 @@ flowchart TD
 
 ### What stays deferred
 
-- **ARC sealing (the outbound/forwarding half).** Cutiemail is a final-delivery server; it
+- **ARC sealing (the outbound/forwarding half).** cutiemail is a final-delivery server; it
   does not forward, so it has nothing to seal. A test-only sealer (`testing/arc-sealer.ts`)
   exists to drive the validator and stands as a reference should sealing ever be needed.
 - **The ValiMail `arc_test_suite` as an external vector pin.** The offline proof here is a

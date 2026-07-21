@@ -132,7 +132,7 @@ export function verifyDatabase(path: string): VerifyReport {
       return { path, kind: 'control', findings };
     }
 
-    return { path, kind: 'unrecognized', findings: ['unrecognized schema — not a Cutiemail database'] };
+    return { path, kind: 'unrecognized', findings: ['unrecognized schema — not a cutiemail database'] };
   } finally {
     db.close();
   }

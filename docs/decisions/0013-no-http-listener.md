@@ -20,11 +20,11 @@ responder inside the mail server:
 
 Mox bundles a full webserver and justifies it because ACME, MTA-STS, autoconfig,
 admin UI, and webmail all need one. None of those other consumers exist here:
-Cutiemail's ACME is external (certbot), and there is no web UI by design.
+cutiemail's ACME is external (certbot), and there is no web UI by design.
 
 ## Decision
 
-**Cutiemail runs no HTTP listener.** The line "a mail server that also speaks
+**cutiemail runs no HTTP listener.** The line "a mail server that also speaks
 HTTP" is a genuine scope boundary, and crossing it for two static documents is
 not justified when:
 

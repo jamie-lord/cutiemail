@@ -3,7 +3,7 @@
  * committed verbatim as isemail-corpus.xml) — the canonical "email address parsing is
  * impossible" test set, 164 cases each tagged with a category.
  *
- * Cutiemail is opinionated (ADR 0007): accept the modern, RFC 5321-deliverable forms;
+ * cutiemail is opinionated (ADR 0007): accept the modern, RFC 5321-deliverable forms;
  * reject the obsolete long tail (comments, folding white space, obs-* productions). So the
  * corpus is used as a PARTITIONED oracle, not a verdict-for-verdict match:
  *

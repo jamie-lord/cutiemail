@@ -1,6 +1,6 @@
 # Contributing
 
-Thanks for looking at Cutiemail. It's an opinionated, correctness-first "SQLite of email": small,
+Thanks for looking at cutiemail. It's an opinionated, correctness-first "SQLite of email": small,
 self-contained, and deliberately scoped. Contributions are welcome, but the project is shaped by a
 strong philosophy — reading it first will save us both time.
 
