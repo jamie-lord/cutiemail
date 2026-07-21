@@ -1,4 +1,4 @@
-# cutie-mail — a from-scratch mail server with ZERO runtime dependencies.
+# Cutiemail — a from-scratch mail server with ZERO runtime dependencies.
 #
 # There is no build step and nothing to install: Node runs the .ts files directly (type
 # stripping, ≥ 22.18), and node_modules holds only the type-checker, which the runtime does

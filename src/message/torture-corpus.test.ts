@@ -12,7 +12,7 @@
  *   - no bytes-vs-strings corruption (a raw NUL never reaches the wire).
  *
  * Beyond the blanket invariant, each block below pins the OPINIONATED outcome for
- * a class of message and COMMENTS why cutie-mail decides it that way — a rejection
+ * a class of message and COMMENTS why Cutiemail decides it that way — a rejection
  * or a scope cut here is an intended, recorded decision, not a silent failure.
  */
 
@@ -35,7 +35,7 @@ import { loadCorpus, loadFixture, FIXTURE_NAMES } from './fixtures/index.ts';
  * (Our builders emit only quoted strings, NIL and atoms — never literals — so a
  * plain quote/paren balance check is exact.)
  *
- * NOTE ON 8-BIT: this deliberately tolerates octets >= 0x80. cutie-mail is an
+ * NOTE ON 8-BIT: this deliberately tolerates octets >= 0x80. Cutiemail is an
  * EAI/SMTPUTF8-era server: raw UTF-8 in a header is passed through, not mangled.
  * The framing-critical octets are C0 (0x00-0x1f) and DEL (0x7f), which the
  * serializers DO strip; those are what this checker pins.
@@ -206,7 +206,7 @@ test('rfc2047: encoded-words are NOT decoded inside ENVELOPE (decoding is a sepa
 });
 
 test('rfc2231: a parameter continuation is NOT reassembled (a recorded scope cut) but is well-formed', () => {
-  // cutie-mail does not implement RFC 2231 continuation reassembly. The DEFINED
+  // Cutiemail does not implement RFC 2231 continuation reassembly. The DEFINED
   // outcome: name*0 / name*1 are treated as ordinary (unrecognised) parameters and
   // the emitted BODYSTRUCTURE stays balanced — no crash, no malformed output.
   for (const name of ['rfc2231-continuation.eml', 'rfc2231-charset-lang.eml']) {
@@ -239,7 +239,7 @@ test('boundaries: a missing terminal delimiter still splits parts (flagged not-c
 
 test('boundaries: a multipart whose boundary never appears is a text/plain leaf, not a childless MULTIPART', () => {
   // Emitting a childless `("MIXED" …)` would put a string where RFC 9051 requires a
-  // nested body, desyncing a strict client. cutie-mail falls back to a text/plain leaf.
+  // nested body, desyncing a strict client. Cutiemail falls back to a text/plain leaf.
   const bs = bodyStructureResponse(loadFixture('multipart-zero-parts.eml').raw);
   assertWellFormedImap(bs, 'multipart-zero-parts');
   assert.ok(bs.startsWith('("TEXT" "PLAIN"'), 'reported as a single leaf, not an empty multipart');

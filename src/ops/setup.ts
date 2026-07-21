@@ -135,7 +135,7 @@ export function runSetup(args: string[], io: OpsIo, env: Record<string, string |
 
   // -- the plan ------------------------------------------------------------------
   const plan: DnsPlanParams = { domain, mailHost: host, ips, dkim: { selector, txtValue: dkim.txtValue }, dmarcPolicy };
-  io.out(`; cutie-mail DNS records for ${domain}`);
+  io.out(`; Cutiemail DNS records for ${domain}`);
   io.out(`; DKIM key: ${resolve(keyPath)} (${dkim.keyType}, ${key.generated ? 'newly generated' : 'existing'})`);
   io.out('');
   io.out(renderZone(dnsRecordsFor(plan)));

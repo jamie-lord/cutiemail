@@ -139,7 +139,7 @@ async function submitTagged(host: string, port: number, login: string, password:
     if (!rcpt.startsWith('250')) throw new Error(`server rejected RCPT TO <${address}>: ${lastLine(rcpt)}`);
     send(sock, 'DATA');
     await r.until(/^354/m);
-    const msg = [`From: ${address}`, `To: ${address}`, `Subject: ${subject}`, '', 'This is an automated cutie-mail self-test message. It is safe to ignore; the', 'selftest command deletes it again once it has been read back.', '.'].join('\r\n');
+    const msg = [`From: ${address}`, `To: ${address}`, `Subject: ${subject}`, '', 'This is an automated Cutiemail self-test message. It is safe to ignore; the', 'selftest command deletes it again once it has been read back.', '.'].join('\r\n');
     send(sock, msg);
     const stored = await r.until(/^\d{3} /m);
     if (!stored.startsWith('250')) throw new Error(`server did not accept the message: ${lastLine(stored)}`);
@@ -208,7 +208,7 @@ export async function runSelftest(args: readonly string[], io: OpsIo, env: Recor
   const submissionPort = posInt(env.MAIL_SUBMISSION_PORT, 5587);
   const imapPort = posInt(env.MAIL_IMAP_PORT, 5993);
   const address = `${login}@${domain}`;
-  const subject = `cutie-mail selftest ${randomUUID()}`;
+  const subject = `Cutiemail selftest ${randomUUID()}`;
   const pw = password ?? (await promptSecret(`password for ${login}: `));
 
   try {

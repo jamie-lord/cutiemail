@@ -1,4 +1,4 @@
-# A minimal cutie-mail deployment for the container-native (NAS / homelab) path.
+# A minimal Cutiemail deployment for the container-native (NAS / homelab) path.
 #
 #   docker compose up -d          # build + run
 #   docker compose logs -f        # the per-message + auth-failure log trail

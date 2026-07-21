@@ -1,5 +1,5 @@
 /**
- * The DNS record plan for a cutie-mail deployment (backlog B1).
+ * The DNS record plan for a Cutiemail deployment (backlog B1).
  *
  * A pure function from deployment parameters to the zone records an operator must
  * publish — MX, A/AAAA, SPF, the DKIM public key, DMARC — plus the out-of-band
@@ -120,7 +120,7 @@ export function mtaStsPolicy(mailHost: string): string {
 /**
  * The optional inbound MTA-STS block (ADR 0013): the policy file content (its mx
  * line must match our config, so we generate it), the TXT record that signals it,
- * and where to host it — any HTTPS static host; cutie-mail deliberately runs no
+ * and where to host it — any HTTPS static host; Cutiemail deliberately runs no
  * HTTP listener. The id is derived from the policy content, so it changes exactly
  * when the policy does (RFC 8461 §3.1: a new id tells caches to refetch) while
  * re-runs stay deterministic and diffable.

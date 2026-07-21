@@ -1,6 +1,6 @@
 # A mail server, built from the byte up
 
-**cutie-mail** is a small, opinionated, self-contained mail server in TypeScript. It sends and
+**Cutiemail** is a small, opinionated, self-contained mail server in TypeScript. It sends and
 receives real internet mail and speaks the protocols existing clients (Thunderbird, Apple Mail —
 desktop and phone) drive, storing everything in SQLite. No mail libraries: the SMTP and IMAP engines, the
 MIME parser, and the DKIM/SPF/DMARC crypto are all hand-built on the byte layer. **Zero runtime dependencies** —
@@ -18,7 +18,7 @@ authenticated mail with Gmail (SPF, DKIM, and DMARC all passing), read back over
 ## Why this — and when to use something else
 
 Stalwart, Maddy, Mox, and Mailcow are all good software, and if you want a batteries-included
-groupware stack or JMAP, use them. cutie-mail's bet is different: **radical smallness you can
+groupware stack or JMAP, use them. Cutiemail's bet is different: **radical smallness you can
 actually read**. One process, one language, zero runtime dependencies, plain SQLite files you can
 query with stock `sqlite3`, and a from-scratch implementation where every protocol byte is code in
 this repo — built correctness-first, with the test bed (reference-model storage proofs,

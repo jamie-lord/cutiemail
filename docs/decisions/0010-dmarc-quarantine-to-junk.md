@@ -6,10 +6,10 @@ Accepted (2026-07-17).
 
 ## Context
 
-cutie-mail already evaluated inbound DMARC fully — SPF + DKIM + alignment + policy
+Cutiemail already evaluated inbound DMARC fully — SPF + DKIM + alignment + policy
 lookup, now over the real Public Suffix List — but only *recorded* the verdict in an
 `Authentication-Results` header and delivered every message to the INBOX regardless. That
-looked like a conservative choice; it isn't. cutie-mail **is the final delivery point** —
+looked like a conservative choice; it isn't. Cutiemail **is the final delivery point** —
 it stores to the mailbox the user reads over IMAP — so there is no downstream filter to
 act on the header, and a normal person reading mail in Apple Mail never sees it. A message
 that DMARC says is spoofed, whose real owner published "reject anything that fails," was
@@ -24,7 +24,7 @@ and can trust — requires acting on the verdict.
 `p=reject` is filed into the recipient's Junk folder, not the INBOX.** Specifically:
 
 - **Quarantine, never hard-reject.** Even `p=reject` files to Junk rather than refusing the
-  message at SMTP. Two reasons: (1) cutie-mail deliberately does not implement ARC (ADR
+  message at SMTP. Two reasons: (1) Cutiemail deliberately does not implement ARC (ADR
   0007), and ARC is what rescues legitimately-forwarded mail (mailing lists, `.forward`)
   from DMARC failure — so hard-rejecting *would* bounce real mail. (2) Junk is recoverable;
   a wrong reject is not. Junk is already a provisioned RFC 6154 SPECIAL-USE folder, so it is

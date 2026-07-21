@@ -1,5 +1,5 @@
 {
-  "name": "cutie-mail",
+  "name": "cutiemail",
   "version": "0.0.0",
   "type": "module",
   "description": "A small, self-contained mail server in TypeScript — SMTP send + receive, IMAP4rev2, SPF/DKIM/DMARC, SQLite storage, zero runtime dependencies. Ships an RFC 5321 conformance suite as a component.",
@@ -18,7 +18,7 @@
     "library-coverage": "node -e \"import('./src/report/library-coverage.ts').then(m => console.log(m.renderLibraryCoverage(m.libraryCoverage())))\""
   },
   "bin": {
-    "cutie-mail-conformance": "src/cli.ts"
+    "cutiemail-conformance": "src/cli.ts"
   },
   "devDependencies": {
     "@types/node": "^22.20.1",

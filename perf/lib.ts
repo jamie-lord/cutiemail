@@ -29,7 +29,7 @@ export function rssMB(): number {
 
 /** A scratch directory that cleans itself up. */
 export function scratchDir(tag: string): { path: string; cleanup: () => void } {
-  const path = mkdtempSync(join(tmpdir(), `cutie-perf-${tag}-`));
+  const path = mkdtempSync(join(tmpdir(), `cutiemail-perf-${tag}-`));
   return { path, cleanup: () => rmSync(path, { recursive: true, force: true }) };
 }
 

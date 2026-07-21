@@ -500,7 +500,7 @@ the stale copy until it expires ~30 days later.
 
 ## Migrating your existing mail in
 
-cutie-mail speaks standard IMAP, so moving your existing mail in is a plain IMAP-to-IMAP copy with
+Cutiemail speaks standard IMAP, so moving your existing mail in is a plain IMAP-to-IMAP copy with
 an off-the-shelf tool — there's nothing bespoke to learn. [`imapsync`](https://imapsync.lamiral.info/)
 is the usual choice:
 

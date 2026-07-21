@@ -3,7 +3,7 @@
  * directory (`*.eml`), loaded byte-exact for `torture-corpus.test.ts`.
  *
  * ── SOURCE / PROVENANCE ──────────────────────────────────────────────────────
- * Every fixture in this directory was AUTHORED for cutie-mail. They are DERIVED
+ * Every fixture in this directory was AUTHORED for Cutiemail. They are DERIVED
  * equivalents of the message shapes that famous public torture corpora are known
  * for breaking parsers with — NOT verbatim copies of any of them. That is a
  * deliberate, honest choice: the classic corpora have unclear or non-permissive
@@ -14,7 +14,7 @@
  * failure mode, with the pattern it models named in `modeledOn` below.
  *
  * ── LICENSE ──────────────────────────────────────────────────────────────────
- * These fixtures are part of cutie-mail and carry the repository's own license.
+ * These fixtures are part of Cutiemail and carry the repository's own license.
  * No third-party corpus text is redistributed here.
  *
  * ── WHY A CORPUS AT ALL ──────────────────────────────────────────────────────
@@ -25,7 +25,7 @@
  * / missing boundaries, 8-bit and NUL in headers, bare CR / bare LF endings,
  * folding torture, empty parts) each run through the LIVE parse + ENVELOPE +
  * BODYSTRUCTURE path. The invariant across the whole set: no crash, no hang, no
- * malformed IMAP, no bytes-vs-strings corruption. Where cutie-mail makes an
+ * malformed IMAP, no bytes-vs-strings corruption. Where Cutiemail makes an
  * OPINIONATED rejection (a bare-LF blank line is not a header/body separator; an
  * RFC 2231 continuation is not reassembled; an encoded-word is not decoded inside
  * ENVELOPE), the test asserts and COMMENTS the outcome as intended, not accidental.
@@ -91,7 +91,7 @@ export const FIXTURE_META: Readonly<Record<string, FixtureMeta>> = {
     modeledOn: 'malformed base64 in encoded-word',
   },
   'rfc2231-continuation.eml': {
-    why: 'a Content-Type parameter split across name*0 / name*1 (RFC 2231 continuation). cutie-mail does NOT reassemble continuations — assert a defined, well-formed outcome.',
+    why: 'a Content-Type parameter split across name*0 / name*1 (RFC 2231 continuation). Cutiemail does NOT reassemble continuations — assert a defined, well-formed outcome.',
     modeledOn: 'cpython email Lib/test/data RFC 2231 continuation messages',
   },
   'rfc2231-charset-lang.eml': {

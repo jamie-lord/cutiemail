@@ -164,7 +164,7 @@ A fifth concrete bug from the `list` script **was fixed**:
 **Deliberate scope cut (recorded).** The remainder of the `list` script asserts Dovecot's
 specific hierarchy model — trailing-separator CREATEs producing `\Noselect` *intermediary*
 nodes that are then excluded from `*` listings, and ancestor-only nodes appearing in `%`
-results. cutie-mail models mailboxes as a flat catalog of slash-named names with correct
+results. Cutiemail models mailboxes as a flat catalog of slash-named names with correct
 wildcard matching; it does **not** synthesise `\Noselect` placeholder nodes for missing
 ancestors. Real modern clients (Thunderbird, Apple Mail) create ordinary mailboxes and do
 not depend on this, so — per the project's opinionated-and-modern scope — it is intentionally
