@@ -17,9 +17,9 @@
  * `setup` generates the DKIM key and prints the DNS records to publish.
  */
 
-import { randomUUID } from 'node:crypto';
+import { randomUUID, X509Certificate } from 'node:crypto';
 import { readFileSync } from 'node:fs';
-import { dirname, join } from 'node:path';
+import { dirname, join, resolve as resolvePath } from 'node:path';
 import { SqliteCatalog } from './store/sqlite-mailbox.ts';
 import { openMailDb, secureMailDbFile } from './store/open-mail-db.ts';
 import { AccountRegistry } from './store/account-registry.ts';
@@ -654,11 +654,16 @@ function requireValidLogin(login: string, source: string): string {
 }
 
 /** Build a config from environment variables, with dev-friendly defaults. Exported for tests. */
-export function configFromEnv(): MailServerConfig & { usingDevCert: boolean } {
+export function configFromEnv(): MailServerConfig & { usingDevCert: boolean; devCertForcedPublic: boolean } {
   const certPath = process.env.MAIL_TLS_CERT;
   const keyPath = process.env.MAIL_TLS_KEY;
   const usingDevCert = certPath === undefined || keyPath === undefined;
   const host = process.env.MAIL_HOST ?? '127.0.0.1';
+  // The refusal below can be bypassed with MAIL_ALLOW_DEV_CERT=1 for a throwaway test.
+  // When that override is ACTUALLY EXERCISED on a public bind it must be loud (a distinct
+  // WARNING in main(), reusing the refusal's language) — the same gentle dev-cert NOTE as
+  // a loopback run would let the override normalise in a copy-pasted unit file.
+  const devCertForcedPublic = usingDevCert && !isLoopbackHost(host) && process.env.MAIL_ALLOW_DEV_CERT === '1';
   // Fail closed (audit run-1, finding 3): the bundled dev certificate's private key is
   // committed in the repo (src/testing/tls-test-cert.ts), so serving it on a non-loopback
   // interface lets a trivial MITM present the same cert and capture AUTH credentials on
@@ -716,6 +721,7 @@ export function configFromEnv(): MailServerConfig & { usingDevCert: boolean } {
       .map((s) => s.trim())
       .filter(Boolean),
     usingDevCert,
+    devCertForcedPublic,
   };
 }
 
@@ -743,6 +749,28 @@ function describeBindError(err: unknown): string | null {
   return null;
 }
 
+/**
+ * A boot-time warning for an expired or soon-expiring TLS certificate, or null when it is
+ * fine. `doctor` has always checked this, but doctor only helps when it is run — a daemon
+ * serving a cert every client rejects, while journalctl shows a healthy start, is exactly
+ * the silent-drift scenario DEPLOYMENT.md warns about. Unparseable input returns null
+ * (the TLS server itself will fail loudly on garbage). Exported for its unit test.
+ */
+export function describeCertExpiry(certPem: string, now: number = Date.now()): string | null {
+  let cert: X509Certificate;
+  try {
+    cert = new X509Certificate(certPem);
+  } catch {
+    return null;
+  }
+  const expires = Date.parse(cert.validTo);
+  if (Number.isNaN(expires)) return null;
+  const days = Math.floor((expires - now) / 86_400_000);
+  if (days < 0) return `WARNING: the TLS certificate EXPIRED ${-days} day(s) ago (${cert.validTo}) — every client TLS handshake will fail until it is renewed.`;
+  if (days <= 14) return `WARNING: the TLS certificate expires in ${days} day(s) (${cert.validTo}) — renew now; is the certbot deploy hook wired up (docs/DEPLOYMENT.md)?`;
+  return null;
+}
+
 async function main(): Promise<void> {
   const cfg = configFromEnv();
   // Every daemon log line carries its own ISO timestamp: under systemd journald adds one
@@ -762,19 +790,36 @@ async function main(): Promise<void> {
     }
     throw err;
   }
-  log(`mail server "${cfg.domain}" started (db: ${cfg.dbPath})`);
+  // The RESOLVED path: databases are created relative to the working directory, and
+  // "started from a different cwd, all my accounts vanished" was the single most-hit
+  // trap in usability testing — the banner is where the operator finds out.
+  const dbShown = cfg.dbPath === ':memory:' ? ':memory: (nothing is persisted)' : resolvePath(cfg.dbPath);
+  log(`mail server "${cfg.domain}" started (control db: ${dbShown}; mail databases live beside it)`);
   log(`  inbound SMTP     ${cfg.host}:${server.inbound.port}`);
   log(`  submission (AUTH) ${cfg.host}:${server.submission.port}`);
   log(`  IMAPS            ${cfg.host}:${server.imap.port}`);
   log(`  accounts: ${server.logins.join(', ')}`);
   log(`  outbound: remote mail is queued and relayed to its MX, with retry${cfg.dkim !== undefined ? ' and DKIM signing' : ''}.`);
-  if (cfg.usingDevCert) log('  NOTE: using the bundled self-signed DEV certificate — set MAIL_TLS_CERT/MAIL_TLS_KEY in production.');
+  if (cfg.devCertForcedPublic) {
+    log(`  WARNING: MAIL_ALLOW_DEV_CERT=1 is serving the bundled DEV certificate on ${cfg.host} — its private key is PUBLIC (committed to the repo), so anyone can MITM these listeners and capture account credentials. Throwaway tests only; never production.`);
+  } else if (cfg.usingDevCert) {
+    log('  NOTE: using the bundled self-signed DEV certificate — set MAIL_TLS_CERT/MAIL_TLS_KEY in production.');
+  }
+  const certWarn = describeCertExpiry(cfg.tls.cert);
+  if (certWarn !== null) log(`  ${certWarn}`);
   const shutdown = (): void => {
     log('shutting down...');
     void server.close().then(() => process.exit(0));
   };
   process.on('SIGINT', shutdown);
   process.on('SIGTERM', shutdown);
+  // SIGHUP is the reflexive "reload" signal from a lifetime of other daemons; Node's
+  // default would TERMINATE the process on it, silently. There is no live reload here
+  // (a deliberate omission — restart instead; docs/BACKLOG.md records live cert reload
+  // as a candidate), so say that, and stay up.
+  process.on('SIGHUP', () => {
+    log('SIGHUP ignored — no live reload; restart the daemon to pick up a renewed certificate or changed configuration (a restart drops connected IMAP sessions).');
+  });
 }
 
 // Run as a daemon when invoked directly with no arguments; with arguments, run the

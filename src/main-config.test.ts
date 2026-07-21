@@ -12,7 +12,9 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { configFromEnv } from './main.ts';
+import { X509Certificate } from 'node:crypto';
+import { configFromEnv, describeCertExpiry } from './main.ts';
+import { TEST_CERT } from './testing/tls-test-cert.ts';
 
 const MAIL_KEYS = Object.keys(process.env).filter((k) => k.startsWith('MAIL_'));
 
@@ -93,4 +95,29 @@ test('a real cert on a public interface is fine (no guard tripped)', () => {
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
+});
+
+test('exercising the MAIL_ALLOW_DEV_CERT override on a public bind is flagged for the loud warning', () => {
+  withEnv({ MAIL_HOST: '0.0.0.0', MAIL_ALLOW_DEV_CERT: '1' }, () => {
+    assert.equal(configFromEnv().devCertForcedPublic, true, 'public bind + override → flagged');
+  });
+  withEnv({}, () => {
+    assert.equal(configFromEnv().devCertForcedPublic, false, 'a loopback dev run is not flagged');
+  });
+  withEnv({ MAIL_HOST: '127.0.0.1', MAIL_ALLOW_DEV_CERT: '1' }, () => {
+    assert.equal(configFromEnv().devCertForcedPublic, false, 'the override without a public bind is inert');
+  });
+});
+
+test('describeCertExpiry warns on an expired or soon-expiring certificate, is quiet otherwise', () => {
+  // Derive the reference times from the bundled cert's own validTo, so the test is
+  // deterministic regardless of when the cert was generated.
+  const expires = Date.parse(new X509Certificate(TEST_CERT).validTo);
+  const DAY = 86_400_000;
+  const expired = describeCertExpiry(TEST_CERT, expires + 3 * DAY);
+  assert.ok(expired !== null && /EXPIRED 3 day/.test(expired), `expired cert warns with the age: ${expired}`);
+  const soon = describeCertExpiry(TEST_CERT, expires - 5 * DAY);
+  assert.ok(soon !== null && /expires in [45] day/.test(soon), `a cert inside the renewal window warns: ${soon}`);
+  assert.equal(describeCertExpiry(TEST_CERT, expires - 60 * DAY), null, 'a healthy cert is quiet');
+  assert.equal(describeCertExpiry('not a certificate', Date.now()), null, 'garbage input is quiet (the TLS server itself fails loudly)');
 });
