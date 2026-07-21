@@ -1,0 +1,16 @@
+{
+  "name": "cutiemail-site",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "The cutiemail docs + marketing site. Renders the repo's own markdown into a static site deployed to Cloudflare Workers.",
+  "scripts": {
+    "build": "node build.mjs",
+    "dev": "node build.mjs && npx wrangler dev",
+    "deploy": "node build.mjs && npx wrangler deploy"
+  },
+  "devDependencies": {
+    "markdown-it": "^14.1.0",
+    "markdown-it-anchor": "^9.2.0"
+  }
+}

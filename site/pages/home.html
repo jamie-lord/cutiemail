@@ -1,0 +1,145 @@
+<div class="home">
+
+  <!-- hero -->
+  <section class="hero">
+    <div class="hero__mascot"><img src="/assets/mascot.svg" alt="Cuti, the cutiemail mascot" width="150" height="131"></div>
+    <h1>A mail server,<br>built from the byte up.</h1>
+    <p class="hero__sub">cutiemail is a small, self-contained mail server in TypeScript. It sends and receives real internet mail, works with Thunderbird and Apple Mail, and keeps your mailbox in plain SQLite files you own. Zero runtime dependencies, and honest about what it leaves out.</p>
+    <div class="hero__cta">
+      <span class="term-pill"><span class="p">$</span> npm start<span class="caret"></span></span>
+      <a class="btn btn--secondary" href="https://github.com/jamie-lord/cutiemail">read the code →</a>
+    </div>
+    <div class="chips">
+      <span class="chip">0 runtime deps</span>
+      <span class="chip chip--butter">1,000+ tests</span>
+      <span class="chip chip--mint">SPF · DKIM · DMARC passing, live</span>
+      <span class="chip">MIT</span>
+    </div>
+  </section>
+
+  <!-- quick start -->
+  <section id="start" class="wrap-narrow section" style="padding-top: 8px;">
+    <div class="term">
+      <div class="term__bar">
+        <span class="term__dot" style="background: var(--bubblegum);"></span>
+        <span class="term__dot" style="background: var(--butter);"></span>
+        <span class="term__dot" style="background: var(--mint);"></span>
+        <span class="term__title">your new mail server</span>
+      </div>
+      <div class="term__body">
+        <div><span class="p">$</span> npm install <span class="c"># only the type-checker. really.</span></div>
+        <div><span class="p">$</span> npm start <span class="c"># SMTP + submission + IMAPS, up</span></div>
+        <div><span class="p">$</span> node src/main.ts selftest demo</div>
+        <div><span class="ok">✓ submitted, delivered, and read back. The mail path itself works</span></div>
+      </div>
+    </div>
+    <p class="note-mono" style="color: var(--mauve);">A <code>demo/demo</code> account is seeded so it just works. Point Thunderbird or Apple Mail at <code>127.0.0.1:5993</code> and say hi to yourself.</p>
+  </section>
+
+  <!-- what it does -->
+  <section class="wrap section">
+    <div class="section__head">
+      <h2>A whole mail server. Actually whole.</h2>
+      <p>No mail libraries: the SMTP and IMAP engines, the MIME parser, and the DKIM crypto are all code in this repo.</p>
+    </div>
+    <div class="grid-3">
+      <div class="card">
+        <div class="card__badge" style="background: var(--tint-pink);">↓</div>
+        <h3>Receive</h3>
+        <p>SMTP with STARTTLS. Every inbound message is authenticated (SPF, DKIM, DMARC over real DNS). Smuggling-class bytes are rejected at the door, and forged auth headers are stripped. Politely.</p>
+      </div>
+      <div class="card card--butter">
+        <div class="card__badge" style="background: var(--tint-butter);">↑</div>
+        <h3>Send</h3>
+        <p>Submission over TLS, DKIM signing, MTA-STS, and a persistent SQLite retry queue that backs off for ~5 days before sending a proper bounce. Nothing is ever silently dropped.</p>
+      </div>
+      <div class="card card--mint">
+        <div class="card__badge" style="background: var(--tint-mint);">✓</div>
+        <h3>Read</h3>
+        <p>IMAPS with the surface real clients actually drive (IDLE, QRESYNC, SPECIAL-USE, per-part fetch), so your phone and your desktop stay in agreement about your mailbox.</p>
+      </div>
+    </div>
+    <p class="note-mono">bytes, never strings: a message is a <code>Buffer</code> from the socket to the SQLite BLOB and back, byte-exact.</p>
+  </section>
+
+  <!-- dev sink -->
+  <section class="wrap section">
+    <div class="panel panel--blush">
+      <div class="panel__col" style="flex: 1.2;">
+        <h2 style="font-size: clamp(24px, 4vw, 30px); margin: 0 0 12px;">Also: a very good pretend internet.</h2>
+        <p style="font-size: 16px; line-height: 1.65; color: var(--mauve); margin: 0;">Building an app that sends mail? Run cutiemail as a Mailpit-style sink. Except it's a <em>real</em> SMTP/IMAP server, so your code exercises real protocol behaviour. <code>hold</code> mode guarantees nothing ever escapes the box.</p>
+      </div>
+      <div class="panel__col term" style="box-shadow: none; padding: 20px 24px;">
+        <div class="term__body" style="padding: 0; font-size: 13.5px; line-height: 2;">
+          <div><span class="p">$</span> MAIL_CONTROL_DB=:memory: \</div>
+          <div style="padding-left: 16px;">MAIL_OUTBOUND=hold npm start</div>
+          <div><span class="ok">✓ ephemeral, and nothing is ever relayed</span></div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- honest comparison -->
+  <section class="wrap section">
+    <div class="section__head" style="max-width: 660px;">
+      <h2>Honestly? You might want something else.</h2>
+      <p>Stalwart, Maddy, Mox, and Mailcow are all good software. If you want a batteries-included groupware stack or JMAP, use them. cutiemail's bet is to be the SQLite of email:</p>
+    </div>
+    <div class="grid-2">
+      <div class="card card--butter">
+        <h3>Radical smallness you can actually read</h3>
+        <div class="heart-list" style="margin-top: 14px;">
+          <div><span class="hh">♥</span><span>One process, one language, zero runtime dependencies</span></div>
+          <div><span class="hh">♥</span><span>Plain SQLite files you can query with stock <code>sqlite3</code></span></div>
+          <div><span class="hh">♥</span><span>Every protocol byte is code in this repo, nothing imported, nothing hidden</span></div>
+          <div><span class="hh">♥</span><span>Leaving is as easy as arriving: byte-exact storage, plain <code>.eml</code> out</span></div>
+        </div>
+      </div>
+      <div class="cut">
+        <h3 style="font-size: 22px; margin: 0 0 14px;">Deliberately not here</h3>
+        <p style="font-size: 14px; color: var(--mauve); margin: 0 0 16px; line-height: 1.5;">Each omission is a recorded decision with reasons, not a gap.</p>
+        <div class="chips" style="justify-content: flex-start;">
+          <span class="chip chip--white">no POP3</span>
+          <span class="chip chip--white">no JMAP</span>
+          <span class="chip chip--white">no Sieve</span>
+          <span class="chip chip--white">no webmail</span>
+          <span class="chip chip--white">no clustering</span>
+          <span class="chip chip--white">no spam filter</span>
+          <span class="chip chip--white">no multi-domain</span>
+        </div>
+        <p style="font-size: 15px; color: var(--mauve); margin: 18px 0 0; line-height: 1.6;">One domain, a handful of humans, on a small box you own. That's the shape it serves best.</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- conformance suite -->
+  <section class="wrap section">
+    <div class="panel panel--ink">
+      <div class="panel__col" style="flex: 1.2;">
+        <div class="eyebrow">THE TEST BED IS THE STAR OF THE SHOW</div>
+        <h2>Tests that are proven to catch their own lies</h2>
+        <p style="margin-bottom: 16px;">Every conformance check runs both ways: pass against a clean server, fail against a <strong>mutant server</strong> with exactly the defect it targets. A test never shown to fail doesn't count as coverage.</p>
+        <p style="margin: 0;">The receiver's test bed doubles as a standalone <strong>SMTP conformance suite</strong> you can point at any mail server, calibrated against Exim, mox, and aiosmtpd with zero false positives.</p>
+      </div>
+      <div class="panel__col" style="background: var(--term-deep); border: 2px solid #6b3a52; border-radius: 16px; padding: 22px 26px; font-family: var(--font-mono); font-size: 13.5px; line-height: 2;">
+        <div><span style="color: var(--bubblegum);">$</span> node src/cli.ts run \</div>
+        <div style="padding-left: 16px; color: #d9b8c8;">--config reference-servers/postfix.json</div>
+        <div style="color: var(--mint);">✓ conformant, 0 findings</div>
+        <div style="color: var(--butter);">~ 3 permitted-latitude (SHOULD, declined)</div>
+        <div style="color: var(--term-comment);"># a finding exits 1, drops straight into CI</div>
+      </div>
+    </div>
+  </section>
+
+  <!-- honest note -->
+  <section class="wrap-narrow section">
+    <div class="callout">
+      <div class="callout__icon">!</div>
+      <div>
+        <h3>An honest note before you trust it</h3>
+        <p>cutiemail is young (v0, one maintainer), held to an unusually high verification bar, with a production instance exchanging authenticated mail with Gmail daily. Run it for mail you care about only after reading the honest limitations in <a href="/docs/deployment/">the deployment guide</a>.</p>
+      </div>
+    </div>
+  </section>
+
+</div>

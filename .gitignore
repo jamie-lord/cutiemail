@@ -17,3 +17,9 @@ node_modules/
 *.pem
 *.key
 /backup/
+
+# Docs/marketing site (site/) — its own sub-project. The built output and its
+# build dependencies are generated; the source under site/ is tracked.
+/site/dist/
+/site/node_modules/
+/site/.wrangler/
