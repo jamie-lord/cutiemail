@@ -375,13 +375,22 @@ export async function startServer(cfg: MailServerConfig): Promise<RunningServer>
     const targetMailbox = enforce && !arcRescue ? 'Junk' : 'INBOX';
     if (arcRescue) log(`DMARC ${dmarc.policy} failure (from ${dmarc.fromDomain ?? '?'}) rescued to INBOX by trusted ARC seal ${arc.outermostSealer}`);
     else if (enforce) log(`DMARC ${dmarc.policy} failure (from ${dmarc.fromDomain ?? '?'}) filed to Junk`);
+    // Every recipient was validated at RCPT time; one that no longer resolves here
+    // (account disabled / alias removed between RCPT and end-of-DATA) must NOT be
+    // silently skipped — that is mail accepted with 250 and then dropped. Resolve all
+    // recipients BEFORE delivering any copy and reject the whole message with a
+    // transient 451 on a miss: the sender retries, and the refreshed RCPT gate then
+    // rejects that recipient permanently (550 5.1.1). No partial delivery either way.
+    const resolved: string[] = [];
+    for (const rcpt of m.recipients) {
+      const login = loginForLocalAddress(rcpt);
+      if (login === undefined) throw new MessageRejected('451 4.2.1 a recipient mailbox became unavailable — try again later');
+      resolved.push(login);
+    }
     // INTERNALDATE = the moment we accepted the message (RFC 9051 §2.3.3), the same
     // instant stamped into the Received trace line above. Deliver a copy to each of our
     // local recipients' mailbox (ADR 0009).
-    for (const rcpt of m.recipients) {
-      const login = loginForLocalAddress(rcpt);
-      if (login !== undefined) deliverTo(login, stamped, receivedAt.getTime(), targetMailbox);
-    }
+    for (const login of resolved) deliverTo(login, stamped, receivedAt.getTime(), targetMailbox);
   }, {
     domain: cfg.domain,
     tls: cfg.tls,
@@ -459,6 +468,19 @@ export async function startServer(cfg: MailServerConfig): Promise<RunningServer>
       throw new MessageRejected(`550 5.7.1 sender <${m.from}> not authorized for this account`);
     }
     const { local, remote } = routeRecipients(m.recipients, cfg.domain);
+    // Re-resolve every LOCAL recipient before touching any state. RCPT already gated
+    // them (acceptRecipient below), so a miss here is the narrow race with a live
+    // config change (account disabled / alias removed mid-transaction) — but before
+    // that gate existed this was the submission black hole: a typo'd local recipient
+    // got 250 and the message simply vanished (no 550, no DSN, no queue row), breaking
+    // the "never silently dropped" invariant. Fail the WHOLE message with a transient
+    // 451 before any delivery or queueing; on retry the RCPT gate answers 550 5.1.1.
+    const localLogins: string[] = [];
+    for (const rcpt of local) {
+      const login = loginForLocalAddress(rcpt);
+      if (login === undefined) throw new MessageRejected(`451 4.2.1 mailbox <${rcpt}> became unavailable — try again later`);
+      localLogins.push(login);
+    }
     // Backpressure: the outbound queue drains serially (~11/s on a small VM), so a runaway or
     // compromised authenticated account submitting faster than that would grow the queue — and,
     // since each row stores the whole signed body, the DISK — without bound (found under mixed
@@ -493,10 +515,7 @@ export async function startServer(cfg: MailServerConfig): Promise<RunningServer>
       ...(m.recipients.length === 1 ? { forRecipient: m.recipients[0]! } : {}),
       date: new Date(),
     });
-    for (const rcpt of local) {
-      const login = loginForLocalAddress(rcpt);
-      if (login !== undefined) deliverTo(login, traced);
-    }
+    for (const login of localLogins) deliverTo(login, traced);
     if (remote.length > 0) {
       // Sign the outbound copy once, queue it, and kick the loop so the first
       // attempt is immediate; failures are retried, not dropped.
@@ -513,6 +532,16 @@ export async function startServer(cfg: MailServerConfig): Promise<RunningServer>
     throttle: authThrottle,
     host: cfg.host,
     port: cfg.submissionPort,
+    // Validate LOCAL recipients at RCPT time on submission too. An authenticated user
+    // may relay to any remote domain, but an address at OUR domain that doesn't resolve
+    // to an enabled account/alias must be refused with 550 5.1.1 here — not accepted and
+    // silently skipped at delivery (the submission black hole). The submitter is
+    // authenticated, so naming "no such user" leaks nothing to an attacker.
+    acceptRecipient: (address) => {
+      const at = address.lastIndexOf('@');
+      if (at === -1 || address.slice(at + 1).toLowerCase() !== cfg.domain.toLowerCase()) return true;
+      return loginForLocalAddress(address) !== undefined;
+    },
     ...(cfg.maxMessageSize !== undefined ? { maxMessageSize: cfg.maxMessageSize } : {}),
     maxReceivedHops: cfg.maxReceivedHops ?? 100,
   });

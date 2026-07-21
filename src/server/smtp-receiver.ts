@@ -424,7 +424,15 @@ class Connection {
           if (this.#opts.acceptRecipient !== undefined && !this.#opts.acceptRecipient(rcpt)) {
             // Rejected recipients count toward the hard-error limit: an unauthenticated
             // peer spraying RCPTs to enumerate/relay-probe is exactly the abuse to bound.
-            this.#reject('550 5.7.1 relaying denied — recipient not hosted here');
+            // Two distinct refusals (RFC 3463): an address AT our own domain that doesn't
+            // resolve is "no such mailbox" (5.1.1) — calling it "relaying denied" sends a
+            // remote postmaster debugging a typo off to check our MX records instead of
+            // the address. A foreign domain is relaying denied (5.7.1). 5.1.1 is used
+            // uniformly for unknown AND disabled local users, so it discloses nothing
+            // about which of the two a probed address is.
+            const rcptAt = rcpt.lastIndexOf('@');
+            const atOurDomain = this.#opts.domain !== undefined && rcptAt !== -1 && rcpt.slice(rcptAt + 1).toLowerCase() === this.#opts.domain.toLowerCase();
+            this.#reject(atOurDomain ? '550 5.1.1 mailbox unavailable — no such user here' : '550 5.7.1 relaying denied — recipient not hosted here');
             break;
           }
           // Cap recipients per transaction (RFC 5321 §4.5.3.1.10 permits ≥100). Without

@@ -126,7 +126,9 @@ test('daemon inbound rejects RCPT for a foreign domain (no relay / backscatter)'
     // ADR 0009), and the account login is matched case-insensitively.
     assert.match(await rcptReply('alice@mail.example.test'), /^250 /, 'a known local account is accepted');
     assert.match(await rcptReply('ALICE@mail.example.test'), /^250 /, 'the localpart is matched case-insensitively');
-    assert.match(await rcptReply('whoever@mail.example.test'), /^55[04] /, 'an unknown localpart is rejected (no catch-all)');
+    const unknownLocal = await rcptReply('whoever@mail.example.test');
+    assert.match(unknownLocal, /^550 5\.1\.1 /, 'an unknown localpart is rejected as no-such-mailbox (no catch-all)');
+    assert.doesNotMatch(unknownLocal, /relay/i, 'an unknown user at OUR domain is not misdescribed as a relay refusal');
     // A foreign domain must be refused — we are not an open relay and will not
     // accept mail we cannot deliver.
     const foreign = await rcptReply('victim@gmail.com');
