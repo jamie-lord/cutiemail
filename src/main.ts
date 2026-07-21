@@ -698,8 +698,22 @@ export function configFromEnv(): MailServerConfig & { usingDevCert: boolean; dev
       // explicitly set. When it is unset the daemon runs entirely off the registry (accounts
       // created by `init`/`account`), so a production unit needs no credentials at all; a
       // genuinely empty registry gets a dev `demo/demo` fallback in startServer, not here.
+      // The primary's mail DB: MAIL_DB when set; otherwise 'mail.db' — EXCEPT when the
+      // control DB is :memory:, where no path is passed so mailDbPathFor's in-memory
+      // default applies. The old unconditional `?? 'mail.db'` made the path always
+      // explicit, which bypassed that default: a "fully ephemeral" MAIL_CONTROL_DB=
+      // :memory: run with MAIL_USER set silently reopened whatever ./mail.db was lying
+      // around — stale mail leaking into what the README promises is an in-memory run.
       ...(process.env.MAIL_USER !== undefined
-        ? [{ user: requireValidLogin(process.env.MAIL_USER, 'MAIL_USER'), pass: process.env.MAIL_PASS ?? 'demo', mailDbPath: process.env.MAIL_DB ?? 'mail.db' }]
+        ? [{
+            user: requireValidLogin(process.env.MAIL_USER, 'MAIL_USER'),
+            pass: process.env.MAIL_PASS ?? 'demo',
+            ...(process.env.MAIL_DB !== undefined
+              ? { mailDbPath: process.env.MAIL_DB }
+              : (process.env.MAIL_CONTROL_DB ?? 'control.db') === ':memory:'
+                ? {}
+                : { mailDbPath: 'mail.db' }),
+          }]
         : []),
       ...(process.env.MAIL_ACCOUNTS ?? '')
         .split(',')

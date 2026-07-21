@@ -121,3 +121,18 @@ test('describeCertExpiry warns on an expired or soon-expiring certificate, is qu
   assert.equal(describeCertExpiry(TEST_CERT, expires - 60 * DAY), null, 'a healthy cert is quiet');
   assert.equal(describeCertExpiry('not a certificate', Date.now()), null, 'garbage input is quiet (the TLS server itself fails loudly)');
 });
+
+test(':memory: control DB keeps the env-seeded primary mailbox in memory too (no stale ./mail.db)', () => {
+  // The regression: `?? 'mail.db'` made the path always explicit, bypassing the
+  // in-memory default — a "fully ephemeral" CI run with MAIL_USER set reopened
+  // whatever mail.db was lying around in the working directory.
+  withEnv({ MAIL_CONTROL_DB: ':memory:', MAIL_USER: 'ci' }, () => {
+    assert.equal(configFromEnv().accounts[0]?.mailDbPath, undefined, 'no explicit path — startServer defaults it to :memory:');
+  });
+  withEnv({ MAIL_CONTROL_DB: ':memory:', MAIL_USER: 'ci', MAIL_DB: 'explicit.db' }, () => {
+    assert.equal(configFromEnv().accounts[0]?.mailDbPath, 'explicit.db', 'an explicit MAIL_DB still wins');
+  });
+  withEnv({ MAIL_USER: 'ci' }, () => {
+    assert.equal(configFromEnv().accounts[0]?.mailDbPath, 'mail.db', 'the persistent-run default is unchanged (single-account migration path)');
+  });
+});

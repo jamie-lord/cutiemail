@@ -58,7 +58,7 @@ const USAGE = [
 ].join('\n');
 
 /** `account alias add|remove|list` — aliases are routing, not identity (ADR 0014). */
-function runAlias(args: readonly string[], io: OpsIo, registry: AccountRegistry): number {
+function runAlias(args: readonly string[], io: OpsIo, registry: AccountRegistry, dbPath: string): number {
   const [sub, arg1, arg2] = args;
   switch (sub) {
     case 'add': {
@@ -77,7 +77,7 @@ function runAlias(args: readonly string[], io: OpsIo, registry: AccountRegistry)
         return 2;
       }
       if (registry.lookup(login) === undefined) {
-        io.err(`alias add: no account "${login}" — create it first with \`account add ${login}\`.`);
+        io.err(`alias add: no account "${login}" in ${dbPath} — create it first with \`account add ${login}\` (or point --db/MAIL_CONTROL_DB at the right control database).`);
         return 1;
       }
       const taken = registry.nameTaken(local);
@@ -105,7 +105,7 @@ function runAlias(args: readonly string[], io: OpsIo, registry: AccountRegistry)
     case 'list': {
       const login = arg1;
       if (login !== undefined && registry.lookup(login) === undefined) {
-        io.err(`alias list: no account "${login}".`);
+        io.err(`alias list: no account "${login}" in ${dbPath}.`);
         return 1;
       }
       const rows = login !== undefined ? registry.aliasesFor(login).map((alias) => ({ alias, login })) : registry.allAliases();
@@ -120,7 +120,7 @@ function runAlias(args: readonly string[], io: OpsIo, registry: AccountRegistry)
 }
 
 /** `account app-password add|list|remove` — named, revocable per-device credentials (ADR 0017). */
-function runAppPassword(args: readonly string[], io: OpsIo, registry: AccountRegistry): number {
+function runAppPassword(args: readonly string[], io: OpsIo, registry: AccountRegistry, dbPath: string): number {
   const [sub, login, name] = args;
   switch (sub) {
     case 'add': {
@@ -133,7 +133,7 @@ function runAppPassword(args: readonly string[], io: OpsIo, registry: AccountReg
         return 2;
       }
       if (registry.lookup(login) === undefined) {
-        io.err(`app-password add: no account "${login}" — create it first with \`account add ${login}\`.`);
+        io.err(`app-password add: no account "${login}" in ${dbPath} — create it first with \`account add ${login}\` (or point --db/MAIL_CONTROL_DB at the right control database).`);
         return 1;
       }
       if (registry.appPasswordNameTaken(login, name)) {
@@ -169,7 +169,7 @@ function runAppPassword(args: readonly string[], io: OpsIo, registry: AccountReg
         return 2;
       }
       if (registry.lookup(login) === undefined) {
-        io.err(`app-password list: no account "${login}".`);
+        io.err(`app-password list: no account "${login}" in ${dbPath}.`);
         return 1;
       }
       const rows = registry.listAppPasswords(login);
@@ -316,9 +316,9 @@ export async function runAccount(
     const registry = AccountRegistry.open(db);
     switch (verb) {
       case 'alias':
-        return runAlias(positional.slice(1), io, registry);
+        return runAlias(positional.slice(1), io, registry, dbPath);
       case 'app-password':
-        return runAppPassword(positional.slice(1), io, registry);
+        return runAppPassword(positional.slice(1), io, registry, dbPath);
       case 'add': {
         if (registry.lookup(login!) !== undefined) {
           io.err(`account add: ${login} already exists — use set-password to change its password.`);
@@ -359,7 +359,7 @@ export async function runAccount(
       case 'set-password': {
         const existing = registry.lookup(login!);
         if (existing === undefined) {
-          io.err(`account set-password: ${login} does not exist — use add.`);
+          io.err(`account set-password: ${login} does not exist in ${dbPath} — use add (or point --db/MAIL_CONTROL_DB at the right control database).`);
           return 1;
         }
         const password = await readNewPassword(source);
@@ -380,16 +380,16 @@ export async function runAccount(
       case 'enable':
       case 'disable': {
         if (registry.lookup(login!) === undefined) {
-          io.err(`account ${verb}: ${login} does not exist.`);
+          io.err(`account ${verb}: ${login} does not exist in ${dbPath}.`);
           return 1;
         }
         registry.setEnabled(login!, verb === 'enable');
-        io.out(`account ${login}: ${verb}d.${verb === 'disable' ? ' Auth and inbound delivery now refuse it; the mailbox database is untouched.' : ''}`);
+        io.out(`account ${login}: ${verb}d.${verb === 'disable' ? ' Auth, inbound delivery, and submission recipients now refuse it; the mailbox database is untouched.' : ''}`);
         return 0;
       }
       case 'list': {
         const rows = registry.list();
-        if (rows.length === 0) io.out('no accounts.');
+        if (rows.length === 0) io.out(`no accounts in ${dbPath} — create one with \`account add <login>\` (a different --db/MAIL_CONTROL_DB may hold the ones you expect).`);
         for (const r of rows) {
           const aliases = registry.aliasesFor(r.login);
           const aliasSuffix = aliases.length > 0 ? `  aliases: ${aliases.join(', ')}` : '';
@@ -400,6 +400,14 @@ export async function runAccount(
         return 0;
       }
       default:
+        if (verb === 'remove' || verb === 'delete' || verb === 'rm') {
+          // Deliberately no remove verb (see the header comment): deleting the registry
+          // row would discard the credentials while mail-<login>.db kept the mail — a
+          // half-destruction pretending to be clean. Surface the recipe instead.
+          io.err('account has no remove verb, deliberately: deleting the registry row would strand the mailbox database with all its mail.');
+          io.err(`To decommission an account: \`account disable ${login ?? '<login>'}\` (refuses auth + delivery, keeps the mail), then — only if you truly want the mail gone — delete its mail-<login>.db file yourself.`);
+          return 2;
+        }
         io.err(`account: unknown verb ${verb}`);
         io.err(USAGE);
         return 2;

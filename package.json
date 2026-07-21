@@ -10,7 +10,7 @@
   },
   "scripts": {
     "start": "node --disable-warning=ExperimentalWarning src/main.ts",
-    "test": "node --disable-warning=ExperimentalWarning --test 'src/**/*.test.ts'",
+    "test": "node --disable-warning=ExperimentalWarning --test \"src/**/*.test.ts\"",
     "typecheck": "tsc --noEmit",
     "conformance": "node --disable-warning=ExperimentalWarning src/cli.ts",
     "coverage": "node --disable-warning=ExperimentalWarning src/cli.ts coverage",

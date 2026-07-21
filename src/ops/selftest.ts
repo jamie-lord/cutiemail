@@ -106,12 +106,20 @@ function dialImaps(host: string, port: number): Promise<tls.TLSSocket> {
 }
 
 /** Submit a tagged message from <address> to itself over authenticated STARTTLS submission. */
-async function submitTagged(host: string, port: number, login: string, password: string, address: string, subject: string): Promise<void> {
+async function submitTagged(host: string, port: number, login: string, password: string, address: string, subject: string, expectedDomain: string, warn: (line: string) => void): Promise<void> {
   const plain = await dialPlain(host, port, 'submission port');
   let sock: net.Socket = plain;
   try {
     let r = reader(plain);
-    await r.until(/^220 /m);
+    const greeting = await r.until(/^220 /m);
+    // selftest reads its target from the SAME MAIL_* variables as the daemon — but run
+    // without them it silently dials the DEFAULT ports, and on a shared machine that can
+    // be a different instance entirely (it would even PASS against it). The greeting
+    // names the server's domain; a mismatch is the cheap tell, so say it out loud.
+    const greetHost = /^220 (\S+)/m.exec(greeting)?.[1];
+    if (greetHost !== undefined && greetHost.toLowerCase() !== expectedDomain.toLowerCase()) {
+      warn(`  note: the server greets as "${greetHost}" but this selftest expects "${expectedDomain}" — if that surprises you, you may be talking to a different instance; run selftest with the same MAIL_* environment as the daemon.`);
+    }
     send(plain, 'EHLO selftest.local');
     await r.until(/^250[ -]/m);
     send(plain, 'STARTTLS');
@@ -205,7 +213,7 @@ export async function runSelftest(args: readonly string[], io: OpsIo, env: Recor
 
   try {
     io.out(`selftest: submitting a tagged message as <${address}> via ${connectHost}:${submissionPort} (STARTTLS + AUTH)...`);
-    await submitTagged(connectHost, submissionPort, login, pw, address, subject);
+    await submitTagged(connectHost, submissionPort, login, pw, address, subject, domain, (l) => io.out(l));
     io.out('  ok   authenticated submission accepted');
     io.out(`selftest: reading it back over IMAPS at ${connectHost}:${imapPort}...`);
     await findAndCleanup(connectHost, imapPort, login, pw, subject);
