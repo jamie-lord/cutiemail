@@ -353,6 +353,12 @@ export async function runDoctor(args: string[], io: OpsIo, env: Record<string, s
     io.err('doctor: set MAIL_DOMAIN or pass --domain.');
     return 2;
   }
+  if (domain === 'mail.example.com') {
+    // The daemon's placeholder default: it has no real DNS, so every check below would fail
+    // in a way that looks like a broken deployment rather than an unset variable. Say which.
+    io.err('doctor: MAIL_DOMAIN is still the placeholder default "mail.example.com", which has no real DNS — set MAIL_DOMAIN (or pass --domain <your-domain>) to check your actual deployment.');
+    return 2;
+  }
   const dkimKeyPath = env.MAIL_DKIM_KEY;
   const dkimSelector = env.MAIL_DKIM_SELECTOR;
   const certPath = env.MAIL_TLS_CERT;

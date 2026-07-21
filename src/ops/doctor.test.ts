@@ -212,6 +212,11 @@ test('runDoctor: no domain is a usage error (2); unknown flag is a usage error (
   const io = { out: (l: string): void => void cap.lines.push(l), err: (l: string): void => void cap.lines.push(l) };
   assert.equal(await runDoctor([], io, {}, healthyDeps()), 2);
   assert.equal(await runDoctor(['--bogus'], io, { MAIL_DOMAIN: DOMAIN }, healthyDeps()), 2);
+  // The placeholder default has no real DNS — a specific message, not a broken-deployment run.
+  const ph = { lines: [] as string[] };
+  const phIo = { out: (l: string): void => void ph.lines.push(l), err: (l: string): void => void ph.lines.push(l) };
+  assert.equal(await runDoctor([], phIo, { MAIL_DOMAIN: 'mail.example.com' }, healthyDeps()), 2);
+  assert.match(ph.lines.join('\n'), /placeholder default/);
   // And end-to-end through the arg path against the healthy fake world: exit 0.
   assert.equal(await runDoctor(['--domain', DOMAIN, '--probe', 'probe.example'], io, {}, healthyDeps()), 0);
 });
