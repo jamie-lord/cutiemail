@@ -118,6 +118,12 @@ function head(title, desc) {
 <meta property="og:description" content="${esc(desc)}">
 <meta property="og:type" content="website">
 <meta property="og:site_name" content="cutiemail">
+<meta property="og:image" content="https://cuti.email/assets/og.png">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta property="og:image:alt" content="cutiemail: the SQLite of email">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:image" content="https://cuti.email/assets/og.png">
 <meta name="theme-color" content="#fff6f0">
 <link rel="icon" href="/favicon.svg" type="image/svg+xml">
 ${FONTS}
