@@ -210,6 +210,36 @@ test('NEGATIVE CONTROL: verify detects semantic corruption the file-level check 
   }
 });
 
+test('verify WARNs about a stale WAL sidecar beside a snapshot (advisory, never a failure)', async () => {
+  const dir = tmp();
+  try {
+    const { controlPath } = await makeWorld(dir);
+    const dest = join(dir, 'snap');
+    assert.equal(runBackup([dest, '--db', controlPath], capture().io, {}), 0);
+
+    // A freshly-taken snapshot (VACUUM INTO) has NO -wal beside it, so nothing to warn about:
+    // the healthy direction must stay quiet or the warning is noise.
+    const clean = capture();
+    assert.equal(runVerify([dest], clean.io), 0);
+    assert.doesNotMatch(clean.out.join('\n'), /WARN|stale|warning/);
+
+    // The hazard: a stale <db>-wal left beside the snapshot — what a plain `cp` of a
+    // live/uncleanly-stopped data directory produces. A restore that copies only the .db
+    // over the live files would let SQLite replay these frames. verify must WARN and name
+    // the sidecar, but still PASS (exit 0): a stale WAL is advisory, not corruption.
+    writeFileSync(join(dest, 'control.db-wal'), Buffer.from('stale committed frames', 'latin1'));
+    const warned = capture();
+    assert.equal(runVerify([dest], warned.io), 0, 'a stale WAL is advisory, never a verify failure');
+    const text = warned.out.join('\n');
+    assert.match(text, / WARN/);
+    assert.match(text, /control\.db-wal/);
+    assert.match(text, /before copying/); // it names the fix, not just the symptom
+    assert.match(text, /1 warning\(s\)/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test('usage errors: missing destdir / nonexistent control db / nonexistent verify path exit 2', async () => {
   const dir = tmp();
   try {

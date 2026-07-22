@@ -26,13 +26,16 @@
  */
 
 import { X509Certificate, createPrivateKey } from 'node:crypto';
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { connect } from 'node:net';
 import { resolve4, resolve6, resolveMx, resolveTxt, reverse } from 'node:dns/promises';
+import { DatabaseSync } from 'node:sqlite';
 import { checkSpf, type SpfResolvers } from '../auth/spf-check.ts';
 import { parseDmarcRecord } from '../auth/dmarc.ts';
 import { parseDkimKeyRecord } from '../crypto/dkim-keyrecord.ts';
 import { registeredDomain } from '../auth/public-suffix.ts';
+import { AccountRegistry } from '../store/account-registry.ts';
+import { openMailDb } from '../store/open-mail-db.ts';
 import { dkimTxtFromPrivateKey } from './setup.ts';
 import type { OpsIo } from './cli.ts';
 import { sanitizeForTerminalLine } from './terminal.ts';
@@ -254,12 +257,16 @@ export function reportChecks(results: readonly CheckResult[], io: OpsIo): number
 const USAGE = [
   'usage: node src/main.ts doctor [--domain <domain>] [--host <mailhost>]',
   '                               [--probe <domain>] [--skip-dial]',
+  '       node src/main.ts doctor --store [--db <control.db>]',
   '',
   'Checks the deployment against live DNS and the network: MX, A/AAAA, FCrDNS,',
   'SPF (evaluated), DKIM key match, DMARC, TLS certificate, outbound port 25,',
   'and domain age. Reads the same MAIL_* environment as the daemon.',
   '  --probe      whose MX to dial for the outbound-25 test (default gmail.com)',
   '  --skip-dial  skip the outbound port-25 probe',
+  '  --store      instead, PRAGMA quick_check every database (control + each mailbox),',
+  '               read-only, safe while the daemon runs; no DNS/network is touched',
+  '  --db         the control database for --store (default MAIL_CONTROL_DB or control.db)',
 ].join('\n');
 
 /** Real-network dependency implementations (tests inject fakes instead). */
@@ -334,12 +341,16 @@ export async function runDoctor(args: string[], io: OpsIo, env: Record<string, s
   let mailHost: string | undefined;
   let probeDomain = 'gmail.com';
   let skipDial = false;
+  let storeMode = false;
+  let controlDbPath = env.MAIL_CONTROL_DB ?? 'control.db';
   for (let i = 0; i < args.length; i++) {
     const a = args[i]!;
     if (a === '--domain') domain = args[++i];
     else if (a === '--host') mailHost = args[++i];
     else if (a === '--probe') probeDomain = args[++i] ?? probeDomain;
     else if (a === '--skip-dial') skipDial = true;
+    else if (a === '--store') storeMode = true;
+    else if (a === '--db') controlDbPath = args[++i] ?? controlDbPath;
     else if (a === '--help' || a === '-h') {
       io.out(USAGE);
       return 0;
@@ -348,6 +359,13 @@ export async function runDoctor(args: string[], io: OpsIo, env: Record<string, s
       io.err(USAGE);
       return 2;
     }
+  }
+  // --store is a distinct mode: local database integrity only, no DNS/network and no
+  // MAIL_DOMAIN requirement. This keeps the network doctor DNS-only by design (its whole
+  // dependency seam is network) while still giving the operator an on-demand integrity check.
+  if (storeMode) {
+    io.out(`doctor --store: ${controlDbPath}`);
+    return reportChecks(storeChecks(controlDbPath), io);
   }
   if (domain === undefined || domain === '') {
     io.err('doctor: set MAIL_DOMAIN or pass --domain.');
@@ -406,4 +424,77 @@ export function envSecretsCheck(env: Record<string, string | undefined>): CheckR
     status: 'warn',
     detail: `${present.join(' and ')} set in the environment: a plaintext password in the unit file / process environment. Once the account exists it is redundant: rotate with \`account set-password\` and drop it from the unit (the registry is the source of truth).`,
   }];
+}
+
+/**
+ * `doctor --store` — local database integrity, on demand.
+ *
+ * doctor's network checks answer "will the outside world accept my mail"; this answers
+ * "are my databases still sound on disk". Until now `PRAGMA quick_check`/`integrity_check`
+ * ran only inside `verify` (a backup/restore chore) and the crash suite, so corruption of a
+ * LIVE database first surfaced mid-query — a FETCH that throws, a login that fails opaquely.
+ * This lets an operator check the live store deliberately, without stopping the daemon (WAL:
+ * a read-only opener never blocks the daemon's writers).
+ *
+ * quick_check is integrity_check's cheaper sibling (it skips the index-order pass), enough to
+ * catch structural corruption. Read-only: every database is opened `readOnly` and never
+ * written, so checking cannot itself change anything (the same hard line `verify` holds).
+ */
+export function quickCheckDatabase(name: string, path: string): CheckResult {
+  let db: DatabaseSync;
+  try {
+    db = new DatabaseSync(path, { readOnly: true });
+  } catch (e) {
+    return { name, status: 'fail', detail: `cannot open ${path}: ${String(e)}` };
+  }
+  try {
+    let rows: Array<Record<string, unknown>>;
+    try {
+      // The open is lazy: a file that is not a database throws on the first statement.
+      rows = db.prepare('PRAGMA quick_check').all() as Array<Record<string, unknown>>;
+    } catch (e) {
+      return { name, status: 'fail', detail: `${path} is not a readable database: ${String(e)}` };
+    }
+    // quick_check returns a single 'ok' row when healthy; otherwise one row per problem. Read
+    // the first column by position so the exact column name ('quick_check') is not load-bearing.
+    const values = rows.map((r) => String(Object.values(r)[0]));
+    if (values.length === 1 && values[0] === 'ok') {
+      return { name, status: 'ok', detail: `${path} passes quick_check` };
+    }
+    return { name, status: 'fail', detail: `${path} FAILED quick_check: ${values.join('; ')}` };
+  } finally {
+    db.close();
+  }
+}
+
+/**
+ * Integrity-check the whole live store: the control database plus every account's mailbox
+ * database. The control DB is enumerated for its account list (which names each
+ * mail-<login>.db); a mailbox an account never wrote is `skip` (created lazily), exactly as
+ * `backup` treats a missing mail file. Enumeration opens the control DB read-write (as
+ * `account`/`backup` do); each integrity check reopens read-only.
+ */
+export function storeChecks(controlDbPath: string): CheckResult[] {
+  if (!existsSync(controlDbPath)) {
+    return [{ name: 'store', status: 'fail', detail: `control database ${controlDbPath} does not exist (set MAIL_CONTROL_DB or pass --db)` }];
+  }
+  let accounts: ReadonlyArray<{ login: string; mailDbPath: string }>;
+  const controlDb = openMailDb(controlDbPath);
+  try {
+    accounts = AccountRegistry.open(controlDb).list().map((a) => ({ login: a.login, mailDbPath: a.mailDbPath }));
+  } finally {
+    controlDb.close();
+  }
+  const results: CheckResult[] = [quickCheckDatabase('store:control', controlDbPath)];
+  const seen = new Set<string>();
+  for (const a of accounts) {
+    if (a.mailDbPath === ':memory:' || seen.has(a.mailDbPath)) continue;
+    seen.add(a.mailDbPath);
+    if (!existsSync(a.mailDbPath)) {
+      results.push({ name: `store:${a.login}`, status: 'skip', detail: `${a.mailDbPath} not created yet (no mail): skipped` });
+      continue;
+    }
+    results.push(quickCheckDatabase(`store:${a.login}`, a.mailDbPath));
+  }
+  return results;
 }

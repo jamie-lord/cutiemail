@@ -12,8 +12,14 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { generateKeyPairSync } from 'node:crypto';
-import { doctorChecks, reportChecks, runDoctor, envSecretsCheck, type DoctorDeps, type DoctorParams } from './doctor.ts';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { doctorChecks, reportChecks, runDoctor, envSecretsCheck, quickCheckDatabase, storeChecks, type DoctorDeps, type DoctorParams } from './doctor.ts';
 import { dkimTxtFromPrivateKey } from './setup.ts';
+import { runAccount, type PasswordSource } from './account.ts';
+import { SqliteCatalog } from '../store/sqlite-mailbox.ts';
+import { openMailDb } from '../store/open-mail-db.ts';
 import { TEST_CERT, TEST_KEY } from '../testing/tls-test-cert.ts';
 
 const DOMAIN = 'mutant.test';
@@ -219,6 +225,96 @@ test('runDoctor: no domain is a usage error (2); unknown flag is a usage error (
   assert.match(ph.lines.join('\n'), /placeholder default/);
   // And end-to-end through the arg path against the healthy fake world: exit 0.
   assert.equal(await runDoctor(['--domain', DOMAIN, '--probe', 'probe.example'], io, {}, healthyDeps()), 0);
+});
+
+// -- doctor --store: local database integrity, negative-controlled both directions ---------
+
+const silentIo = { out: (): void => {}, err: (): void => {} };
+const storePw: PasswordSource = { interactive: false, read: () => Promise.resolve('doctor-store-pw') };
+
+/** Capture doctor's line output. */
+function lines(): { lines: string[]; io: { out(l: string): void; err(l: string): void } } {
+  const acc: string[] = [];
+  return { lines: acc, io: { out: (l) => void acc.push(l), err: (l) => void acc.push(l) } };
+}
+
+/** A control DB + a populated mail DB at the path the registry records, via the real code paths. */
+async function makeStore(dir: string): Promise<{ controlPath: string; mailPath: string }> {
+  const controlPath = join(dir, 'control.db');
+  assert.equal(await runAccount(['add', 'alice', '--db', controlPath], silentIo, {}, storePw), 0);
+  const mailPath = join(dir, 'mail-alice.db'); // where `account add` recorded alice's mailbox
+  const db = openMailDb(mailPath);
+  const inbox = SqliteCatalog.open(db, 1).get('INBOX')!;
+  // A multi-page body, so a later-page corruption below is genuine structural damage.
+  for (let i = 1; i <= 4; i++) inbox.append(Buffer.from('x'.repeat(2000), 'latin1'));
+  db.close();
+  return { controlPath, mailPath };
+}
+
+test('doctor --store: healthy databases pass quick_check; a corrupted mailbox is detected (both directions)', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'doctor-store-'));
+  try {
+    const { controlPath, mailPath } = await makeStore(dir);
+
+    // Healthy: exit 0, an ok line for the control DB and for alice's mailbox.
+    const ok = lines();
+    assert.equal(await runDoctor(['--store', '--db', controlPath], ok.io, {}), 0);
+    const okText = ok.lines.join('\n');
+    assert.match(okText, /store:control/);
+    assert.match(okText, /store:alice/);
+    assert.match(okText, /healthy/);
+    assert.doesNotMatch(okText, / FAIL/);
+
+    // Negative control: byte-corrupt a b-tree page of alice's mailbox. quick_check must catch
+    // it — otherwise the corruption first surfaces mid-FETCH as a thrown query.
+    const bytes = readFileSync(mailPath);
+    assert.ok(bytes.length > 4096 + 200, 'need a multi-page database to corrupt page 2');
+    for (let i = 0; i < 200; i++) bytes[4096 + i] = bytes[4096 + i]! ^ 0xff;
+    writeFileSync(mailPath, bytes);
+
+    const bad = lines();
+    assert.equal(await runDoctor(['--store', '--db', controlPath], bad.io, {}), 1, 'a corrupt DB fails the run');
+    const badText = bad.lines.join('\n');
+    assert.match(badText, / FAIL/);
+    assert.match(badText, /store:alice/);
+    assert.match(badText, /quick_check/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('doctor --store: a control DB that does not exist is a clear failure, not a crash', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'doctor-store-'));
+  try {
+    const missing = join(dir, 'nope.db');
+    const cap = lines();
+    assert.equal(await runDoctor(['--store', '--db', missing], cap.io, {}), 1);
+    assert.match(cap.lines.join('\n'), /does not exist/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('quickCheckDatabase: junk file is reported unreadable, not thrown; healthy file passes', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'doctor-store-'));
+  try {
+    const junk = join(dir, 'junk.db');
+    writeFileSync(junk, 'this is not a database');
+    const bad = quickCheckDatabase('store:junk', junk);
+    assert.equal(bad.status, 'fail');
+
+    const { mailPath } = await makeStore(dir);
+    assert.equal(quickCheckDatabase('store:alice', mailPath).status, 'ok');
+
+    // storeChecks skips an account whose mailbox file was never created (lazy DB), like backup.
+    const controlPath = join(dir, 'control.db');
+    assert.equal(await runAccount(['add', 'bob', '--db', controlPath], silentIo, {}, storePw), 0);
+    const results = storeChecks(controlPath);
+    const bobRow = results.find((r) => r.name === 'store:bob');
+    assert.ok(bobRow !== undefined && bobRow.status === 'skip', 'bob never received mail: skipped, not failed');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 test('envSecretsCheck warns when plaintext credentials are in the environment, else silent', () => {

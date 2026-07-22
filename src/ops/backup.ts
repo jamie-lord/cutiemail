@@ -220,6 +220,29 @@ const VERIFY_USAGE = [
   'modified by verifying it. Exit 1 if anything is unhealthy.',
 ].join('\n');
 
+/**
+ * Warn when a write-ahead-log sidecar sits beside a database being verified. In a
+ * backup or restore directory this is a hazard, not a normal state: `backup` writes a
+ * single self-contained file per database via VACUUM INTO (never a `-wal`), so a
+ * `<db>-wal` next to a snapshot means the file was copied out of a live/uncleanly-stopped
+ * data directory. If such a directory is then restored by copying only the `.db` files
+ * over the live ones, SQLite REPLAYS these stale frames into the restored database on the
+ * next open — silently resurrecting data the snapshot never contained. The fix is to
+ * delete the `-wal` (and `-shm`) before copying. Returns the advisory line, or null when
+ * no sidecar is present. (A `-wal` is legitimate only beside a database a running daemon
+ * has open; treat this as advisory, never a failure.)
+ */
+function staleWalWarning(dbFile: string): string | null {
+  if (!existsSync(`${dbFile}-wal`)) return null;
+  const name = basename(dbFile);
+  return (
+    `a stale ${name}-wal write-ahead log sits beside it. If this is a backup or restore ` +
+    `directory, DELETE ${name}-wal (and ${name}-shm) before copying the .db into place: ` +
+    `SQLite will otherwise replay these frames into the restored database, resurrecting ` +
+    `state the snapshot never held. (A -wal is normal only beside a database a running daemon has open.)`
+  );
+}
+
 export function runVerify(args: string[], io: OpsIo): number {
   const paths: string[] = [];
   for (const a of args) {
@@ -255,6 +278,7 @@ export function runVerify(args: string[], io: OpsIo): number {
     } else files.push(p);
   }
   let failures = 0;
+  let warnings = 0;
   for (const f of files) {
     const report = verifyDatabase(f);
     if (report.findings.length === 0) {
@@ -263,8 +287,15 @@ export function runVerify(args: string[], io: OpsIo): number {
       failures++;
       for (const finding of report.findings) io.out(` FAIL   ${f}: ${finding}`);
     }
+    // A stale WAL sidecar is a restore hazard (see staleWalWarning): advisory, never a failure.
+    const wal = staleWalWarning(f);
+    if (wal !== null) {
+      warnings++;
+      io.out(` WARN   ${f}: ${wal}`);
+    }
   }
   io.out('');
-  io.out(failures === 0 ? `verify: ${files.length} database(s) healthy` : `verify: ${failures} of ${files.length} database(s) UNHEALTHY`);
+  const healthLine = failures === 0 ? `verify: ${files.length} database(s) healthy` : `verify: ${failures} of ${files.length} database(s) UNHEALTHY`;
+  io.out(warnings === 0 ? healthLine : `${healthLine} (${warnings} warning(s): stale WAL sidecar(s) — see above)`);
   return failures === 0 ? 0 : 1;
 }
