@@ -227,6 +227,9 @@ a.term-pill:active { box-shadow: 0 0 0 var(--bubblegum); transform: translate(4p
 
 .prose { min-width: 0; max-width: 760px; overflow-wrap: break-word; }
 .prose > *:first-child { margin-top: 0; }
+/* Images in rendered markdown (the README banner on the Overview page most of all) scale to the
+   column instead of overflowing at their intrinsic width. */
+.prose img { max-width: 100%; height: auto; display: block; }
 .prose h1 { font-size: clamp(30px, 5vw, 40px); margin: 0 0 8px; }
 .prose h2 { font-size: 26px; margin: 44px 0 14px; padding-bottom: 8px; border-bottom: 2px dashed var(--dash); }
 .prose h3 { font-size: 20px; margin: 30px 0 10px; }
