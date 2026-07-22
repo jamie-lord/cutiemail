@@ -59,7 +59,11 @@ export const CASES: readonly TestCase[] = [
   testCase({
     id: 'command-line-512-accepted',
     requirement: 'R-5321-4.5.3.1.4-a',
-    alsoTouches: ['R-5321-4.3.2-f'],
+    // §4.5.3.1's umbrella MUST ("Every implementation MUST be able to receive
+    // objects of at least these sizes") is exactly what each per-object floor case
+    // exercises; carrying it here (and on the sibling floor cases) makes the umbrella
+    // fixture-gated rather than a silent gap.
+    alsoTouches: ['R-5321-4.3.2-f', 'R-5321-4.5.3.1-a'],
     intent: 'a 512-octet command line is processed, not rejected as too long',
     rationale:
       '§4.5.3.1.4: "The maximum total length of a command line including the command word ' +
@@ -124,6 +128,7 @@ export const CASES: readonly TestCase[] = [
   testCase({
     id: 'text-line-1000-accepted',
     requirement: 'R-5321-4.5.3.1.6-a',
+    alsoTouches: ['R-5321-4.5.3.1-a'],
     intent: 'a 1000-octet text line in DATA is accepted',
     rationale:
       '§4.5.3.1.6: "The maximum total length of a text line including the <CRLF> is 1000 ' +
@@ -167,6 +172,7 @@ export const CASES: readonly TestCase[] = [
   testCase({
     id: 'local-part-64-accepted',
     requirement: 'R-5321-4.5.3.1.1-a',
+    alsoTouches: ['R-5321-4.5.3.1-a'],
     intent: 'a 64-octet local-part (the mandated floor) is accepted, not rejected for length',
     rationale:
       '§4.5.3.1.1: "The maximum total length of a user name or other local-part is 64 octets." A ' +
@@ -202,6 +208,7 @@ export const CASES: readonly TestCase[] = [
   testCase({
     id: 'long-domain-accepted',
     requirement: 'R-5321-4.5.3.1.2-a',
+    alsoTouches: ['R-5321-4.5.3.1-a'],
     intent: 'a domain near the 255-octet floor is accepted, not rejected for length',
     rationale:
       '§4.5.3.1.2: "The maximum total length of a domain name or number is 255 octets." A receiver ' +

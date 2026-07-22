@@ -468,6 +468,11 @@ export const S4_4 = [
   },
   {
     id: 'R-5321-4.4-x',
+    deliberatelyUncovered: {
+      reason:
+        'needs a multi-recipient transaction deliverable to some but not all recipients to reach the partial-success DATA state, which is server-side mixed deliverability not creatable in-band.',
+      date: '2026-07-22',
+    },
     section: '4.4',
     page: 59,
     level: 'MUST',

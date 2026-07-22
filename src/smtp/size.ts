@@ -5,6 +5,15 @@
  * over-limit message is rejected 552, and the enforcement is against the ACTUAL
  * received size — the client's declared SIZE is only a pre-transmission hint and
  * MUST NOT be trusted for the real check.
+ *
+ * NOTE: unlike auth-state.ts (which the receiver now calls directly), the
+ * production receiver (src/server/smtp-receiver.ts) reimplements this policy inline
+ *; it rejects a declared SIZE= over the limit up front in the MAIL handler and
+ * enforces the ACTUAL byte count while buffering DATA. This module is the readable,
+ * negative-controlled specification of those two rules and is exercised by
+ * size.test.ts; the receiver's own enforcement is pinned live by
+ * smtp-size.integration.test.ts. Kept as reference so the rule is stated in one
+ * clear place, not as a claim that the receiver imports it.
  */
 
 export interface SizeDecision {

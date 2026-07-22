@@ -12,6 +12,7 @@ import net from 'node:net';
 import { DatabaseSync } from 'node:sqlite';
 import { deliver } from '../client/deliver.ts';
 import { SmtpReceiver } from './smtp-receiver.ts';
+import type { DeliveredMessage } from './smtp-receiver.ts';
 import { SqliteMailbox } from '../store/sqlite-mailbox.ts';
 
 const connectTo = (port: number): { host: string; port: number; tls: 'none' } => ({ host: '127.0.0.1', port, tls: 'none' });
@@ -142,6 +143,131 @@ test('the receiver caps recipients per transaction (452), resisting unbounded RC
     c.write('RCPT TO:<overflow@x.test>\r\n');
     const resp = await c.expect('452');
     assert.match(resp, /452/, 'the recipient over the cap is rejected with 452');
+    c.write('QUIT\r\n');
+  } finally {
+    c.sock.destroy();
+    await receiver.close();
+  }
+});
+
+test('a single transaction carries every accepted recipient, in order (multi-RCPT)', async () => {
+  // The receiver hands the delivery handler ALL accepted recipients on one message.
+  // (The daemon-level fan-out to two separate mailboxes is main.ts's responsibility,
+  // covered by the daemon integration tests; here we pin the receiver's recipient list.)
+  const delivered: DeliveredMessage[] = [];
+  const receiver = await SmtpReceiver.start((m) => { delivered.push(m); });
+  const c = new RawSmtp(receiver.port);
+  try {
+    await c.expect('220');
+    c.write('EHLO probe\r\n');
+    await c.expect('250');
+    c.write('MAIL FROM:<a@b.test>\r\n');
+    await c.expect('250 2.1.0 Ok');
+    c.write('RCPT TO:<first@x.test>\r\n');
+    await c.expect('250 2.1.5 Ok');
+    c.write('RCPT TO:<second@x.test>\r\n');
+    await c.expect('250 2.1.5 Ok');
+    c.write('DATA\r\n');
+    await c.expect('354');
+    c.write('Subject: fan-out\r\n\r\none body, two recipients\r\n.\r\n');
+    await c.expect('250 2.0.0 message stored');
+    assert.equal(delivered.length, 1, 'one message delivered');
+    assert.deepEqual(delivered[0]!.recipients, ['first@x.test', 'second@x.test'], 'both recipients carried, in order');
+    c.write('QUIT\r\n');
+  } finally {
+    c.sock.destroy();
+    await receiver.close();
+  }
+});
+
+test('DATA before any RCPT is refused 503, and a normal transaction still completes afterwards', async () => {
+  const delivered: DeliveredMessage[] = [];
+  const receiver = await SmtpReceiver.start((m) => { delivered.push(m); });
+  const c = new RawSmtp(receiver.port);
+  try {
+    await c.expect('220');
+    c.write('EHLO probe\r\n');
+    await c.expect('250');
+    // DATA with no recipient buffered is out of order (RFC 5321 §4.1.4) -> 503.
+    c.write('DATA\r\n');
+    const r = await c.expect('503');
+    assert.match(r, /503 5\.5\.1 need RCPT/, 'DATA before RCPT draws 503');
+    // The connection survives: a full transaction still completes on it.
+    c.write('MAIL FROM:<a@b.test>\r\n');
+    await c.expect('250 2.1.0 Ok');
+    c.write('RCPT TO:<u@x.test>\r\n');
+    await c.expect('250 2.1.5 Ok');
+    c.write('DATA\r\n');
+    await c.expect('354');
+    c.write('Subject: recovered\r\n\r\nbody\r\n.\r\n');
+    await c.expect('250 2.0.0 message stored');
+    assert.equal(delivered.length, 1, 'the subsequent normal transaction delivered');
+    c.write('QUIT\r\n');
+  } finally {
+    c.sock.destroy();
+    await receiver.close();
+  }
+});
+
+test('HELO draws a single-line 250 and a full transaction works; a mid-transaction NOOP does not disturb it', async () => {
+  const delivered: DeliveredMessage[] = [];
+  const receiver = await SmtpReceiver.start((m) => { delivered.push(m); });
+  const c = new RawSmtp(receiver.port);
+  try {
+    await c.expect('220');
+    // HELO (not EHLO): the fallback greeting. It MUST draw a single-line 250, never
+    // an EHLO-style extension list (RFC 5321 §3.2).
+    c.write('HELO client\r\n');
+    const helo = await c.expect('250');
+    assert.ok(!helo.includes('250-'), 'HELO draws a single-line 250, never a continued (250-) extension list');
+    c.write('MAIL FROM:<a@b.test>\r\n');
+    await c.expect('250 2.1.0 Ok');
+    // NOOP mid-transaction must not forget the reverse-path (RFC 5321 §4.1.1.9).
+    c.write('NOOP\r\n');
+    await c.expect('250 2.0.0 Ok');
+    c.write('RCPT TO:<u@x.test>\r\n');
+    await c.expect('250 2.1.5 Ok');
+    c.write('DATA\r\n');
+    await c.expect('354');
+    c.write('Subject: helo path\r\n\r\nbody\r\n.\r\n');
+    await c.expect('250 2.0.0 message stored');
+    assert.equal(delivered.length, 1, 'the HELO-opened, NOOP-spanning transaction delivered');
+    assert.deepEqual(delivered[0]!.recipients, ['u@x.test']);
+    c.write('QUIT\r\n');
+  } finally {
+    c.sock.destroy();
+    await receiver.close();
+  }
+});
+
+test('a non-ASCII (UTF-8) envelope address is failed 553 (SMTPUTF8 not offered); ASCII still delivers', async () => {
+  const delivered: DeliveredMessage[] = [];
+  const receiver = await SmtpReceiver.start((m) => { delivered.push(m); });
+  const c = new RawSmtp(receiver.port);
+  try {
+    await c.expect('220');
+    c.write('EHLO probe\r\n');
+    const ehlo = await c.expect('250');
+    assert.ok(!ehlo.includes('SMTPUTF8'), 'the receiver does not advertise SMTPUTF8');
+    // A UTF-8 local-part in MAIL FROM, as raw UTF-8 octets on the wire. Without
+    // SMTPUTF8 the envelope must stay ASCII, so this is failed, not silently accepted.
+    c.sock.write(Buffer.from('MAIL FROM:<náïve@example.com>\r\n', 'utf8'));
+    const mail = await c.expect('553');
+    assert.match(mail, /553 5\.6\.7/, 'non-ASCII reverse-path failed 553 5.6.7');
+    // An ASCII sender works; a non-ASCII recipient in that transaction is likewise failed.
+    c.write('MAIL FROM:<ascii@example.com>\r\n');
+    await c.expect('250 2.1.0 Ok');
+    c.sock.write(Buffer.from('RCPT TO:<bòb@example.net>\r\n', 'utf8'));
+    await c.expect('553');
+    // ...and an ASCII recipient in the same transaction still delivers.
+    c.write('RCPT TO:<bob@example.net>\r\n');
+    await c.expect('250 2.1.5 Ok');
+    c.write('DATA\r\n');
+    await c.expect('354');
+    c.write('Subject: ascii ok\r\n\r\nbody\r\n.\r\n');
+    await c.expect('250 2.0.0 message stored');
+    assert.equal(delivered.length, 1, 'the all-ASCII transaction delivered');
+    assert.deepEqual(delivered[0]!.recipients, ['bob@example.net'], 'only the ASCII recipient was buffered');
     c.write('QUIT\r\n');
   } finally {
     c.sock.destroy();

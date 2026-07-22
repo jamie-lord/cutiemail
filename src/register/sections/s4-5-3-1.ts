@@ -186,6 +186,11 @@ export const S4_5_3_1 = [
   // ---- §4.5.3.1.3 Path ----------------------------------------------------
   {
     id: 'R-5321-4.5.3.1.3-a',
+    deliberatelyUncovered: {
+      reason:
+        'needs an otherwise-acceptable 256-octet path the server accepts to isolate path length from an unresolvable-domain rejection, which is server-side accept state not creatable in-band (the local-part and domain sub-floors are covered fixture-gated).',
+      date: '2026-07-22',
+    },
     section: '4.5.3.1.3',
     page: 63,
     level: 'MUST',
@@ -282,6 +287,11 @@ export const S4_5_3_1 = [
   // ---- §4.5.3.1.7 Message Content ----------------------------------------
   {
     id: 'R-5321-4.5.3.1.7-a',
+    deliberatelyUncovered: {
+      reason:
+        'needs a roughly 64K-octet message to a known-good recipient, told apart from a SIZE or policy rejection, which is server-side accept state not creatable in-band.',
+      date: '2026-07-22',
+    },
     section: '4.5.3.1.7',
     page: 63,
     level: 'MUST',
@@ -473,6 +483,11 @@ export const S4_5_3_1 = [
   },
   {
     id: 'R-5321-4.5.3.1.8-e',
+    deliberatelyUncovered: {
+      reason:
+        'needs a server with a known sub-100 recipient cap to prove over-limit addresses are explicitly rejected rather than silently dropped, which is a configuration not settable in-band.',
+      date: '2026-07-22',
+    },
     section: '4.5.3.1.8',
     page: 64,
     level: 'MUST',
@@ -546,6 +561,11 @@ export const S4_5_3_1 = [
   // ---- §4.5.3.1.10 Too Many Recipients Code ------------------------------
   {
     id: 'R-5321-4.5.3.1.10-a',
+    deliberatelyUncovered: {
+      reason:
+        'needs a server whose recipient buffer is exhausted to observe the 452 too-many-recipients code, which is an implementation-limit state not creatable in-band.',
+      date: '2026-07-22',
+    },
     section: '4.5.3.1.10',
     page: 64,
     level: 'MUST',
@@ -585,6 +605,11 @@ export const S4_5_3_1 = [
   },
   {
     id: 'R-5321-4.5.3.1.10-c',
+    deliberatelyUncovered: {
+      reason:
+        'needs a server with an implementation (not site-policy) RCPT limit to assert the exact 452 code at the cap, which is not creatable in-band.',
+      date: '2026-07-22',
+    },
     section: '4.5.3.1.10',
     page: 65,
     level: 'MUST',

@@ -132,6 +132,11 @@ export const S3_3 = [
   },
   {
     id: 'R-5321-3.3-d',
+    deliberatelyUncovered: {
+      reason:
+        'needs a reverse-path the server rejects at MAIL time (a blocked sender or failing policy), which is server-specific policy state not creatable in-band.',
+      date: '2026-07-22',
+    },
     section: '3.3',
     page: 19,
     level: 'MUST',
@@ -219,6 +224,11 @@ export const S3_3 = [
   },
   {
     id: 'R-5321-3.3-g',
+    deliberatelyUncovered: {
+      reason:
+        'needs about 100 distinct recipients the server accepts to observe the accept step repeating, which is server-side mailbox state not creatable in-band; the recipient-count floor itself is covered by hundred-recipients-buffered.',
+      date: '2026-07-22',
+    },
     section: '3.3',
     page: 19,
     level: 'MUST',
@@ -539,6 +549,11 @@ export const S3_3 = [
   },
   {
     id: 'R-5321-3.3-s',
+    deliberatelyUncovered: {
+      reason:
+        'needs an accepted transaction in the data phase to observe the "up to but not including the end of mail data" framing, and the observable end-of-data handling is already covered fixture-gated by accepted-transaction-stored.',
+      date: '2026-07-22',
+    },
     section: '3.3',
     page: 20,
     level: 'MUST',
@@ -838,6 +853,11 @@ export const S3_3 = [
   },
   {
     id: 'R-5321-3.3-ac',
+    deliberatelyUncovered: {
+      reason:
+        'needs an accepted transaction carrying deliberately mismatched Resent- header counts to prove the server does not reject on that basis, which is server-side accept state plus header introspection not creatable in-band.',
+      date: '2026-07-22',
+    },
     section: '3.3',
     page: 21,
     level: 'MUST NOT',

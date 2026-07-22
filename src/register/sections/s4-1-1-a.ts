@@ -400,6 +400,11 @@ export const S4_1_1_A = [
   },
   {
     id: 'R-5321-4.1.1.1-k',
+    deliberatelyUncovered: {
+      reason:
+        'needs the server to advertise an EHLO keyword usable in a later command so the keyword can be echoed in a different case and compared, which the mutant does not usefully model and which needs an accepted keyword-bearing command.',
+      date: '2026-07-22',
+    },
     section: '4.1.1.1',
     page: 34,
     level: 'MUST',
@@ -571,6 +576,11 @@ export const S4_1_1_A = [
   },
   {
     id: 'R-5321-4.1.1.2-d',
+    deliberatelyUncovered: {
+      reason:
+        'proving MAIL clears the forward-path buffer needs a completed transaction (an accepted recipient) and a second MAIL, which is server-side accept state not creatable in-band.',
+      date: '2026-07-22',
+    },
     section: '4.1.1.2',
     page: 34,
     level: 'MUST',
@@ -1269,6 +1279,11 @@ export const S4_1_1_A = [
   },
   {
     id: 'R-5321-4.1.1.4-l',
+    deliberatelyUncovered: {
+      reason:
+        'needs a completed transaction then a second DATA against an empty forward-path buffer, requiring a recipient the server accepts, which is server-side state not creatable in-band.',
+      date: '2026-07-22',
+    },
     section: '4.1.1.4',
     page: 37,
     level: 'MUST',
@@ -1322,6 +1337,11 @@ export const S4_1_1_A = [
   },
   {
     id: 'R-5321-4.1.1.4-n',
+    deliberatelyUncovered: {
+      reason:
+        'needs a transaction the server accepts to 354 then refuses at the dot (over-SIZE or over-quota), which is server-side failure state not creatable in-band.',
+      date: '2026-07-22',
+    },
     section: '4.1.1.4',
     page: 37,
     level: 'MUST',
@@ -1348,6 +1368,11 @@ export const S4_1_1_A = [
   },
   {
     id: 'R-5321-4.1.1.4-o',
+    deliberatelyUncovered: {
+      reason:
+        'needs two accepted recipients on one transaction with exactly one failing at delivery time, and the partial-failure model needs server-side state not creatable in-band.',
+      date: '2026-07-22',
+    },
     section: '4.1.1.4',
     page: 37,
     level: 'MUST',

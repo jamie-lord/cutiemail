@@ -80,12 +80,23 @@ test('every case cites a non-client, testable requirement (primary and alsoTouch
 // quietly becomes false with nothing failing.
 //
 // This is that claim as an invariant. A strict (MUST/MUST NOT/REQUIRED),
-// server-observable, PLAIN-wire requirement (kind 'wire' — not fixture-gated,
-// which is a distinct honest state, and not not-testable) may only be
-// 'fully-covered' (test + proven mutant) or 'deliberately-uncovered' (a recorded
-// decision). It may NEVER be 'uncovered' (no test, no decision — a silent gap) or
-// 'test-only' (a test never shown to have teeth). If this test fails, the
-// project's central promise is no longer true; fix the coverage, not the test.
+// server-observable requirement that is OBSERVABLE ON THE WIRE; kind 'wire'
+// (assertable on a bare connection) OR kind 'wire-with-fixture' (assertable once
+// the operator supplies the server-side state); may only sit in an honest
+// covered-or-recorded state:
+//   - 'fully-covered'          (plain-wire: test + proven negative control)
+//   - 'fixture-gated'          (wire-with-fixture: a test exists and will run
+//                               against a server given the fixture; the honest
+//                               "waiting on server state", never a silent gap)
+//   - 'deliberately-uncovered' (a recorded decision, with a reason)
+// It may NEVER be 'uncovered' (no test, no decision; a silent gap) or 'test-only'
+// (a test never shown to have teeth). Both wire KINDS are held to this bar: a
+// 'wire-with-fixture' MUST left 'uncovered' is exactly as much a silent gap as a
+// plain-wire one; the promise the README makes ("no strict wire-testable MUST is
+// a silent gap") is over BOTH, so the guard must be too, or the executable check
+// under-claims what the prose asserts. If this test fails, the project's central
+// promise is no longer true; fix the coverage (author a case, or record a
+// deliberatelyUncovered decision), not the test.
 test('no strict wire-testable MUST is a silent gap (the headline coverage claim)', () => {
   const report = computeCoverage(ALL_CASES, ALL_MUTANTS, LATITUDE_CONTROLLED_IDS);
   const defById = new Map<string, RequirementDef>(
@@ -95,14 +106,16 @@ test('no strict wire-testable MUST is a silent gap (the headline coverage claim)
     const def = defById.get(r.id)!;
     const strict = def.level === 'MUST' || def.level === 'MUST NOT' || def.level === 'REQUIRED';
     const observable = def.party !== 'client';
-    const plainWire = def.testability.kind === 'wire';
-    return strict && observable && plainWire && (r.state === 'uncovered' || r.state === 'test-only');
+    const wireObservable =
+      def.testability.kind === 'wire' || def.testability.kind === 'wire-with-fixture';
+    return strict && observable && wireObservable && (r.state === 'uncovered' || r.state === 'test-only');
   });
   assert.deepEqual(
     offenders.map((r) => `${r.id} [${r.state}]`),
     [],
-    'a strict, observable, plain-wire MUST is a silent gap — it must be fully-covered ' +
-      'by a proven negative control or carry a deliberatelyUncovered decision',
+    'a strict, observable, wire-testable MUST is a silent gap; a plain-wire one must be ' +
+      'fully-covered by a proven negative control, a wire-with-fixture one must at least be ' +
+      'fixture-gated (carry a case), and either may instead carry a deliberatelyUncovered decision',
   );
 });
 

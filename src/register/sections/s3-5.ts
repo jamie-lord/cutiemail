@@ -73,6 +73,11 @@ export const S3_5 = [
   },
   {
     id: 'R-5321-3.5.1-c',
+    deliberatelyUncovered: {
+      reason:
+        'needs a user name that VRFY resolves to with a 250 on a server implementing VRFY, and neither a verifying VRFY nor the matching mailbox is creatable in-band.',
+      date: '2026-07-22',
+    },
     section: '3.5.1',
     page: 22,
     level: 'MUST',
@@ -94,6 +99,11 @@ export const S3_5 = [
   },
   {
     id: 'R-5321-3.5.1-d',
+    deliberatelyUncovered: {
+      reason:
+        'needs a VRFY that yields a 250 so the reply-text address form can be parsed, and a verifying VRFY is server-side state not creatable in-band.',
+      date: '2026-07-22',
+    },
     section: '3.5.1',
     page: 22,
     level: 'MUST',
@@ -165,6 +175,11 @@ export const S3_5 = [
   },
   {
     id: 'R-5321-3.5.1-g',
+    deliberatelyUncovered: {
+      reason:
+        'needs a mailing list with known members that EXPN expands, and no mailing-list state is creatable in-band (most MTAs have no such concept).',
+      date: '2026-07-22',
+    },
     section: '3.5.1',
     page: 23,
     level: 'MUST',
@@ -252,6 +267,11 @@ export const S3_5 = [
   },
   {
     id: 'R-5321-3.5.1-k',
+    deliberatelyUncovered: {
+      reason:
+        'needs a multi-member mailing list EXPN expands with a 250 multiline reply, which is server-side list state not creatable in-band.',
+      date: '2026-07-22',
+    },
     section: '3.5.1',
     page: 24,
     level: 'MUST',
@@ -276,6 +296,11 @@ export const S3_5 = [
   },
   {
     id: 'R-5321-3.5.1-l',
+    deliberatelyUncovered: {
+      reason:
+        'needs VRFY or EXPN implemented plus a known-valid local mailbox to check the returned mailbox against, which is server-side state not creatable in-band.',
+      date: '2026-07-22',
+    },
     section: '3.5.1',
     page: 24,
     level: 'MUST',
@@ -374,6 +399,11 @@ export const S3_5 = [
   // ---------------------------------------------------------------------------
   {
     id: 'R-5321-3.5.2-a',
+    deliberatelyUncovered: {
+      reason:
+        'needs a VRFY or EXPN returning a 2yz or 551 (a known-valid or known-forwarded address), which is server-side verifying state not creatable in-band.',
+      date: '2026-07-22',
+    },
     section: '3.5.2',
     page: 24,
     level: 'MUST',
@@ -448,6 +478,11 @@ export const S3_5 = [
   },
   {
     id: 'R-5321-3.5.2-d',
+    deliberatelyUncovered: {
+      reason:
+        'needs a VRFY reply address that can be fed back into a RCPT and accepted, requiring a verifying VRFY plus a matching mailbox, server-side state not creatable in-band.',
+      date: '2026-07-22',
+    },
     section: '3.5.2',
     page: 25,
     level: 'MUST',
@@ -475,6 +510,11 @@ export const S3_5 = [
   },
   {
     id: 'R-5321-3.5.2-e',
+    deliberatelyUncovered: {
+      reason:
+        'needs an alias delivering to a program or file that VRFY verifies, which is server-side alias state not creatable in-band.',
+      date: '2026-07-22',
+    },
     section: '3.5.2',
     page: 25,
     level: 'MUST',
@@ -497,6 +537,11 @@ export const S3_5 = [
   },
   {
     id: 'R-5321-3.5.2-f',
+    deliberatelyUncovered: {
+      reason:
+        'needs a VRFY or EXPN reply containing an address on a server implementing the command to prove no source route is returned, and a verifying VRFY is server-side state not creatable in-band.',
+      date: '2026-07-22',
+    },
     section: '3.5.2',
     page: 25,
     level: 'MUST NOT',

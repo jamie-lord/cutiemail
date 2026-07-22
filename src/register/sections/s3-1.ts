@@ -97,6 +97,11 @@ export const S3_1 = [
   },
   {
     id: 'R-5321-3.1-d',
+    deliberatelyUncovered: {
+      reason:
+        'needs a domain the server accepts mail for so the reply class to a postmaster RCPT inside a transaction can be observed, which is server-side state not creatable in-band.',
+      date: '2026-07-22',
+    },
     section: '3.1',
     page: 18,
     level: 'MUST',
@@ -151,6 +156,11 @@ export const S3_1 = [
   },
   {
     id: 'R-5321-3.1-f',
+    deliberatelyUncovered: {
+      reason:
+        'needs a listener configured to answer 554 rather than 220 on connect; without that the antecedent "a server taking this approach" is never satisfied and the check would be vacuous, and the mutant models no such listener.',
+      date: '2026-07-22',
+    },
     section: '3.1',
     page: 18,
     level: 'MUST',

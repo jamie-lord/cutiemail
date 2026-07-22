@@ -16,6 +16,7 @@ import tls from 'node:tls';
 import type { Duplex } from 'node:stream';
 import { CR, LF, DOT } from '../wire/bytes.ts';
 import { countReceived } from './received.ts';
+import { canAuth } from '../smtp/auth-state.ts';
 import type { AuthThrottle } from './auth-throttle.ts';
 
 /** MAIL_DEBUG=1 logs each received command line (AUTH redacted) to stderr. */
@@ -81,6 +82,15 @@ export interface ReceiverOptions {
   /** Idle-connection timeout in ms (default 5 min). Tests set it short. */
   readonly idleTimeoutMs?: number;
   /**
+   * Deadline for the STARTTLS handshake to complete, in ms (default 30s). A client
+   * that issues STARTTLS then stalls or dribbles the TLS handshake would otherwise
+   * hold the connection open indefinitely: the manually-constructed TLSSocket has no
+   * built-in handshake timeout, and the socket idle timer resets on every dribbled
+   * byte, so a slow-drip handshake is a slowloris the idle timer never catches. Tests
+   * set it short.
+   */
+  readonly tlsHandshakeTimeoutMs?: number;
+  /**
    * Decide whether to accept a recipient at RCPT time. Returns false to reject it.
    * The inbound (port 25) path uses this to accept only local mailboxes — otherwise
    * we would accept (and misdeliver, or become backscatter for) mail addressed to
@@ -97,8 +107,25 @@ export interface ReceiverOptions {
 const addrOf = (line: string): string => /<([^>]*)>/.exec(line)?.[1] ?? '';
 const NUL = String.fromCharCode(0);
 
+/**
+ * A non-ASCII octet in an envelope address. `line` reaches us decoded as latin1, so
+ * every octet of a UTF-8 sequence is a char in 0x80-0xFF. RFC 6531 (SMTPUTF8) permits
+ * UTF-8 in envelope addresses ONLY after the client issues SMTPUTF8 (advertised in
+ * EHLO); this receiver does not advertise it (ADR 0001 keeps EAI in scope only when
+ * advertised), so a non-ASCII MAIL FROM / RCPT TO must be FAILED, not silently
+ * accepted (docs/IMPLEMENTING-A-CONFORMANT-SERVER.md §11; RFC 5321 §2.4 keeps the
+ * envelope ASCII without the extension).
+ */
+const hasNonAscii = (s: string): boolean => {
+  for (let i = 0; i < s.length; i++) if (s.charCodeAt(i) > 0x7f) return true;
+  return false;
+};
+
 /** Idle-connection timeout (RFC 5321 §4.5.3.2 server timeouts are ~5 min per step). */
 const IDLE_TIMEOUT_MS = 300_000;
+
+/** Deadline for a STARTTLS TLS handshake to complete (slowloris bound). */
+const TLS_HANDSHAKE_TIMEOUT_MS = 30_000;
 
 /** Max recipients per transaction (RFC 5321 §4.5.3.1.10 sets the floor at 100). */
 const MAX_RECIPIENTS = 100;
@@ -283,7 +310,7 @@ class Connection {
         // RFC 5321 §6.3: a message carrying too many Received hops is looping.
         const hops = this.#opts.maxReceivedHops;
         if (hops !== undefined && countReceived(unstuffed) >= hops) {
-          this.#write('554 5.4.6 too many Received hops — mail loop detected');
+          this.#write('554 5.4.6 too many Received hops; mail loop detected');
           this.#from = '';
           this.#recipients = [];
           this.#inData = false;
@@ -405,6 +432,12 @@ class Connection {
           this.#write('552 5.3.4 message size exceeds fixed maximum message size');
           break;
         }
+        // SMTPUTF8 (RFC 6531) is not advertised, so the envelope stays ASCII: a
+        // non-ASCII reverse-path is failed, never silently accepted (see hasNonAscii).
+        if (hasNonAscii(addrOf(line))) {
+          this.#reject('553 5.6.7 non-ASCII address requires SMTPUTF8, which is not offered');
+          break;
+        }
         this.#from = addrOf(line);
         this.#recipients = [];
         this.#inTransaction = true;
@@ -419,6 +452,12 @@ class Connection {
         }
         {
           const rcpt = addrOf(line);
+          // SMTPUTF8 (RFC 6531) is not advertised, so a non-ASCII forward-path is
+          // failed rather than silently accepted (see hasNonAscii).
+          if (hasNonAscii(rcpt)) {
+            this.#reject('553 5.6.7 non-ASCII address requires SMTPUTF8, which is not offered');
+            break;
+          }
           // Reject recipients we don't serve (RFC 5321 §7.2): otherwise we accept and
           // misdeliver mail for unknown users, and become a backscatter source for
           // foreign domains we can't actually relay to.
@@ -433,7 +472,7 @@ class Connection {
             // about which of the two a probed address is.
             const rcptAt = rcpt.lastIndexOf('@');
             const atOurDomain = this.#opts.domain !== undefined && rcptAt !== -1 && rcpt.slice(rcptAt + 1).toLowerCase() === this.#opts.domain.toLowerCase();
-            this.#reject(atOurDomain ? '550 5.1.1 mailbox unavailable — no such user here' : '550 5.7.1 relaying denied — recipient not hosted here');
+            this.#reject(atOurDomain ? '550 5.1.1 mailbox unavailable; no such user here' : '550 5.7.1 relaying denied; recipient not hosted here');
             break;
           }
           // Cap recipients per transaction (RFC 5321 §4.5.3.1.10 permits ≥100). Without
@@ -492,12 +531,26 @@ class Connection {
       this.#write('504 5.5.4 AUTH not supported');
       return;
     }
-    if (!this.#tls) {
-      this.#write('538 5.7.11 Encryption required for AUTH'); // no plaintext AUTH
-      return;
-    }
-    if (this.#authed) {
-      this.#write('503 5.5.1 already authenticated');
+    // The AUTH sequencing rules are decided by the single tested source of truth,
+    // canAuth (src/smtp/auth-state.ts; RFC 4954 §4 + ADR 0007): no cleartext AUTH
+    // (538), none DURING a mail transaction (503, R-4954-4-a), and none twice (503,
+    // R-4954-4-b). The receiver used to reimplement two of these inline and OMITTED
+    // the mid-transaction guard entirely; now it defers to canAuth so the reference
+    // module cannot drift from the production path. Enhanced status codes and the
+    // wire text stay the receiver's; canAuth owns the decision.
+    const decision = canAuth({
+      tlsActive: this.#tls,
+      authenticated: this.#authed,
+      inTransaction: this.#inTransaction,
+    });
+    if (!decision.accepted) {
+      if (decision.code === 538) {
+        this.#write('538 5.7.11 Encryption required for AUTH');
+      } else if (this.#inTransaction) {
+        this.#write('503 5.5.1 AUTH not permitted during a mail transaction');
+      } else {
+        this.#write('503 5.5.1 already authenticated');
+      }
       return;
     }
     const parts = line.split(/\s+/);
@@ -540,7 +593,7 @@ class Connection {
       // the raw material for spotting a credential-stuffing run and for fail2ban.
       this.#opts.log?.(`submission auth failed for ${JSON.stringify(username)} from ${this.#remoteAddress}`);
       if (this.#opts.throttle?.isBlocked(this.#remoteAddress) === true) {
-        this.#opts.log?.(`auth throttle engaged for ${this.#remoteAddress} (submission) — refusing further attempts while the window drains`);
+        this.#opts.log?.(`auth throttle engaged for ${this.#remoteAddress} (submission), refusing further attempts while the window drains`);
       }
       this.#write('535 5.7.8 Authentication credentials invalid');
     }
@@ -558,6 +611,21 @@ class Connection {
     this.#inData = false;
 
     const secure = new tls.TLSSocket(raw, { isServer: true, key: this.#opts.tls!.key, cert: this.#opts.tls!.cert });
+    // A manually-constructed TLSSocket has NO handshake timeout. Impose a deadline so
+    // a client that issues STARTTLS then stalls or dribbles the handshake cannot wedge
+    // the connection open (the idle timer resets on each dribbled byte, so it never
+    // fires). Cleared the instant the handshake completes.
+    const handshakeDeadline = setTimeout(() => {
+      try {
+        secure.destroy();
+      } catch {
+        // best-effort teardown
+      }
+      raw.destroy();
+    }, this.#opts.tlsHandshakeTimeoutMs ?? TLS_HANDSHAKE_TIMEOUT_MS);
+    handshakeDeadline.unref?.();
+    secure.once('secure', () => clearTimeout(handshakeDeadline));
+    secure.once('close', () => clearTimeout(handshakeDeadline));
     this.#active = secure;
     this.#tls = true;
     this.#bind(secure);
@@ -573,11 +641,21 @@ export class SmtpReceiver {
   readonly port: number;
   readonly #server: net.Server;
   readonly #sockets: Set<net.Socket>;
+  readonly #inFlight: Set<Promise<void>>;
+  readonly #closing: { value: boolean };
 
-  private constructor(server: net.Server, port: number, sockets: Set<net.Socket>) {
+  private constructor(
+    server: net.Server,
+    port: number,
+    sockets: Set<net.Socket>,
+    inFlight: Set<Promise<void>>,
+    closing: { value: boolean },
+  ) {
     this.#server = server;
     this.port = port;
     this.#sockets = sockets;
+    this.#inFlight = inFlight;
+    this.#closing = closing;
   }
 
   /** Live connection count — for observability / leak diagnostics (must return to baseline after churn). */
@@ -593,6 +671,23 @@ export class SmtpReceiver {
     // any real sending pattern.
     server.maxConnections = MAX_CONNECTIONS;
     const sockets = new Set<net.Socket>();
+    // Track in-flight delivery handlers so a graceful close() can wait for a message that is
+    // mid-store (a handler blocked on verifyDkim DNS, say) to finish against the still-open
+    // database, rather than the caller closing stores under it and the resumed handler writing
+    // to a closed DB. `closing` gates NEW work once shutdown starts: an accepted DATA that has
+    // not yet reached the handler is refused 421 instead of racing the teardown.
+    const inFlight = new Set<Promise<void>>();
+    const closing = { value: false };
+    const trackedHandler: DeliveryHandler = async (msg) => {
+      if (closing.value) throw new MessageRejected('421 4.3.2 service shutting down, retry later');
+      const p = Promise.resolve(handler(msg));
+      inFlight.add(p);
+      try {
+        return await p;
+      } finally {
+        inFlight.delete(p);
+      }
+    };
     return new Promise((resolve, reject) => {
       // A bind failure (EADDRINUSE — a stale instance or a system MTA already on the port;
       // EACCES — a privileged port 25/587 without root/setcap) otherwise emits an unhandled
@@ -607,16 +702,24 @@ export class SmtpReceiver {
         server.on('connection', (sock) => {
           sockets.add(sock);
           sock.on('close', () => sockets.delete(sock));
-          new Connection(sock, handler, domain, options);
+          new Connection(sock, trackedHandler, domain, options);
         });
-        resolve(new SmtpReceiver(server, port, sockets));
+        resolve(new SmtpReceiver(server, port, sockets, inFlight, closing));
       });
     });
   }
 
-  close(): Promise<void> {
+  async close(): Promise<void> {
+    // Refuse new work, then stop accepting connections.
+    this.#closing.value = true;
+    const serverClosed = new Promise<void>((resolve) => this.#server.close(() => resolve()));
+    // Let any handler that is mid-store finish (and send its reply) against the still-open
+    // database before the caller closes it. allSettled: a handler that rejects is the client's
+    // problem, not a shutdown error.
+    await Promise.allSettled([...this.#inFlight]);
+    // Now force-close idle and just-finished connections so serverClosed can resolve.
     for (const s of this.#sockets) s.destroy();
     this.#sockets.clear();
-    return new Promise((resolve) => this.#server.close(() => resolve()));
+    await serverClosed;
   }
 }

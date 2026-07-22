@@ -160,6 +160,11 @@ export const S7 = [
   },
   {
     id: 'R-5321-7.3-b',
+    deliberatelyUncovered: {
+      reason:
+        'needs a server with VRFY or EXPN deliberately disabled to assert the exact 252 reply, which is operator configuration not settable in-band.',
+      date: '2026-07-22',
+    },
     section: '7.3',
     page: 76,
     level: 'MUST',
@@ -206,6 +211,11 @@ export const S7 = [
   },
   {
     id: 'R-5321-7.3-d',
+    deliberatelyUncovered: {
+      reason:
+        'needs one known-valid and one known-invalid address to prove a uniformly-550 VRFY never discriminates, and a known-deliverable mailbox is server-side state not creatable in-band; the false-250 half is covered by vrfy-does-not-falsely-verify.',
+      date: '2026-07-22',
+    },
     section: '7.3',
     page: 76,
     level: 'MUST NOT',

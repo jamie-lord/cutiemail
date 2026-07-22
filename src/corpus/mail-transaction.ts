@@ -45,7 +45,13 @@ export const CASES: readonly TestCase[] = [
   testCase({
     id: 'source-route-syntax-recognized',
     requirement: 'R-5321-4.1.1.3-b',
-    alsoTouches: ['R-5321-3.3-k'],
+    // R-5321-4.1.2-a ("the so-called source route ... MUST BE accepted") states the
+    // same recognise-the-syntax duty from the grammar section: a 501 syntax error on
+    // the source-routed path is exactly its violation too, which the primary's
+    // rejectSourceRouteAsSyntax mutant demonstrates. It is wire-with-fixture (the
+    // deeper "accept and route it" needs a fixture recipient), so this carrying it
+    // makes it fixture-gated rather than a silent gap.
+    alsoTouches: ['R-5321-3.3-k', 'R-5321-4.1.2-a'],
     intent: 'a source-routed recipient path is parsed, not rejected as a syntax error',
     rationale:
       '§4.1.1.3: "Receiving systems MUST recognize source route syntax." The assertion is ' +

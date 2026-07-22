@@ -54,6 +54,11 @@ export const S2_4 = [
   },
   {
     id: 'R-5321-2.4-c',
+    deliberatelyUncovered: {
+      reason:
+        'proving the local-part is treated case-sensitively needs two addresses differing only in local-part case where exactly one is a valid mailbox, which is server-side state not creatable in-band; the observable half (case preserved on relay) is covered fixture-gated by local-part-case-preserved-on-delivery.',
+      date: '2026-07-22',
+    },
     section: '2.4',
     page: 16,
     level: 'MUST',

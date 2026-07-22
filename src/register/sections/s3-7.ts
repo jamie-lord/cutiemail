@@ -135,6 +135,11 @@ export const S3_7 = [
   },
   {
     id: 'R-5321-3.7.2-c',
+    deliberatelyUncovered: {
+      reason:
+        'needs a recipient the system accepts plus a message with a malformed Received: header and a well-formed control run, to prove trace-field format is not a rejection basis, which is server-side accept state not creatable in-band.',
+      date: '2026-07-22',
+    },
     section: '3.7.2',
     page: 29,
     level: 'MUST NOT',

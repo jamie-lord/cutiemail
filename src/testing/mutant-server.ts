@@ -376,6 +376,30 @@ export interface Defects {
    * floor §4.5.3.1.6 requires. Simulates a too-small text buffer.
    */
   readonly rejectTextLineAt500?: boolean;
+  /**
+   * Reject an otherwise-accepted message whose body contains a C0 control octet
+   * (NUL, DEL, VT, FF, …) with a 5yz, rather than accepting it. Violates
+   * R-5321-4.1.1.4-c ("The mail data may contain any of the 128 ASCII character
+   * codes"): a conformant server carries such octets through, it does not refuse
+   * the transaction for containing them. CR/LF/TAB are exempted so the defect
+   * isolates the "unusual ASCII control in the body" case, not line structure.
+   */
+  readonly rejectAsciiControlInData?: boolean;
+  /**
+   * Answer VRFY with a 250 that echoes the queried address, WITHOUT having
+   * verified it; the false-verification defect. Violates R-5321-7.3-a / -c and
+   * R-5321-3.5.3-a/-b: a 250 to a syntactically-valid but certainly-nonexistent
+   * address makes the server "appear to have verified" an address it has not.
+   * The clean baseline answers 252 "Cannot VRFY" (no false signal).
+   */
+  readonly vrfyFalselyVerifies?: boolean;
+  /**
+   * Reject the 11th and later RCPT in one transaction with 452 "too many
+   * recipients"; a recipient cap far below the §4.5.3.1.8 floor of 100 a server
+   * MUST buffer. Violates R-5321-4.5.3.1.8-a/-b (rejecting for excessive
+   * recipients with fewer than 100 RCPTs). The clean baseline buffers all of them.
+   */
+  readonly rejectRecipientsBefore100?: boolean;
 }
 
 export interface MutantOptions {
@@ -730,6 +754,23 @@ export class MutantServer {
       this.#write(sock, crlf`500 Error: text line too long`);
       return eod;
     }
+    // Defect: refuse a message whose body carries an unusual ASCII control octet
+    // (NUL, DEL, VT, FF, …). §4.1.1.4-c says the mail data MAY contain any of the
+    // 128 ASCII codes, so a conformant server carries them through; it does not
+    // reject the transaction for containing them. CR/LF/TAB are exempt (they are
+    // line structure, tested elsewhere), so this isolates the "unusual control" case.
+    if (this.#defects.rejectAsciiControlInData) {
+      const body = buf.subarray(0, eod);
+      for (const b of body) {
+        // Exempt the line-structure octets TAB (0x09), LF (0x0a) and CR (0x0d);
+        // any other C0 control or DEL trips the (non-conformant) rejection.
+        if (b === 0x09 || b === 0x0a || b === 0x0d) continue;
+        if (b <= 0x1f || b === 0x7f) {
+          this.#write(sock, crlf`554 5.6.0 message contains a forbidden control character`);
+          return eod;
+        }
+      }
+    }
     // Conformant temp-deferral at storage: the message was received but not stored
     // (disk pressure / post-DATA deferral), so a 451 is owed, not a 250.
     if (this.#defects.tempDeferAtStorage) {
@@ -994,6 +1035,11 @@ export class MutantServer {
           if (d.rejectLongDomain && (addr.split('@')[1]?.length ?? 0) > 120) {
             return replyOK(550, '5.1.2 Bad recipient domain (too long)');
           }
+          // Defect: cap the transaction at 10 recipients; far below the §4.5.3.1.8
+          // floor of 100 a server MUST buffer; by 452-ing the 11th onward.
+          if (d.rejectRecipientsBefore100 && state.rcptCount >= 10) {
+            return replyOK(452, '4.5.3 Too many recipients');
+          }
           const verdict = this.#recipientVerdict(addr);
           if (verdict === 'reject' && !d.acceptRejectedRecipient) {
             return replyOK(550, '5.1.1 Recipient rejected');
@@ -1103,6 +1149,13 @@ export class MutantServer {
           return replyOK(503, 'Error: send HELO/EHLO first');
         }
         if (d.vrfyNotSupported) return replyOK(502, 'VRFY not implemented');
+        // Defect: echo the queried address back with a 250 without verifying it ; 
+        // the false-verification the §7.3 / §3.5.3 MUST NOTs forbid. The address
+        // argument is taken verbatim from the command line after the verb.
+        if (d.vrfyFalselyVerifies) {
+          const arg = text.replace(/^VRFY\s+/i, '').trim();
+          return replyOK(250, arg.length > 0 ? arg : 'user');
+        }
         if (d.vrfyResetsState) {
           state.hasMail = false;
           state.rcptCount = 0;

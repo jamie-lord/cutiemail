@@ -95,6 +95,36 @@ async function attemptInjection(retain: boolean): Promise<DeliveredMessage[]> {
   return delivered;
 }
 
+test('STARTTLS: a stalled TLS handshake is dropped within the handshake deadline (slowloris)', async () => {
+  // Reproduce-first: without a handshake deadline the manually-constructed TLSSocket
+  // waits forever for handshake bytes, and the socket idle timer resets on each
+  // dribbled byte, so the connection wedges open. With the deadline the server drops it.
+  const receiver = await SmtpReceiver.start(() => {}, { tls: TLS_OPTS, tlsHandshakeTimeoutMs: 200 });
+  try {
+    const raw = net.connect(receiver.port, '127.0.0.1');
+    raw.on('error', () => {});
+    const rr = new Reader(raw);
+    await rr.until('ESMTP\r\n');
+    raw.write('EHLO client\r\n');
+    await rr.until('250 STARTTLS\r\n');
+    raw.write('STARTTLS\r\n');
+    await rr.until('Ready to start TLS\r\n');
+    // Never actually negotiate TLS: dribble the first couple of bytes of a TLS record
+    // and then stall. The handshake never completes; the deadline must drop the socket.
+    raw.write(Buffer.from([0x16, 0x03]));
+    const dropped = await new Promise<boolean>((resolve) => {
+      let settled = false;
+      const finish = (v: boolean): void => { if (!settled) { settled = true; resolve(v); } };
+      raw.once('close', () => finish(true));
+      raw.once('end', () => finish(true));
+      setTimeout(() => finish(false), 2000); // generous ceiling; the deadline is 200ms
+    });
+    assert.ok(dropped, 'the server dropped the stalled STARTTLS handshake within the deadline');
+  } finally {
+    await receiver.close();
+  }
+});
+
 test('STARTTLS: plaintext injected before the handshake is discarded (retainBufferAcrossStarttls caught)', async () => {
   // Conformant: the injected transaction is discarded — nothing is delivered.
   const conformant = await attemptInjection(false);

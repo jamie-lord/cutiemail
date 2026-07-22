@@ -56,6 +56,11 @@ export const S4_5_1 = [
   },
   {
     id: 'R-5321-4.5.1-c',
+    deliberatelyUncovered: {
+      reason:
+        'needs a relaying or delivering (non-554) server whose served domain is known so postmaster at that domain is an expected accept, which is server-side state not creatable in-band.',
+      date: '2026-07-22',
+    },
     section: '4.5.1',
     page: 61,
     level: 'MUST',
@@ -105,6 +110,11 @@ export const S4_5_1 = [
   },
   {
     id: 'R-5321-4.5.1-e',
+    deliberatelyUncovered: {
+      reason:
+        'needs a known served domain to assert postmaster at that domain is accepted, which is server-side state not creatable in-band.',
+      date: '2026-07-22',
+    },
     section: '4.5.1',
     page: 61,
     level: 'MUST',
@@ -227,6 +237,11 @@ export const S4_5_1 = [
   },
   {
     id: 'R-5321-4.5.2-b',
+    deliberatelyUncovered: {
+      reason:
+        'needs a recipient the server accepts so a transaction reaches the line-by-line DATA receive path, which is server-side accept state not creatable in-band; the observable transparency of that path (dot-un-stuffing, control-character delivery) is covered fixture-gated via the sink.',
+      date: '2026-07-22',
+    },
     section: '4.5.2',
     page: 62,
     level: 'MUST',

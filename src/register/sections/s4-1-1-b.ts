@@ -182,6 +182,11 @@ export const S4_1_1_B = [
   // ---------------------------------------------------------------- 4.1.1.6
   {
     id: 'R-5321-4.1.1.6-a',
+    deliberatelyUncovered: {
+      reason:
+        'needs a mailbox the server accepts and one it rejects, told apart, so a VRFY confirmation can be judged, which is server-side state not creatable in-band.',
+      date: '2026-07-22',
+    },
     section: '4.1.1.6',
     page: 38,
     level: 'MUST',
@@ -245,6 +250,11 @@ export const S4_1_1_B = [
   // ---------------------------------------------------------------- 4.1.1.7
   {
     id: 'R-5321-4.1.1.7-a',
+    deliberatelyUncovered: {
+      reason:
+        'needs a mailing list the server expands with known membership, which is server-side list state not creatable in-band (most MTAs have no mailing-list concept).',
+      date: '2026-07-22',
+    },
     section: '4.1.1.7',
     page: 39,
     level: 'MUST',
@@ -275,6 +285,11 @@ export const S4_1_1_B = [
   },
   {
     id: 'R-5321-4.1.1.7-b',
+    deliberatelyUncovered: {
+      reason:
+        'needs a multi-member mailing list the server expands, which is server-side list state not creatable in-band.',
+      date: '2026-07-22',
+    },
     section: '4.1.1.7',
     page: 39,
     level: 'MUST',
@@ -677,6 +692,11 @@ export const S4_1_1_B = [
   },
   {
     id: 'R-5321-4.1.1.10-e',
+    deliberatelyUncovered: {
+      reason:
+        'needs an out-of-band delivery sink to prove a pre-close completed transaction was delivered while a mid-DATA-dropped one was not, which is invisible on the connection being destroyed.',
+      date: '2026-07-22',
+    },
     section: '4.1.1.10',
     page: 40,
     level: 'MUST',
@@ -758,6 +778,11 @@ export const S4_1_1_B = [
   },
   {
     id: 'R-5321-4.1.1.10-h',
+    deliberatelyUncovered: {
+      reason:
+        'needs an out-of-band delivery sink to prove QUIT aborted an uncompleted transaction, since the 221 alone shows nothing and the sink is out of scope for the inbound corpus.',
+      date: '2026-07-22',
+    },
     section: '4.1.1.10',
     page: 40,
     level: 'MUST',

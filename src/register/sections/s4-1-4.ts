@@ -76,6 +76,11 @@ export const S4_1_4 = [
   },
   {
     id: 'R-5321-4.1.4-d',
+    deliberatelyUncovered: {
+      reason:
+        'proving a second EHLO clears a partially-built transaction needs a recipient the server accepts to build the pending state first, which is server-side accept state not creatable in-band.',
+      date: '2026-07-22',
+    },
     section: '4.1.4',
     page: 44,
     level: 'MUST',

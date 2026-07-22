@@ -137,6 +137,11 @@ export const S2_3_B = [
   },
   {
     id: 'R-5321-2.3.11-a',
+    deliberatelyUncovered: {
+      reason:
+        'distinguishing a relayed from a locally-delivered local-part needs a domain the server relays for plus recipients it treats differently at RCPT, which is server-side routing state not creatable in-band and not modelled by the mutant.',
+      date: '2026-07-22',
+    },
     section: '2.3.11',
     page: 16,
     level: 'MUST',

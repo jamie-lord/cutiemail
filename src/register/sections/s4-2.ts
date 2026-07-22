@@ -98,6 +98,11 @@ export const S4_2 = [
   },
   {
     id: 'R-5321-4.2-c',
+    deliberatelyUncovered: {
+      reason:
+        'the 251, 421 and 551 codes need forwarding or shutdown state not reachable on a bare connection; only 220 and 221 are reachable in-band, so the code association cannot be exercised.',
+      date: '2026-07-22',
+    },
     section: '4.2',
     page: 46,
     level: 'MUST',

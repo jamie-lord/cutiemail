@@ -7,6 +7,12 @@
  * no-plaintext-AUTH-without-TLS rule are all enforced here. A pure decision
  * function over the session state — testable before the live submission server
  * exists, which must reproduce these decisions.
+ *
+ * This is NOT dead reference code: the production receiver (src/server/smtp-receiver.ts,
+ * Connection.#auth) CALLS canAuth for the AUTH sequencing decision, so this module is
+ * the single source of truth for it rather than a parallel copy that can silently
+ * diverge. The receiver keeps its own wire replies (enhanced status codes + text);
+ * canAuth decides only accept-or-refuse and which rule fired.
  */
 
 export interface SessionState {

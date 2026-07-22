@@ -442,6 +442,11 @@ export const S6 = [
   },
   {
     id: 'R-5321-6.3-s',
+    deliberatelyUncovered: {
+      reason:
+        'needs a routing configuration that forwards a message back through the server to induce a real loop, which is relay and routing state not establishable over an SMTP client connection.',
+      date: '2026-07-22',
+    },
     section: '6.3',
     page: 73,
     level: 'MUST',

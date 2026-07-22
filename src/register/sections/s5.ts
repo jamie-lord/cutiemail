@@ -321,13 +321,11 @@ export const S5 = [
     text:
       'MX records contain a preference indication that MUST be used in ' +
       'sorting if more than one such record appears (see below).',
-    testability: {
-      kind: 'not-testable',
-      reason:
-        'Requires the sender to sort candidate hosts by MX preference. A ' +
-        'sender-side ranking decision on its outbound path; invisible to the ' +
-        'server we connect to.',
-    },
+    testability: { kind: 'wire-client' },
+    note:
+      'Proven client-side by the outbound MX resolver: resolveMxHosts sorts ' +
+      'candidate hosts by increasing preference, and mx.test.ts asserts the ' +
+      'order with an ignorePreference negative control.',
   },
   {
     id: 'R-5321-5.1-o',
@@ -339,18 +337,15 @@ export const S5 = [
     text:
       'the sender-SMTP MUST randomize them to spread the load across multiple ' +
       'mail exchangers for a specific organization.',
-    testability: {
-      kind: 'not-testable',
-      reason:
-        'Requires the sender to randomize equal-preference MX targets. A ' +
-        'sender-side selection behaviour; not observable from the receiver, ' +
-        'and even end-to-end it would only be visible statistically.',
-    },
+    testability: { kind: 'wire-client' },
     note:
-      'Condition stated earlier in the sentence ("If there are multiple ' +
-      'destinations with the same preference and there is no clear reason to ' +
-      'favor one ..."); quoted from "the sender-SMTP MUST randomize" which ' +
-      'carries the obligation and is unique.',
+      'Proven client-side by the outbound MX resolver: resolveMxHosts shuffles ' +
+      'each equal-preference tier (Fisher-Yates over an injectable RNG), and ' +
+      'mx.test.ts asserts both orders appear over repeated resolutions with a ' +
+      'noEqualPreferenceShuffle negative control. Condition stated earlier in the ' +
+      'sentence ("If there are multiple destinations with the same preference and ' +
+      'there is no clear reason to favor one ..."); the quoted "the sender-SMTP ' +
+      'MUST randomize" carries the obligation and is unique.',
   },
   {
     id: 'R-5321-5.1-p',

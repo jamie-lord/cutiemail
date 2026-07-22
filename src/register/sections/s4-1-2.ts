@@ -181,6 +181,11 @@ export const S4_1_2 = [
   },
   {
     id: 'R-5321-4.1.2-g',
+    deliberatelyUncovered: {
+      reason:
+        'needs a single valid mailbox addressable three equivalent ways (bare, redundantly quoted, backslash-quoted) all accepted, which is server-side mailbox state not creatable in-band.',
+      date: '2026-07-22',
+    },
     section: '4.1.2',
     page: 42,
     level: 'MUST',
@@ -282,6 +287,11 @@ export const S4_1_2 = [
   },
   {
     id: 'R-5321-4.1.2-k',
+    deliberatelyUncovered: {
+      reason:
+        'needs a valid mailbox whose local-part contains a character significant only when quoted, which is server-side mailbox state not creatable in-band.',
+      date: '2026-07-22',
+    },
     section: '4.1.2',
     page: 43,
     level: 'MUST',
