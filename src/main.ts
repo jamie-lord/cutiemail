@@ -748,6 +748,45 @@ export function configFromEnv(): MailServerConfig & { usingDevCert: boolean; dev
   const dkim = dkimKeyPath !== undefined && dkimSelector !== undefined
     ? { selector: dkimSelector, privateKeyPem: readEnvFile(dkimKeyPath, 'MAIL_DKIM_KEY', 'Generate it with `node src/main.ts setup`, or unset MAIL_DKIM_KEY/MAIL_DKIM_SELECTOR to send unsigned (worse deliverability, but it starts).') }
     : undefined;
+  // Seeded accounts from the environment (create-only bootstrap; the registry is the source
+  // of truth thereafter, ADR 0012). The env primary is included ONLY when MAIL_USER is set —
+  // unset, the daemon runs entirely off the registry, so a production unit needs no
+  // credentials at all, and a genuinely empty registry gets a dev demo/demo fallback in
+  // startServer, not here. Additional accounts come from MAIL_ACCOUNTS ("user:pass,user2:pw").
+  const accounts = [
+    ...(process.env.MAIL_USER !== undefined
+      ? [{
+          user: requireValidLogin(process.env.MAIL_USER, 'MAIL_USER'),
+          pass: process.env.MAIL_PASS ?? 'demo',
+          // The primary's mail DB: MAIL_DB when set; otherwise 'mail.db' — EXCEPT when the
+          // control DB is :memory:, where no path is passed so mailDbPathFor's in-memory
+          // default applies. An explicit './mail.db' would bypass that and silently reopen
+          // whatever stale on-disk mail was lying around in a "fully ephemeral" run.
+          ...(process.env.MAIL_DB !== undefined
+            ? { mailDbPath: process.env.MAIL_DB }
+            : (process.env.MAIL_CONTROL_DB ?? 'control.db') === ':memory:'
+              ? {}
+              : { mailDbPath: 'mail.db' }),
+        }]
+      : []),
+    ...(process.env.MAIL_ACCOUNTS ?? '')
+      .split(',')
+      .map((s) => s.trim())
+      .filter((s) => s.includes(':'))
+      .map((pair) => ({ user: requireValidLogin(pair.slice(0, pair.indexOf(':')), 'MAIL_ACCOUNTS'), pass: pair.slice(pair.indexOf(':') + 1) })),
+  ];
+  // An empty password is not a weak password — it is no authentication at all. On a public
+  // bind, refuse to seed one from ANY env path (MAIL_PASS='', or a MAIL_ACCOUNTS entry like
+  // "you:" with nothing after the colon), the same fail-closed stance as the well-known
+  // default guarded above. Loopback keeps the permissive dev behaviour.
+  if (!isLoopbackHost(host)) {
+    const empty = accounts.find((a) => a.pass === '');
+    if (empty !== undefined) {
+      throw new Error(
+        `refusing to seed account ${JSON.stringify(empty.user)} on ${host} with an empty password — it would accept any login. Set a real password (MAIL_PASS or the MAIL_ACCOUNTS entry), or leave it unset and provision with \`node src/main.ts init <login>\`.`,
+      );
+    }
+  }
   return {
     // The control DB (registry + queue). MAIL_DB now names the FIRST account's mail
     // database, so an existing single-account deploy migrates with no data loss: its
@@ -758,37 +797,7 @@ export function configFromEnv(): MailServerConfig & { usingDevCert: boolean; dev
     submissionPort: posIntEnv(process.env.MAIL_SUBMISSION_PORT, 5587),
     imapPort: posIntEnv(process.env.MAIL_IMAP_PORT, 5993),
     domain: process.env.MAIL_DOMAIN ?? 'mail.example.com',
-    // The primary account keeps its existing mail database (MAIL_DB) for a clean
-    // migration; additional accounts come from MAIL_ACCOUNTS ("user:pass,user2:pass2")
-    // and default their mail DB to mail-<user>.db beside the control DB.
-    accounts: [
-      // The env primary is a CREATE-ONLY bootstrap seed, included ONLY when MAIL_USER is
-      // explicitly set. When it is unset the daemon runs entirely off the registry (accounts
-      // created by `init`/`account`), so a production unit needs no credentials at all; a
-      // genuinely empty registry gets a dev `demo/demo` fallback in startServer, not here.
-      // The primary's mail DB: MAIL_DB when set; otherwise 'mail.db' — EXCEPT when the
-      // control DB is :memory:, where no path is passed so mailDbPathFor's in-memory
-      // default applies. The old unconditional `?? 'mail.db'` made the path always
-      // explicit, which bypassed that default: a "fully ephemeral" MAIL_CONTROL_DB=
-      // :memory: run with MAIL_USER set silently reopened whatever ./mail.db was lying
-      // around — stale mail leaking into what the README promises is an in-memory run.
-      ...(process.env.MAIL_USER !== undefined
-        ? [{
-            user: requireValidLogin(process.env.MAIL_USER, 'MAIL_USER'),
-            pass: process.env.MAIL_PASS ?? 'demo',
-            ...(process.env.MAIL_DB !== undefined
-              ? { mailDbPath: process.env.MAIL_DB }
-              : (process.env.MAIL_CONTROL_DB ?? 'control.db') === ':memory:'
-                ? {}
-                : { mailDbPath: 'mail.db' }),
-          }]
-        : []),
-      ...(process.env.MAIL_ACCOUNTS ?? '')
-        .split(',')
-        .map((s) => s.trim())
-        .filter((s) => s.includes(':'))
-        .map((pair) => ({ user: requireValidLogin(pair.slice(0, pair.indexOf(':')), 'MAIL_ACCOUNTS'), pass: pair.slice(pair.indexOf(':') + 1) })),
-    ],
+    accounts,
     tls: dev,
     ...(dkim !== undefined ? { dkim } : {}),
     // 25 MiB default. Validated: a malformed value must NOT become NaN, or every

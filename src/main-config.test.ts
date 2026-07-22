@@ -138,6 +138,22 @@ test('MAIL_USER without MAIL_PASS refuses to seed a well-known default credentia
     withEnv({ MAIL_HOST: '127.0.0.1', MAIL_USER: 'you' }, () => {
       assert.equal(configFromEnv().accounts[0]?.pass, 'demo');
     });
+    // The sibling seeding path: a MAIL_ACCOUNTS entry with a trailing colon ("you:") seeds an
+    // EMPTY password — no authentication at all — which the MAIL_USER guard above never sees.
+    withEnv({ MAIL_HOST: '0.0.0.0', MAIL_ACCOUNTS: 'you:', ...cert }, () => {
+      assert.throws(
+        () => configFromEnv(),
+        (e: Error) => /refusing to seed account "you" on 0\.0\.0\.0 with an empty password/.test(e.message),
+        'an empty-password MAIL_ACCOUNTS entry on a public bind must fail closed',
+      );
+    });
+    // A real password on the same entry is fine; loopback tolerates even the empty one (dev).
+    withEnv({ MAIL_HOST: '0.0.0.0', MAIL_ACCOUNTS: 'you:a-real-passphrase', ...cert }, () => {
+      assert.equal(configFromEnv().accounts[0]?.pass, 'a-real-passphrase');
+    });
+    withEnv({ MAIL_HOST: '127.0.0.1', MAIL_ACCOUNTS: 'you:' }, () => {
+      assert.equal(configFromEnv().accounts[0]?.pass, '');
+    });
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
