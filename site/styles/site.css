@@ -292,12 +292,15 @@ a.term-pill:active { box-shadow: 0 0 0 var(--bubblegum); transform: translate(4p
   .wrap, .wrap-narrow { padding-inline: 20px; }
   .hero { padding: 24px 20px 56px; }
   .panel { padding: 28px 24px; }
-  .nav__links .nav-hide { display: none; }
-  .nav__inner { padding: 14px 18px; }
-  .nav__links { gap: 12px; }
-  .nav__links .btn { padding: 8px 14px; }
+  .nav__inner { padding: 12px 16px; gap: 12px; }
+  .brand img { height: 22px; }
+  .brand__word { font-size: 18px; }
+  .nav__links { gap: 14px; font-size: 14px; }
+  .nav__links .btn { padding: 8px 16px; font-size: 14px; box-shadow: 3px 3px 0 var(--ink); }
   .panel__col { min-width: 0; flex-basis: 100%; overflow-x: auto; }
 }
-@media (max-width: 380px) {
-  .nav__links .btn { display: none; }
+/* Very narrow: keep the primary CTA and drop the secondary text links (docs and github
+   stay in the footer and are reachable from the page). Stops the nav overflowing. */
+@media (max-width: 460px) {
+  .nav__links a:not(.btn) { display: none; }
 }
