@@ -469,9 +469,14 @@ export async function startServer(cfg: MailServerConfig): Promise<RunningServer>
       });
       const login = loginForLocalAddress(from);
       if (login !== undefined) {
-        deliverTo(login, bounce); // the sender is one of ours — the bounce lands in their INBOX
+        deliverTo(login, bounce); // the sender is one of ours, the bounce lands in their INBOX
       } else {
-        queue.enqueue('', [from], bounce, Date.now()); // null return-path, relayed onward
+        // Sign the relayed bounce so it aligns for DMARC at the recipient (From is
+        // MAILER-DAEMON@our-domain). A p=quarantine/reject domain, which this project itself
+        // recommends, would otherwise junk or reject its own bounces and the sender never
+        // learns their mail failed. The envelope stays a null return-path (cannot itself bounce).
+        const outBounce = signer !== undefined ? dkimSign(bounce, signer) : bounce;
+        queue.enqueue('', [from], outBounce, Date.now());
       }
       log(`bounce generated for <${from}> (${failures.length} recipient(s))`);
     },
@@ -590,6 +595,10 @@ export async function startServer(cfg: MailServerConfig): Promise<RunningServer>
       const s = stores.get(login);
       return s === undefined ? undefined : { catalog: s.catalog, notifier: s.notifier };
     },
+    // Consulted on every command of a live session so `account disable` cuts an already-open
+    // connection at its next command, not only the next LOGIN (the store cache would otherwise
+    // keep a disabled, possibly compromised, credential serving mail until a daemon restart).
+    isEnabled: (login) => registry.lookup(login)?.enabled === true,
     log,
     // One size limit for the whole server: a message importable over SMTP must be
     // importable over IMAP APPEND too (imapsync migrations move large legacy mail).

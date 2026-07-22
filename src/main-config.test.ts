@@ -63,6 +63,25 @@ test('MAIL_ALLOW_DEV_CERT=1 is an explicit unsafe opt-in for a public interface'
   });
 });
 
+test('a malformed numeric env var falls back to its default rather than becoming NaN', () => {
+  // posIntEnv guards against a NaN limit silently disabling every `value > limit` check: a
+  // malformed MAIL_MAX_SIZE must fall back to the default, not turn the size ceiling off. Same
+  // for the ports: a bad value takes the default rather than binding port 0 or NaN.
+  for (const bad of ['abc', '', '0', '-5', '3.5', ' ']) {
+    withEnv({ MAIL_MAX_SIZE: bad, MAIL_SMTP_PORT: bad }, () => {
+      const cfg = configFromEnv();
+      assert.equal(cfg.maxMessageSize, 26_214_400, `MAIL_MAX_SIZE=${JSON.stringify(bad)} falls back to the default, not NaN`);
+      assert.equal(cfg.smtpPort, 2525, `MAIL_SMTP_PORT=${JSON.stringify(bad)} falls back to the default`);
+    });
+  }
+  // A well-formed value passes through.
+  withEnv({ MAIL_MAX_SIZE: '1048576', MAIL_SMTP_PORT: '2626' }, () => {
+    const cfg = configFromEnv();
+    assert.equal(cfg.maxMessageSize, 1_048_576, 'a valid MAIL_MAX_SIZE is honoured');
+    assert.equal(cfg.smtpPort, 2626, 'a valid MAIL_SMTP_PORT is honoured');
+  });
+});
+
 test('an invalid MAIL_USER or MAIL_ACCOUNTS login is rejected at boot (not turned into a bad filename)', () => {
   for (const bad of ['../evil', 'a/b', 'a:b', '.hidden', 'x'.repeat(65)]) {
     withEnv({ MAIL_USER: bad }, () => assert.throws(() => configFromEnv(), /invalid account login/, `MAIL_USER=${bad}`));

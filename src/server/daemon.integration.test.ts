@@ -138,3 +138,41 @@ test('daemon inbound rejects RCPT for a foreign domain (no relay / backscatter)'
     await server.close();
   }
 });
+
+test('daemon: one inbound transaction with two local recipients fans out one copy to each mailbox', async () => {
+  // Mailing a household's two users in a single MAIL/RCPT/RCPT/DATA transaction is ordinary; the
+  // receiver carries N recipients and the daemon must fan out one copy to each mailbox. Nothing
+  // covered this end to end (every other path uses one RCPT), so a bug dropping all-but-first, or
+  // cross-delivering, would have shipped green.
+  const config: MailServerConfig = {
+    ...CONFIG,
+    accounts: [
+      { user: 'alice', pass: 's3cret-passphrase' },
+      { user: 'bob', pass: 'another-passphrase' },
+    ],
+  };
+  const server = await startServer(config);
+  try {
+    const data = Buffer.from('Subject: household notice\r\n\r\nto both of us\r\n', 'latin1');
+    const sent = await deliver(
+      { host: '127.0.0.1', port: server.inbound.port, tls: 'none' },
+      {
+        from: 'someone@example.net',
+        recipients: ['alice@mail.example.test', 'bob@mail.example.test'],
+        data,
+        clientName: 'sender.example.net',
+      },
+    );
+    assert.ok(sent.ok, `two-recipient delivery should succeed: ${sent.failure}`);
+
+    for (const [who, pass] of [['alice', 's3cret-passphrase'], ['bob', 'another-passphrase']] as const) {
+      const got = await imapsLogin(server.imap.port, who, pass);
+      assert.ok(got.ok, `${who} logs in`);
+      const body = got.body!;
+      const subjectAt = body.indexOf(Buffer.from('Subject:'));
+      assert.ok(subjectAt !== -1 && body.subarray(subjectAt).equals(data), `${who} received the message body byte-exact`);
+    }
+  } finally {
+    await server.close();
+  }
+});
