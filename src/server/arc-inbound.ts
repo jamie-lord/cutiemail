@@ -88,7 +88,12 @@ function verifyWithKey(input: Buffer, b: string, key: { keyType: 'rsa' | 'ed2551
     if (key.keyType === 'ed25519') {
       return verifyEd25519(input, b, importEd25519PublicKey(Buffer.from(key.pub, 'base64')));
     }
-    return verifySignature(input, b, createPublicKey({ key: Buffer.from(key.pub, 'base64'), format: 'der', type: 'spki' }), 'RSA-SHA256');
+    const publicKey = createPublicKey({ key: Buffer.from(key.pub, 'base64'), format: 'der', type: 'spki' });
+    // RFC 8301 §3.2: "Verifiers MUST NOT consider signatures using RSA keys of less than 1024
+    // bits as valid." ARC shares DKIM's crypto, so it shares the floor: a weak-key AMS or seal
+    // is invalid, which (all ARC failures being permanent, §5.2.1) collapses the chain to cv=fail.
+    if ((publicKey.asymmetricKeyDetails?.modulusLength ?? 0) < 1024) return false;
+    return verifySignature(input, b, publicKey, 'RSA-SHA256');
   } catch {
     return false;
   }

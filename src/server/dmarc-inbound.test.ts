@@ -177,3 +177,48 @@ test('From extraction uses the angle-addr (not a spoofed display name) and strip
   assert.equal(d.fromDomain, 'example.com', 'the trailing dot is stripped');
   assert.equal(d.verdict, 'pass', 'strict alignment holds despite the trailing dot');
 });
+
+test('a SINGLE From header carrying a mailbox-list cannot pass DMARC (RFC 7489 §6.6.1, RFC 5322 §3.6.1)', async () => {
+  // The single-header evasion of the duplicate-From defence: `From: victim, attacker` in ONE
+  // header. The attacker owns evil.com (aligned DKIM d=evil.com) as the SECOND mailbox, while a
+  // lenient MUA may render the FIRST, victim@bank.com. The old count=froms.length reported 1, so
+  // domainOfAddrSpec's lastIndexOf('@') aligned evil.com → a forged dmarc=pass. Now the mailbox
+  // count makes it a display-spoof fail, and bank.com's p=reject is fetched so it lands in Junk.
+  const rec = dmarcAt({ '_dmarc.bank.com': 'v=DMARC1; p=reject', '_dmarc.evil.com': 'v=DMARC1; p=none' });
+  const list = Buffer.from('From: victim@bank.com, x@evil.com\r\nSubject: hi\r\n\r\nbody\r\n', 'latin1');
+  const out = await checkDmarc({ rawMessage: list, dkimPassedDomains: ['evil.com'], spfResult: 'pass', spfDomain: 'evil.com', resolveTxt: rec });
+  assert.equal(out.verdict, 'fail', 'a single-header mailbox-list is a DMARC fail, never a pass');
+  // Control: the genuine single mailbox with the same aligned DKIM passes.
+  const genuine = Buffer.from('From: x@evil.com\r\nSubject: hi\r\n\r\nbody\r\n', 'latin1');
+  const ok = await checkDmarc({ rawMessage: genuine, dkimPassedDomains: ['evil.com'], spfResult: 'pass', spfDomain: 'evil.com', resolveTxt: rec });
+  assert.equal(ok.verdict, 'pass', 'the single-mailbox control still passes');
+});
+
+test('MULTIPLE published DMARC records → no policy applied (RFC 7489 §6.6.3 step 5)', async () => {
+  // Two v=DMARC1 records at _dmarc.<from>; §6.6.3 step 5 terminates discovery with no policy.
+  // The old txts.find() took the FIRST and evaluated against it (SPF already rejects this case).
+  const two = async (name: string) => (name === '_dmarc.example.com' ? ['v=DMARC1; p=reject', 'v=DMARC1; p=none'] : []);
+  const out = await checkDmarc({ rawMessage: msg('example.com'), dkimPassedDomains: ['example.com'], spfResult: 'pass', spfDomain: 'example.com', resolveTxt: two });
+  assert.equal(out.verdict, 'none', 'multiple records is treated as no DMARC policy');
+  assert.equal(out.policy, null);
+  // Control: exactly one record and the same aligned auth passes.
+  const one = dmarcAt({ '_dmarc.example.com': 'v=DMARC1; p=reject' });
+  assert.equal((await checkDmarc({ rawMessage: msg('example.com'), dkimPassedDomains: ['example.com'], spfResult: 'none', spfDomain: '', resolveTxt: one })).verdict, 'pass');
+});
+
+test('an IDN U-label From aligns with an A-label d= and is not junked (RFC 6376 §3.5 A-labels)', async () => {
+  // Legit IDN mail: the From is written with U-labels (bücher.example) but the DKIM d= is the
+  // A-label (xn--bcher-kva.example) as required on the wire. The old raw compare made them
+  // unequal → unaligned → junked under p=quarantine/reject. Alignment now normalizes both sides.
+  const uFrom = 'bücher.example';
+  const aLabel = 'xn--bcher-kva.example';
+  // The published record is fetched at the A-label _dmarc name (the query is A-labelled too).
+  const rec = dmarcAt({ [`_dmarc.${aLabel}`]: 'v=DMARC1; p=reject' });
+  const message = Buffer.from(`From: Bücher <buch@${uFrom}>\r\nSubject: hi\r\n\r\nbody\r\n`, 'latin1');
+  const viaDkim = await checkDmarc({ rawMessage: message, dkimPassedDomains: [aLabel], spfResult: 'none', spfDomain: '', resolveTxt: rec });
+  assert.equal(viaDkim.verdict, 'pass', 'U-label From aligns with the A-label DKIM d=');
+  // Reverse pairing: an A-label From with a U-label SPF domain aligns too.
+  const aMessage = Buffer.from(`From: buch@${aLabel}\r\nSubject: hi\r\n\r\nbody\r\n`, 'latin1');
+  const viaSpf = await checkDmarc({ rawMessage: aMessage, dkimPassedDomains: [], spfResult: 'pass', spfDomain: uFrom, resolveTxt: rec });
+  assert.equal(viaSpf.verdict, 'pass', 'A-label From aligns with a U-label SPF identifier');
+});

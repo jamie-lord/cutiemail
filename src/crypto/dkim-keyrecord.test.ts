@@ -48,6 +48,18 @@ test('R-6376-3.6.1-b: an empty p= is a revoked key, unusable (treatEmptyPAsValid
   assert.ok(parseDkimKeyRecord(K('v=DKIM1; k=ed25519; p='), { treatEmptyPAsValid: true }).valid, 'treatEmptyPAsValid must be detectable');
 });
 
+test('t= flags are parsed into a colon-separated list (RFC 6376 §3.6.1)', () => {
+  // t=y (testing) and t=s (constrain i= to d=) drive the verifier's inbound checks; the parser
+  // must surface them. "Unrecognized flags MUST be ignored"; they are kept, not made fatal.
+  assert.deepEqual([...parseDkimKeyRecord(K('v=DKIM1; k=rsa; t=y; p=AAAA')).flags], ['y']);
+  assert.deepEqual([...parseDkimKeyRecord(K('v=DKIM1; k=rsa; t=s:y; p=AAAA')).flags], ['s', 'y']);
+  const unknown = parseDkimKeyRecord(K('v=DKIM1; k=rsa; t=s:future; p=AAAA'));
+  assert.deepEqual([...unknown.flags], ['s', 'future']);
+  assert.ok(unknown.valid, 'an unrecognised flag does not invalidate the key');
+  // No t= tag → no flags.
+  assert.deepEqual([...parseDkimKeyRecord(K('v=DKIM1; k=rsa; p=AAAA')).flags], []);
+});
+
 test('end-to-end: the public key parsed from the record verifies an Ed25519 signature', () => {
   cites('R-6376-3.6.1-b');
   // Import the public key straight out of the parsed record and verify a signature.

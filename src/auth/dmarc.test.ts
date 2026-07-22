@@ -57,3 +57,16 @@ test('R-7489-3.1.1-a: strict alignment needs an exact FQDN match (strictUsesOrgD
   // Negative control: strict using org-domain matching would wrongly align a subdomain.
   assert.ok(checkAlignment(from, auth, 's', orgDomain, { strictUsesOrgDomain: true }), 'strictUsesOrgDomain must be detectable');
 });
+
+test('alignment normalizes IDN to A-labels so a U-label From matches an A-label d= (RFC 6376 §3.5)', () => {
+  // An IDN From is commonly written with U-labels while DKIM d= / SPF are A-labels on the wire.
+  // The old raw lower-case compare made the two encodings unequal, false-failing legit IDN mail
+  // (junked under p=quarantine/reject). Both identifiers are now punycoded before comparison.
+  const uLabel = 'bücher.example';
+  const aLabel = 'xn--bcher-kva.example';
+  assert.ok(checkAlignment(uLabel, aLabel, 's', orgDomain), 'strict: U-label From vs A-label d= aligns');
+  assert.ok(checkAlignment(aLabel, uLabel, 's', orgDomain), 'strict: the reverse pairing aligns too');
+  assert.ok(checkAlignment(uLabel, aLabel, 'r', orgDomain), 'relaxed aligns as well');
+  // Control: two genuinely different IDNs must NOT align (no over-broad normalization).
+  assert.ok(!checkAlignment(uLabel, 'xn--nxasmq6b.example', 's', orgDomain), 'a different IDN is not aligned');
+});

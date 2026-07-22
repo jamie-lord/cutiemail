@@ -10,6 +10,8 @@
  * tolerance, and strict-vs-relaxed alignment) testable without a network or a PSL.
  */
 
+import { domainToASCII } from 'node:url';
+
 export type DmarcPolicy = 'none' | 'quarantine' | 'reject';
 export type AlignmentMode = 'r' | 's';
 
@@ -106,10 +108,22 @@ export function parseDmarcRecord(record: Buffer, defects: DmarcParseDefects = {}
   };
 }
 
+/** Normalize a domain to lower-case A-labels for comparison. An IDN From is often written as
+ *  U-labels while a DKIM `d=` / SPF domain is A-labels (RFC 6376 §3.5, §2.3.8: identifiers are
+ *  A-labels on the wire); comparing the two encodings directly false-fails legitimate IDN mail
+ *  (junked under p=quarantine/reject). domainToASCII is idempotent on an already-ASCII input;
+ *  fall back to the lower-cased input if it cannot be encoded (never throw). */
+function toAscii(domain: string): string {
+  const lower = domain.toLowerCase();
+  const ascii = domainToASCII(lower);
+  return ascii === '' ? lower : ascii;
+}
+
 /**
  * Is `authDomain` aligned with `fromDomain` under `mode`? Strict requires an exact
  * FQDN match; relaxed requires equal Organizational Domains (via the injected
- * `orgDomain`). Comparison is case-insensitive.
+ * `orgDomain`). Both identifiers are normalized to A-labels first so a U-label From
+ * aligns with an A-label `d=` (and vice versa); comparison is case-insensitive.
  */
 export function checkAlignment(
   fromDomain: string,
@@ -118,8 +132,8 @@ export function checkAlignment(
   orgDomain: (domain: string) => string,
   defects: AlignmentDefects = {},
 ): boolean {
-  const from = fromDomain.toLowerCase();
-  const auth = authDomain.toLowerCase();
+  const from = toAscii(fromDomain);
+  const auth = toAscii(authDomain);
   if (mode === 's' && defects.strictUsesOrgDomain !== true) {
     return from === auth;
   }

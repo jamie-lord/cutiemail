@@ -8,11 +8,11 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { generateKeyPairSync } from 'node:crypto';
+import { generateKeyPairSync, createSign } from 'node:crypto';
 import { signMessage } from '../crypto/dkim-sign.ts';
 import { verifyDkim, MAX_DKIM_SIGNATURES } from './dkim-inbound.ts';
 import { computeBodyHash, canonicalizedBodyLength } from '../crypto/dkim-bodyhash.ts';
-import type { SignedField } from '../crypto/dkim-verify.ts';
+import { buildSigningInput, type SignedField } from '../crypto/dkim-verify.ts';
 
 function signedMessage(): { message: Buffer; publicKeyDer: string } {
   const { privateKey, publicKey } = generateKeyPairSync('rsa', { modulusLength: 2048 });
@@ -270,4 +270,72 @@ test('a signature that does not cover the From header is rejected (RFC 6376 §5.
   const message = Buffer.from(`DKIM-Signature: ${(signed as { header: string }).header}\r\nFrom: forged@evil.test\r\nSubject: legit\r\n\r\n${body.toString('latin1')}`, 'latin1');
   const out = await verifyDkim(message, async () => Buffer.from(`v=DKIM1; k=rsa; p=${der}`, 'latin1'));
   assert.equal(out.verdict, 'permerror', 'an unsigned From makes the signature meaningless — not a pass');
+});
+
+// A genuinely-valid RSA signature over From made with a key of `bits`, plus the matching public
+// key. Under 1024 bits the signer refuses without allowWeakKey, so the defect is used to MAKE a
+// weak-key signature the verifier must then reject (mirroring the signer's own floor).
+function signedWith(bits: number): { message: Buffer; der: string } {
+  const { privateKey, publicKey } = generateKeyPairSync('rsa', { modulusLength: bits });
+  const headers: SignedField[] = [{ name: 'From', value: 'alice@example.com' }, { name: 'Subject', value: 'k' }];
+  const body = Buffer.from('body\r\n', 'latin1');
+  const signed = signMessage({ domain: 'example.com', selector: 'sel', headerCanon: 'relaxed', bodyCanon: 'relaxed', signedHeaders: headers, body, privateKey }, bits < 1024 ? { allowWeakKey: true } : {});
+  assert.ok(signed.ok, `signing with a ${bits}-bit key succeeds`);
+  const message = Buffer.from(`DKIM-Signature: ${(signed as { header: string }).header}\r\n` + headers.map((h) => `${h.name}: ${h.value}`).join('\r\n') + '\r\n\r\n' + body.toString('latin1'), 'latin1');
+  return { message, der: publicKey.export({ type: 'spki', format: 'der' }).toString('base64') };
+}
+
+test('RFC 8301 §3.2: an RSA key under 1024 bits is rejected (fail); 1024 and 2048 verify', async () => {
+  // "Verifiers MUST NOT consider signatures using RSA keys of less than 1024 bits as valid."
+  // The 512-bit signature is cryptographically valid for its key; only the key strength is the
+  // reason it must fail, mirroring the signer's own 1024-bit floor (dkim-sign.ts).
+  const weak = signedWith(512);
+  assert.equal((await verifyDkim(weak.message, async () => keyRecord(weak.der))).verdict, 'fail', '512-bit key rejected');
+  for (const bits of [1024, 2048]) {
+    const ok = signedWith(bits);
+    assert.equal((await verifyDkim(ok.message, async () => keyRecord(ok.der))).verdict, 'pass', `${bits}-bit key verifies`);
+  }
+});
+
+// A valid RSA-SHA256 signature over From with an explicit i= (AUID) tag, signed by signKeys so
+// the resolver returns the matching public key.
+function signWithAuid(iTag: string, d = 'example.com'): Buffer {
+  const body = Buffer.from('Hi\r\n', 'latin1');
+  const bh = computeBodyHash(body, 'relaxed', 'sha256');
+  const sigValue = `v=1; a=rsa-sha256; c=relaxed/relaxed; d=${d}; s=sel; i=${iTag}; h=from; bh=${bh}; b=`;
+  const s = createSign('RSA-SHA256');
+  s.update(buildSigningInput([{ name: 'From', value: 'a@example.com' }], sigValue, 'relaxed'));
+  s.end();
+  const b = s.sign(signKeys.privateKey).toString('base64');
+  return Buffer.from(`DKIM-Signature: ${sigValue}${b}\r\nFrom: a@example.com\r\nSubject: t\r\n\r\nHi\r\n`, 'latin1');
+}
+
+test('RFC 6376 §3.5: the i= (AUID) domain must be d= or a subdomain of it, else the signature is ignored', async () => {
+  const der = signKeys.publicKey.export({ type: 'spki', format: 'der' }).toString('base64');
+  const rsaKey = async (): Promise<Buffer> => keyRecord(der);
+  // i= domain evil.com is neither d= nor a subdomain of example.com → the signature is invalid.
+  assert.equal((await verifyDkim(signWithAuid('user@evil.com'), rsaKey)).verdict, 'permerror', 'an out-of-scope i= is rejected');
+  // Controls: a subdomain of d=, and the local-part-only form (@example.com == d=), both verify.
+  assert.equal((await verifyDkim(signWithAuid('user@sub.example.com'), rsaKey)).verdict, 'pass', 'a subdomain i= is within d=');
+  assert.equal((await verifyDkim(signWithAuid('@example.com'), rsaKey)).verdict, 'pass', 'i= domain equal to d= verifies');
+});
+
+test('RFC 6376 §3.6.1 t=s: the key constrains i= to EXACTLY d= (no subdomain)', async () => {
+  const der = signKeys.publicKey.export({ type: 'spki', format: 'der' }).toString('base64');
+  const strictKey = async (): Promise<Buffer> => Buffer.from(`v=DKIM1; k=rsa; t=s; p=${der}`, 'latin1');
+  // A subdomain i= is allowed WITHOUT t=s (proven above) but forbidden under it.
+  assert.equal((await verifyDkim(signWithAuid('user@sub.example.com'), strictKey)).verdict, 'permerror', 't=s forbids a subdomain i=');
+  // Control: i= exactly d= still passes under t=s.
+  assert.equal((await verifyDkim(signWithAuid('user@example.com'), strictKey)).verdict, 'pass', 't=s permits i= == d=');
+});
+
+test('RFC 6376 §3.6.1 t=y: a testing key is treated as unsigned (no DMARC-alignable pass)', async () => {
+  // "Verifiers MUST NOT treat messages from Signers in testing mode differently from unsigned
+  // email." A cryptographically-valid signature under a t=y key yields verdict none and no
+  // passed domain, so it can never contribute an aligned DKIM pass to DMARC.
+  const { message, publicKeyDer } = signedMessage();
+  const testingKey = async (): Promise<Buffer> => Buffer.from(`v=DKIM1; k=rsa; t=y; p=${publicKeyDer}`, 'latin1');
+  const out = await verifyDkim(message, testingKey);
+  assert.equal(out.verdict, 'none', 'testing mode yields no authenticated result');
+  assert.deepEqual([...out.passedDomains], [], 'a testing key contributes no aligned domain');
 });

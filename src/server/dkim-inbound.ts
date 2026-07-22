@@ -165,6 +165,23 @@ async function verifyOneSignature(rawValue: string, headers: ReturnType<typeof p
   const keyRecord = parseDkimKeyRecord(keyBytes);
   if (!keyRecord.valid || keyRecord.publicKey === null) return { verdict: 'permerror', domain: sig.domain };
 
+  // RFC 6376 §3.6.1 t=y (testing): "Verifiers MUST NOT treat messages from Signers in testing
+  // mode differently from unsigned email." So a testing key yields no authenticated result:
+  // treat the signature as if it did not exist (never a DMARC-alignable pass), verdict none.
+  if (keyRecord.flags.includes('y')) return { verdict: 'none', domain: sig.domain };
+
+  // RFC 6376 §3.5: the AUID (i=) domain "MUST be the same as, or a subdomain of, the value of
+  // the d= tag"; and a key record with t=s further requires it EQUAL d= (no subdomain). A
+  // signature whose i= is out of the key's authorized scope is ignored (not a pass).
+  const auid = sig.tags.get('i');
+  if (auid !== undefined) {
+    const at = auid.lastIndexOf('@');
+    const iDomain = (at === -1 ? auid : auid.slice(at + 1)).trim().toLowerCase().replace(/\.$/, '');
+    const d = sig.domain.toLowerCase().replace(/\.$/, '');
+    const withinD = iDomain === d || iDomain.endsWith(`.${d}`);
+    if (!withinD || (keyRecord.flags.includes('s') && iDomain !== d)) return { verdict: 'permerror', domain: sig.domain };
+  }
+
   // Step 3: build the header-hash input and verify the signature. RSA (rsa-sha256,
   // most senders) and Ed25519 (ed25519-sha256, RFC 8463) share the input; only the
   // public-key import and the verify primitive differ.
@@ -180,6 +197,10 @@ async function verifyOneSignature(rawValue: string, headers: ReturnType<typeof p
       ok = verifyEd25519(input, sig.signature, importEd25519PublicKey(Buffer.from(keyRecord.publicKey, 'base64')));
     } else {
       const publicKey = createPublicKey({ key: Buffer.from(keyRecord.publicKey, 'base64'), format: 'der', type: 'spki' });
+      // RFC 8301 §3.2: "Verifiers MUST NOT consider signatures using RSA keys of less than 1024
+      // bits as valid." The signer already refuses to sign under 1024 bits (dkim-sign.ts); the
+      // verifier mirrors the floor so a weak-key signature can never yield a pass into DMARC.
+      if ((publicKey.asymmetricKeyDetails?.modulusLength ?? 0) < 1024) return { verdict: 'fail', domain: sig.domain };
       ok = verifySignature(input, sig.signature, publicKey, 'RSA-SHA256'); // rsa-sha1 rejected above (RFC 8301)
     }
   } catch {

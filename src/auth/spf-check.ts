@@ -30,6 +30,11 @@ export interface SpfResolvers {
 }
 
 const MAX_DNS_MECHANISMS = 10; // RFC 7208 §4.6.4
+// RFC 7208 §4.6.4: "SPF implementations SHOULD limit 'void lookups' to two ... Exceeding the
+// limit produces a 'permerror' result." A void lookup is a DNS query (a/mx/exists) that returns
+// no records; unbounded, they let a hostile record fan the resolver out (the §11.1 third-party
+// DoS) while sidestepping the ten-mechanism cap, since each empty lookup still costs a query.
+const MAX_VOID_LOOKUPS = 2;
 
 /** An IP address as a big integer plus its bit-width (32 for v4, 128 for v6), or null. */
 function ipToBig(ip: string): { value: bigint; bits: 32 | 128 } | null {
@@ -115,6 +120,8 @@ function anyAddressMatches(ip: string, addresses: readonly string[], v4: number 
 
 interface EvalState {
   lookups: number;
+  /** DNS-driven mechanisms that resolved to no records (RFC 7208 §4.6.4 void lookups). */
+  voids: number;
   readonly resolvers: SpfResolvers;
   readonly ip: string;
 }
@@ -177,11 +184,14 @@ async function matchMechanism(term: SpfTerm, state: EvalState, depth: number, cu
       try {
         if (mech === 'a') {
           const { domain, v4, v6 } = splitDualCidr(value);
-          return anyAddressMatches(state.ip, await state.resolvers.a(domain || currentDomain), v4, v6);
+          const addrs = await state.resolvers.a(domain || currentDomain);
+          if (addrs.length === 0 && ++state.voids > MAX_VOID_LOOKUPS) return 'error'; // §4.6.4
+          return anyAddressMatches(state.ip, addrs, v4, v6);
         }
         if (mech === 'mx') {
           const { domain, v4, v6 } = splitDualCidr(value);
           const hosts = await state.resolvers.mx(domain || currentDomain);
+          if (hosts.length === 0 && ++state.voids > MAX_VOID_LOOKUPS) return 'error'; // §4.6.4
           for (const host of hosts.slice(0, MAX_DNS_MECHANISMS)) {
             if (++state.lookups > MAX_DNS_MECHANISMS) return 'error';
             if (anyAddressMatches(state.ip, await state.resolvers.a(host), v4, v6)) return true;
@@ -189,7 +199,9 @@ async function matchMechanism(term: SpfTerm, state: EvalState, depth: number, cu
           return false;
         }
         if (mech === 'exists') {
-          return (await state.resolvers.a(value)).length > 0;
+          const addrs = await state.resolvers.a(value);
+          if (addrs.length === 0 && ++state.voids > MAX_VOID_LOOKUPS) return 'error'; // §4.6.4
+          return addrs.length > 0;
         }
         // include: matches only when the referenced policy yields "pass".
         const sub = await evalDomain(value, state, depth + 1);
@@ -215,6 +227,6 @@ export async function checkSpf(ip: string, domain: string, resolvers: SpfResolve
   const mapped = /^::ffff:(\d+\.\d+\.\d+\.\d+)$/i.exec(ip);
   const normalized = mapped !== null && net.isIPv4(mapped[1]!) ? mapped[1]! : ip;
   if (domain === '' || ipToBig(normalized) === null) return 'none';
-  const state: EvalState = { lookups: 0, resolvers, ip: normalized };
+  const state: EvalState = { lookups: 0, voids: 0, resolvers, ip: normalized };
   return evalDomain(domain, state, 0);
 }

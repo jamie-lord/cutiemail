@@ -14,6 +14,7 @@
  * quarantine a policy failure to Junk, never hard-reject).
  */
 
+import { domainToASCII } from 'node:url';
 import { parseDmarcRecord, checkAlignment } from '../auth/dmarc.ts';
 import { fromAuthor, domainOfAddrSpec } from '../message/from-author.ts';
 import { registeredDomain } from '../auth/public-suffix.ts';
@@ -49,22 +50,39 @@ export function organizationalDomain(domain: string): string {
 }
 
 /**
- * The From domain and how many From headers the message carries. RFC 5322 §3.6.1 requires
- * exactly one; a message with more than one is the canonical DMARC display spoof (auth aligns
- * the first, the MUA may show the last), so the caller must not let it pass. The domain comes
- * from the shared spoof-hardened author extractor (message/from-author.ts) — the SAME parse
- * the submission send-as gate uses, so DMARC alignment and sender-authorization can never
- * disagree on who the From is.
+ * The From domain and how many author mailboxes the message carries. RFC 5322 §3.6.1 requires
+ * exactly one From with exactly one mailbox; more than one From header OR a single From holding
+ * a mailbox-list is the canonical DMARC display spoof (auth aligns one, the MUA may show
+ * another), so the caller must not let count>1 pass. The domain and count come from the shared
+ * spoof-hardened author extractor (message/from-author.ts): the SAME parse the submission
+ * send-as gate uses, so DMARC alignment and sender-authorization can never disagree.
  */
 function fromHeaderInfo(raw: Buffer): { domain: string | null; count: number } {
   const { address, count } = fromAuthor(raw);
   return { domain: address === null ? null : domainOfAddrSpec(address), count };
 }
 
-async function fetchDmarc(domain: string, resolveTxt: DmarcInput['resolveTxt']): Promise<string | null> {
-  const txts = await resolveTxt(`_dmarc.${domain}`);
-  const found = txts.find((t) => t.toLowerCase().startsWith('v=dmarc1'));
-  return found ?? null;
+/** The `_dmarc.<domain>` query name, with the domain forced to A-labels so an IDN From (a
+ *  U-label domain) resolves against the DNS-published record (RFC 6376/7489: identifiers are
+ *  A-labels on the wire). Falls back to the input if domainToASCII cannot encode it. */
+function dmarcQueryName(domain: string): string {
+  const ascii = domainToASCII(domain);
+  return `_dmarc.${ascii === '' ? domain : ascii}`;
+}
+
+/**
+ * Fetch the applicable DMARC record for a domain. RFC 7489 §6.6.3 step 5: after discarding
+ * records that are not DMARC records, "If the remaining set contains multiple records or no
+ * records, policy discovery terminates and DMARC processing is not applied", so more than one
+ * v=DMARC1 record is reported as `multiple` (a terminal no-policy), never silently first-wins
+ * (SPF already rejects multiple records, spf-check.ts). `record` is the single record, or null
+ * when none is published.
+ */
+async function fetchDmarc(domain: string, resolveTxt: DmarcInput['resolveTxt']): Promise<{ record: string | null; multiple: boolean }> {
+  const txts = await resolveTxt(dmarcQueryName(domain));
+  const found = txts.filter((t) => t.toLowerCase().startsWith('v=dmarc1'));
+  if (found.length > 1) return { record: null, multiple: true };
+  return { record: found[0] ?? null, multiple: false };
 }
 
 export async function checkDmarc(input: DmarcInput): Promise<DmarcOutcome> {
@@ -76,6 +94,7 @@ export async function checkDmarc(input: DmarcInput): Promise<DmarcOutcome> {
   // of a p=reject domain reach the INBOX instead of Junk (the enforcement predicate keys
   // on the policy), so the MORE deceptive attack evaded the enforcement the plainer one hit.
   const spoofMultiFrom = fromCount > 1;
+  const noPolicy = (): DmarcOutcome => ({ verdict: spoofMultiFrom ? 'fail' : 'none', policy: null, fromDomain, pct: 100 });
   if (fromDomain === null) return { verdict: spoofMultiFrom ? 'fail' : 'none', policy: null, fromDomain: null, pct: 100 };
 
   let recordText: string | null;
@@ -83,18 +102,23 @@ export async function checkDmarc(input: DmarcInput): Promise<DmarcOutcome> {
   // itself — in that case the subdomain policy (sp=) governs the From (§6.6.3).
   let viaOrgFallback = false;
   try {
-    recordText = await fetchDmarc(fromDomain, input.resolveTxt);
+    const primary = await fetchDmarc(fromDomain, input.resolveTxt);
+    // §6.6.3 step 5: multiple published records terminate discovery with no policy applied.
+    if (primary.multiple) return noPolicy();
+    recordText = primary.record;
     if (recordText === null) {
       const org = organizationalDomain(fromDomain);
       if (org !== fromDomain) {
-        recordText = await fetchDmarc(org, input.resolveTxt);
+        const fallback = await fetchDmarc(org, input.resolveTxt);
+        if (fallback.multiple) return noPolicy();
+        recordText = fallback.record;
         viaOrgFallback = recordText !== null;
       }
     }
   } catch {
     return { verdict: 'temperror', policy: null, fromDomain, pct: 100 };
   }
-  if (recordText === null) return { verdict: spoofMultiFrom ? 'fail' : 'none', policy: null, fromDomain, pct: 100 };
+  if (recordText === null) return noPolicy();
 
   const record = parseDmarcRecord(Buffer.from(recordText, 'latin1'));
   if (!record.valid) return { verdict: spoofMultiFrom ? 'fail' : 'none', policy: null, fromDomain, pct: 100 };

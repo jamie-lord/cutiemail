@@ -8,7 +8,7 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { authorAddrSpec, domainOfAddrSpec, fromAuthor } from './from-author.ts';
+import { authorAddrSpec, domainOfAddrSpec, fromAuthor, mailboxCount } from './from-author.ts';
 
 test('authorAddrSpec takes the plain angle-addr', () => {
   assert.equal(authorAddrSpec('Alice <alice@example.com>'), 'alice@example.com');
@@ -63,4 +63,28 @@ test('fromAuthor reads the From value through the spoof-hardened parse', () => {
   const r = fromAuthor(msg('From: "x <a@evil.com>" <victim@bank.com>'));
   assert.equal(r.address, 'victim@bank.com');
   assert.equal(r.count, 1);
+});
+
+test('mailboxCount counts the mailboxes in a single From value (the mailbox-list spoof, RFC 5322 §3.6.1)', () => {
+  // The single-header mailbox-list evasion: two addr-specs in ONE From header. A naive parser
+  // that only counts From HEADERS reports 1, so an attacker-controlled second mailbox (with
+  // aligned DKIM) rides in while an MUA may render the first, victim, address.
+  assert.equal(mailboxCount('victim@bank.com, x@evil.com'), 2, 'two mailboxes in one value');
+  assert.equal(mailboxCount('<victim@bank.com>, <x@evil.com>'), 2, 'two angle-addrs too');
+  // A single mailbox stays 1 regardless of a comma hidden in a quoted display-name or comment.
+  assert.equal(mailboxCount('<victim@bank.com>'), 1);
+  assert.equal(mailboxCount('"Alice, Example" <alice@example.com>'), 1, 'quoted comma is not a separator');
+  assert.equal(mailboxCount('(a, comment) alice@example.com'), 1, 'comment comma is not a separator');
+  assert.equal(mailboxCount('Just A Name'), 0, 'no addr-spec, no mailbox');
+});
+
+test('fromAuthor surfaces the true mailbox count for a single-header list (count>1 is the spoof signal)', () => {
+  // BEFORE the fix, count was froms.length === 1 here, so the caller could not tell this apart
+  // from a genuine single author. The mailbox count now makes the list case count>1.
+  const r = fromAuthor(msg('From: victim@bank.com, x@evil.com'));
+  assert.equal(r.count, 2, 'the single-header mailbox-list is counted as multi-mailbox');
+  // A genuine single mailbox with a comma-bearing quoted display-name is still count 1 (control).
+  const ok = fromAuthor(msg('From: "Alice, Example" <alice@example.com>'));
+  assert.equal(ok.count, 1);
+  assert.equal(ok.address, 'alice@example.com');
 });

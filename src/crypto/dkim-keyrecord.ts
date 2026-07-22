@@ -18,6 +18,9 @@ export interface DkimKeyRecord {
   readonly publicKey: string | null;
   /** True when p= is present but empty — the key is revoked. */
   readonly revoked: boolean;
+  /** The t= flags (RFC 6376 §3.6.1), colon-separated, lower-cased. "y" = testing, "s" =
+   *  constrain i= to exactly d=. Unrecognised flags are kept but ignored by the verifier. */
+  readonly flags: readonly string[];
   readonly anomalies: readonly string[];
 }
 
@@ -60,6 +63,11 @@ export function parseDkimKeyRecord(record: Buffer, defects: DkimKeyRecordDefects
 
   const keyType = tags.get('k') ?? 'rsa'; // default rsa
 
+  // t= Flags (RFC 6376 §3.6.1): a colon-separated list; "Unrecognized flags MUST be ignored".
+  // We surface them for the verifier's use: t=y (testing) and t=s (constrain i= to d=).
+  const tTag = tags.get('t');
+  const flags = tTag === undefined ? [] : tTag.split(':').map((f) => f.trim().toLowerCase()).filter((f) => f.length > 0);
+
   // R-6376-3.6.1-b: p= REQUIRED; an empty p= is a revocation tombstone.
   const p = tags.get('p');
   let revoked = false;
@@ -78,5 +86,5 @@ export function parseDkimKeyRecord(record: Buffer, defects: DkimKeyRecordDefects
   // defect (the whole point of the negative control); a malformed record never is.
   const usable = revoked ? defects.treatEmptyPAsValid === true : wellFormed && publicKey !== null;
 
-  return { valid: usable, version, keyType, publicKey, revoked, anomalies };
+  return { valid: usable, version, keyType, publicKey, revoked, flags, anomalies };
 }

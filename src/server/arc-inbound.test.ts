@@ -14,8 +14,9 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { generateKeyPairSync } from 'node:crypto';
 import { verifyArc } from './arc-inbound.ts';
-import { makeArcSigner, addArcSet, arcResolver, rawMessageOf as rawOf, type HeaderLine } from '../testing/arc-sealer.ts';
+import { makeArcSigner, addArcSet, arcResolver, rawMessageOf as rawOf, type HeaderLine, type ArcSigner } from '../testing/arc-sealer.ts';
 import { cryptoRequirement } from '../register/crypto/index.ts';
 import type { CryptoRequirementId } from '../register/crypto/index.ts';
 
@@ -128,4 +129,24 @@ test('NEGATIVE: the sealer key is not in DNS → cv=fail, never temperror (§5.2
   const raw = rawOf([...hop.lines, ...BASE_HEADERS], BODY);
   const out = await verifyArc(raw, async () => null); // no key published
   assert.equal(out.cv, 'fail');
+});
+
+/** An ARC signer with an RSA key of an explicit bit-length (makeArcSigner always uses 2048). */
+function rsaSignerOfBits(bits: number, d: string, s: string): ArcSigner {
+  const { privateKey, publicKey } = generateKeyPairSync('rsa', { modulusLength: bits });
+  return { d, s, alg: 'rsa', priv: privateKey, pub: publicKey.export({ format: 'der', type: 'spki' }).toString('base64') };
+}
+
+test('NEGATIVE: an ARC sealer using an RSA key under 1024 bits fails the chain (RFC 8301 §3.2)', async () => {
+  // ARC shares DKIM's crypto and its RFC 8301 floor: "Verifiers MUST NOT consider signatures
+  // using RSA keys of less than 1024 bits as valid." A 512-bit seal/AMS is invalid → cv=fail.
+  const weak = rsaSignerOfBits(512, 'weak.example', 'w');
+  const hop = addArcSet(BASE_HEADERS, BODY, weak, 1, 'none', 'dmarc=pass', []);
+  const raw = rawOf([...hop.lines, ...BASE_HEADERS], BODY);
+  assert.equal((await verifyArc(raw, resolverFor(weak))).cv, 'fail', 'a weak-key chain must not validate');
+  // Control: the same construction with a 1024-bit key validates → cv=pass (the floor is exact).
+  const ok = rsaSignerOfBits(1024, 'ok.example', 'k');
+  const okHop = addArcSet(BASE_HEADERS, BODY, ok, 1, 'none', 'dmarc=pass', []);
+  const okRaw = rawOf([...okHop.lines, ...BASE_HEADERS], BODY);
+  assert.equal((await verifyArc(okRaw, resolverFor(ok))).cv, 'pass', 'a 1024-bit sealer validates');
 });

@@ -73,6 +73,18 @@ test('the RFC 7208 §4.6.4 DNS-lookup limit is enforced (DoS guard)', async () =
   assert.equal(await checkSpf('192.0.2.5', 'big.test', resolvers(txt)), 'permerror', '11 include lookups exceed the limit');
 });
 
+test('RFC 7208 §4.6.4: more than two void lookups → permerror (DoS guard)', async () => {
+  // A "void lookup" is a DNS-driven mechanism (a/mx/exists) that resolves to no records. Three
+  // empty-resolving a: mechanisms are three void lookups; exceeding the limit of two must be a
+  // permerror, not a benign fall-through; otherwise a hostile record fans the resolver out
+  // under the ten-mechanism cap. None of x1..x3 has an A record.
+  const three = resolvers({ 'v.test': ['v=spf1 a:x1.test a:x2.test a:x3.test -all'] });
+  assert.equal(await checkSpf('192.0.2.5', 'v.test', three), 'permerror', 'three void lookups exceed the limit');
+  // Control: exactly two void lookups are within the limit → evaluation continues to -all.
+  const two = resolvers({ 't.test': ['v=spf1 a:x1.test a:x2.test -all'] });
+  assert.equal(await checkSpf('192.0.2.5', 't.test', two), 'fail', 'two void lookups are allowed');
+});
+
 test('a null domain or an unparseable IP is "none"', async () => {
   assert.equal(await checkSpf('192.0.2.5', '', resolvers({})), 'none', 'empty domain');
   assert.equal(await checkSpf('not-an-ip', 'ex.test', resolvers({ 'ex.test': ['v=spf1 -all'] })), 'none', 'bad IP');
