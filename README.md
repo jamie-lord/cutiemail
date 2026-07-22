@@ -310,11 +310,13 @@ distilled, with sources, in [the SMTP divergence notes](docs/research/smtp-diver
 
 **Calibration before trust.** The runner is our own code, so its verdicts are only trustworthy
 once calibrated against known-good MTAs, with every disagreement triaged to *our bug*, *our
-misreading*, or *a genuine divergence*. It has been run against **three independent
-implementations (Exim, mox, and aiosmtpd) with zero false positives**; the triaged divergences
-(all three honour bare-LF command terminators, a widely-relaxed `MUST NOT`) are recorded in
-[reference-servers/](reference-servers/). A Postfix run is the one target still outstanding
-(it needs a root-capable host), and the roadmap says so.
+misreading*, or *a genuine divergence*. It has been run against **four independent
+implementations (Postfix, Exim, mox, and aiosmtpd) with zero false positives**; the triaged
+divergences (all four honour bare-LF command terminators, a widely-relaxed `MUST NOT`) are
+recorded in [reference-servers/](reference-servers/). Postfix was run in two configurations, one
+vulnerable to SMTP smuggling and one hardened against it, and the suite flagged the smuggling
+vectors on the first and cleared them on the second, the strongest evidence that it convicts a
+real defect without convicting a hardened server.
 
 ## Design decisions
 

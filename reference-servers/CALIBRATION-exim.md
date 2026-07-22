@@ -56,20 +56,19 @@ exim -bdf -oX 2526 -C "$PWD/exim-test.conf.example" &
 node ../src/cli.ts run --config exim-local.json --verbose --now 2026-07-16T12:00:00Z
 ```
 
-## Still open
+## Postfix: now done (2026-07-22)
 
-**Postfix, investigated 2026-07-17, environment-blocked (not deferred).** The Postfix half of
-#23 was attempted properly and cannot run in this environment: there is no Homebrew formula for
-`postfix` (nor `opensmtpd`), and the Apple-signed system Postfix at `/usr/sbin/postfix` is
-SIP-hardened against a rootless isolated instance: `postfix check` passes on an isolated config,
-but `master -c DIR -d -v` exits instantly with no diagnostic anywhere (the exact rootless pattern
-that worked for Exim). Reproducible steps are in `README.md`. Postfix would *corroborate* the
-three completed calibrations, not unblock anything. The calibration goal (validate the suite
-against real independent MTAs, zero false positives) is already met by Exim + mox + aiosmtpd.
+The Postfix half of #23 is **complete**. Once Docker was available, Postfix ran cleanly via the
+pinned `docker-compose.yml` (the macOS-native rootless attempt described in earlier revisions of
+`README.md` had failed against Apple's SIP-hardened system daemon; Docker sidesteps it). Postfix
+3.7.11 was calibrated in two configs, vulnerable and hardened, with **zero false positives** in
+both, and the two-config run is now the suite's strongest single validation: it convicts the
+smuggling-vulnerable Postfix and positively blesses the hardened one. Full triage in
+[CALIBRATION-postfix.md](CALIBRATION-postfix.md). The instrument is validated against four
+independent codebases.
 
-The Stalwart/Maddy differential (#24) also remains (single Go/Rust binaries, no brew formula,
-would need fetching). Docker stays non-functional here (VM registry egress broken). None of these
-is blocking: the instrument is validated against three independent codebases.
+The Stalwart/Maddy differential (#24) still remains as optional corroboration (single Go/Rust
+binaries, no brew formula, would need fetching); it is not blocking.
 
 ## Re-confirmation (2026-07-17, current codebase)
 

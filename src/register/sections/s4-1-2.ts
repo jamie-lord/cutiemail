@@ -413,13 +413,19 @@ export const S4_1_2 = [
       'Also note the scope: "invalid character codes" is not defined here, and ' +
       'inherits from -i/-j (non-ASCII and controls in mailbox names) and -l/-m ' +
       '(non-LDH in domain labels). Those are the character sets to probe. ' +
-      'CALIBRATION WATCH-ITEM (task #23): the exact-501 assertion is the single ' +
-      'place in the corpus most likely to fire against a mainstream server — some ' +
-      'Postfix builds emit 500 (not 501) for a control-octet syntax error. If it ' +
-      'reds a triaged-conformant Postfix/Exim, that is a divergence to RECORD (the ' +
-      'server departs from the exact-501 MUST), and the open question is whether to ' +
-      'weaken THIS register entry to 5yz-class — NOT evidence the test is wrong. ' +
-      'Left faithful to the RFC text until a real server forces the call.',
+      'CALIBRATION GROUND TRUTH: the watch-item resolved, and more sharply than ' +
+      'predicted. The guess was that a mainstream server might emit 500 rather than ' +
+      '501 (a code-class quibble). The real finding is blunter: Postfix 3.7.11 and ' +
+      'aiosmtpd 1.4.6 ACCEPT a BEL (0x07) octet in the MAIL local-part with 250 and ' +
+      'DELIVER the message (Postfix: byte-verified, queued as CAE3D1099), while ' +
+      'Exim 4.99.4 and mox 0.0.15 REJECT it. So it is 2-lenient / 2-strict across ' +
+      'four independent MTAs, and the two lenient ones fail "MUST reject" under any ' +
+      'reading, not merely the exact-code clause, which settles the open question: ' +
+      'do NOT weaken this entry to 5yz-class. The exact-501 assertion never fired a ' +
+      'false 500-vs-501 red against any real server; the reds it produced are ' +
+      'genuine accept-instead-of-reject divergences. Our own server rejects the ' +
+      'octet (strict side), so no server change follows. See ' +
+      'reference-servers/CALIBRATION-postfix.md.',
   },
 
   {

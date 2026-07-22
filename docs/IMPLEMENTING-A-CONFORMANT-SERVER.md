@@ -155,7 +155,7 @@ documented behaviour; see `docs/research/smtp-divergence.md` §6).
 - Point the suite at your server (`node src/cli.ts run --config your-server.json`) from the
   first working EHLO onward. A finding is a `MUST`/`MUST NOT` violation with the exact byte
   transcript.
-- Calibrate against known-good MTAs first: Exim, mox, aiosmtpd (`reference-servers/`). Then you
-  can trust the suite before trusting its verdict on your server.
+- Calibrate against known-good MTAs first: Postfix, Exim, mox, aiosmtpd (`reference-servers/`).
+  Then you can trust the suite before trusting its verdict on your server.
 - The register notes (`src/register/sections/`) carry per-requirement traps that did not fit
   here. When a requirement puzzles you, read its note.

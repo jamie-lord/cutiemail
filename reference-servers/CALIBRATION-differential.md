@@ -42,6 +42,11 @@ artefact, and that this MUST NOT is widely relaxed by production MTAs for comman
 NUL/BEL control octets in commands (R-5321-4.1.2-j/-n); Exim and mox reject those, a real
 strictness difference.
 
+Later strengthened to four (2026-07-22): Postfix 3.7.11 also honours the bare-LF command
+terminator, and also accepts a BEL octet in the MAIL local-part, so the control-octet split is now
+2-lenient (aiosmtpd, Postfix) / 2-strict (Exim, mox). See
+[CALIBRATION-postfix.md](CALIBRATION-postfix.md).
+
 ## The differential matrix (Exim × mox)
 
 ```
@@ -71,6 +76,8 @@ class of bug the mutant (my own code) structurally cannot reveal.
 
 ## Status
 
-Tasks #23 (Exim half) and #24 (Exim × mox × aiosmtpd differential) are **done via native
-installs**. The Postfix half of #23 and Stalwart remain (Postfix resists a rootless isolated
-instance; Stalwart has no Homebrew formula). Docker is still non-functional in this environment.
+Tasks #23 (Exim + Postfix) and #24 (Exim × mox × aiosmtpd differential) are **done**: Exim, mox,
+and aiosmtpd via native installs, Postfix via Docker (see
+[CALIBRATION-postfix.md](CALIBRATION-postfix.md)). Four independent MTAs, zero false positives.
+Only Stalwart/Maddy remains as optional corroboration (no Homebrew formula, would need fetching);
+it is not blocking.

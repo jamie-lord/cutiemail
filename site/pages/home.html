@@ -134,7 +134,7 @@
         <div class="eyebrow">THE TEST BED IS THE STAR OF THE SHOW</div>
         <h2>Tests that are proven to catch their own lies</h2>
         <p style="margin-bottom: 16px;">Every conformance check runs both ways: pass against a clean server, fail against a <strong>mutant server</strong> with exactly the defect it targets. A test never shown to fail doesn't count as coverage.</p>
-        <p style="margin: 0;">The receiver's test bed doubles as a standalone <strong>SMTP conformance suite</strong> you can point at any mail server, calibrated against Exim, mox, and aiosmtpd with zero false positives.</p>
+        <p style="margin: 0;">The receiver's test bed doubles as a standalone <strong>SMTP conformance suite</strong> you can point at any mail server, calibrated against Postfix, Exim, mox, and aiosmtpd with zero false positives. Postfix was run both vulnerable to SMTP smuggling and hardened against it: the suite flagged the smuggling vectors on the first and cleared them on the second.</p>
       </div>
       <div class="panel__col" style="background: var(--term-deep); border: 2px solid #6b3a52; border-radius: 16px; padding: 22px 26px; font-family: var(--font-mono); font-size: 13.5px; line-height: 2;">
         <div><span style="color: var(--bubblegum);">$</span> node src/cli.ts run \</div>

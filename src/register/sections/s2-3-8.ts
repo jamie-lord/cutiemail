@@ -37,15 +37,19 @@ export const S2_3_8 = [
       'DISAGREEMENT between two implementations, so our report must classify ' +
       'the observed behaviour (honoured / rejected / silently normalised) ' +
       'rather than only pass/fail. See task #17. ' +
-      'CALIBRATION GROUND TRUTH (2026-07-16): BOTH real servers pointed at this ' +
-      'check honour a bare-LF-terminated COMMAND — Exim 4.99.4 replied 250 to a ' +
-      'bare-LF EHLO and NOOP, and aiosmtpd 1.4.6 the same. So this MUST NOT is ' +
-      'widely violated by production MTAs for command-line terminators (distinct ' +
-      'from the DATA-phase end-of-data smuggling that CVE-2023-51766 hardened). ' +
-      'The suite is CORRECT to flag it — bare-LF acceptance is exactly the ' +
-      'smuggling-adjacent leniency it exists to surface — and a server author ' +
-      'using this suite genuinely wants to know. Recorded as a real divergence, ' +
-      'not softened: see reference-servers/CALIBRATION-exim.md.',
+      'CALIBRATION GROUND TRUTH: all FOUR real servers pointed at this check ' +
+      'honour a bare-LF-terminated COMMAND: Exim 4.99.4, mox 0.0.15, aiosmtpd ' +
+      '1.4.6, and Postfix 3.7.11 each replied 250 to a bare-LF EHLO and NOOP. So ' +
+      'this MUST NOT is widely violated by production MTAs for command-line ' +
+      'terminators, and DISTINCT from the DATA-phase end-of-data smuggling that ' +
+      'CVE-2023-51764 hardened. Postfix proves the split directly: with ' +
+      'smtpd_forbid_bare_newline=yes it STILL executes a bare-LF command (this ' +
+      'requirement, unchanged) while the DATA-phase smuggling vectors ' +
+      '(R-5321-4.1.1.4-j / -i) move from non-conformant to conformant. The suite ' +
+      'is CORRECT to flag the command-phase leniency, because bare-LF acceptance ' +
+      'is the smuggling-adjacent behaviour it exists to surface, and a server ' +
+      'author using this suite genuinely wants to know. Recorded as a real divergence, ' +
+      'not softened: see reference-servers/CALIBRATION-postfix.md.',
   },
   {
     id: 'R-5321-2.3.8-b',

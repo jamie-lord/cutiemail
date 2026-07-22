@@ -57,10 +57,11 @@ to exist before the server did.
 ### SMTP receiver: RFC 5321
 
 The deepest harness: a full socket-driven conformance suite with a mutant server for negative
-controls, **calibrated against Exim, mox, and aiosmtpd with zero false positives** (the
+controls, **calibrated against Postfix, Exim, mox, and aiosmtpd with zero false positives** (the
 divergences that surfaced are triaged and recorded in
-[`reference-servers/`](../reference-servers/): all three honour bare-LF command terminators, a
-widely-relaxed MUST NOT). The flagship coverage is the CRLF/SMTP-smuggling corpus and the RFC
+[`reference-servers/`](../reference-servers/): all four honour bare-LF command terminators, a
+widely-relaxed MUST NOT; Postfix was run vulnerable and hardened, and the suite flagged the
+smuggling vectors on the first and cleared them on the second). The flagship coverage is the CRLF/SMTP-smuggling corpus and the RFC
 3207 STARTTLS session-security class: pre-handshake injection, smuggle-into-TLS, post-handshake
 reset. This suite doubles as a standalone tool you can point at any MTA:
 [IMPLEMENTING-A-CONFORMANT-SERVER.md](IMPLEMENTING-A-CONFORMANT-SERVER.md).
@@ -296,9 +297,9 @@ reasons is in [BACKLOG.md](BACKLOG.md) and [the decision records](decisions/0000
 
 ## What's still open
 
-The open test-bed items (a Postfix calibration target for the receiver suite, adopting the
-openSPF vector suite, a longer `imaptest` soak) live in [BACKLOG.md](BACKLOG.md) with their
-reasons and their blockers, alongside the one correctness follow-up the 2026-07-21 coverage
+The open test-bed items (adopting the openSPF vector suite, a longer `imaptest` soak, and an
+optional OpenSMTPD calibration target) live in [BACKLOG.md](BACKLOG.md) with their reasons and
+their blockers, alongside the one correctness follow-up the 2026-07-21 coverage
 audit left open: the `RENAME INBOX` target draws its UIDVALIDITY from INBOX's own value rather
 than the monotonic counter, so a rename onto a previously-deleted name could reuse a lower
 validity (narrow, scoped for a follow-up).

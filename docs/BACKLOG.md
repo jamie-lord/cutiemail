@@ -36,13 +36,20 @@ The test suite is the one place where completeness is itself the goal, so these 
 even though each is either blocked on an environment or marginal against coverage already
 achieved:
 
-### Real-MTA (Postfix) calibration of the receiver suite
+### Real-MTA (Postfix) calibration of the receiver suite: DONE (2026-07-22)
 
-The SMTP receiver suite is calibrated against three independent implementations (Exim 4.99,
-mox 0.0.15, aiosmtpd 1.4.6) with zero false positives, and the bare-LF divergence confirmed
-real across all three. Postfix is the recorded fourth target. It needs a host where Postfix can
-actually run (root, and without disturbing that host's own mail); the harness itself runs
-unchanged. Marginal value: a fourth MTA mostly re-confirms the first three.
+The SMTP receiver suite is now calibrated against **four** independent implementations (Postfix
+3.7.11, Exim 4.99, mox 0.0.15, aiosmtpd 1.4.6) with zero false positives. Postfix ran via
+Docker in two configs, vulnerable and hardened, and the suite flagged the two SMTP-smuggling
+vectors on the vulnerable config and positively cleared them on the hardened one, the strongest
+single validation of the false-positive discipline (which was built around never convicting a
+hardened Postfix). It also gave the §4.1.2 control-octet rule a second lenient witness
+(Postfix and aiosmtpd accept a BEL octet; Exim and mox reject it). No server change followed:
+our server is on the strict side of all four. See
+[reference-servers/CALIBRATION-postfix.md](../reference-servers/CALIBRATION-postfix.md).
+
+Optional remaining corroboration: an OpenSMTPD or Stalwart/Maddy run. Not blocking; the
+calibration goal is met four times over.
 
 ### openSPF RFC 7208 vector suite
 

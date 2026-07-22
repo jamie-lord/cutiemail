@@ -9,34 +9,69 @@
 #
 # Usage:
 #   cd reference-servers && docker compose up -d
-#   node ../src/cli.ts run --config postfix.json
-#   node ../src/cli.ts run --config exim.json
+#   # give the servers a few seconds to accept connections
+#   node ../src/cli.ts run --config postfix.json           # vulnerable config (2526)
+#   node ../src/cli.ts run --config postfix-hardened.json   # hardened config  (2528)
+#   node ../src/cli.ts run --config exim.json               # exim            (2527)
 #   docker compose down
 #
-# Both are pinned to explicit versions so results are reproducible and the matrix
-# report's version field is meaningful. Bump deliberately, and re-triage.
+# Two Postfix services on purpose. The pinned boky image is Postfix 3.7.11,
+# whose default smtpd_forbid_bare_newline is `no` (the pre-CVE-2023-51764
+# behaviour), so `postfix` exercises the UNMITIGATED end-of-data smuggling path
+# and `postfix-hardened` (smtpd_forbid_bare_newline=yes) exercises the fix. The
+# suite must flag the smuggling vectors on the first and clear them on the
+# second; that two-config result is the calibration's strongest evidence
+# (reference-servers/CALIBRATION-postfix.md).
+#
+# The smtpd restrictions are set to `permit` so the minimal reference config
+# accepts the suite's RFC-2606 test envelope (MAIL FROM a .invalid domain to a
+# recipient at the local domain) without a policy rejection masking the
+# protocol-level questions under test. relay_restrictions keeps open-relay
+# refusal intact so the non-relay-domain fixture still draws a 554.
+#
+# Versions are pinned so results are reproducible and the matrix report's
+# version field is meaningful. Bump deliberately, and re-triage.
+
+x-postfix-common: &postfix-common
+  environment: &postfix-env
+    ALLOWED_SENDER_DOMAINS: example.com
+    POSTFIX_mynetworks: 127.0.0.1/32
+    POSTFIX_smtpd_client_restrictions: permit
+    POSTFIX_smtpd_helo_restrictions: permit
+    POSTFIX_smtpd_sender_restrictions: permit
+    POSTFIX_smtpd_recipient_restrictions: permit
+    POSTFIX_smtpd_relay_restrictions: permit_mynetworks,reject_unauth_destination
+    POSTFIX_mydestination: example.com
+    POSTFIX_local_recipient_maps: static:all
+  restart: unless-stopped
 
 services:
-  # Postfix — the reference for the mainstream interpretation of RFC 5321.
-  # Version chosen to POST-DATE the SMTP-smuggling fix (>= 3.9 defaults
-  # smtpd_forbid_bare_newline to 'normalize'), so the smuggling corpus sees the
-  # mitigated behaviour. To test the UNmitigated path, set
-  # smtpd_forbid_bare_newline=no in the override and expect the corpus to flag it.
+  # Postfix, default (vulnerable) config: smtpd_forbid_bare_newline=no.
+  # The reference for the mainstream interpretation of RFC 5321, and the
+  # unmitigated end-of-data smuggling path (CVE-2023-51764 class).
   postfix:
-    image: boky/postfix:v4.3.0  # Postfix 3.8.x — pin exactly; see README on version drift
+    <<: *postfix-common
+    image: boky/postfix:v4.3.0  # Postfix 3.7.11 — pin exactly; see README on version drift
     hostname: postfix.example.com
-    environment:
-      ALLOWED_SENDER_DOMAINS: example.com
-      # A valid recipient the fixture declares. boky/postfix accepts configured
-      # virtual users; see postfix.json fixture.
-      RELAY_HOST: ''
     ports:
       - '2526:25'
-    restart: unless-stopped
 
-  # Exim — a second independent interpretation. Where Postfix and Exim disagree
-  # on a requirement, that IS a divergence worth a register note, even before we
-  # point the suite at Stalwart/Mox/Maddy.
+  # Postfix, hardened config: smtpd_forbid_bare_newline=yes. The same binary
+  # with the smuggling mitigation on. The suite must POSITIVELY bless the
+  # DATA-phase end-of-data vectors here (they move violated -> conformant),
+  # while the command-phase bare-LF leniency Postfix keeps by design remains.
+  postfix-hardened:
+    <<: *postfix-common
+    image: boky/postfix:v4.3.0
+    hostname: postfix.example.com
+    environment:
+      <<: *postfix-env
+      POSTFIX_smtpd_forbid_bare_newline: 'yes'
+    ports:
+      - '2528:25'
+
+  # Exim, a second independent interpretation. Where Postfix and Exim disagree
+  # on a requirement, that IS a divergence worth a register note.
   exim:
     image: exim/exim4:4.98  # pin; 4.97.1+ has the smuggling fix (CVE-2023-51766)
     hostname: exim.example.com
