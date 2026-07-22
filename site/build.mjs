@@ -104,7 +104,9 @@ function wrapTables(html) {
 }
 
 /* ---------- layout ---------- */
-const FONTS = `<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin><link href="https://fonts.googleapis.com/css2?family=Baloo+2:wght@500;700;800&family=Nunito:ital,wght@0,400;0,600;0,700;0,800;1,400&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">`;
+// Fonts are self-hosted (no CDN): see assets/fonts/, regenerate with tools/fetch-google-fonts.mjs.
+// Preload the two faces above the fold on most pages (headings + body) to cut FOUT.
+const FONTS = `<link rel="preload" href="/assets/fonts/baloo2-800-normal-latin.woff2" as="font" type="font/woff2" crossorigin><link rel="preload" href="/assets/fonts/nunito-400-normal-latin.woff2" as="font" type="font/woff2" crossorigin><link rel="stylesheet" href="/assets/fonts/fonts.css">`;
 
 function head(title, desc) {
   return `<!doctype html>
@@ -155,12 +157,16 @@ const n=document.getElementById('nav');const on=()=>n.classList.toggle('scrolled
 </script>`;
 
 function mermaidScript() {
-  return `<script type="module">
-import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs';
-mermaid.initialize({startOnLoad:true,securityLevel:'strict',theme:'base',themeVariables:{
+  // Self-hosted mermaid (no CDN): the pinned UMD build assets/mermaid.min.js (v11.16.0; update
+  // with `curl -sS https://cdn.jsdelivr.net/npm/mermaid@<v>/dist/mermaid.min.js -o assets/mermaid.min.js`),
+  // then render explicitly.
+  return `<script src="/assets/mermaid.min.js"></script>
+<script>
+mermaid.initialize({startOnLoad:false,securityLevel:'strict',theme:'base',themeVariables:{
   fontFamily:'JetBrains Mono, monospace',primaryColor:'#ffe4ee',primaryBorderColor:'#4a1d33',primaryTextColor:'#4a1d33',
   lineColor:'#4a1d33',secondaryColor:'#fff3cd',tertiaryColor:'#dff3ee',clusterBkg:'#fff6f0',clusterBorder:'#4a1d33',
   edgeLabelBackground:'#fff6f0'}});
+mermaid.run();
 </script>`;
 }
 
