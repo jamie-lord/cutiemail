@@ -29,6 +29,8 @@ export interface MxDefects {
   readonly ignorePreference?: boolean;
   /** Fall back to the domain's address record even when MX records exist. Violates R-5321-5.1-g. */
   readonly useAddressWhenMxPresent?: boolean;
+  /** Keep DNS order within an equal-preference tier (never randomize). Violates R-5321-5.1-o. */
+  readonly noEqualPreferenceShuffle?: boolean;
 }
 
 export interface MxResult {
@@ -37,8 +39,35 @@ export interface MxResult {
   readonly anomalies: readonly string[];
 }
 
-/** Resolve the ordered delivery hosts for a recipient domain. */
-export function resolveMxHosts(domain: string, dns: DnsResolver, defects: MxDefects = {}): MxResult {
+/**
+ * Sort by increasing preference, then Fisher-Yates shuffle each equal-preference tier in place.
+ * R-5321-5.1-o (MUST): when several MXes share a preference "the sender-SMTP MUST randomize them
+ * to spread the load". `rng` is injected so the corpus can pin the statistics deterministically;
+ * production uses Math.random.
+ */
+function orderByPreference(records: readonly MxRecord[], rng: () => number): MxRecord[] {
+  const byPref = [...records].sort((a, b) => a.preference - b.preference);
+  let i = 0;
+  while (i < byPref.length) {
+    let j = i;
+    while (j < byPref.length && byPref[j]!.preference === byPref[i]!.preference) j++;
+    // Shuffle the [i, j) tier (all sharing byPref[i].preference).
+    for (let k = j - 1; k > i; k--) {
+      const r = i + Math.floor(rng() * (k - i + 1));
+      const tmp = byPref[k]!;
+      byPref[k] = byPref[r]!;
+      byPref[r] = tmp;
+    }
+    i = j;
+  }
+  return byPref;
+}
+
+/**
+ * Resolve the ordered delivery hosts for a recipient domain. `rng` seeds the equal-preference
+ * randomization (R-5321-5.1-o); it defaults to Math.random and is injected only by tests.
+ */
+export function resolveMxHosts(domain: string, dns: DnsResolver, defects: MxDefects = {}, rng: () => number = Math.random): MxResult {
   const mx = dns.mx(domain);
   const anomalies: string[] = [];
 
@@ -52,9 +81,15 @@ export function resolveMxHosts(domain: string, dns: DnsResolver, defects: MxDefe
   }
 
   if (mx.length > 0) {
-    // R-5321-5.1-n: sort by increasing preference (stable). "*=* random within a
-    // preference level" is a later refinement; deterministic order here.
-    const ordered = defects.ignorePreference === true ? [...mx] : [...mx].sort((a, b) => a.preference - b.preference);
+    // R-5321-5.1-n: sort by increasing preference; R-5321-5.1-o: randomize within a tier.
+    // The ignorePreference defect uses raw DNS order (no sort, no shuffle); the
+    // noEqualPreferenceShuffle defect sorts but leaves each tier in DNS order.
+    const ordered =
+      defects.ignorePreference === true
+        ? [...mx]
+        : defects.noEqualPreferenceShuffle === true
+          ? [...mx].sort((a, b) => a.preference - b.preference)
+          : orderByPreference(mx, rng);
     const hosts = ordered.map((r) => r.host);
     // R-5321-5.1-g: with MX present, do NOT use the domain's own address record.
     if (defects.useAddressWhenMxPresent === true && dns.hasAddress(domain)) hosts.push(domain);

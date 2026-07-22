@@ -22,6 +22,7 @@ import type { WireOptions } from '../wire/transport.ts';
 import { replyFramer, frameReplyAtEof } from '../wire/reply.ts';
 import type { Reply } from '../wire/reply.ts';
 import { CR, LF, DOT, CRLF, EOD, dotStuff } from '../wire/bytes.ts';
+import { envelopeIsInternationalized } from '../transport/smtputf8.ts';
 
 export interface DeliveryRequest {
   /** Envelope reverse-path (may be empty for a bounce, i.e. MAIL FROM:<>). */
@@ -63,12 +64,30 @@ export interface DeliveryResult {
   /** True once we transmitted (or began transmitting) message data. */
   readonly sentData: boolean;
   readonly dataCode: number | null;
+  /**
+   * True when we transmitted the FULL terminating <CRLF>.<CRLF> but got no reply within the
+   * post-EOD window (timeout / close / reset). The outcome is INDETERMINATE - the peer may have
+   * accepted the message without our seeing the 250 (RFC 5321 §4.5.3.2.6, "the likelihood that a
+   * duplicate message will be sent"). The relay treats this specially: it must NOT walk to the
+   * next MX in the same tick, and must not resend in a way that duplicates.
+   */
+  readonly dataIndeterminate: boolean;
   readonly quit: boolean;
   /** Why we stopped, when !ok. */
   readonly failure: string | null;
 }
 
 const DEFAULT_TIMEOUT = 5000;
+/**
+ * The reply after the terminating <CRLF>.<CRLF> gets a far longer deadline than the other
+ * phases. RFC 5321 §4.5.3.2.6 sets the "DATA termination" timeout to 10 MINUTES, precisely
+ * "because of the likelihood that a duplicate message will be sent" if a client gives up here
+ * and retries: the peer commonly runs a slow content scanner that has already accepted (and will
+ * reply 250) while a short client timer fires. A generous window turns almost every real
+ * slow-scanner case into a normal 250 instead of a duplicate. Per-phase timeouts (§4.5.3.2) are
+ * otherwise driven by the caller's `timeoutMs`.
+ */
+const DEFAULT_POST_DATA_REPLY_TIMEOUT = 10 * 60_000;
 
 /** Assemble a command line with the configured terminator. */
 function command(verb: string, defects: ClientDefects): Buffer {
@@ -106,6 +125,20 @@ export interface DeliveryOptions {
    * active downgrade must never result in delivery. Implies `startTls`.
    */
   readonly requireValidCert?: boolean;
+  /**
+   * Extra TLS options merged into the STARTTLS handshake (before `rejectUnauthorized`/`servername`,
+   * which always win). The load-bearing use is `ca`: under MTA-STS enforce the certificate must
+   * chain to a trusted root, and this is the injection point the enforce path lacked - so a
+   * positive control (a cert chained to a test CA whose name matches the MX) can prove enforce
+   * actually DELIVERS, not only that it refuses. Production leaves this unset (the system trust
+   * store applies).
+   */
+  readonly tlsOptions?: import('node:tls').ConnectionOptions;
+  /**
+   * Override the reply timeout AFTER the terminating <CRLF>.<CRLF> (RFC 5321 §4.5.3.2.6). Defaults
+   * to 10 minutes; tests set it short to exercise the indeterminate (dataIndeterminate) path.
+   */
+  readonly postDataReplyTimeoutMs?: number;
 }
 
 export async function deliver(
@@ -124,6 +157,7 @@ export async function deliver(
     rcptCodes: [],
     sentData: false,
     dataCode: null,
+    dataIndeterminate: false,
     quit: false,
     failure: null,
   };
@@ -133,7 +167,12 @@ export async function deliver(
     // Greeting.
     const greeting = await readReply(wire, timeoutMs);
     if (!is2yz(greeting)) {
-      return { ...base, greetingCode: greeting?.code ?? null, failure: 'no 2yz greeting' };
+      // A non-2yz greeting (RFC 5321 §3.1: 554 "no SMTP service here", 421 "not available")
+      // means no transaction can happen; the only sensible next command is QUIT. Send it so the
+      // peer closes cleanly rather than being dropped mid-session. The code is surfaced for the
+      // relay's classification (5yz greeting → permanent, 4yz → transient).
+      await wire.send(command('QUIT', defects));
+      return { ...base, greetingCode: greeting?.code ?? null, quit: true, failure: 'no 2yz greeting' };
     }
     const greetingCode = greeting!.code;
 
@@ -165,7 +204,7 @@ export async function deliver(
         const ready = await readReply(wire, timeoutMs);
         if (is2yz(ready)) {
           try {
-            await wire.startTls({ rejectUnauthorized: options.requireValidCert === true, servername: connect.servername ?? connect.host });
+            await wire.startTls({ ...options.tlsOptions, rejectUnauthorized: options.requireValidCert === true, servername: connect.servername ?? connect.host });
             await wire.send(command(`EHLO ${req.clientName}`, defects));
             const reEhlo = await readReply(wire, timeoutMs);
             if (!is2yz(reEhlo)) return { ...base, greetingCode, openingVerb, failure: 'EHLO after STARTTLS refused' };
@@ -192,6 +231,25 @@ export async function deliver(
     // assertion closes every non-TLS path: under enforce, TLS must be established here.
     if (options.requireValidCert === true && !wire.tlsEstablished) {
       return { ...base, greetingCode, openingVerb, heloFellBack, failure: 'STARTTLS required (MTA-STS enforce) but the session is not encrypted' };
+    }
+
+    // SMTPUTF8 transmission gate (RFC 6531 §3.5), wiring src/transport/smtputf8.ts. The outbound
+    // client does not yet EMIT the SMTPUTF8 parameter nor UTF-8-encode the MAIL/RCPT lines (a
+    // recorded ASCII-only-envelope cut - the submission side governs whether an internationalized
+    // envelope is accepted at all; see report). The command assembly is latin1, so an
+    // internationalized envelope address would be silently mojibaked onto the wire. Refuse to
+    // transmit it - fail loudly rather than corrupt - instead of sending a mangled address.
+    const envelopeAddresses = [req.from, ...req.recipients].map((a) => Buffer.from(a, 'utf8'));
+    if (envelopeIsInternationalized(envelopeAddresses)) {
+      await wire.send(command('QUIT', defects));
+      return {
+        ...base,
+        greetingCode,
+        openingVerb,
+        heloFellBack,
+        quit: true,
+        failure: 'internationalized envelope requires SMTPUTF8, which this client does not transmit (ASCII-only envelope)',
+      };
     }
 
     // The mail transaction. In the pipeline defect we fire the envelope + DATA
@@ -265,9 +323,28 @@ export async function deliver(
     }
 
     const sentData = await transmitData(wire, req, defects, timeoutMs);
-    const finalReply = await readReply(wire, timeoutMs);
-    await wire.send(command('QUIT', defects));
+    // Per-phase timeout (RFC 5321 §4.5.3.2): the reply after the terminating dot gets the generous
+    // DATA-termination window - UNLESS we deliberately skipped the terminator (a defect), in which
+    // case there is no dot on the wire and nothing to wait minutes for, so the caller's timeout
+    // applies as before.
+    const sentTerminator = defects.skipTerminatingDot !== true;
+    const postEodTimeout = sentTerminator ? (options.postDataReplyTimeoutMs ?? DEFAULT_POST_DATA_REPLY_TIMEOUT) : timeoutMs;
+    const finalReply = await readReply(wire, postEodTimeout);
+    // Best-effort QUIT: when the post-EOD outcome is indeterminate BECAUSE the peer closed/reset
+    // after consuming the message, the wire is already down and a QUIT send would REJECT - which
+    // would throw out of deliver, and the relay's catch would then mark it a plain transient and
+    // walk to the next MX (the exact duplicate this fix prevents). Swallow the send error so the
+    // indeterminate result is returned intact.
+    try {
+      await wire.send(command('QUIT', defects));
+    } catch {
+      /* peer already gone - the outcome below still stands */
+    }
 
+    // Sent the full terminator but heard nothing back → INDETERMINATE (the peer may hold the
+    // message already). Distinct from a plain "data not accepted": the relay must not next-MX or
+    // naively resend on this.
+    const dataIndeterminate = sentTerminator && finalReply === null;
     return {
       ...base,
       greetingCode,
@@ -277,9 +354,14 @@ export async function deliver(
       rcptCodes,
       sentData,
       dataCode: finalReply?.code ?? null,
+      dataIndeterminate,
       quit: true,
       ok: is2yz(finalReply),
-      failure: is2yz(finalReply) ? null : `data not accepted (${finalReply?.code ?? 'no reply/timeout'})`,
+      failure: is2yz(finalReply)
+        ? null
+        : dataIndeterminate
+          ? 'no reply after end-of-data (indeterminate - possible duplicate on resend)'
+          : `data not accepted (${finalReply?.code ?? 'no reply/timeout'})`,
     };
   } finally {
     await wire.close();

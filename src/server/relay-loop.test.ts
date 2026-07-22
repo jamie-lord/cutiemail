@@ -86,6 +86,40 @@ test('a durable settle fault does not re-send or re-bounce every tick', async ()
   assert.equal(bounces.length, 0, 'and not re-bounced');
 });
 
+test('an all-delivered entry whose remove() throws does NOT re-send the delivered recipients', async () => {
+  // The regression: when every recipient delivered and remove() threw, `unsettled` was empty and
+  // the code rescheduled entry.recipients - the DELIVERED list - re-delivering the whole message
+  // every backoff until the DB recovered, contradicting the never-re-sent invariant. It must
+  // instead reschedule an EMPTY (tombstone) recipient list: relay to no one, retry the remove.
+  const db = new DatabaseSync(':memory:');
+  const queue = SqliteQueue.open(db);
+  const relayedTo: string[][] = [];
+  const relay = async (m: { recipients: readonly string[] }): Promise<readonly RelayResult[]> => {
+    relayedTo.push([...m.recipients]);
+    return m.recipients.map((rc) => r(rc, 'success')); // every recipient delivers
+  };
+  // remove() throws (all-delivered path), reschedule works. deadLetter unused here.
+  let removeShouldThrow = true;
+  const realRemove = queue.remove.bind(queue);
+  (queue as unknown as { remove: (id: string) => void }).remove = (id: string): void => {
+    if (removeShouldThrow) throw new Error('SQLITE_FULL');
+    realRemove(id);
+  };
+  const loop = new RelayLoop(queue, relay);
+  const t0 = 1_000_000;
+  queue.enqueue('me@x.test', ['ok@y.test'], Buffer.from('msg'), t0);
+
+  await loop.tick(t0);
+  assert.deepEqual(relayedTo, [['ok@y.test']], 'the message was relayed once');
+  assert.equal(queue.due(t0).length, 0, 'the row is deferred, not left immediately due');
+
+  // The DB recovers; the deferred tombstone tick relays to NO ONE and cleans the row up.
+  removeShouldThrow = false;
+  await loop.tick(t0 + 20 * 60_000); // past SETTLE_FAILURE_BACKOFF
+  assert.deepEqual(relayedTo, [['ok@y.test'], []], 'the retry relayed an EMPTY recipient list - the delivered recipient was never re-sent');
+  assert.equal(queue.size, 0, 'and the row is finally removed');
+});
+
 test('a permanent failure notifies the sender via onBounce (RFC 5321 §6.1)', async () => {
   const queue = SqliteQueue.open(new DatabaseSync(':memory:'));
   const relay = async (m: { recipients: readonly string[] }): Promise<readonly RelayResult[]> => m.recipients.map((rc) => r(rc, 'permanent'));

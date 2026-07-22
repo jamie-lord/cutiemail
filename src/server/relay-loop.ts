@@ -174,11 +174,14 @@ export class RelayLoop {
         // Defer everything NOT durably settled: the transient (retryLater) recipients AND the
         // permanent-failure recipients whose bounce has not committed (the bounce is emitted only
         // after a clean settle, so a permanent recipient must stay on the row to be re-relayed and
-        // bounced on a later tick — dropping it silently loses its bounce). Delivered
-        // recipients are excluded (never re-sent). Fall back to the full list only if that set is
-        // empty (all delivered), so the row still persists for the operator rather than vanishing.
+        // bounced on a later tick - dropping it silently loses its bounce). Delivered recipients
+        // are ALWAYS excluded - never re-sent. When everything was delivered (unsettled empty) we
+        // reschedule an EMPTY recipient list: a tombstone that keeps the row for the operator and
+        // for the next remove() attempt, but relays to NO ONE. (Rescheduling entry.recipients here
+        // - the delivered list - re-delivered the whole message every backoff until the DB
+        // recovered, contradicting the never-re-sent invariant two lines above.)
         const unsettled = [...retryLater, ...permanentFailures.map((f) => f.recipient)];
-        this.#queue.reschedule(entry.id, unsettled.length > 0 ? unsettled : entry.recipients, attempts, now + SETTLE_FAILURE_BACKOFF_MS);
+        this.#queue.reschedule(entry.id, unsettled, attempts, now + SETTLE_FAILURE_BACKOFF_MS);
       } catch {
         /* the queue store is unwritable; the row remains due until it recovers */
       }

@@ -42,24 +42,38 @@ export class StsCache {
     const now = deps.now();
 
     // 1. The STS TXT record: presence + the policy id (rotates when the policy changes).
-    let id: string | null = null;
+    let stsRecords: readonly string[] = [];
+    let txtLookupFailed = false;
     try {
       const txts = await deps.resolveTxt(`_mta-sts.${d}`);
-      const rec = txts.find((t) => t.toLowerCase().startsWith('v=stsv1'));
-      if (rec !== undefined) {
-        const m = /(?:^|;)\s*id\s*=\s*([^;]+)/i.exec(rec);
-        id = m ? m[1]!.trim() : null;
-      }
+      stsRecords = txts.filter((t) => t.toLowerCase().startsWith('v=stsv1'));
     } catch {
-      id = null; // a DNS failure is treated as "no policy right now" (opportunistic TLS)
+      txtLookupFailed = true; // a transient DNS error - NOT a definitive "no policy"
     }
-    if (id === null) {
+
+    const cached = this.#entries.get(d);
+    const servedCache = (): StsPolicy | null =>
+      cached !== undefined && cached.expiresAt > now ? cached.policy : null;
+
+    // RFC 8461 §5.1: a cached policy must survive a TXT-lookup failure. The TXT lookup is
+    // unauthenticated - an active attacker can suppress it (or pollute it with a second record)
+    // to strip TLS. So a THROWN lookup (transient DNS error) or an AMBIGUOUS answer (§3.1: the
+    // number of v=STSv1 records is not exactly one → "assume no available policy") must NOT drop
+    // an unexpired cached policy: it serves the cache and only forgoes enforcement when there is
+    // no live cache. ONLY a clean, definitively-absent record (a successful lookup returning zero
+    // v=STSv1 records) forgets the policy, exactly like the HTTPS-fetch-failure path below.
+    if (txtLookupFailed) return servedCache();
+    if (stsRecords.length === 0) {
       this.#entries.delete(d); // no policy published — forget any stale one
       return null;
     }
+    if (stsRecords.length > 1) return servedCache(); // §3.1: multiple records → ambiguous, keep cache
+
+    const m = /(?:^|;)\s*id\s*=\s*([^;]+)/i.exec(stsRecords[0]!);
+    const id = m ? m[1]!.trim() : null;
+    if (id === null) return servedCache(); // a malformed record (no id) - ambiguous, keep cache
 
     // 2. Serve a cached policy with the same id that has not expired.
-    const cached = this.#entries.get(d);
     if (cached !== undefined && cached.id === id && cached.expiresAt > now) return cached.policy;
 
     // 3. (Re)fetch and cache. On failure, fall back to a still-valid cached policy.
@@ -92,13 +106,27 @@ export function httpsFetchPolicy(timeoutMs = 10_000, maxBytes = 65_536): (domain
     const timer = setTimeout(() => controller.abort(), timeoutMs);
     try {
       const res = await fetch(url, { signal: controller.signal, redirect: 'error' });
-      if (!res.ok) return null;
-      const buf = Buffer.from(await res.arrayBuffer());
-      return buf.length > maxBytes ? buf.subarray(0, maxBytes) : buf;
+      return await readPolicyResponse(res, maxBytes);
     } catch {
       return null;
     } finally {
       clearTimeout(timer);
     }
   };
+}
+
+/**
+ * The response half of the policy fetch, split out so it is unit-testable without a live TLS
+ * endpoint: a non-2xx status yields null (no policy served), and an over-large body is capped to
+ * `maxBytes` (RFC 8461 §3.2 bounds the policy size) and the prefix returned for the parser to
+ * pin-or-reject. The transport concerns the wrapper keeps - TLS validation, the abort timeout,
+ * and `redirect: 'error'` (§3.3 forbids redirects) - are fetch-level and exercised in production.
+ */
+export async function readPolicyResponse(
+  res: { readonly ok: boolean; arrayBuffer: () => Promise<ArrayBuffer> },
+  maxBytes: number,
+): Promise<Buffer | null> {
+  if (!res.ok) return null;
+  const buf = Buffer.from(await res.arrayBuffer());
+  return buf.length > maxBytes ? buf.subarray(0, maxBytes) : buf;
 }

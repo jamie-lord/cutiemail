@@ -16,7 +16,7 @@
  */
 
 import net from 'node:net';
-import { resolveMx, resolve4, resolve6 } from 'node:dns/promises';
+import { resolveMx, resolve4 } from 'node:dns/promises';
 import { deliver } from '../client/deliver.ts';
 import { resolveMxHosts, type DnsResolver, type MxRecord } from '../client/mx.ts';
 import { mxAllowed, type StsPolicy } from '../transport/mta-sts.ts';
@@ -145,6 +145,17 @@ export interface OutboundOptions {
    * policy-listed MX over a validated certificate.
    */
   readonly resolveStsPolicy?: (domain: string) => Promise<StsPolicy | null>;
+  /**
+   * Extra TLS options threaded into the STARTTLS handshake (see DeliveryOptions.tlsOptions). The
+   * load-bearing use is `ca`, so an MTA-STS-enforce POSITIVE control can prove enforce delivers
+   * to a cert that chains to a trusted root. Production leaves it unset (system trust store).
+   */
+  readonly tlsOptions?: import('node:tls').ConnectionOptions;
+  /**
+   * Override the post-<CRLF>.<CRLF> reply timeout (RFC 5321 §4.5.3.2.6, default 10 min in the
+   * client). Exposed for tuning and for tests that exercise the indeterminate-outcome path.
+   */
+  readonly postDataReplyTimeoutMs?: number;
 }
 
 export interface RelayResult {
@@ -196,18 +207,20 @@ async function realDnsHosts(domain: string): Promise<readonly string[]> {
 
   let hasAddress = false;
   if (mx.length === 0) {
-    // Only an implicit MX (the domain's own A/AAAA) is consulted when no MX exists.
+    // Only an implicit MX (the domain's own address) is consulted when no MX exists - and only
+    // an IPv4 (A) one. This relay deliberately connects family:4 (Gmail and other large
+    // receivers 550 IPv6 without a matching v6 PTR, which we set for v4 only). An AAAA-only
+    // domain is therefore NOT counted as deliverable: were it counted, we would hand the loop a
+    // host we then cannot dial over IPv4, burning an attempt (and eventually a misleading 5.4.7
+    // "delivery time expired") on every retry for five days. Dropping it here surfaces the
+    // honest "no usable (IPv4) address" outcome instead. This is our IPv4-only limitation, not
+    // the destination's permanent failure, so it stays transient rather than a hard bounce - a
+    // domain may add an A record, and a future dual-stack relay could reach it. (See report:
+    // making a v6-only destination a prompt permanent bounce is a deliverability policy call.)
     try {
       hasAddress = (await resolve4(domain)).length > 0;
     } catch {
       hasAddress = false;
-    }
-    if (!hasAddress) {
-      try {
-        hasAddress = (await resolve6(domain)).length > 0;
-      } catch {
-        hasAddress = false;
-      }
     }
   }
 
@@ -282,9 +295,24 @@ export async function relayOutbound(msg: RelayableMessage, opts: OutboundOptions
       }
     }
 
+    // Multi-MX aggregate classification (RFC 5321 §5.1 / §4.5.4.1). Hosts are tried in
+    // preference order; the per-host outcomes are merged, NOT overwritten last-host-wins:
+    //   - a 5yz from a REACHABLE MX is authoritative-permanent and stops the walk - the
+    //     recipient's own infrastructure has spoken (fixes hammering a 550 for 5 days because a
+    //     lower-preference backup connect-timed-out and downgraded the class to transient);
+    //   - BUT a higher-preference host that failed only transiently (down / connect error) is
+    //     not overridden by a later, lower-preference 5yz - that higher server may recover and
+    //     accept, so the aggregate stays transient (fixes the immediate bounce of mail the
+    //     primary would take, just because a stale backup said 550);
+    //   - a post-EOD indeterminate outcome (terminator sent, no reply) stops the walk and defers
+    //     WITHOUT trying the next MX - trying it would guarantee a duplicate to an org that may
+    //     already hold the message (fix for the 5s post-DATA timeout duplication).
     let delivered = false;
+    let sawTransient = false; // connect failure / 4yz / dropped connection / unresolved (retry-worthy)
+    let sawIndeterminate = false; // post-EOD timeout - unknown whether the peer accepted
+    let sawAuthoritativePermanent = false; // a reachable MX answered 5yz
+    let sawLocalPermanent = false; // our own refusal to dial this host (SSRF), not a recipient verdict
     let lastError = '';
-    let lastClass: 'transient' | 'permanent' = 'transient';
     for (const host of candidateHosts) {
       // SSRF guard: never open a relay connection to a loopback/private MX target that a
       // hostile recipient-domain DNS could have pointed us at — as a literal IP/localhost
@@ -297,15 +325,20 @@ export async function relayOutbound(msg: RelayableMessage, opts: OutboundOptions
       if (guardTargets) {
         if (isUnsafeMxTarget(host)) {
           lastError = `refusing to relay to non-public MX target ${host}`;
-          lastClass = 'permanent';
+          sawLocalPermanent = true;
           continue;
         }
         const vet = await vetMxHost(host);
         if (!('ip' in vet)) {
-          // 'private' → SSRF, permanent bounce; 'unresolved' → transient, retry. Either way
-          // net.connect is never handed a name to re-resolve, so no rebinding window opens.
-          lastError = vet.permanent ? `refusing to relay to non-public MX target ${host}` : `MX ${host} did not resolve`;
-          lastClass = vet.permanent ? 'permanent' : 'transient';
+          // 'private' → SSRF (a local permanent refusal, not a recipient verdict); 'unresolved'
+          // → transient, retry. Either way net.connect never gets a name to re-resolve.
+          if (vet.permanent) {
+            lastError = `refusing to relay to non-public MX target ${host}`;
+            sawLocalPermanent = true;
+          } else {
+            lastError = `MX ${host} did not resolve`;
+            sawTransient = true;
+          }
           continue;
         }
         connectHost = vet.ip;
@@ -316,13 +349,17 @@ export async function relayOutbound(msg: RelayableMessage, opts: OutboundOptions
         // our PTR is set for the v4 address, so relay over IPv4 only.
         const target = { host: connectHost, port, tls: 'none' as const, family: 4 as const, ...(servername !== undefined ? { servername } : {}) };
         const envelope = { from: msg.from, recipients: [recipient], data: msg.data, clientName: opts.clientName };
-        let r = await deliver(target, envelope, {}, undefined, { startTls: true, requireValidCert: enforce });
+        const commonOpts = {
+          ...(opts.tlsOptions !== undefined ? { tlsOptions: opts.tlsOptions } : {}),
+          ...(opts.postDataReplyTimeoutMs !== undefined ? { postDataReplyTimeoutMs: opts.postDataReplyTimeoutMs } : {}),
+        };
+        let r = await deliver(target, envelope, {}, undefined, { startTls: true, requireValidCert: enforce, ...commonOpts });
         // Opportunistic STARTTLS (RFC 3207): if the handshake itself failed, the MX
         // advertised TLS it cannot complete — retry the same host in plaintext rather than
         // bounce. NOT under MTA-STS enforce: there a TLS/cert failure is terminal (its
         // distinct failure string never matches here), so we never downgrade.
         if (!r.ok && !enforce && r.failure === 'STARTTLS handshake failed') {
-          r = await deliver(target, envelope, {}, undefined, { startTls: false });
+          r = await deliver(target, envelope, {}, undefined, { startTls: false, ...commonOpts });
         }
         if (r.ok) {
           results.push({ recipient, ok: true, classification: 'success', detail: `delivered via ${host}` });
@@ -330,16 +367,35 @@ export async function relayOutbound(msg: RelayableMessage, opts: OutboundOptions
           break;
         }
         lastError = r.failure ?? `refused (data ${r.dataCode ?? '?'})`;
-        // The code that refused us, in transaction order. 5yz = permanent (bounce);
-        // 4yz or a dropped connection = transient (retry).
+        if (r.dataIndeterminate) {
+          // We put the whole message + terminating dot on the wire and heard nothing back. Do
+          // NOT walk to the next MX (that org may already hold this copy). Defer for the queue
+          // to re-attempt later; the client's 10-minute post-EOD window makes a true timeout rare.
+          sawIndeterminate = true;
+          break;
+        }
+        // The code that refused us, in transaction order. A reachable 5yz is authoritative.
         const code = r.dataCode ?? r.rcptCodes.find((c) => c >= 400) ?? r.mailCode ?? r.greetingCode;
-        lastClass = code !== null && code >= 500 && code < 600 ? 'permanent' : 'transient';
+        if (code !== null && code >= 500 && code < 600) {
+          sawAuthoritativePermanent = true;
+          break; // the recipient's infrastructure gave a definitive answer; stop probing backups
+        }
+        sawTransient = true; // 4yz / dropped connection → retry (and keep trying lower-preference MX)
       } catch (e) {
         lastError = String(e);
-        lastClass = 'transient';
+        sawTransient = true; // connect refused / reset / TLS error before a reply → transient
       }
     }
-    if (!delivered) results.push({ recipient, ok: false, classification: lastClass, detail: `all hosts failed: ${lastError || 'unknown'}` });
+    if (!delivered) {
+      // Merge (see the block comment above). A higher-preference transient failure keeps the
+      // whole recipient transient even if a lower-preference MX later said 5yz.
+      let classification: 'transient' | 'permanent';
+      if (sawTransient || sawIndeterminate) classification = 'transient';
+      else if (sawAuthoritativePermanent) classification = 'permanent';
+      else if (sawLocalPermanent) classification = 'permanent';
+      else classification = 'transient';
+      results.push({ recipient, ok: false, classification, detail: `all hosts failed: ${lastError || 'unknown'}` });
+    }
   }
 
   return results;

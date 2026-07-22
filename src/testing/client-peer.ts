@@ -30,6 +30,14 @@ import net from 'node:net';
 import { CR, LF, DOT } from '../wire/bytes.ts';
 
 export interface PeerOptions {
+  /** Status for the opening greeting. Default 220. Set 554/421 to test greeting rejection. */
+  readonly greetingStatus?: number;
+  /**
+   * Milliseconds to withhold the reply AFTER the terminating <CRLF>.<CRLF>. The peer consumes
+   * the message (so the terminator is on the wire) but delays the 250 - a client with a shorter
+   * post-EOD timeout observes an INDETERMINATE outcome. 0 (default) replies immediately.
+   */
+  readonly withholdDataReplyMs?: number;
   /** Status for EHLO. Default 250. Set 500 to force the HELO-fallback path. */
   readonly ehloStatus?: number;
   /** Status for HELO. Default 250. */
@@ -117,7 +125,8 @@ export class ClientPeer {
     let inData = false;
 
     sock.on('error', () => {});
-    write(sock, 220, 'peer.test ESMTP scripted');
+    const greeting = this.#opts.greetingStatus ?? 220;
+    write(sock, greeting, greeting < 400 ? 'peer.test ESMTP scripted' : 'peer.test no service here');
 
     const addrOf = (line: string): string => /<([^>]*)>/.exec(line)?.[1] ?? '';
 
@@ -139,7 +148,15 @@ export class ClientPeer {
           recipients = [];
           inData = false;
           buf = buf.subarray(eod);
-          write(sock, 250, '2.0.0 message accepted');
+          // The message is captured (terminator seen); optionally delay the 250 so a client with a
+          // shorter post-EOD timeout treats the outcome as indeterminate.
+          const hold = this.#opts.withholdDataReplyMs ?? 0;
+          if (hold > 0) {
+            const t = setTimeout(() => write(sock, 250, '2.0.0 message accepted'), hold);
+            t.unref();
+          } else {
+            write(sock, 250, '2.0.0 message accepted');
+          }
           continue;
         }
 

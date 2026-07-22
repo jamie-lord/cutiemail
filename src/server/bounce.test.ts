@@ -44,3 +44,21 @@ test('a bounce is a well-formed multipart/report with the three required parts',
   // The original message is returned intact.
   assert.match(text, /the original body/, 'the original message is included');
 });
+
+test('the bounce carries a Received trace header and a Diagnostic-Code from the remote reply', () => {
+  const original = Buffer.from('From: alice@example.com\r\nSubject: hi\r\n\r\nbody\r\n', 'latin1');
+  const bounce = buildBounceMessage({
+    reportingMta: 'mx.example.test',
+    originalSender: 'alice@example.com',
+    originalData: original,
+    failures: [{ recipient: 'nobody@remote.test', action: 'failed', status: '5.1.1', detail: '550 5.1.1 no such user' }],
+    date: 'Wed, 15 Jul 2026 09:30:00 +0000',
+    token: 'abc123',
+  });
+  const text = bounce.toString('latin1');
+  // A trace header the integrator's DKIM signer can oversign - and it is at the very top.
+  assert.match(text, /^Received: by mx\.example\.test \(cutiemail\) id abc123; Wed, 15 Jul 2026 09:30:00 \+0000\r\n/, 'a Received header leads the message');
+  assert.ok(text.indexOf('Received:') < text.indexOf('From:'), 'the Received trace precedes the originator fields');
+  // The remote reply (detail) is now surfaced to the sender as a Diagnostic-Code.
+  assert.match(text, /Diagnostic-Code: smtp; 550 5\.1\.1 no such user/, 'the remote failure reason reaches the sender');
+});

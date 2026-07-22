@@ -195,3 +195,72 @@ test('R-5321-3.3-y: the client sends no message data after a 5yz (and ignore5yzA
     assert.ok(r.sentData || peer.received.includes(Buffer.from('DATA')), 'ignore5yzAndSendData defect must be detectable');
   });
 });
+
+test('post-EOD reply timeout is INDETERMINATE, not a plain refusal (RFC 5321 §4.5.3.2.6)', async () => {
+  // The peer accepts DATA, consumes the whole message + terminating dot, then WITHHOLDS the 250
+  // (a slow content scanner). With a short post-EOD timeout the client must report the outcome as
+  // indeterminate - the peer may already hold the message - rather than as a normal failure that
+  // a caller would resend and duplicate.
+  await withPeer({ withholdDataReplyMs: 5_000 }, async (peer) => {
+    const r = await deliver(connectTo(peer.port), REQUEST, {}, undefined, { postDataReplyTimeoutMs: 150 });
+    assert.equal(r.ok, false, 'no 250 was seen, so not a success');
+    assert.equal(r.dataIndeterminate, true, 'a post-terminator timeout is indeterminate');
+    assert.equal(r.dataCode, null, 'no data code was received');
+    assert.match(r.failure ?? '', /indeterminate/, 'the failure names the indeterminate outcome');
+    // The message DID reach the peer (the duplicate risk is real precisely because it arrived).
+    assert.equal(peer.deliveries.length, 1, 'the terminated message was received by the peer');
+  });
+  // Contrast: a peer that replies in time is a clean success, NOT indeterminate.
+  await withPeer({}, async (peer) => {
+    const r = await deliver(connectTo(peer.port), REQUEST, {}, undefined, { postDataReplyTimeoutMs: 5_000 });
+    assert.ok(r.ok, `a timely 250 is a success: ${r.failure}`);
+    assert.equal(r.dataIndeterminate, false, 'a replied-to delivery is never indeterminate');
+  });
+});
+
+test('a rejected greeting is QUIT-ed, and the code drives classification (fix 8)', async () => {
+  // 554 "no service": a permanent greeting rejection. The client must QUIT (RFC 5321 §3.1), not
+  // drop the connection, and surface the 5yz code for the relay to bounce on.
+  await withPeer({ greetingStatus: 554 }, async (peer) => {
+    const r = await deliver(connectTo(peer.port), REQUEST);
+    assert.equal(r.ok, false);
+    assert.equal(r.greetingCode, 554, 'the greeting code is reported');
+    assert.equal(r.quit, true, 'the client QUITs a rejected greeting');
+    // The QUIT is fire-and-forget (no reply awaited), so poll briefly for the peer to receive it.
+    for (let i = 0; i < 50 && !peer.received.includes(Buffer.from('QUIT')); i++) await new Promise((res) => setTimeout(res, 5));
+    assert.ok(peer.received.includes(Buffer.from('QUIT')), 'QUIT is actually on the wire');
+    assert.equal(peer.deliveries.length, 0, 'no transaction after a rejected greeting');
+  });
+  // 421 "not available": a transient greeting rejection - still QUIT, code surfaced as 4yz.
+  await withPeer({ greetingStatus: 421 }, async (peer) => {
+    const r = await deliver(connectTo(peer.port), REQUEST);
+    assert.equal(r.ok, false);
+    assert.equal(r.greetingCode, 421, 'the 4yz greeting code is reported (relay defers on it)');
+    assert.equal(r.quit, true);
+  });
+});
+
+test('SMTPUTF8 gate: an internationalized envelope is refused, not mojibaked onto the wire (fix 9)', async () => {
+  // The client does not yet transmit SMTPUTF8, so an internationalized envelope address must be
+  // refused rather than latin1-mangled onto the wire.
+  const intlFrom = { ...REQUEST, from: 'jamⅰe@exämple.com' };
+  await withPeer({}, async (peer) => {
+    const r = await deliver(connectTo(peer.port), intlFrom);
+    assert.equal(r.ok, false);
+    assert.match(r.failure ?? '', /SMTPUTF8|internationalized/i, 'the refusal names the reason');
+    assert.equal(peer.deliveries.length, 0, 'nothing was transmitted');
+    assert.ok(!peer.received.includes(Buffer.from('MAIL FROM')), 'no MAIL FROM with a mangled address was sent');
+  });
+  const intlRcpt = { ...REQUEST, recipients: ['reçipient@example.net'] };
+  await withPeer({}, async (peer) => {
+    const r = await deliver(connectTo(peer.port), intlRcpt);
+    assert.equal(r.ok, false, 'an internationalized recipient is refused too');
+    assert.equal(peer.deliveries.length, 0);
+  });
+  // Negative control: the same shape with an ASCII envelope delivers normally.
+  await withPeer({}, async (peer) => {
+    const r = await deliver(connectTo(peer.port), REQUEST);
+    assert.ok(r.ok, `an ASCII envelope must still deliver: ${r.failure}`);
+    assert.equal(peer.deliveries.length, 1);
+  });
+});

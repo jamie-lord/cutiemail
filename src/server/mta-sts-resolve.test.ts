@@ -6,7 +6,8 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { StsCache, type StsResolverDeps } from './mta-sts-resolve.ts';
+import { StsCache, readPolicyResponse, type StsResolverDeps } from './mta-sts-resolve.ts';
+import { parseStsPolicy } from '../transport/mta-sts.ts';
 
 const POLICY = 'version: STSv1\nmode: enforce\nmx: mail.example.com\nmax_age: 86400\n';
 
@@ -80,4 +81,47 @@ test('a fetch that returns an invalid policy yields no policy', async () => {
   const { deps } = harness({ id: 'v1', body: 'version: bogus\nmode: whatever\n' });
   const cache = new StsCache();
   assert.equal(await cache.resolve('example.com', deps), null);
+});
+
+test('a cached enforce policy SURVIVES a TXT-lookup failure (§5.1 - no downgrade)', async () => {
+  // The regression: a thrown TXT lookup used to be treated as id=null → the cached policy was
+  // DELETED and null returned, letting an active attacker strip TLS by suppressing the
+  // unauthenticated TXT lookup. It must now serve the still-valid cache instead.
+  const { state, deps } = harness({ id: 'v1' });
+  const cache = new StsCache();
+  assert.equal((await cache.resolve('example.com', deps))?.mode, 'enforce');
+  const blackout: StsResolverDeps = { ...deps, resolveTxt: async () => { throw new Error('SERVFAIL'); } };
+  state.t += 3600_000; // +1h, still within max_age
+  assert.equal((await cache.resolve('example.com', blackout))?.mode, 'enforce', 'the unexpired cache is served despite the DNS failure');
+  // Past expiry, a still-failing lookup finally yields no policy (nothing left to downgrade FROM).
+  state.t += 86400_000;
+  assert.equal(await cache.resolve('example.com', blackout), null, 'an expired cache is not served forever');
+});
+
+test('multiple v=STSv1 records are ambiguous: no fresh policy, and the cached one is KEPT (§3.1/§5.1)', async () => {
+  const { state, deps } = harness({ id: 'v1' });
+  const cache = new StsCache();
+  assert.equal((await cache.resolve('example.com', deps))?.mode, 'enforce');
+  const doubled: StsResolverDeps = { ...deps, resolveTxt: async () => ['v=STSv1; id=v1', 'v=STSv1; id=zzz'] };
+  assert.equal((await cache.resolve('example.com', doubled))?.mode, 'enforce', 'an ambiguous TXT answer must not drop the cached policy');
+  assert.equal(state.fetches, 1, 'and must not trigger a refetch');
+});
+
+test('a definitively-absent record (a clean empty lookup) DOES forget a cached policy', async () => {
+  const { deps } = harness({ id: 'v1' });
+  const cache = new StsCache();
+  assert.equal((await cache.resolve('example.com', deps))?.mode, 'enforce');
+  const gone: StsResolverDeps = { ...deps, resolveTxt: async () => [] };
+  assert.equal(await cache.resolve('example.com', gone), null, 'a clean "no record" drops enforcement (the domain retired MTA-STS)');
+});
+
+test('readPolicyResponse: a non-2xx status yields null; an oversize body is capped to the parseable prefix', async () => {
+  assert.equal(await readPolicyResponse({ ok: false, arrayBuffer: async () => new ArrayBuffer(0) }, 64), null, 'a non-2xx status serves no policy');
+  const policy = 'version: STSv1\nmode: enforce\nmx: mail.example.com\nmax_age: 86400\n';
+  const oversize = Buffer.concat([Buffer.from(policy, 'latin1'), Buffer.alloc(200_000, 0x41)]);
+  const ab = new ArrayBuffer(oversize.length);
+  new Uint8Array(ab).set(oversize);
+  const capped = await readPolicyResponse({ ok: true, arrayBuffer: async () => ab }, 65_536);
+  assert.equal(capped?.length, 65_536, 'the body is capped to maxBytes (RFC 8461 §3.2)');
+  assert.equal(parseStsPolicy(capped!).mode, 'enforce', 'the capped prefix still parses to the real policy');
 });

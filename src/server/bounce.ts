@@ -35,7 +35,12 @@ export interface BounceInput {
  */
 export function buildBounceMessage(input: BounceInput): Buffer {
   const boundary = `=_bounce_${input.token}`;
-  const status = generateDeliveryStatus(input.reportingMta, input.failures);
+  // Thread each failure's remote reply (detail) into the DSN as a Diagnostic-Code (RFC 3464
+  // §2.3.6) - the bounce now tells the sender WHY each recipient failed, not just that it did.
+  const status = generateDeliveryStatus(
+    input.reportingMta,
+    input.failures.map((f) => ({ ...f, diagnostic: f.diagnostic ?? f.detail })),
+  );
 
   const humanLines = [
     `This is the mail system at host ${input.reportingMta}.`,
@@ -49,6 +54,10 @@ export function buildBounceMessage(input: BounceInput): Buffer {
   const human = Buffer.from(humanLines.join('\r\n') + '\r\n', 'latin1');
 
   const headers =
+    // A trace header for the locally-generated bounce (RFC 5321 §4.4). It also gives the message
+    // a Received line the integrator's DKIM signer can oversign, so a signed bounce carries a
+    // stable trace at the top. Prepended so it sits above the originator fields.
+    `Received: by ${input.reportingMta} (cutiemail) id ${input.token}; ${input.date}\r\n` +
     `From: Mail Delivery System <MAILER-DAEMON@${input.reportingMta}>\r\n` +
     `To: <${input.originalSender}>\r\n` +
     `Subject: Undelivered Mail Returned to Sender\r\n` +
