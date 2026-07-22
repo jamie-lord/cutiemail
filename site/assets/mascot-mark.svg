@@ -5,8 +5,8 @@
   <!-- body fill; the outline is painted last so the flap can never halve its weight -->
   <rect x="6" y="6" width="150" height="110" rx="22" fill="#ffb3c9"/>
   <g clip-path="url(#envm)">
-    <path d="M81 -88 L158 -15 L81 58 L4 -15 Z" fill="#ff8fb2" stroke="#4a1d33" stroke-width="7" stroke-linejoin="round"/>
+    <path d="M81 -88 L158 -15 L81 58 L4 -15 Z" fill="#ff8fb2" stroke="#4a1d33" stroke-width="9" stroke-linejoin="round"/>
   </g>
   <!-- the mark reads at 16–26 px, so its stroke is optically heavier than the hero mascot's -->
-  <rect x="6" y="6" width="150" height="110" rx="22" fill="none" stroke="#4a1d33" stroke-width="7"/>
+  <rect x="6" y="6" width="150" height="110" rx="22" fill="none" stroke="#4a1d33" stroke-width="9"/>
 </svg>
