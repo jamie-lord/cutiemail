@@ -106,6 +106,9 @@ function countLines(body: Buffer): number {
  */
 const MAX_MIME_DEPTH = 100;
 
+/** The transfer-encodings RFC 2045 §6.4 permits on a composite (multipart/message) type. */
+const COMPOSITE_ENCODINGS = new Set(['7BIT', '8BIT', 'BINARY']);
+
 /** Build the MIME part tree for a message or message part. */
 export function buildBodyStructure(raw: Buffer, depth = 0): BodyPart {
   // Parse ONCE per node and read every header from that result — calling header(raw,…)
@@ -135,13 +138,17 @@ export function buildBodyStructure(raw: Buffer, depth = 0): BodyPart {
   if (type === 'multipart') {
     const boundary = params.find(([n]) => n === 'boundary')?.[1] ?? '';
     const children = boundary === '' ? [] : parseMultipart(body, boundary).parts.map((p) => buildBodyStructure(p, depth + 1));
+    // RFC 2045 §6.4: a composite type may only carry a transparent transfer-encoding
+    // (7bit/8bit/binary). A quoted-printable/base64 label on a multipart is forbidden and
+    // bogus; do not copy it onto the emitted MULTIPART node (default such a node to 7BIT).
+    const compositeEncoding = COMPOSITE_ENCODINGS.has(encoding) ? encoding : '7BIT';
     // A multipart whose boundary matched no parts is malformed. Emitting it as an empty
     // multipart yields `("MIXED" …)` — a string where RFC 9051 body-type-mpart requires a
     // leading nested body — which desyncs a strict client's FETCH parse. Fall through and
     // report the raw content as a single text/plain leaf instead (a valid structure the
     // client can still BODY[]-fetch).
     if (children.length > 0) {
-      return { multipart: true, type: 'MULTIPART', subtype: subtype.toUpperCase(), params, id, description, encoding, size: body.length, lines: null, disposition, children, rfc822: null };
+      return { multipart: true, type: 'MULTIPART', subtype: subtype.toUpperCase(), params, id, description, encoding: compositeEncoding, size: body.length, lines: null, disposition, children, rfc822: null };
     }
     return { multipart: false, type: 'TEXT', subtype: 'PLAIN', params, id, description, encoding, size: body.length, lines: countLines(body), disposition, children: [], rfc822: null };
   }

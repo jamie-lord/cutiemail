@@ -26,6 +26,18 @@ const COLON = 0x3a;
 const SP = 0x20;
 const HTAB = 0x09;
 const MAX_LINE = 998; // R-5322-2.1.1-a, excluding CRLF
+/**
+ * Cap on the number of header FIELDS materialised. Pass 2 allocates one Header object
+ * (name + concatenated value) per field; with no ceiling, a message whose header section
+ * is millions of tiny lines forces millions of live objects. The body path was already
+ * hardened against this exact OOM (forEachLine is O(1) in line objects), but the header
+ * section was not — and inbound mail is parsed THREE times (DKIM + DMARC + ARC), so one
+ * unauthenticated message could stall the event loop / OOM the process. Past the cap the
+ * remaining header-section lines are ignored (the body boundary is still found in pass 1).
+ * 1000 is far above any real message (Received + Authentication-Results + ARC chains are
+ * dozens of fields, not thousands).
+ */
+export const MAX_HEADERS = 1000;
 
 /** Defects that make the parser violate a specific message-format requirement. */
 export interface ParserDefects {
@@ -47,6 +59,11 @@ export interface ParserDefects {
    * space in a field name is how a smuggled header is disguised).
    */
   readonly acceptInvalidFieldNameChars?: boolean;
+  /**
+   * Do not cap the header-field count: materialise every header line with no ceiling.
+   * Reinstates the parse-time header-section OOM the MAX_HEADERS cap defends against.
+   */
+  readonly dontCapHeaderCount?: boolean;
 }
 
 type Terminator = 'crlf' | 'lf' | 'none';
@@ -143,6 +160,8 @@ export function parseMessage(input: Buffer, defects: ParserDefects = {}): Messag
     cur = null;
   };
   let inHeaders = true;
+  let headerCapHit = false;
+  const capHeaders = defects.dontCapHeaderCount !== true;
   forEachLine(input, (buf, start, end, terminator, lineNo) => {
     if (!inHeaders) return;
     const len = end - start;
@@ -156,7 +175,18 @@ export function parseMessage(input: Buffer, defects: ParserDefects = {}): Messag
       cur.valueParts.push(Buffer.from([CR, LF]), buf.subarray(start, end));
       return;
     }
+    // Starting a new field: flush the pending one first. Then, once MAX_HEADERS fields have
+    // been materialised, stop (record the anomaly once); the remaining header-section lines
+    // are ignored until the body boundary, so the field count never exceeds the cap.
     flush();
+    if (capHeaders && headers.length >= MAX_HEADERS) {
+      if (!headerCapHit) {
+        anomalies.push({ kind: 'too-many-headers', line: lineNo });
+        headerCapHit = true;
+      }
+      cur = null; // no later continuation appends to a capped header (already null after flush)
+      return;
+    }
     let colon = -1;
     for (let j = start; j < end; j++) {
       if (buf[j] === COLON) {

@@ -7,7 +7,7 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { bodyResponse, bodyStructureResponse, resolvePart } from './body-structure.ts';
+import { bodyResponse, bodyStructureResponse, resolvePart, buildBodyStructure } from './body-structure.ts';
 
 const msg = (s: string): Buffer => Buffer.from(s.replace(/\n/g, '\r\n'), 'latin1');
 
@@ -92,6 +92,18 @@ test('a NUL or control octet in a header/filename is not emitted raw in a quoted
   assert.match(bs, /"ev il\.exe"/, 'the control octet was collapsed to a space');
 });
 
+test('a bogus non-transparent CTE on a multipart is not copied onto the MULTIPART node (RFC 2045 §6.4)', () => {
+  // base64 on a multipart is EXPRESSLY FORBIDDEN (composite types only carry 7bit/8bit/binary).
+  // The emitted MULTIPART node must default to a transparent encoding, never the bogus label.
+  const raw = msg('Content-Type: multipart/mixed; boundary=B\nContent-Transfer-Encoding: base64\n\n--B\nContent-Type: text/plain\n\nhi\n--B--\n');
+  const node = buildBodyStructure(raw);
+  assert.ok(node.multipart, 'the container is a multipart node');
+  assert.equal(node.encoding, '7BIT', 'the forbidden base64 is not copied onto the composite node');
+  // A legitimate transparent encoding IS preserved.
+  const raw8 = msg('Content-Type: multipart/mixed; boundary=B\nContent-Transfer-Encoding: 8bit\n\n--B\nContent-Type: text/plain\n\nhi\n--B--\n');
+  assert.equal(buildBodyStructure(raw8).encoding, '8BIT', 'a transparent 8bit label is kept');
+});
+
 test('a pathologically deep multipart is bounded, not a stack overflow (DoS guard)', () => {
   let m = 'Content-Type: text/plain\r\n\r\nleaf\r\n';
   for (let i = 0; i < 5000; i++) {
@@ -101,6 +113,36 @@ test('a pathologically deep multipart is bounded, not a stack overflow (DoS guar
   // Must return a value (bounded at the depth cap), never throw a RangeError.
   const bs = bodyStructureResponse(Buffer.from(m, 'latin1'));
   assert.ok(bs.length > 0 && bs.startsWith('('), 'a deeply nested message yields a bounded structure, not a crash');
+});
+
+test('a deep message/rfc822 chain is bounded by the depth cap, not a stack overflow', () => {
+  // Distinct from the multipart nesting bomb: buildBodyStructure ALSO recurses through the
+  // message/rfc822 branch (encapsulated ENVELOPE + nested structure). MAX_MIME_DEPTH guards
+  // that recursion too; a 250-deep chain must engage the cap, never overflow the stack, and
+  // still serialise to balanced IMAP output.
+  let m = 'Content-Type: text/plain\r\n\r\nleaf\r\n';
+  for (let i = 0; i < 250; i++) {
+    m = `Content-Type: message/rfc822\r\n\r\n${m}`;
+  }
+  const raw = Buffer.from(m, 'latin1');
+  const bs = bodyStructureResponse(raw); // must not throw a RangeError
+  assert.ok(bs.startsWith('(') && bs.length > 0, 'a deep message/rfc822 chain yields a bounded structure');
+  // The output parens are balanced (no desync from the truncated-at-cap recursion).
+  let depth = 0;
+  let inQuote = false;
+  for (let i = 0; i < bs.length; i++) {
+    const ch = bs[i];
+    if (inQuote) {
+      if (ch === '\\') i++;
+      else if (ch === '"') inQuote = false;
+    } else if (ch === '"') inQuote = true;
+    else if (ch === '(') depth++;
+    else if (ch === ')') depth--;
+    assert.ok(depth >= 0, 'never an unbalanced close paren');
+  }
+  assert.equal(depth, 0, 'the deep message/rfc822 structure has balanced parentheses');
+  // The basic BODY form is likewise bounded and balanced.
+  assert.ok(bodyResponse(raw).startsWith('('), 'BODY form is also bounded');
 });
 
 test('BODYSTRUCTURE and resolvePart never crash on fuzzed / malformed MIME', () => {

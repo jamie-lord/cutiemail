@@ -79,4 +79,28 @@ export const M_S2047 = [
       'the negative control. (Whitespace between an encoded-word and ORDINARY text ' +
       'is preserved — only the encoded-word/encoded-word gap is ignored.)',
   },
+  {
+    id: 'R-2047-5-b',
+    rfc: 'rfc2047',
+    section: '5',
+    page: 7,
+    level: 'MUST',
+    party: 'both',
+    normativeSource: 'keyword',
+    text:
+      "an 'encoded-word' that appears in a header field defined as '*text' MUST be " +
+      "separated from any adjacent 'encoded-word' or 'text' by 'linear-white-space'.",
+    testability: { kind: 'parse' },
+    note:
+      'The separation rule that bounds where a token is a token: an encoded-word ' +
+      "abutting ordinary text with no LWSP (foo=?utf-8?Q?bar?=baz) is NOT an " +
+      "'encoded-word' and a conformant reader leaves it literal, so a payload cannot " +
+      'glue itself onto surrounding text and be silently decoded. The same LWSP bound ' +
+      "governs the phrase (display-name) placement in §5(3). Our decoder only decodes " +
+      'a token separated from adjacent text by LWSP (or the field start/end); ' +
+      'otherwise it leaves it literal and flags abutting-text. The acceptAbuttingText ' +
+      'defect is the negative control. This decoder is a library surface — the live ' +
+      'ENVELOPE/BODYSTRUCTURE path preserves raw header bytes and never runs it — but ' +
+      'this register asserts the decoder enforces the RFC bound, so the bound holds.',
+  },
 ] as const satisfies readonly RequirementDef[];

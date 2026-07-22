@@ -12,6 +12,11 @@
  * decoded octets (post-base64 / post-Q), leaving charset transcoding to a separate
  * step. Bytes, never strings: the token structure is ASCII, but the decoded content
  * is arbitrary octets.
+ *
+ * This decoder is a LIBRARY SURFACE: the live ENVELOPE/BODYSTRUCTURE path preserves raw
+ * header bytes and never runs it. But the requirement register asserts this decoder
+ * enforces the RFC 2047 bounds (LWSP separation, the 75-char ceiling, addr-spec
+ * exclusion, valid base64), so those bounds must actually hold here.
  */
 
 import type { Header } from './model.ts';
@@ -25,6 +30,10 @@ export interface EncodedWordDefects {
   readonly decodeInAddrSpec?: boolean;
   /** Keep the whitespace between two adjacent encoded-words. Violates R-2047-6.2-a. */
   readonly keepInterWordWhitespace?: boolean;
+  /** Decode a token abutting adjacent text with no LWSP separation. Violates R-2047-5-b. */
+  readonly acceptAbuttingText?: boolean;
+  /** Decode a B-word whose base64 payload is malformed (half-decode it). Violates the Q-parity rule. */
+  readonly acceptInvalidBase64?: boolean;
 }
 
 export interface DecodeOptions extends EncodedWordDefects {
@@ -69,6 +78,17 @@ function decodeQ(text: string): Buffer {
 
 const isWhitespaceOnly = (s: string): boolean => /^[ \t\r\n]*$/.test(s);
 
+/** A single LWSP octet (linear-white-space): space, tab, or a bare CR/LF from folding. */
+const isLwsp = (c: string | undefined): boolean => c === ' ' || c === '\t' || c === '\r' || c === '\n';
+
+/**
+ * A syntactically valid base64 payload for a B-word: only the base64 alphabet, padded to
+ * a multiple of 4 with at most two trailing '='. Node's Buffer.from(...,'base64') is
+ * lenient — it silently drops stray octets and half-decodes — so a malformed B-word would
+ * otherwise slip through decoded, inconsistent with a malformed Q-word (left literal).
+ */
+const isValidBase64 = (t: string): boolean => t.length % 4 === 0 && /^[A-Za-z0-9+/]*={0,2}$/.test(t);
+
 export function decodeEncodedWords(input: Buffer, opts: DecodeOptions = {}): DecodeResult {
   const s = input.toString('latin1');
   // Permissive token match (allows internal whitespace, so we can DETECT and reject it).
@@ -107,6 +127,32 @@ export function decodeEncodedWords(input: Buffer, opts: DecodeOptions = {}): Dec
     if (opts.addrSpecContext === true && opts.decodeInAddrSpec !== true) {
       anomalies.add('encoded-word-in-addr-spec');
       pushLiteral(full); // forbidden here — do not decode
+      continue;
+    }
+    // R-2047-5-b: an encoded-word MUST be separated from adjacent 'text'/'encoded-word'
+    // by LWSP. A token glued to ordinary text (foo=?utf-8?Q?bar?=baz) is NOT an
+    // encoded-word — a conformant reader leaves it literal, so a payload cannot ride in
+    // by abutting the surrounding text. The field start/end count as separated. This is
+    // the §5(1)/(3) *text/phrase placement rule; addr-spec context (§5-a, checked above)
+    // is its own placement rule, so this is scoped to non-address context.
+    if (opts.addrSpecContext !== true) {
+      const before = m.index > 0 ? s[m.index - 1] : undefined;
+      const after = lastIndex < s.length ? s[lastIndex] : undefined;
+      const abuts = (before !== undefined && !isLwsp(before)) || (after !== undefined && !isLwsp(after));
+      if (abuts && opts.acceptAbuttingText !== true) {
+        anomalies.add('abutting-text');
+        pushLiteral(full); // not LWSP-separated — leave it literal
+        continue;
+      }
+    }
+    // A B-word with a malformed base64 payload is left literal (+ flagged), the same
+    // defined outcome as a broken Q-word, rather than Node's silent half-decode. Skipped
+    // when internal whitespace was deliberately accepted (that defect models Node's own
+    // whitespace-tolerant decode, so strictness here would mask it).
+    const wsAccepted = hasInternalWs && opts.acceptInternalWhitespace === true;
+    if (enc === 'B' && !wsAccepted && !isValidBase64(text) && opts.acceptInvalidBase64 !== true) {
+      anomalies.add('invalid-base64');
+      pushLiteral(full);
       continue;
     }
     const bytes = enc === 'B' ? Buffer.from(text, 'base64') : decodeQ(text);

@@ -32,7 +32,7 @@ import { DSN } from './sections/dsn.ts';
  * RFC 2045 MIME sections (4, 5, 5.2, 6) share this list; there is no collision
  * between the two numbering spaces at present.
  */
-export const EXTRACTED_SECTIONS: readonly string[] = ['2', '2.1', '2.1.1', '2.2', '2.3.2', '2.3.3', '3.3', '3.4.1', '3.6', '4', '5', '5.1.1', '5.2', '6', '6.2'];
+export const EXTRACTED_SECTIONS: readonly string[] = ['2', '2.1', '2.1.1', '2.2', '2.3.2', '2.3.3', '3.3', '3.4.1', '3.6', '4', '5', '5.1.1', '5.2', '6', '6.2', '6.4'];
 
 export const MESSAGE_REQUIREMENTS = [
   ...M_S2_1,

@@ -8,6 +8,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { buildEnvelope, serializeEnvelope } from './envelope.ts';
+import type { EnvelopeAddress } from './envelope.ts';
 import { parseMessage } from '../message/parse.ts';
 import { imapRequirement } from '../register/imap/index.ts';
 import type { ImapRequirementId } from '../register/imap/index.ts';
@@ -81,4 +82,47 @@ test('a quoted display-name with a comma is one address, not split on the inner 
   assert.equal(to.length, 2, 'the two genuinely-separate To addresses still split');
   assert.equal(to[0]!.name, 'Roe, Jane');
   assert.equal(to[1]!.mailbox, 'plain');
+});
+
+const addrs = (headers: readonly import('../message/model.ts').Header[], field: string, defects = {}): EnvelopeAddress[] =>
+  buildEnvelope(headers, defects).fields.find((f) => f.name === field)!.value as EnvelopeAddress[];
+
+test('RFC 9051 §7.5.2: an RFC 5322 group address emits start/end markers with clean hosts (noGroupMarkers caught)', () => {
+  cites('R-9051-7.5.2-a');
+  const headers = parseMessage(
+    Buffer.from(`From: a@x.test${CRLF}To: A Group: alice@x.test, bob@y.test;${CRLF}Subject: x${CRLF}${CRLF}body`, 'latin1'),
+  ).headers;
+
+  const to = addrs(headers, 'to');
+  // Start marker (NIL NIL "A Group" NIL), the two members, then end marker (NIL NIL NIL NIL).
+  assert.deepEqual(to[0], { name: null, mailbox: 'A Group', host: '' }, 'group start marker carries the group name, NIL host');
+  assert.deepEqual(to[1], { name: null, mailbox: 'alice', host: 'x.test' }, 'first member, group name not glued on');
+  assert.deepEqual(to[2], { name: null, mailbox: 'bob', host: 'y.test' }, "last member's host is clean, no leaked ';'");
+  assert.deepEqual(to[3], { name: null, mailbox: null, host: null }, 'group end marker is all-NIL');
+  assert.equal(to.length, 4);
+
+  const wire = serializeEnvelope(buildEnvelope(headers));
+  assert.match(wire, /\(NIL NIL "A Group" NIL\)/, 'the group start marker serializes with a NIL host');
+  assert.match(wire, /\(NIL NIL NIL NIL\)/, 'the group end marker serializes all-NIL');
+  assert.doesNotMatch(wire, /y\.test;/, "the closing ';' never leaks into a host");
+
+  // Negative control: without group markers the old corruption returns — the group name
+  // glues onto the first mailbox and the ';' leaks into the last host.
+  const broken = addrs(headers, 'to', { noGroupMarkers: true });
+  assert.ok(
+    broken.some((a) => (a.host ?? '').includes(';') || (a.mailbox ?? '').includes(' ')),
+    'noGroupMarkers must be detectable (group name glued / semicolon leaked)',
+  );
+  assert.ok(!broken.some((a) => a.mailbox === null), 'the defect emits no end marker');
+});
+
+test('RFC 9051 §7.5.2: an undisclosed-recipients empty group is a start marker then an immediate end marker', () => {
+  cites('R-9051-7.5.2-a');
+  const headers = parseMessage(
+    Buffer.from(`From: a@x.test${CRLF}To: undisclosed-recipients:;${CRLF}Subject: x${CRLF}${CRLF}body`, 'latin1'),
+  ).headers;
+  const to = addrs(headers, 'to');
+  assert.deepEqual(to[0], { name: null, mailbox: 'undisclosed-recipients', host: '' }, 'the empty group opens with its name');
+  assert.deepEqual(to[1], { name: null, mailbox: null, host: null }, 'and closes immediately with the end marker');
+  assert.equal(to.length, 2, 'an empty group has no members between the markers');
 });

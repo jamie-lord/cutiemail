@@ -12,7 +12,7 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { parseMessage, hasHeader, hasAnomaly } from './parse.ts';
+import { parseMessage, hasHeader, hasAnomaly, MAX_HEADERS } from './parse.ts';
 import type { ParserDefects } from './parse.ts';
 import { messageRequirement } from '../register/message/index.ts';
 import type { MessageRequirementId } from '../register/message/index.ts';
@@ -47,6 +47,39 @@ test('a large all-CRLF message parses with bounded memory/time', () => {
   assert.equal(msg.headers.length, 2, 'headers still parsed correctly');
   assert.equal(msg.body.length, body.length, 'the body is a subarray, not re-materialised');
   assert.ok(ms < 1500, `a large message must parse in bounded time (took ${ms.toFixed(0)}ms)`);
+});
+
+test('a header section with millions of fields is capped in bounded memory/time (too-many-headers)', () => {
+  // The body path was hardened against a per-line-object OOM; the HEADER section was not.
+  // A message whose header section is millions of tiny fields would otherwise materialise one
+  // Header object each — and inbound mail is parsed 3x (DKIM+DMARC+ARC). The MAX_HEADERS cap
+  // bounds it. Mirrors the large-all-CRLF body test, but the payload is entirely headers.
+  const many = 'X: y\r\n'.repeat(2_000_000); // ~2M header fields, ~12 MiB
+  const big = b(`From: a@example.com${CRLF}${many}${CRLF}body`);
+  const start = process.hrtime.bigint();
+  const msg = parseMessage(big);
+  const ms = Number(process.hrtime.bigint() - start) / 1e6;
+  assert.ok(hasAnomaly(msg, 'too-many-headers'), 'the header-count cap is recorded as an anomaly');
+  assert.ok(msg.headers.length <= MAX_HEADERS, `the field count is capped at MAX_HEADERS (${msg.headers.length})`);
+  assert.ok(ms < 1500, `a huge header section must parse in bounded time (took ${ms.toFixed(0)}ms)`);
+});
+
+test('the header-count cap engages exactly at MAX_HEADERS and is off below it (dontCapHeaderCount caught)', () => {
+  const overCap = b(`${'X: y\r\n'.repeat(MAX_HEADERS + 50)}${CRLF}body`);
+  const capped = parseMessage(overCap);
+  assert.ok(hasAnomaly(capped, 'too-many-headers'), 'over the cap is flagged');
+  assert.equal(capped.headers.length, MAX_HEADERS, 'the field count is exactly MAX_HEADERS');
+
+  // Below the cap: no anomaly, every field materialised.
+  const underCap = parseMessage(b(`${'X: y\r\n'.repeat(200)}${CRLF}body`));
+  assert.ok(!hasAnomaly(underCap, 'too-many-headers'), 'a modest header count is not flagged');
+  assert.equal(underCap.headers.length, 200, 'all fields below the cap are kept');
+
+  // Negative control: disabling the cap materialises every field (uncapped) and never flags.
+  const defect: ParserDefects = { dontCapHeaderCount: true };
+  const uncapped = parseMessage(overCap, defect);
+  assert.ok(!hasAnomaly(uncapped, 'too-many-headers'), 'dontCapHeaderCount must be detectable');
+  assert.equal(uncapped.headers.length, MAX_HEADERS + 50, 'without the cap every field is materialised');
 });
 
 test('R-5322-2.1.1-a: a line over 998 octets is flagged (and the defect is caught)', () => {

@@ -63,3 +63,39 @@ test('R-2047-6.2-a: whitespace between adjacent encoded-words is ignored (keepIn
   // Negative control: keeping it leaves a spurious space.
   assert.equal(decoded('=?utf-8?Q?a?= =?utf-8?Q?b?=', { keepInterWordWhitespace: true }), 'a b', 'keepInterWordWhitespace must be detectable');
 });
+
+test('R-2047-5-b: a token abutting *text with no LWSP is left literal (acceptAbuttingText caught)', () => {
+  cites('R-2047-5-b');
+  // *text placement: the token is glued to ordinary text on both sides.
+  const abut = 'foo=?utf-8?Q?bar?=baz';
+  const r = decodeEncodedWords(w(abut));
+  assert.ok(hasEncodedWordAnomaly(r, 'abutting-text'), 'a non-LWSP-separated token is flagged');
+  assert.equal(r.text.toString('latin1'), abut, 'it is left literal, never decoded into the surrounding text');
+  // A properly LWSP-separated token still decodes (control that the rule is not over-broad).
+  assert.equal(decoded('foo =?utf-8?Q?bar?= baz'), 'foo bar baz', 'LWSP-separated tokens still decode');
+  // Negative control: accepting abutting text decodes the glued token.
+  assert.notEqual(decodeEncodedWords(w(abut), { acceptAbuttingText: true }).text.toString('latin1'), abut, 'acceptAbuttingText must be detectable');
+});
+
+test('R-2047-5-b: the phrase (display-name) variant abutting adjacent text is also left literal', () => {
+  cites('R-2047-5-b');
+  // A display-name-shaped value where the encoded-word abuts a following letter with no LWSP.
+  const phrase = '=?utf-8?Q?Jos?=e Smith';
+  const r = decodeEncodedWords(w(phrase));
+  assert.ok(hasEncodedWordAnomaly(r, 'abutting-text'), 'an encoded-word glued to a name character is flagged');
+  assert.ok(r.text.toString('latin1').startsWith('=?utf-8?Q?Jos?='), 'the abutting token stays literal in the phrase');
+  // Separated by LWSP, the same phrase decodes.
+  assert.equal(decoded('=?utf-8?Q?Jose?= Smith'), 'Jose Smith', 'the LWSP-separated phrase decodes');
+});
+
+test('invalid base64 in a B-word is left literal + flagged, not half-decoded (acceptInvalidBase64 caught)', () => {
+  // A malformed B-word must reach the same defined outcome as a malformed Q-word: literal.
+  const bad = '=?utf-8?B?not!valid?=';
+  const r = decodeEncodedWords(w(bad));
+  assert.ok(hasEncodedWordAnomaly(r, 'invalid-base64'), 'the malformed base64 payload is flagged');
+  assert.equal(r.text.toString('latin1'), bad, 'the token is left literal, not half-decoded');
+  // A valid B-word still decodes.
+  assert.equal(decoded('=?ISO-8859-1?B?SGVsbG8=?='), 'Hello', 'a valid B-word is unaffected');
+  // Negative control: accepting invalid base64 lets Node silently half-decode it.
+  assert.notEqual(decodeEncodedWords(w(bad), { acceptInvalidBase64: true }).text.toString('latin1'), bad, 'acceptInvalidBase64 must be detectable');
+});

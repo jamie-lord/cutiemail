@@ -30,6 +30,8 @@ export interface ContentType {
   readonly params: ReadonlyMap<string, string>;
   /** Recognized-but-not-acted-on parameter names (ignored per R-2045-5-b). */
   readonly ignoredParams: readonly string[];
+  /** Recognized parameter names (boundary/charset) that appeared more than once — ambiguous. */
+  readonly duplicateParams: readonly string[];
   /** False when the header was syntactically invalid and the default was substituted. */
   readonly valid: boolean;
 }
@@ -59,13 +61,25 @@ export interface MimeDefects {
   readonly acceptUnknownCte?: boolean;
   /** Do not flag a duplicate Content-Type. Undoes the ADR-0007 MIME-confusion cut. */
   readonly acceptDuplicateContentType?: boolean;
+  /** Do not flag a non-transparent CTE on a composite (multipart/message) type. Violates R-2045-6.4-a. */
+  readonly acceptCteOnComposite?: boolean;
+  /** Do not flag a duplicate Content-Transfer-Encoding. Undoes the duplicate-header cut. */
+  readonly acceptDuplicateCte?: boolean;
+  /** Do not flag a duplicate MIME-Version. Undoes the duplicate-header cut. */
+  readonly acceptDuplicateMimeVersion?: boolean;
+  /** Do not flag a repeated boundary/charset parameter. Undoes the repeated-parameter cut. */
+  readonly acceptDuplicateParam?: boolean;
 }
+
+/** The transfer-encodings that perform no transform, so are permitted on a composite type (§6.4). */
+const TRANSPARENT_CTE = new Set(['7bit', '8bit', 'binary']);
 
 const DEFAULT_TYPE: ContentType = {
   type: 'text',
   subtype: 'plain',
   params: new Map([['charset', 'us-ascii']]),
   ignoredParams: [],
+  duplicateParams: [],
   valid: true,
 };
 
@@ -106,6 +120,7 @@ function parseContentType(raw: string, defects: MimeDefects): ContentType {
 
   const params = new Map<string, string>();
   const ignoredParams: string[] = [];
+  const duplicateParams: string[] = [];
   let valid = true;
   for (const p of parts.slice(1)) {
     const eq = p.indexOf('=');
@@ -115,6 +130,13 @@ function parseContentType(raw: string, defects: MimeDefects): ContentType {
     let pval = p.slice(eq + 1).trim();
     if (pval.startsWith('"') && pval.endsWith('"') && pval.length >= 2) pval = pval.slice(1, -1);
     if (KNOWN_PARAMS.has(pname)) {
+      // A recognized parameter given twice (two boundaries / two charsets) is a
+      // MIME-confusion vector: last-wins silently picks one. Record it (unless the
+      // defect suppresses the flag). The value still resolves last-wins so downstream
+      // has a concrete value, but the ambiguity is surfaced.
+      if (params.has(pname) && defects.acceptDuplicateParam !== true && !duplicateParams.includes(pname)) {
+        duplicateParams.push(pname);
+      }
       params.set(pname, pval);
     } else {
       // R-2045-5-b: ignore unknown params (keep the media type). The defect lets
@@ -124,7 +146,7 @@ function parseContentType(raw: string, defects: MimeDefects): ContentType {
     }
   }
   if (!valid) return DEFAULT_TYPE;
-  return { type, subtype, params, ignoredParams, valid: true };
+  return { type, subtype, params, ignoredParams, duplicateParams, valid: true };
 }
 
 export function analyzeMime(headers: readonly Header[], defects: MimeDefects = {}): MimeInfo {
@@ -133,6 +155,12 @@ export function analyzeMime(headers: readonly Header[], defects: MimeDefects = {
   // MIME-Version (R-2045-4-a).
   const mimeVersions = valuesOf(headers, 'MIME-Version');
   const mimeVersion = mimeVersions[0] ?? null;
+  if (mimeVersions.length > 1 && defects.acceptDuplicateMimeVersion !== true) {
+    // Two MIME-Version headers: like a duplicate Content-Type, which one governs is
+    // exactly the disagreement a MIME-confusion attack wants. Flag rather than silently
+    // taking [0].
+    anomalies.push('duplicate-mime-version');
+  }
   if (mimeVersion === null && defects.dontFlagMissingMimeVersion !== true) {
     anomalies.push('missing-mime-version');
   } else if (mimeVersion !== null && mimeVersion !== '1.0') {
@@ -147,7 +175,7 @@ export function analyzeMime(headers: readonly Header[], defects: MimeDefects = {
   let contentType: ContentType;
   if (ctValues.length === 0) {
     if (defects.noDefaultContentType === true) {
-      contentType = { type: '', subtype: '', params: new Map(), ignoredParams: [], valid: false };
+      contentType = { type: '', subtype: '', params: new Map(), ignoredParams: [], duplicateParams: [], valid: false };
     } else {
       contentType = DEFAULT_TYPE; // §5.2 default
     }
@@ -156,9 +184,15 @@ export function analyzeMime(headers: readonly Header[], defects: MimeDefects = {
     contentType = parseContentType(ctValues[0]!, defects);
   }
   if (contentType.ignoredParams.length > 0) anomalies.push('ignored-unknown-param');
+  if (contentType.duplicateParams.length > 0) anomalies.push('duplicate-content-type-param');
 
   // Content-Transfer-Encoding (R-2045-6-a). Absent = 7bit (the default).
   const cteValues = valuesOf(headers, 'Content-Transfer-Encoding');
+  if (cteValues.length > 1 && defects.acceptDuplicateCte !== true) {
+    // A duplicate CTE is the same MIME-confusion class as a duplicate Content-Type:
+    // silently taking [0] lets two agents decode differently. Flag it.
+    anomalies.push('duplicate-cte');
+  }
   const cteRaw = (cteValues[0] ?? '7bit').toLowerCase();
   let cte = cteRaw;
   let cteRecognized = KNOWN_CTE.has(cteRaw);
@@ -171,6 +205,16 @@ export function analyzeMime(headers: readonly Header[], defects: MimeDefects = {
       octetStreamTreatment = true; // treat body as opaque octets
       cte = cteRaw; // keep the raw label for evidence
     }
+  }
+
+  // R-2045-6.4-a: a composite media type (multipart/*, message/*) recursively includes
+  // other Content-Type fields, so ONLY the transparent encodings (7bit/8bit/binary) are
+  // permitted on it — quoted-printable/base64 (or any unrecognized mechanism) would nest
+  // encodings. Flag when a composite carries a non-transparent CTE. Absent CTE defaults
+  // to 7bit (transparent), so it never trips this.
+  const composite = contentType.type === 'multipart' || contentType.type === 'message';
+  if (composite && !TRANSPARENT_CTE.has(cteRaw) && defects.acceptCteOnComposite !== true) {
+    anomalies.push('cte-on-composite');
   }
 
   return { mimeVersion, contentType, cte, cteRecognized, octetStreamTreatment, anomalies };

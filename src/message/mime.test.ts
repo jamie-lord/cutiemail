@@ -102,3 +102,53 @@ test('R-2045-6-a: an unrecognized CTE forces octet-stream treatment (and acceptU
   const defect = analyzeMime(weird, { acceptUnknownCte: true });
   assert.ok(defect.cteRecognized && !defect.octetStreamTreatment, 'acceptUnknownCte must be detectable');
 });
+
+test('R-2045-6.4-a: a non-transparent CTE on a composite type is flagged (acceptCteOnComposite caught)', () => {
+  cites('R-2045-6.4-a');
+  // base64 on multipart is EXPRESSLY FORBIDDEN — encodings must be at the innermost leaf.
+  const composite = [MIME, hdr('Content-Type', 'multipart/mixed; boundary=B'), hdr('Content-Transfer-Encoding', 'base64')];
+  assert.ok(hasMimeAnomaly(analyzeMime(composite), 'cte-on-composite'), 'base64 on multipart/* is flagged');
+  // quoted-printable on message/* is equally forbidden.
+  const msgQp = [MIME, hdr('Content-Type', 'message/rfc822'), hdr('Content-Transfer-Encoding', 'quoted-printable')];
+  assert.ok(hasMimeAnomaly(analyzeMime(msgQp), 'cte-on-composite'), 'quoted-printable on message/* is flagged');
+  // 7bit/8bit/binary on a composite are permitted — no flag.
+  for (const ok of ['7bit', '8bit', 'binary']) {
+    const clean = [MIME, hdr('Content-Type', 'multipart/mixed; boundary=B'), hdr('Content-Transfer-Encoding', ok)];
+    assert.ok(!hasMimeAnomaly(analyzeMime(clean), 'cte-on-composite'), `${ok} on a composite is transparent, not flagged`);
+  }
+  // base64 on a LEAF type is normal and must NOT flag.
+  const leaf = [MIME, hdr('Content-Type', 'text/plain'), hdr('Content-Transfer-Encoding', 'base64')];
+  assert.ok(!hasMimeAnomaly(analyzeMime(leaf), 'cte-on-composite'), 'base64 on a leaf type is fine');
+  // Negative control.
+  assert.ok(!hasMimeAnomaly(analyzeMime(composite, { acceptCteOnComposite: true }), 'cte-on-composite'), 'acceptCteOnComposite must be detectable');
+});
+
+test('a duplicate Content-Transfer-Encoding is flagged (acceptDuplicateCte caught)', () => {
+  cites('R-2045-6-a');
+  const dup = [MIME, hdr('Content-Type', 'text/plain'), hdr('Content-Transfer-Encoding', 'base64'), hdr('Content-Transfer-Encoding', '7bit')];
+  assert.ok(hasMimeAnomaly(analyzeMime(dup), 'duplicate-cte'), 'two CTE headers is a MIME-confusion vector, flagged');
+  assert.ok(!hasMimeAnomaly(analyzeMime([MIME, hdr('Content-Transfer-Encoding', 'base64')]), 'duplicate-cte'), 'a single CTE is fine');
+  assert.ok(!hasMimeAnomaly(analyzeMime(dup, { acceptDuplicateCte: true }), 'duplicate-cte'), 'acceptDuplicateCte must be detectable');
+});
+
+test('a duplicate MIME-Version is flagged (acceptDuplicateMimeVersion caught)', () => {
+  cites('R-2045-4-a');
+  const dup = [hdr('MIME-Version', '1.0'), hdr('MIME-Version', '1.0'), hdr('Content-Type', 'text/plain')];
+  assert.ok(hasMimeAnomaly(analyzeMime(dup), 'duplicate-mime-version'), 'two MIME-Version headers is ambiguous, flagged');
+  assert.ok(!hasMimeAnomaly(analyzeMime([MIME, hdr('Content-Type', 'text/plain')]), 'duplicate-mime-version'), 'a single MIME-Version is fine');
+  assert.ok(!hasMimeAnomaly(analyzeMime(dup, { acceptDuplicateMimeVersion: true }), 'duplicate-mime-version'), 'acceptDuplicateMimeVersion must be detectable');
+});
+
+test('a repeated boundary/charset parameter is flagged (acceptDuplicateParam caught)', () => {
+  cites('R-2045-5-a');
+  // Two boundaries: which one splits the body is exactly the MIME-confusion disagreement.
+  const dupBoundary = [MIME, hdr('Content-Type', 'multipart/mixed; boundary=A; boundary=B')];
+  assert.ok(hasMimeAnomaly(analyzeMime(dupBoundary), 'duplicate-content-type-param'), 'a repeated boundary is flagged');
+  // Two charsets on a text part.
+  const dupCharset = [MIME, hdr('Content-Type', 'text/plain; charset=utf-8; charset=us-ascii')];
+  assert.ok(hasMimeAnomaly(analyzeMime(dupCharset), 'duplicate-content-type-param'), 'a repeated charset is flagged');
+  // A single boundary is not flagged.
+  assert.ok(!hasMimeAnomaly(analyzeMime([MIME, hdr('Content-Type', 'multipart/mixed; boundary=B')]), 'duplicate-content-type-param'), 'a single boundary is fine');
+  // Negative control.
+  assert.ok(!hasMimeAnomaly(analyzeMime(dupBoundary, { acceptDuplicateParam: true }), 'duplicate-content-type-param'), 'acceptDuplicateParam must be detectable');
+});

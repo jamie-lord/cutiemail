@@ -9,11 +9,20 @@
 
 import type { Header } from '../message/model.ts';
 
-/** One address in an ENVELOPE address list: (name adl mailbox host). adl is unused (NIL). */
+/**
+ * One entry in an ENVELOPE address list: (name adl mailbox host). adl is unused (NIL).
+ *
+ * RFC 9051 §7.5.2 also carries RFC 5322 group syntax as special forms of this same
+ * structure, distinguished by a NIL host:
+ *   - a group START marker has host === '' (serialized NIL) and mailbox === the group
+ *     name phrase (non-NIL);
+ *   - a group END marker has host === null AND mailbox === null (both NIL).
+ * So `mailbox` is nullable purely to express the end marker (NIL NIL NIL NIL).
+ */
 export interface EnvelopeAddress {
   readonly name: string | null;
-  readonly mailbox: string;
-  readonly host: string;
+  readonly mailbox: string | null;
+  readonly host: string | null;
 }
 
 /** ENVELOPE field value: a string (date/subject/ids), an address list, or NIL (null). */
@@ -29,6 +38,13 @@ export interface EnvelopeDefects {
   readonly wrongFieldOrder?: boolean;
   /** Leave an absent Sender/Reply-To as NIL instead of defaulting to From. Violates R-9051-7.5.2-b. */
   readonly nilAbsentSender?: boolean;
+  /**
+   * Do not emit RFC 9051 §7.5.2 group start/end markers: treat the group name and its
+   * ':'/';' delimiters as ordinary address text. Reproduces the pre-fix corruption where
+   * the group name glues onto the first mailbox and the trailing ';' leaks into the last
+   * host. Negative control for the group-marker behaviour.
+   */
+  readonly noGroupMarkers?: boolean;
 }
 
 /**
@@ -52,25 +68,38 @@ function headerValue(headers: readonly Header[], name: string): string | null {
   return null;
 }
 
-/** Parse an address list header value into ENVELOPE address structures. */
-export function parseAddressList(value: string | null): readonly EnvelopeAddress[] {
-  if (value === null || value.trim() === '') return [];
-  return splitAddressList(value)
-    .map((raw) => parseOneAddress(raw.trim()))
-    .filter((a): a is EnvelopeAddress => a !== null);
-}
+/** Group markers (RFC 9051 §7.5.2): both use a NIL host to signal group syntax. */
+const groupStart = (name: string): EnvelopeAddress => ({ name: null, mailbox: name, host: '' });
+const groupEnd = (): EnvelopeAddress => ({ name: null, mailbox: null, host: null });
 
 /**
- * Split an address list on the commas that SEPARATE addresses — not the ones
- * inside a quoted display-name (`"Lastname, Firstname" <a@b>`) or an angle-addr.
- * A plain `.split(',')` mangles the very common "Last, First" display name into
- * two bogus addresses.
+ * Parse an address list header value into ENVELOPE address structures.
+ *
+ * Handles RFC 5322 §3.4 group syntax (`display-name ":" [group-list] ";"`). RFC 9051
+ * §7.5.2 represents a group as a START marker `(NIL NIL "groupname" NIL)`, the member
+ * mailboxes, then an END marker `(NIL NIL NIL NIL)`. The old code had no group handling
+ * at all, so `A Group: a@x, b@y;` glued the group name onto the first mailbox and leaked
+ * the closing ';' into the last host — a real ENVELOPE corruption a client mis-displays.
+ *
+ * One top-level scan (respecting quotes and angle-addr) recognizes the comma that
+ * separates mailboxes AND the ':'/';' that bound a group, so a comma inside a quoted
+ * display-name (`"Lastname, Firstname"`) is still not a separator.
  */
-function splitAddressList(value: string): string[] {
-  const parts: string[] = [];
+export function parseAddressList(value: string | null, defects: EnvelopeDefects = {}): readonly EnvelopeAddress[] {
+  if (value === null || value.trim() === '') return [];
+  const groupsOff = defects.noGroupMarkers === true;
+  const out: EnvelopeAddress[] = [];
   let cur = '';
   let inQuote = false;
   let inAngle = false;
+  let inGroup = false;
+  const flushMailbox = (): void => {
+    const raw = cur.trim();
+    cur = '';
+    if (raw === '') return;
+    const a = parseOneAddress(raw);
+    if (a !== null) out.push(a);
+  };
   for (let i = 0; i < value.length; i++) {
     const c = value[i]!;
     if (inQuote) {
@@ -88,15 +117,26 @@ function splitAddressList(value: string): string[] {
     } else if (c === '>') {
       inAngle = false;
       cur += c;
-    } else if (c === ',' && !inAngle) {
-      parts.push(cur);
+    } else if (c === ':' && !inAngle && !inGroup && !groupsOff) {
+      // Group start: the text accumulated so far is the group name phrase.
+      out.push(groupStart(cur.trim()));
       cur = '';
+      inGroup = true;
+    } else if (c === ';' && !inAngle && inGroup && !groupsOff) {
+      flushMailbox();
+      out.push(groupEnd());
+      inGroup = false;
+    } else if (c === ',' && !inAngle) {
+      flushMailbox();
     } else {
       cur += c;
     }
   }
-  parts.push(cur);
-  return parts.filter((p) => p.trim().length > 0);
+  flushMailbox();
+  // A group left unterminated (no ';') still gets a closing marker, so the structure
+  // a client reads is always balanced.
+  if (inGroup) out.push(groupEnd());
+  return out;
 }
 
 function parseOneAddress(raw: string): EnvelopeAddress | null {
@@ -109,11 +149,11 @@ function parseOneAddress(raw: string): EnvelopeAddress | null {
 }
 
 export function buildEnvelope(headers: readonly Header[], defects: EnvelopeDefects = {}): Envelope {
-  const from = parseAddressList(headerValue(headers, 'From'));
+  const from = parseAddressList(headerValue(headers, 'From'), defects);
 
   // R-9051-7.5.2-b: Sender/Reply-To default to From when absent/empty.
-  const senderRaw = parseAddressList(headerValue(headers, 'Sender'));
-  const replyToRaw = parseAddressList(headerValue(headers, 'Reply-To'));
+  const senderRaw = parseAddressList(headerValue(headers, 'Sender'), defects);
+  const replyToRaw = parseAddressList(headerValue(headers, 'Reply-To'), defects);
   const sender = senderRaw.length > 0 ? senderRaw : defects.nilAbsentSender === true ? [] : from;
   const replyTo = replyToRaw.length > 0 ? replyToRaw : defects.nilAbsentSender === true ? [] : from;
 
@@ -125,9 +165,9 @@ export function buildEnvelope(headers: readonly Header[], defects: EnvelopeDefec
     { name: 'from', value: asVal(from) },
     { name: 'sender', value: asVal(sender) },
     { name: 'reply-to', value: asVal(replyTo) },
-    { name: 'to', value: asVal(parseAddressList(headerValue(headers, 'To'))) },
-    { name: 'cc', value: asVal(parseAddressList(headerValue(headers, 'Cc'))) },
-    { name: 'bcc', value: asVal(parseAddressList(headerValue(headers, 'Bcc'))) },
+    { name: 'to', value: asVal(parseAddressList(headerValue(headers, 'To'), defects)) },
+    { name: 'cc', value: asVal(parseAddressList(headerValue(headers, 'Cc'), defects)) },
+    { name: 'bcc', value: asVal(parseAddressList(headerValue(headers, 'Bcc'), defects)) },
     { name: 'in-reply-to', value: headerValue(headers, 'In-Reply-To') },
     { name: 'message-id', value: headerValue(headers, 'Message-ID') },
   ];

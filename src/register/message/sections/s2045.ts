@@ -110,4 +110,27 @@ export const M_S2045 = [
       'negative control. The known mechanisms (7bit/8bit/binary/quoted-printable/' +
       'base64) are themselves case-insensitive (§6.1).',
   },
+  {
+    id: 'R-2045-6.4-a',
+    rfc: 'rfc2045',
+    section: '6.4',
+    page: 17,
+    level: 'MUST NOT',
+    party: 'both',
+    normativeSource: 'prose',
+    text:
+      'it is EXPRESSLY FORBIDDEN to use any encodings other than "7bit", "8bit", ' +
+      'or "binary" with any composite media type',
+    testability: { kind: 'parse' },
+    note:
+      'A composite media type (multipart/*, message/*) recursively includes other ' +
+      'Content-Type fields, so any non-transparent transfer-encoding on it would ' +
+      'nest encodings — a MIME-confusion vector where a receiver decodes the ' +
+      'container and a naive scanner does not. Only 7bit/8bit/binary (no transform) ' +
+      'are permitted; encoding must be done at the innermost leaf. Our analyzer ' +
+      'flags cte-on-composite when a composite type carries quoted-printable/base64 ' +
+      '(or any unrecognized mechanism); the acceptCteOnComposite defect is the ' +
+      'negative control. Prose "EXPRESSLY FORBIDDEN" — normative in force, no 2119 ' +
+      'keyword, so recorded as a MUST NOT sourced from prose.',
+  },
 ] as const satisfies readonly RequirementDef[];
