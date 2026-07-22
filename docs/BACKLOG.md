@@ -98,7 +98,8 @@ clear the bar. Most of these carry a revisit trigger.
   snapshot story is the honest availability answer here.
 - **Distro packaging / unattended updates.** Presupposes a distribution story the project
   doesn't have and isn't seeking.
-- **Multi-domain.** One domain per server is the recorded minimum (ADR 0009); multi-domain is
+- **Multi-domain.** One domain per server is the current design (ADR 0009 notes a future
+  multi-domain story would widen the account key — deliberately not now); multi-domain is
   a real scope expansion, revisitable with a stated reason.
 
 **Security features blocked or covered elsewhere:**

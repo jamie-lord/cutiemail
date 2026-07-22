@@ -10,7 +10,7 @@ Nothing else. Total runtime dependencies: **zero**. Total dev dependencies: **on
 
 ## Why so little
 
-**Node 22.18+ runs TypeScript directly** via type stripping — verified on this machine (v22.22.0):
+**Node 22.18+ runs TypeScript directly** via type stripping — verified with Node v22.22.0:
 `node foo.ts` works with no flag. So there is no build step, no bundler, no `ts-node`, no `tsx`.
 `tsc` is present only to *check* types, never to emit. `erasableSyntaxOnly` is on so that if we ever
 write syntax Node can't strip (enums, namespaces, parameter properties), it fails at typecheck

@@ -294,8 +294,8 @@ These aren't style preferences; break one and something real breaks.
   and back. Strings are UTF-16 and SMTP is octets; the one place a string touches
   the wire it is `latin1`-encoded so the mapping is exact (`wire/bytes.ts`).
 - **Zero runtime dependencies.** SQLite is `node:sqlite`, crypto is `node:crypto`,
-  TLS is `node:tls`. The `package.json` `dependencies` block is empty and is meant
-  to stay that way. This is the "SQLite of email" claim taken literally.
+  TLS is `node:tls`. `package.json` has no `dependencies` at all (only dev tooling)
+  and is meant to stay that way. This is the "SQLite of email" claim taken literally.
 - **`erasableSyntaxOnly` TypeScript, run directly.** Node ≥ 22.18 executes the
   `.ts` with no build step, which forbids anything that needs a runtime transform:
   no `enum`, no constructor parameter properties. Classes use explicit `#private`

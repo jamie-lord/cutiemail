@@ -38,12 +38,12 @@ const NAV = [
   { group: 'Start here', items: [
     { src: 'README.md', url: '/docs/', title: 'Overview' },
     { src: 'docs/DEPLOYMENT.md', url: '/docs/deployment/', title: 'Deploy it for real' },
-    { src: 'docs/IMPLEMENTING-A-CONFORMANT-SERVER.md', url: '/docs/conformant-server/', title: 'The conformance suite' },
   ]},
   { group: 'How it works', items: [
     { src: 'docs/ARCHITECTURE.md', url: '/docs/architecture/', title: 'Architecture' },
     { src: 'docs/TESTING.md', url: '/docs/testing/', title: 'How it’s tested' },
     { src: 'docs/PERFORMANCE.md', url: '/docs/performance/', title: 'Performance' },
+    { src: 'docs/IMPLEMENTING-A-CONFORMANT-SERVER.md', url: '/docs/conformant-server/', title: 'The conformance suite' },
     { src: 'docs/research/smtp-divergence.md', url: '/docs/smtp-divergence/', title: 'SMTP divergence notes' },
   ]},
   { group: 'Contributing', items: [
@@ -63,6 +63,9 @@ for (const g of NAV) for (const it of g.items) bySrc.set(it.src, it);
 const md = new MarkdownIt({ html: false, linkify: false, typographer: true });
 md.use(anchor, {
   level: [2, 3, 4],
+  // GitHub-compatible slugs (lowercase, punctuation stripped, spaces → hyphens) so the
+  // same `#anchor` links in the repo's markdown work identically on GitHub and here.
+  slugify: (s) => String(s).trim().toLowerCase().replace(/[^\p{L}\p{N}\s-]/gu, '').replace(/\s+/g, '-'),
   permalink: anchor.permalink.linkInsideHeader({ symbol: '#', placement: 'after', class: 'header-anchor' }),
 });
 // mermaid fences pass through raw for client-side rendering; other fences render as-is.

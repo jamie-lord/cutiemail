@@ -1,12 +1,26 @@
 # A minimal cutiemail deployment for the container-native (NAS / homelab) path.
 #
-#   docker compose up -d          # build + run
-#   docker compose logs -f        # the per-message + auth-failure log trail
-#   docker compose exec mail node src/main.ts account add you   # manage accounts
+# First run, IN THIS ORDER — each step is required by the next:
 #
-# ONE volume holds all state (the control database + every per-user mailbox). Everything else
-# is configured by environment, exactly like the bare-metal path — this file is just the
-# systemd unit's equivalent for people who deploy in containers.
+#   1. Put a real certificate beside this file:   ./tls/cert.pem  ./tls/key.pem
+#      (from Let's Encrypt: fullchain.pem -> cert.pem, privkey.pem -> key.pem).
+#      The daemon refuses to start on a public bind without one — the bundled dev
+#      cert's private key is public, so serving it would expose your credentials.
+#   2. Set MAIL_DOMAIN below to your real mail domain.
+#   3. docker compose run --rm mail init you      # create YOUR account (hidden password
+#                                                 # prompt) BEFORE anything is listening
+#   4. docker compose run --rm mail setup         # generate the DKIM key + print the
+#                                                 # exact DNS records to publish
+#   5. docker compose up -d
+#
+# Day 2:
+#   docker compose logs -f                                      # per-message + auth-failure trail
+#   docker compose exec mail node src/main.ts account add anna  # manage accounts, no restart
+#   docker compose exec mail node src/main.ts selftest you      # end-to-end proof (submit → read back)
+#
+# ONE named volume holds all state (the control database, every per-user mailbox, the DKIM
+# key). Everything else is configured by environment, exactly like the bare-metal path —
+# this file is the systemd unit's equivalent for people who deploy in containers.
 services:
   mail:
     build: .
@@ -21,19 +35,20 @@ services:
       MAIL_DOMAIN: mail.example.com
       MAIL_HOST: 0.0.0.0
       MAIL_CONTROL_DB: /data/control.db
-      # A REAL certificate is required for a public bind — the daemon refuses to serve the
-      # bundled dev cert off loopback (its private key is public). Mount yours (below) and
-      # point these at it; without them the container will refuse to start on 0.0.0.0.
+      # The certificate mounted from ./tls (step 1 above). If these files are missing the
+      # daemon exits with a message naming them rather than serving the dev cert publicly.
       MAIL_TLS_CERT: /data/tls/cert.pem
       MAIL_TLS_KEY: /data/tls/key.pem
-      # DKIM signing — generate with `docker compose exec mail node src/main.ts setup`, then
-      # publish the printed DNS records. Omit for SPF-only (spam-foldered) outbound.
+      # DKIM signing — `setup` (step 4) generates this key if it doesn't exist yet, and
+      # prints the matching DNS record. Unset both to send unsigned (spam-foldered).
       MAIL_DKIM_KEY: /data/dkim/mail.key
       MAIL_DKIM_SELECTOR: s1
     volumes:
-      # Persist all databases + secrets across restarts and image rebuilds. Back this up
-      # (`node src/main.ts backup`) and encrypt it before it leaves the host.
+      # Persist all databases + the DKIM key across restarts and image rebuilds. Back this
+      # up (`node src/main.ts backup`) and encrypt it before it leaves the host.
       - mail-data:/data
+      # Your certificate, read-only from beside this file (step 1). Re-copy + restart on renewal.
+      - ./tls:/data/tls:ro
 
 volumes:
   mail-data:

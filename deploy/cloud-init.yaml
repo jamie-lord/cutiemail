@@ -9,6 +9,8 @@ packages:
   - curl
   - rsync
   - ufw
+  # for the doc's "is outbound port 25 open?" check (nc gmail-smtp-in.l.google.com 25)
+  - netcat-openbsd
 
 users:
   - default          # keep the platform-injected SSH key on root

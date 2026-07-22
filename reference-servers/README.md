@@ -29,28 +29,27 @@ misreading. See `CALIBRATION-exim.md`, `CALIBRATION-aiosmtpd.md`, and `CALIBRATI
 (the Exim×mox agreement matrix). **The instrument is validated: it makes no false accusation
 across 155 conformant behaviours spanning three independent codebases.**
 
-## Postfix and OpenSMTPD: unavailable in this environment (investigated 2026-07-17)
+## Postfix and OpenSMTPD: not yet calibrated
 
 The two canonical spec-strict receivers would add corroborating weight — Postfix especially,
 since the suite's whole false-positive discipline was designed around not convicting a hardened
-Postfix. Neither can run here, for concrete, verified reasons:
+Postfix. What they need is a host that can run them as an isolated, unprivileged test daemon,
+and macOS — where the three completed runs were done — cannot provide one:
 
-- **No Homebrew formula** for either `postfix` or `opensmtpd` (both checked). Exim and mox
-  calibrated cleanly precisely because they *are* Homebrew binaries under our control.
-- **The system Postfix is SIP-hardened against a rootless instance.** macOS ships
-  `/usr/sbin/postfix`, and an isolated unprivileged daemon — the exact pattern that worked for
-  Exim (own config dir, own queue tree, port 2526) — gets as far as a clean `postfix check`,
-  but the master daemon then exits immediately with **no diagnostic**: nothing on stdout/stderr,
-  nothing in the unified log, even run in foreground debug mode (`master -c DIR -d -v`). The
-  Apple-signed daemons will not run outside their system context. Steps are below so the finding
-  is reproducible, not asserted.
-- **Docker is non-functional here** (the VM's registry egress is broken — archived diagnosis at
-  the foot of this file), so the containerised `boky/postfix` path can't run either.
+- **No Homebrew formula** exists for either `postfix` or `opensmtpd`. Exim and mox calibrated
+  cleanly precisely because they *are* Homebrew binaries pinned to a package version.
+- **macOS's system Postfix cannot stand in.** It ships `/usr/sbin/postfix`, and an isolated
+  unprivileged instance — the exact pattern that worked for Exim (own config dir, own queue
+  tree, a high port) — gets as far as a clean `postfix check`, but the Apple-signed `master`
+  daemon then exits immediately with **no diagnostic**: nothing on stdout/stderr, nothing in
+  the unified log, even in foreground debug mode (`master -c DIR -d -v`). It will not run
+  outside its SIP-protected system context. Steps are below so the finding is reproducible,
+  not asserted.
 
-This is a recorded environment limitation, **not missing work**. The calibration *goal* —
-validate the suite against real independent MTAs with zero false positives — is met by the three
-above. A fourth (Postfix) would corroborate, not unblock. On a host with a package-manager
-Postfix or working Docker egress, the config and JSON here run unchanged and add the data point.
+This is a recorded gap with a known shape, **not missing work**. The calibration *goal* —
+validate the suite against real independent MTAs with zero false positives — is met by the
+three above; a fourth would corroborate, not unblock. On a Linux host with a package-manager
+Postfix, or anywhere Docker runs, the config and JSON here run unchanged and add the data point.
 
 ### Reproducing the (blocked) system-Postfix attempt
 
@@ -64,7 +63,7 @@ mkdir -p "$BASE"/spool/{pid,private,public,active,incoming,deferred,defer,bounce
 /usr/libexec/postfix/master -c "$BASE/etc" -d -v # exits instantly, silent — SIP-hardened
 ```
 
-## Running a containerised calibration (only if Docker egress works here)
+## Running a containerised calibration (Linux / any Docker host)
 
 ```sh
 cd reference-servers
@@ -113,19 +112,5 @@ versions deliberately and re-triage; a new MTA version can change conformant beh
 containerised run, pin the image to a digest (`image: boky/postfix@sha256:...`) and reconcile
 the `version` label against `postconf mail_version` / `exim -bV` on first run.
 
----
-
-## Archived: the Docker blocker (2026-07-16)
-
-The original plan was a containerised Postfix/Exim via `docker compose`. It could not run here,
-and the native installs above superseded it. Kept for the record:
-
-- The Docker daemon started, but pulls hung indefinitely. `docker pull hello-world` (a ~13 KB
-  image) never completed; no image layer was ever committed.
-- The break was inside Docker Desktop's Linux VM, not the host network. From the host,
-  `curl https://registry-1.docker.io/v2/` returned 401 (the correct "authenticate" response)
-  and `auth.docker.io/token` returned 200 in <300 ms — the registry was reachable; the VM's
-  egress to it was not. A full Docker restart did not recover it.
-
-This is why the calibration was completed against natively-installed MTAs instead — which is a
-better recipe anyway (no Docker dependency, pinned to a real package version).
+(The three completed runs used native installs rather than containers deliberately — no Docker
+dependency, and each server pinned to a real package version.)

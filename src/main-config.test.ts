@@ -97,6 +97,18 @@ test('a real cert on a public interface is fine (no guard tripped)', () => {
   }
 });
 
+test('a TLS/DKIM env var pointing at a missing file fails with the variable, the path, and the way out', () => {
+  // The raw alternative is an ENOENT stack trace — which under systemd Restart=on-failure
+  // becomes a silent crash loop. Classic trigger: enabling the unit before certbot ran.
+  const missing = join(tmpdir(), 'nope', 'cert.pem');
+  withEnv({ MAIL_HOST: '0.0.0.0', MAIL_TLS_CERT: missing, MAIL_TLS_KEY: missing }, () => {
+    assert.throws(() => configFromEnv(), (e: Error) => /cannot start: MAIL_TLS_CERT points at .*cert\.pem.*ENOENT/.test(e.message) && /certbot/.test(e.message));
+  });
+  withEnv({ MAIL_DKIM_KEY: join(tmpdir(), 'nope', 'dkim.key'), MAIL_DKIM_SELECTOR: 's1' }, () => {
+    assert.throws(() => configFromEnv(), (e: Error) => /cannot start: MAIL_DKIM_KEY points at .*dkim\.key.*ENOENT/.test(e.message) && /setup/.test(e.message));
+  });
+});
+
 test('exercising the MAIL_ALLOW_DEV_CERT override on a public bind is flagged for the loud warning', () => {
   withEnv({ MAIL_HOST: '0.0.0.0', MAIL_ALLOW_DEV_CERT: '1' }, () => {
     assert.equal(configFromEnv().devCertForcedPublic, true, 'public bind + override → flagged');

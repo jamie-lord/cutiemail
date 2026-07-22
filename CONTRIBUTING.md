@@ -48,7 +48,9 @@ These are the invariants the whole codebase is built on. A change that breaks on
 ## How to develop
 
 ```sh
-npm install        # only the type-checker; no runtime deps
+git clone https://github.com/jamie-lord/cutiemail
+cd cutiemail
+npm install        # dev tooling only (the type-checker); no runtime deps
 npm test           # the whole suite (node --test), including the negative-control proofs
 npm run typecheck  # tsc --noEmit; strict
 npm start          # run the daemon locally with dev-friendly defaults

@@ -12,13 +12,8 @@
     "start": "node --disable-warning=ExperimentalWarning src/main.ts",
     "test": "node --disable-warning=ExperimentalWarning --test \"src/**/*.test.ts\"",
     "typecheck": "tsc --noEmit",
-    "conformance": "node --disable-warning=ExperimentalWarning src/cli.ts",
-    "coverage": "node --disable-warning=ExperimentalWarning src/cli.ts coverage",
     "registry": "node -e \"import('./src/report/registry.ts').then(m => console.log(m.renderRegistrySummary(m.buildRegistrySummary())))\"",
     "library-coverage": "node -e \"import('./src/report/library-coverage.ts').then(m => console.log(m.renderLibraryCoverage(m.libraryCoverage())))\""
-  },
-  "bin": {
-    "cutiemail-conformance": "src/cli.ts"
   },
   "devDependencies": {
     "@types/node": "^22.20.1",

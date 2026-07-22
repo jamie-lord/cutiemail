@@ -6,7 +6,8 @@
     <h1>A mail server,<br>built from the byte up.</h1>
     <p class="hero__sub">cutiemail is a small, self-contained mail server in TypeScript. It sends and receives real internet mail, works with Thunderbird and Apple Mail, and keeps your mailbox in plain SQLite files you own. Zero runtime dependencies, and honest about what it leaves out.</p>
     <div class="hero__cta">
-      <span class="term-pill"><span class="p">$</span> npm start<span class="caret"></span></span>
+      <a class="term-pill" href="#start" aria-label="try it on your laptop — the two-minute quick start"><span class="p">$</span> npm start<span class="caret"></span></a>
+      <a class="btn btn--primary" href="/docs/deployment/">host real email →</a>
       <a class="btn btn--secondary" href="https://github.com/jamie-lord/cutiemail">read the code →</a>
     </div>
     <div class="chips">
@@ -19,6 +20,7 @@
 
   <!-- quick start -->
   <section id="start" class="wrap-narrow section" style="padding-top: 8px;">
+    <p class="note-mono" style="color: var(--mauve); margin-bottom: 14px;">Two minutes, on the machine in front of you. The only prerequisite is <a href="https://nodejs.org/">Node.js</a> 22.18 or newer (<code>node --version</code> to check — Debian/Ubuntu's apt version is too old). Putting it on a real server with real DNS is <a href="/docs/deployment/">the deployment guide</a>.</p>
     <div class="term">
       <div class="term__bar">
         <span class="term__dot" style="background: var(--bubblegum);"></span>
@@ -27,13 +29,26 @@
         <span class="term__title">your new mail server</span>
       </div>
       <div class="term__body">
-        <div><span class="p">$</span> npm install <span class="c"># only the type-checker. really.</span></div>
-        <div><span class="p">$</span> npm start <span class="c"># SMTP + submission + IMAPS, up</span></div>
-        <div><span class="p">$</span> node src/main.ts selftest demo</div>
-        <div><span class="ok">✓ submitted, delivered, and read back. The mail path itself works</span></div>
+        <div><span class="p">$</span> git clone https://github.com/jamie-lord/cutiemail</div>
+        <div><span class="p">$</span> cd cutiemail</div>
+        <div><span class="p">$</span> npm install <span class="c"># dev tooling only — nothing the server runs</span></div>
+        <div><span class="p">$</span> npm start <span class="c"># SMTP + submission + IMAPS, up. Leave it running</span></div>
       </div>
     </div>
-    <p class="note-mono" style="color: var(--mauve);">A <code>demo/demo</code> account is seeded so it just works. Point Thunderbird or Apple Mail at <code>127.0.0.1:5993</code> and say hi to yourself.</p>
+    <div class="term" style="margin-top: 16px;">
+      <div class="term__bar">
+        <span class="term__dot" style="background: var(--bubblegum);"></span>
+        <span class="term__dot" style="background: var(--butter);"></span>
+        <span class="term__dot" style="background: var(--mint);"></span>
+        <span class="term__title">a second terminal</span>
+      </div>
+      <div class="term__body">
+        <div><span class="p">$</span> node src/main.ts selftest demo <span class="c"># password: demo</span></div>
+        <div><span class="c">ExperimentalWarning: SQLite is an experimental feature… <span style="font-style: italic;">(Node's notice, not ours — harmless)</span></span></div>
+        <div><span class="ok">✓ selftest PASSED — authenticated submission, local delivery, and IMAP read-back all work.</span></div>
+      </div>
+    </div>
+    <p class="note-mono" style="color: var(--mauve);">A <code>demo/demo</code> account is seeded so it just works (on your machine only — it never comes to life on a public server). Point Thunderbird or Apple Mail at <code>127.0.0.1:5993</code> — username <code>demo</code>, not an email address — and say hi to yourself.</p>
   </section>
 
   <!-- what it does -->
@@ -123,10 +138,10 @@
       </div>
       <div class="panel__col" style="background: var(--term-deep); border: 2px solid #6b3a52; border-radius: 16px; padding: 22px 26px; font-family: var(--font-mono); font-size: 13.5px; line-height: 2;">
         <div><span style="color: var(--bubblegum);">$</span> node src/cli.ts run \</div>
-        <div style="padding-left: 16px; color: #d9b8c8;">--config reference-servers/postfix.json</div>
-        <div style="color: var(--mint);">✓ conformant, 0 findings</div>
-        <div style="color: var(--butter);">~ 3 permitted-latitude (SHOULD, declined)</div>
-        <div style="color: var(--term-comment);"># a finding exits 1, drops straight into CI</div>
+        <div style="padding-left: 16px; color: #d9b8c8;">--config reference-servers/exim.json</div>
+        <div style="color: var(--mint);">✓ 59 conformant · 0 false positives</div>
+        <div style="color: var(--butter);">~ 2 divergences — real, triaged, recorded</div>
+        <div style="color: var(--term-comment);"># exits non-zero on findings — drops straight into CI</div>
       </div>
     </div>
   </section>
@@ -137,7 +152,7 @@
       <div class="callout__icon">!</div>
       <div>
         <h3>An honest note before you trust it</h3>
-        <p>cutiemail is young (v0, one maintainer), held to an unusually high verification bar, with a production instance exchanging authenticated mail with Gmail daily. Run it for mail you care about only after reading the honest limitations in <a href="/docs/deployment/">the deployment guide</a>.</p>
+        <p>cutiemail is young (v0, one maintainer), held to an unusually high verification bar, with a production instance exchanging authenticated mail with Gmail daily. Today it belongs on a spare domain or a subdomain — there's no spam filter and no third-party security review yet — not as the only home of mail you can't lose. The full list of limitations, and the cutover path for later, is in <a href="/docs/deployment/">the deployment guide</a>.</p>
       </div>
     </div>
   </section>

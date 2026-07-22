@@ -245,14 +245,21 @@ export async function startServer(cfg: MailServerConfig): Promise<RunningServer>
   // mail-<user>.db left at 0644). Best-effort; :memory: and missing files skipped.
   for (const acct of registry.list()) secureMailDbFile(acct.mailDbPath);
   // Dev out-of-box default: with NOTHING configured and NOTHING in the registry, seed a
-  // demo/demo account so `npm start` just works. A real deployment provisions with
-  // `init`/`account` (or MAIL_USER), so its registry is non-empty and this never fires —
-  // which is what lets a production unit carry no credentials at all.
+  // demo/demo account so `npm start` just works. LOOPBACK BINDS ONLY: on a public bind
+  // (a container's 0.0.0.0, a mis-ordered deployment) a well-known credential must never
+  // come to life on real ports — an empty registry there simply accepts no logins until
+  // `init` creates a real account. A real deployment provisions with `init`/`account`
+  // (or MAIL_USER), so its registry is non-empty and neither branch fires — which is
+  // what lets a production unit carry no credentials at all.
   if (registry.list().length === 0) {
-    const demoPath = inMemory ? ':memory:' : join(dirname(cfg.dbPath), 'mail.db');
-    registry.upsert('demo', 'demo', demoPath);
-    secureMailDbFile(demoPath);
-    log('no accounts configured — seeded a dev account demo/demo. Provision real ones with `node src/main.ts init` / `account`.');
+    if (isLoopbackHost(cfg.host)) {
+      const demoPath = inMemory ? ':memory:' : join(dirname(cfg.dbPath), 'mail.db');
+      registry.upsert('demo', 'demo', demoPath);
+      secureMailDbFile(demoPath);
+      log('no accounts configured — seeded a dev account demo/demo. Provision real ones with `node src/main.ts init` / `account`.');
+    }
+    // On a non-loopback bind nothing is seeded, so the at-least-one-enabled-account
+    // guard below fails the boot with an actionable message instead.
   }
   const verify = (user: string, pass: string): boolean => registry.verifyPassword(user, pass);
 
@@ -608,6 +615,8 @@ export async function startServer(cfg: MailServerConfig): Promise<RunningServer>
   const enabledLogins = registry.list().filter((a) => a.enabled).map((a) => a.login);
   const mailbox = enabledLogins.map((login) => stores.get(login)?.catalog.get('INBOX')).find((m) => m !== undefined);
   if (mailbox === undefined) {
+    // Read before controlDb.close() below — the registry is unusable after.
+    const nothingSeededPublicly = registry.list().length === 0 && !isLoopbackHost(cfg.host);
     // Fail closed WITHOUT leaking the already-bound listeners + relay timer — an embedder
     // that catches this must not be left with orphaned handles keeping the loop alive. Await the
     // loop so no in-flight tick races the controlDb.close() below.
@@ -617,7 +626,10 @@ export async function startServer(cfg: MailServerConfig): Promise<RunningServer>
     await imap.close();
     stores.closeAll();
     controlDb.close();
-    throw new Error('a mail server needs at least one enabled account');
+    throw new Error(
+      'cannot start: a mail server needs at least one enabled account. Create one with `node src/main.ts init <login>` (first run) or re-enable one with `account enable`.'
+      + (nothingSeededPublicly ? ` The demo/demo dev fallback is seeded only on a loopback bind, never on ${cfg.host}.` : ''),
+    );
   }
 
   return {
@@ -660,6 +672,21 @@ function isLoopbackHost(host: string): boolean {
 }
 
 /**
+ * Read a file an env var points at, or die with a line that names the variable, the path,
+ * and the way out. The raw alternative is an ENOENT stack trace — which, under systemd's
+ * Restart=on-failure, becomes a silent crash loop the operator has to diagnose from the
+ * journal. The classic trigger is running the unit before the TLS/DKIM files exist.
+ */
+function readEnvFile(path: string, varName: string, hint: string): string {
+  try {
+    return readFileSync(path, 'utf8');
+  } catch (e) {
+    const code = (e as NodeJS.ErrnoException).code ?? 'unreadable';
+    throw new Error(`cannot start: ${varName} points at ${path}, which cannot be read (${code}). ${hint}`);
+  }
+}
+
+/**
  * Validate an env-provided account login before it becomes a `mail-<login>.db` filename.
  * The `account` CLI applies `validLogin`; env seeding must too, or a malformed entry like
  * `../x:pw` would build `mail-../x.db`. Operator-trusted config, so a bad value fails loud
@@ -694,11 +721,18 @@ export function configFromEnv(): MailServerConfig & { usingDevCert: boolean; dev
     );
   }
   // The bundled dev certificate is imported lazily only when no real cert is given.
-  const dev = usingDevCert ? loadDevCert() : { cert: readFileSync(certPath!, 'utf8'), key: readFileSync(keyPath!, 'utf8') };
+  const dev = usingDevCert
+    ? loadDevCert()
+    : {
+        cert: readEnvFile(certPath!, 'MAIL_TLS_CERT', 'Issue the certificate first (the deployment guide walks through certbot), or unset MAIL_TLS_CERT/MAIL_TLS_KEY to use the loopback-only dev certificate.'),
+        key: readEnvFile(keyPath!, 'MAIL_TLS_KEY', 'Issue the certificate first (the deployment guide walks through certbot), or unset MAIL_TLS_CERT/MAIL_TLS_KEY to use the loopback-only dev certificate.'),
+      };
   // DKIM signing is enabled only when both a key file and a selector are given.
   const dkimKeyPath = process.env.MAIL_DKIM_KEY;
   const dkimSelector = process.env.MAIL_DKIM_SELECTOR;
-  const dkim = dkimKeyPath !== undefined && dkimSelector !== undefined ? { selector: dkimSelector, privateKeyPem: readFileSync(dkimKeyPath, 'utf8') } : undefined;
+  const dkim = dkimKeyPath !== undefined && dkimSelector !== undefined
+    ? { selector: dkimSelector, privateKeyPem: readEnvFile(dkimKeyPath, 'MAIL_DKIM_KEY', 'Generate it with `node src/main.ts setup`, or unset MAIL_DKIM_KEY/MAIL_DKIM_SELECTOR to send unsigned (worse deliverability, but it starts).') }
+    : undefined;
   return {
     // The control DB (registry + queue). MAIL_DB now names the FIRST account's mail
     // database, so an existing single-account deploy migrates with no data loss: its

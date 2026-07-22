@@ -55,6 +55,26 @@ test('boots off a pre-seeded registry with NO env accounts, and invents no demo 
   }
 });
 
+test('the demo/demo dev fallback is loopback-only: an empty registry on a public bind refuses to boot', async () => {
+  // The container/mis-ordered-deployment trap: an operator starts the daemon on 0.0.0.0
+  // before running `init`. A well-known demo/demo credential must not come to life on
+  // real ports — the boot fails loud, naming `init` and the loopback-only rule.
+  const dir = mkdtempSync(join(tmpdir(), 'demo-public-'));
+  try {
+    await assert.rejects(
+      () => startServer({ ...passwordlessConfig(dir), host: '0.0.0.0' }),
+      (e: Error) => /at least one enabled account/.test(e.message) && /init/.test(e.message) && /loopback/.test(e.message),
+      'fails with the way out: run init; demo/demo is loopback-only',
+    );
+    // The refusal did not pollute the registry with a demo account.
+    const check = openMailDb(join(dir, 'control.db'));
+    assert.equal(AccountRegistry.open(check).lookup('demo'), undefined, 'no demo/demo was seeded on the public bind');
+    check.close();
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test('a genuinely empty registry with no config gets a demo/demo dev fallback', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'demo-fallback-'));
   try {

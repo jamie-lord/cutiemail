@@ -4,7 +4,8 @@
 receives real internet mail and speaks the protocols existing clients (Thunderbird, Apple Mail —
 desktop and phone) drive, storing everything in SQLite. No mail libraries: the SMTP and IMAP engines, the
 MIME parser, and the DKIM/SPF/DMARC crypto are all hand-built on the byte layer. **Zero runtime dependencies** —
-Node runs the TypeScript directly, and the only thing in `node_modules` is the type-checker.
+the only thing you install is Node.js itself; `node_modules` holds nothing but dev tooling
+(the TypeScript type-checker and its type definitions), none of which the server ever loads.
 
 The design goal is best said as the *SQLite of email*:
 correct, minimal, and embeddable rather than a sprawling MTA. Scope is chosen deliberately and
@@ -40,12 +41,20 @@ guide is Linux/systemd-only).
 
 ## Run it
 
-Requires Node ≥ 22.18 (it runs the `.ts` files directly — no build step; an older Node fails with
-an unknown-file-extension loader error rather than a friendly message).
+Requires **Node.js ≥ 22.18** — it runs the `.ts` files directly, so there is no build step.
+`npm install` refuses on an older Node with an unsupported-engine error that names the
+required version (that's `.npmrc`'s `engine-strict` at work — much friendlier than the loader
+error an old Node would otherwise hit at `npm start`). Note that the Node in Debian/Ubuntu's
+`apt` is usually too old: install Node 22 from
+[NodeSource](https://github.com/nodesource/distributions) instead —
+[the deployment guide](docs/DEPLOYMENT.md) has the exact commands.
 
 ```sh
-npm install     # only the type-checker; no runtime deps
-npm start       # launch the daemon with dev-friendly defaults
+node --version  # v22.18.0 or newer
+git clone https://github.com/jamie-lord/cutiemail
+cd cutiemail
+npm install     # dev tooling only (the type-checker) — nothing the server runs
+npm start       # the daemon, with dev-friendly defaults
 ```
 
 (The storage layer uses Node's built-in `node:sqlite`, so a direct `node src/main.ts …` prints a
@@ -53,48 +62,39 @@ harmless `ExperimentalWarning: SQLite …`. The `npm` scripts silence it with
 `--disable-warning=ExperimentalWarning`.)
 
 `npm start` opens the databases and starts three listeners: inbound SMTP, submission SMTP (SASL
-PLAIN AUTH over TLS), and IMAPS. Stop it with Ctrl-C or SIGTERM any time — shutdown is graceful
-and the SQLite databases are crash-safe. **State lands in the directory you run from**: the
-control and mailbox databases are created in the current working directory (the startup banner
-prints the resolved path), so start it from the same directory each time — or set
-`MAIL_CONTROL_DB` to an absolute path. There is no config file — everything is configured by
-environment variable, and the SQLite files are created on first run (no schema step). On
-PowerShell, set variables as `$env:MAIL_DOMAIN='...'` before `npm start` (the `VAR=value command`
-one-liners below are POSIX-shell syntax).
+PLAIN AUTH over TLS), and IMAPS. It binds `127.0.0.1` only — a private plaything on the machine
+in front of you; putting it on a real server with real DNS is
+[the deployment guide](docs/DEPLOYMENT.md). Leave it running (it's a foreground daemon) and stop
+it with Ctrl-C or SIGTERM any time — shutdown is graceful and the SQLite databases are
+crash-safe. **State lands beside the code**: the control and mailbox databases are created in
+the working directory (`npm start` always runs from the repo root; the startup banner prints the
+resolved path), so run it from the same place each time — or set `MAIL_CONTROL_DB` to an
+absolute path. There is no config file and the zero-config run needs no variables at all —
+everything is configured by environment variable (the full list is in the
+[configuration reference](#configuration-reference) below), and the SQLite files are created on
+first run (no schema step). On PowerShell, set variables as `$env:MAIL_DOMAIN='...'` before
+`npm start` (the `VAR=value command` one-liners below are POSIX-shell syntax).
 
 New to running mail? Start with the picture in
 [the deployment guide's "The shape of it"](docs/DEPLOYMENT.md#the-shape-of-it) for a plain-English
 map of the moving parts (MX, SPF, DKIM, DMARC) before touching a real domain.
 
-| Variable | Default | Meaning |
-|---|---|---|
-| `MAIL_DOMAIN` | `mail.example.com` | the local mail domain *and* the SMTP greeting/HELO name |
-| `MAIL_HOST` | `127.0.0.1` | bind address (`0.0.0.0` in production) |
-| `MAIL_SMTP_PORT` / `MAIL_SUBMISSION_PORT` / `MAIL_IMAP_PORT` | `2525` / `5587` / `5993` | listener ports (use 25 / 587 / 993 in production) |
-| `MAIL_USER` (+ `MAIL_PASS`) | unset | set **both** to seed a primary account at boot (create-only, ADR 0012); `MAIL_PASS` is ignored unless `MAIL_USER` is set. Prefer `init`/`account` (below), which keep no password in the environment. With neither set and an empty registry, a `demo`/`demo` dev account is seeded so `npm start` just works. |
-| `MAIL_ACCOUNTS` | unset | additional accounts, `"user:pass,user2:pass2"` (each gets its own `mail-<user>.db`); create-only, like `MAIL_USER` |
-| `MAIL_CONTROL_DB` | `control.db` | the control database — account registry + outbound queue (created in the **current directory** unless you give a path; point it somewhere real for a deployment) |
-| `MAIL_DB` | `mail.db` | the primary account's mailbox database — only read together with `MAIL_USER`. Created by `init` as `mail-<login>.db` beside the control DB. For a fully ephemeral run set `MAIL_CONTROL_DB=:memory:` (every mail DB then defaults to `:memory:`). |
-| `MAIL_TLS_CERT` / `MAIL_TLS_KEY` | bundled dev cert | PEM cert/key paths. Unset falls back to a bundled dev cert — but **only on a loopback bind**: the daemon refuses to boot with the dev cert on a non-loopback `MAIL_HOST` (its private key is public), so production must set these (`MAIL_ALLOW_DEV_CERT=1` forces it for a throwaway test). |
-| `MAIL_DKIM_KEY` / `MAIL_DKIM_SELECTOR` | unset | PEM RSA key + selector to sign outbound mail |
-| `MAIL_TRUSTED_ARC_SEALERS` | unset | comma-separated forwarder domains whose valid ARC chain may rescue a DMARC failure to the inbox |
-| `MAIL_MAX_SIZE` | `26214400` | max accepted message size in octets (25 MiB) — applied to SMTP `SIZE` and the IMAP `APPEND` literal alike |
-| `MAIL_OUTBOUND` | `deliver` | set `hold` for a dev/test sink: remote mail is queued (inspect with `queue list`) but **never relayed** — nothing can escape a test instance (ADR 0019). Any other value refuses to boot. |
-| `MAIL_DEBUG` | unset | `1` logs every received SMTP/IMAP command line to stderr (credentials redacted) — the protocol-level debugging view |
-
 ### Send yourself the first email
 
-With no config, `npm start` seeds a `demo`/`demo` account. To prove the whole path works —
-authenticated submission, local delivery, read-back — run the built-in check against the running
-daemon (in a second terminal):
+With no config, `npm start` seeds a `demo`/`demo` account (on loopback binds only — a public
+bind refuses to boot until `init` creates a real account, so this convenience credential can
+never go live on the internet). To prove the whole path works — authenticated submission, local
+delivery, read-back — run the built-in check **in a second terminal, while the daemon runs**,
+with the same `MAIL_*` environment as the daemon (it dials the configured ports; with no
+variables set on either side, the defaults line up):
 
 ```sh
 node src/main.ts selftest demo   # enter the password: demo
 ```
 
-Run `selftest` with the **same `MAIL_*` environment as the daemon** — it dials the configured
-ports (defaults otherwise), and it warns if the server's greeting doesn't match the expected
-domain. A green run means the mail path itself works, not just that a banner printed. To point a real
+A green run means the mail path itself works, not just that a banner printed. (The test message
+is deleted after it's read back, so the inbox ends empty; `selftest` also warns if the server's
+greeting doesn't match the expected domain.) To point a real
 client (Thunderbird, Apple Mail) at the local dev instance:
 
 - **IMAP** — `127.0.0.1`, port **5993**, security **SSL/TLS** (implicit).
@@ -104,7 +104,8 @@ client (Thunderbird, Apple Mail) at the local dev instance:
   case-sensitive and is not the email address.
 - The bundled dev certificate is self-signed, so accept the one-time security exception.
 
-The same entry point is the operator toolbox (`node src/main.ts <command>`):
+The same entry point is the operator toolbox: `node src/main.ts <command>`, run from the repo
+folder — read the pair as one word, the way `systemctl <verb>` is one word:
 
 - **`init <login>`** — first-run bootstrap: creates the primary account (prompts for the
   password, writes SCRAM to the control DB, prints a ready-to-paste systemd unit that carries
@@ -139,6 +140,24 @@ The same entry point is the operator toolbox (`node src/main.ts <command>`):
   Read-only (nothing is marked seen) — the quick "did it arrive" check for a shell or CI.
 
 `node src/main.ts help` lists all of these; a bare `node src/main.ts` starts the daemon.
+
+### Configuration reference
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `MAIL_DOMAIN` | `mail.example.com` | the local mail domain *and* the SMTP greeting/HELO name |
+| `MAIL_HOST` | `127.0.0.1` | bind address (`0.0.0.0` in production) |
+| `MAIL_SMTP_PORT` / `MAIL_SUBMISSION_PORT` / `MAIL_IMAP_PORT` | `2525` / `5587` / `5993` | listener ports (use 25 / 587 / 993 in production) |
+| `MAIL_USER` (+ `MAIL_PASS`) | unset | set **both** to seed a primary account at boot (create-only, ADR 0012); `MAIL_PASS` is ignored unless `MAIL_USER` is set. Prefer `init`/`account` (above), which keep no password in the environment. With neither set and an empty registry, a `demo`/`demo` dev account is seeded so `npm start` just works — on a **loopback bind only**; a public bind refuses to boot instead. |
+| `MAIL_ACCOUNTS` | unset | additional accounts, `"user:pass,user2:pass2"` (each gets its own `mail-<user>.db`); create-only, like `MAIL_USER` |
+| `MAIL_CONTROL_DB` | `control.db` | the control database — account registry + outbound queue (created in the **current directory** unless you give a path; point it somewhere real for a deployment) |
+| `MAIL_DB` | `mail.db` | the primary account's mailbox database — only read together with `MAIL_USER`, and also the file the seeded `demo` account uses (so a bare `npm start` creates `control.db` + `mail.db`). Accounts created by `init`/`account` get `mail-<login>.db` beside the control DB instead. For a fully ephemeral run set `MAIL_CONTROL_DB=:memory:` (every mail DB then defaults to `:memory:`). |
+| `MAIL_TLS_CERT` / `MAIL_TLS_KEY` | bundled dev cert | PEM cert/key paths. Unset falls back to a bundled dev cert — but **only on a loopback bind**: the daemon refuses to boot with the dev cert on a non-loopback `MAIL_HOST` (its private key is public), so production must set these (`MAIL_ALLOW_DEV_CERT=1` forces it for a throwaway test). A set path that can't be read fails the boot with a message naming the variable. |
+| `MAIL_DKIM_KEY` / `MAIL_DKIM_SELECTOR` | unset | PEM RSA key + selector to sign outbound mail |
+| `MAIL_TRUSTED_ARC_SEALERS` | unset | comma-separated forwarder domains whose valid ARC chain may rescue a DMARC failure to the inbox |
+| `MAIL_MAX_SIZE` | `26214400` | max accepted message size in octets (25 MiB) — applied to SMTP `SIZE` and the IMAP `APPEND` literal alike |
+| `MAIL_OUTBOUND` | `deliver` | set `hold` for a dev/test sink: remote mail is queued (inspect with `queue list`) but **never relayed** — nothing can escape a test instance (ADR 0019). Any other value refuses to boot. |
+| `MAIL_DEBUG` | unset | `1` logs every received SMTP/IMAP command line to stderr (credentials redacted) — the protocol-level debugging view |
 
 Embedding it instead of running the daemon? `startServer(config)` takes a `MailServerConfig`
 object directly, with the same knobs plus injection seams (DNS resolvers, the auth throttle, the
@@ -258,7 +277,7 @@ receiving sink, and the register says so rather than hide behind a flattering pe
 ```sh
 node src/cli.ts coverage                              # what's tested, deliberately uncovered, or not testable
 node src/cli.ts list                                  # every corpus case and the requirement it checks
-node src/cli.ts run --config reference-servers/postfix.json
+node src/cli.ts run --config reference-servers/exim.json
 ```
 
 A finding exits 1, a clean run exits 0, a config error exits 2 — so it drops into CI. The `fixture`

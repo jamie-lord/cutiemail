@@ -79,7 +79,7 @@ After=network.target
 Type=simple
 User=mail
 WorkingDirectory=/opt/mailserver
-ExecStart=/usr/bin/node src/main.ts
+ExecStart=/usr/bin/node --disable-warning=ExperimentalWarning src/main.ts
 Environment=MAIL_DOMAIN=$MAIL_DOMAIN
 Environment=MAIL_HOST=0.0.0.0
 Environment=MAIL_CONTROL_DB=/var/lib/mailserver/control.db

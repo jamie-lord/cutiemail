@@ -14,7 +14,9 @@ COPY --chown=node:node package.json ./
 
 # State lives on a mounted volume, not in the image. MAIL_CONTROL_DB points here; the per-user
 # mail-<login>.db files are created beside it. Owner-only, matching the daemon's own hardening.
-RUN mkdir -p /data && chown node:node /data
+# tls/ and dkim/ exist up front so `setup` can write the DKIM key and a cert can be dropped in
+# without a manual mkdir (a named volume is populated from the image on first use).
+RUN mkdir -p /data/tls /data/dkim && chown -R node:node /data
 USER node
 ENV MAIL_CONTROL_DB=/data/control.db
 

@@ -141,7 +141,11 @@ code, kbd, samp, pre { font-family: var(--font-mono); }
   background: var(--ink); color: var(--term-text);
   font-family: var(--font-mono); font-size: 16px; padding: 15px 26px;
   border-radius: 999px; box-shadow: 4px 4px 0 var(--bubblegum);
+  text-decoration: none; transition: box-shadow 0.12s ease, transform 0.12s ease;
 }
+a.term-pill:hover { box-shadow: 2px 2px 0 var(--bubblegum); transform: translate(2px, 2px); }
+a.term-pill:active { box-shadow: 0 0 0 var(--bubblegum); transform: translate(4px, 4px); }
+@media (prefers-reduced-motion: reduce) { .term-pill { transition: none; } }
 .term-pill .p { color: var(--bubblegum); }
 .caret { display: inline-block; width: 9px; height: 18px; background: var(--butter); margin-left: 2px; vertical-align: -3px; animation: blink 1.2s step-end infinite; }
 @keyframes blink { 0%, 49% { opacity: 1; } 50%, 100% { opacity: 0; } }
