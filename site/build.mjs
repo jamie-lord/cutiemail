@@ -134,7 +134,7 @@ ${FONTS}
 
 function nav() {
   return `<header class="nav" id="nav"><div class="nav__inner">
-  <a class="brand" href="/"><img src="/assets/mascot-mark.svg" alt=""><span class="brand__word">cutiemail</span></a>
+  <a class="brand" href="/" aria-label="cutiemail home"><img src="/assets/mascot-mark.svg" alt=""><span class="brand__word">cutiemail</span></a>
   <nav class="nav__links">
     <a href="/docs/">docs</a>
     <a href="${GH}">github</a>

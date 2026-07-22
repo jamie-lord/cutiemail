@@ -299,8 +299,11 @@ a.term-pill:active { box-shadow: 0 0 0 var(--bubblegum); transform: translate(4p
   .nav__links .btn { padding: 8px 16px; font-size: 14px; box-shadow: 3px 3px 0 var(--ink); }
   .panel__col { min-width: 0; flex-basis: 100%; overflow-x: auto; }
 }
-/* Very narrow: keep the primary CTA and drop the secondary text links (docs and github
-   stay in the footer and are reachable from the page). Stops the nav overflowing. */
+/* Very narrow: collapse the brand to its mark (the wordmark is recoverable from the mark and
+   is shown in the homepage hero) to free the space, so every nav link stays visible instead of
+   being hidden. Shed decoration, not navigation. */
 @media (max-width: 460px) {
-  .nav__links a:not(.btn) { display: none; }
+  .brand__word { display: none; }
+  .nav__links { gap: 12px; }
+  .nav__links .btn { padding: 8px 14px; }
 }
