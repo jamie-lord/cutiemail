@@ -1,13 +1,14 @@
-# Differential calibration across three independent MTAs (2026-07-16), task #24
+# Differential calibration across three independent MTAs
 
-With Docker still non-functional here, the differential run (#24) was done against **three
-independently-implemented mail servers installed natively**, with no Docker and no system-mail
-mutation:
+Pointing the suite at more than one server also produces a differential: where two conformant
+servers disagree on a requirement, that disagreement is itself data. This run compares **three
+independently-implemented mail servers installed natively**, with no system-mail mutation. (A
+fourth, Postfix, was later added via Docker; see [CALIBRATION-postfix.md](CALIBRATION-postfix.md).)
 
 | Server | What it is | How run |
 |---|---|---|
 | **Exim 4.99.4** | One of the two canonical reference MTAs (C) | `brew install exim`, isolated unprivileged daemon (see [CALIBRATION-exim.md](CALIBRATION-exim.md)) |
-| **mox 0.0.15** | Modern full-featured MTA (Go), the project Jamie's own framing most resembles | `brew install mox`, `mox localserve` throwaway test server |
+| **mox 0.0.15** | Modern full-featured MTA (Go), the implementation this project's framing most resembles | `brew install mox`, `mox localserve` throwaway test server |
 | **aiosmtpd 1.4.6** | Permissive asyncio SMTP server (Python) | venv (see [CALIBRATION-aiosmtpd.md](CALIBRATION-aiosmtpd.md)) |
 
 ## Per-server result: ZERO false positives against all three
@@ -71,13 +72,12 @@ Pointing the runner at mox surfaced two genuine bugs that a synthetic mutant nev
 2. **`cli.ts` called `exit()`**, truncating buffered stdout on a pipe/file. Switched to
    `process.exitCode`.
 
-This is why we calibrate against real software: these are exactly the
-class of bug the mutant (my own code) structurally cannot reveal.
+This is why the suite is calibrated against real software: these are exactly the class of bug the
+mutant (the project's own code) structurally cannot reveal.
 
 ## Status
 
-Tasks #23 (Exim + Postfix) and #24 (Exim × mox × aiosmtpd differential) are **done**: Exim, mox,
-and aiosmtpd via native installs, Postfix via Docker (see
-[CALIBRATION-postfix.md](CALIBRATION-postfix.md)). Four independent MTAs, zero false positives.
-Only Stalwart/Maddy remains as optional corroboration (no Homebrew formula, would need fetching);
-it is not blocking.
+The differential covers four independent MTAs (Postfix, Exim, mox, aiosmtpd) with zero false
+positives; Exim, mox, and aiosmtpd via native installs, Postfix via Docker (see
+[CALIBRATION-postfix.md](CALIBRATION-postfix.md)). Only an OpenSMTPD or Stalwart/Maddy run remains
+as optional corroboration; it is not blocking.

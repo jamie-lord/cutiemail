@@ -1,4 +1,4 @@
-# Calibration against Postfix 3.7.11 (2026-07-22)
+# Calibration against Postfix 3.7.11
 
 The fourth and most important ground-truth calibration. Postfix is the reference for the
 mainstream interpretation of RFC 5321, and the suite's whole false-positive discipline was

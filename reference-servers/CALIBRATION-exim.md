@@ -1,14 +1,12 @@
-# Calibration against Exim 4.99.4 (2026-07-16), task #23, the Exim half
+# Calibration against Exim 4.99.4
 
-The **real reference-MTA calibration** the project has waited for. Docker registry egress
-stayed broken in this environment (see [README.md](README.md)), so instead of the containerised
-Postfix/Exim, this run uses a **natively-installed Exim 4.99.4** (`brew install exim`) driven as
-an **isolated, unprivileged test daemon** with its own config, its own spool, a high port, no root,
-and **no mutation of the host's system mail**.
+One of the two most spec-scrutinised MTAs alive, and one of the four the conformance suite is
+calibrated against. This run uses a **natively-installed Exim 4.99.4** (`brew install exim`)
+driven as an **isolated, unprivileged test daemon** with its own config, its own spool, a high
+port, no root, and **no mutation of the host's system mail**.
 
-Exim is one of the two most spec-scrutinised MTAs alive. This is genuine ground truth: the
-calibration exists to test THE SUITE, not Exim. When the suite flags Exim, the prior is that
-the suite is wrong.
+This is genuine ground truth: the calibration exists to test THE SUITE, not Exim. When the suite
+flags Exim, the prior is that the suite is wrong.
 
 ## Result
 
@@ -41,8 +39,8 @@ The runner drives a real production MTA; the reply reader frames Exim's real mul
 (SIZE, LIMITS, 8BITMIME, PIPELINING, PIPECONNECT, CHUNKING, STARTTLS, HELP) correctly; the
 four-state grading makes **no false accusation** against Exim across 59 conformant behaviours;
 and the two findings it does raise are a real, byte-verified divergence, not an artefact.
-Combined with the aiosmtpd smoke-calibration, the instrument is now validated against two
-independent third-party implementations.
+Alongside Postfix, mox, and aiosmtpd, the instrument is validated against four independent
+implementations.
 
 ## Reproducing
 
@@ -56,32 +54,10 @@ exim -bdf -oX 2526 -C "$PWD/exim-test.conf.example" &
 node ../src/cli.ts run --config exim-local.json --verbose --now 2026-07-16T12:00:00Z
 ```
 
-## Postfix: now done (2026-07-22)
+## Stability across code changes
 
-The Postfix half of #23 is **complete**. Once Docker was available, Postfix ran cleanly via the
-pinned `docker-compose.yml` (the macOS-native rootless attempt described in earlier revisions of
-`README.md` had failed against Apple's SIP-hardened system daemon; Docker sidesteps it). Postfix
-3.7.11 was calibrated in two configs, vulnerable and hardened, with **zero false positives** in
-both, and the two-config run is now the suite's strongest single validation: it convicts the
-smuggling-vulnerable Postfix and positively blesses the hardened one. Full triage in
-[CALIBRATION-postfix.md](CALIBRATION-postfix.md). The instrument is validated against four
-independent codebases.
-
-The Stalwart/Maddy differential (#24) still remains as optional corroboration (single Go/Rust
-binaries, no brew formula, would need fetching); it is not blocking.
-
-## Re-confirmation (2026-07-17, current codebase)
-
-After a large session of server work (DKIM/queue/STARTTLS/IDLE/UIDPLUS/multi-mailbox,
-DoS hardening, transactional WAL storage, VRFY/control-octet fixes), the ground-truth
-calibration was **re-run against a freshly-launched native Exim 4.99.4** on 127.0.0.1:2526:
-
-```
-59 conformant, 2 non-conformant, 0 permitted-latitude, 7 inconclusive
-```
-
-**Identical to the original run**: same two genuine bare-LF divergences (R-5321-2.3.8-a,
-R-5321-4.1.1.4-i), same zero false positives across 59 conformant Exim behaviours. The
-conformance suite's grading remains trustworthy against a real production MTA after the
-session's changes (which touched the live servers and storage, not the corpus/runner;
-this confirms that separation held). aiosmtpd (with STARTTLS) was re-confirmed the same way.
+Re-running this calibration against a freshly-launched native Exim 4.99.4 after substantial
+server and storage work gives an **identical result**: the same two genuine bare-LF divergences
+(R-5321-2.3.8-a, R-5321-4.1.1.4-i), the same zero false positives across 59 conformant Exim
+behaviours. The corpus and runner are separate from the server code, so changes to the live
+servers and storage do not move the calibration; this confirms that separation holds.

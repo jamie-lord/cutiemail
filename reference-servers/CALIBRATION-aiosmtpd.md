@@ -1,21 +1,20 @@
-# Smoke-calibration against aiosmtpd (2026-07-16)
+# Calibration against aiosmtpd 1.4.6
 
-A **partial, honestly-caveated calibration** run while the Postfix/Exim ground-truth run
-(task #23) is blocked on Docker registry egress (see [README.md](README.md)). This is **not**
-a substitute for #23 and does not close it.
+One of the four independent SMTP implementations the conformance suite is calibrated against
+(the others are Postfix, Exim, and mox; see [README.md](README.md)).
 
 ## What this is, and what it is not
 
-`aiosmtpd` 1.4.6 is a third-party asyncio SMTP server: independent code, **not**
-mine and **not** a spec-scrutinised MTA. Its value here is narrow but real. Pointing the suite
-at software I did not write exercises the runner, the reply reader, and the grading engine
-end-to-end in a way the mutant server (my own code) structurally cannot. It catches the class
-of bug where the instrument mis-frames or mis-judges a real server.
+`aiosmtpd` 1.4.6 is a third-party asyncio SMTP server: independent code, and **not** a
+spec-scrutinised MTA. Its value is narrow but real. Pointing the suite at software written
+independently of this project exercises the runner, the reply reader, and the grading engine
+end-to-end in a way the mutant server (this project's own code) structurally cannot. It catches
+the class of bug where the instrument mis-frames or mis-judges a real server.
 
 Its limits are equally real: aiosmtpd is a permissive debugging server. It exercises the
 *lax* paths, not the hardened ones a production MTA defends, so a clean-ish run here says
-little about the strict-rejection requirements Postfix/Exim would drive. **Ground-truth
-calibration still requires #23.**
+little about the strict-rejection requirements Postfix and Exim drive. Those are covered by the
+Postfix and Exim calibrations.
 
 ## Result
 
@@ -49,14 +48,14 @@ primitive the flagship CRLF corpus exists to catch. The suite caught it in real,
 widely-deployed software on the first run, the strongest possible evidence the smuggling
 tests have teeth beyond the mutant.
 
-### A triage note on method (recorded because it nearly misled me)
+### A triage note on method
 
 The first raw-socket repro of the NUL finding returned `503 send HELO first`, appearing to
 contradict the suite's `250`. That was a bug in the *repro harness* (it wrote MAIL before the
 EHLO reply had been drained), not in the suite. A careful sequential repro that fully drains
-each reply before sending the next confirmed `250 OK`. Lesson for #23's triage: a
-disagreement between a hand-repro and the suite is, until proven otherwise, a bug in the
-hand-repro: the runner sequences correctly.
+each reply before sending the next confirmed `250 OK`. The lesson for triage: a disagreement
+between a hand-repro and the suite is, until proven otherwise, a bug in the hand-repro, because
+the runner sequences correctly.
 
 ## Reproducing
 
@@ -72,18 +71,18 @@ node ../src/cli.ts run --config aiosmtpd.json --verbose --now 2026-07-16T12:00:0
 Both `aiosmtpd-target.py` and `aiosmtpd.json` live here in `reference-servers/`. They use
 only RFC 2606 reserved domains.
 
-## What this de-risks, and what it leaves open
+## What this de-risks, and what it leaves to the stricter MTAs
 
 De-risked: the runner drives real independent software end-to-end; the reply reader frames a
 real multiline EHLO correctly; the four-state grading produces no false accusation against a
 real server; fixture/extension/sink gating yields honest inconclusive rather than false
 pass/fail.
 
-Still open (task #23): a permissive server can't exercise the strict-rejection and
-hardened-path requirements. Only Postfix/Exim (which *do* reject bare-LF, *do* enforce
-sizes, *do* run STARTTLS) will calibrate those. Run #23 on a host with working Docker egress.
+Left to the stricter MTAs: a permissive server can't exercise the strict-rejection and
+hardened-path requirements. Postfix and Exim (which *do* reject bare-LF, *do* enforce sizes,
+*do* run STARTTLS) calibrate those; see their write-ups.
 
-## Independently reproduced (2026-07-16)
+## Independently reproduced
 
 Re-run from scratch in a fresh venv (`aiosmtpd 1.4.6`, a different install from the one above)
 against the same target and config: **identical result: 68 cases, the same 4 non-conformant
@@ -93,7 +92,7 @@ bare-LF EHLO drawing a full `250` extension list, `250 OK` to a NUL-bearing MAIL
 project's "assume we are wrong until proven" rule applied to its own calibration record: the
 claim above is confirmed by a second independent run, not taken on faith.
 
-## Broadened run, and a real bug it surfaced in the config parser (2026-07-16)
+## Broadened run, and a real bug it surfaced in the config parser
 
 Adding `longLocalPartRecipient` and
 `longDomainRecipient` to `aiosmtpd.json` (aiosmtpd accepts any recipient, so it can exercise
@@ -101,7 +100,7 @@ the §4.5.3.1 size floors) **surfaced a genuine defect in `config.ts`**: the par
 those two fields, so an operator who declared them got them silently dropped and the floor
 tests stayed inconclusive with no error. Fixed (both fields now parsed; the round-trip test
 made exhaustive so a future unwired `Fixture` field fails the build). This is exactly the class
-of instrument bug a real calibration catches and the mutant (my own code) cannot.
+of instrument bug a real calibration catches and the mutant (this project's own code) cannot.
 
 After the fix, the broadened run over the **69** current cases (the new
 `mail-resets-prior-recipient-state`, R-5321-3.3-b, is included) gives **57 conformant, 4

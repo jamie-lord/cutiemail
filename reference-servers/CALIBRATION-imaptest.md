@@ -1,16 +1,15 @@
-# Calibration against Dovecot imaptest (2026-07-17): the IMAP server
+# Calibration against Dovecot imaptest: the IMAP server
 
-The IMAP server is the largest hand-built surface in the project, and until now it had
-only ever been driven by our own tests and adversarial audits, never by independently
-written software. This is that calibration: **Dovecot's `imaptest`**, the canonical IMAP
-stress/consistency tester, pointed at our `ImapServer`. It found a real RFC 9051 §7.4.1
+The IMAP server is the largest hand-built surface in the project, and it had only ever been
+driven by the project's own tests and adversarial review, never by independently written
+software. This is that calibration: **Dovecot's `imaptest`**, the canonical IMAP
+stress/consistency tester, pointed at the `ImapServer`. It found a real RFC 9051 §7.4.1
 violation on the first run.
 
 ## How it was built and run
 
-`imaptest` has no Homebrew formula and its Docker image can't run here (the box's Docker
-egress is broken; see `README.md`), and no imaptest branch compiles against Ubuntu's
-patched Dovecot 2.3.21 headers. So it was built the officially-supported way: **vanilla
+`imaptest` has no Homebrew formula, and no imaptest branch compiles against Ubuntu's patched
+Dovecot 2.3.21 headers. So it was built the officially-supported way: **vanilla
 Dovecot 2.3.21 from source** (`dovecot.org/releases/2.3/dovecot-2.3.21.tar.gz`), with
 imaptest's matching `release-2.3.21` branch linked against that source tree
 (`./configure --with-dovecot=/opt/dovecot-2.3.21`).
