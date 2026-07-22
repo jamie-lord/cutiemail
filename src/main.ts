@@ -186,21 +186,21 @@ export function seedAccounts(
       // Advisory only (never a hard boot failure): the CLI/init paths reject a sub-floor
       // password, but an env seed shouldn't stop the daemon from starting — warn instead.
       if (a.pass.length < MIN_PASSWORD_LENGTH) {
-        log(`account ${a.user}: seeded password is under ${MIN_PASSWORD_LENGTH} characters — set a stronger one with \`node src/main.ts account set-password ${a.user}\`.`);
+        log(`account ${a.user}: seeded password is under ${MIN_PASSWORD_LENGTH} characters. Set a stronger one with \`node src/main.ts account set-password ${a.user}\`.`);
       }
     } else {
       // The account already exists → the registry is authoritative and this env seed does
       // nothing but keep a plaintext password in the unit file / environment.
       redundant++;
       if (existing.enabled && !registry.verifyPassword(a.user, a.pass)) {
-        log(`account ${a.user}: already provisioned — the differing env password is IGNORED (change it with \`node src/main.ts account set-password ${a.user}\`)`);
+        log(`account ${a.user}: already provisioned: the differing env password is IGNORED (change it with \`node src/main.ts account set-password ${a.user}\`)`);
       }
     }
   }
   if (redundant > 0) {
     // Not a per-account warning — one advisory. The seeds bootstrapped once; now they are
     // only a liability (a plaintext password in the unit and /proc/<pid>/environ).
-    log(`${redundant} env-seeded account(s) already exist — MAIL_PASS/MAIL_ACCOUNTS are now redundant plaintext; remove them from the unit and manage with \`node src/main.ts account\`.`);
+    log(`${redundant} env-seeded account(s) already exist: MAIL_PASS/MAIL_ACCOUNTS are now redundant plaintext; remove them from the unit and manage with \`node src/main.ts account\`.`);
   }
 }
 
@@ -256,7 +256,7 @@ export async function startServer(cfg: MailServerConfig): Promise<RunningServer>
       const demoPath = inMemory ? ':memory:' : join(dirname(cfg.dbPath), 'mail.db');
       registry.upsert('demo', 'demo', demoPath);
       secureMailDbFile(demoPath);
-      log('no accounts configured — seeded a dev account demo/demo. Provision real ones with `node src/main.ts init` / `account`.');
+      log('no accounts configured: seeded a dev account demo/demo. Provision real ones with `node src/main.ts init` / `account`.');
     }
     // On a non-loopback bind nothing is seeded, so the at-least-one-enabled-account
     // guard below fails the boot with an actionable message instead.
@@ -401,7 +401,7 @@ export async function startServer(cfg: MailServerConfig): Promise<RunningServer>
     const resolved: string[] = [];
     for (const rcpt of m.recipients) {
       const login = loginForLocalAddress(rcpt);
-      if (login === undefined) throw new MessageRejected('451 4.2.1 a recipient mailbox became unavailable — try again later');
+      if (login === undefined) throw new MessageRejected('451 4.2.1 a recipient mailbox became unavailable; try again later');
       resolved.push(login);
     }
     // INTERNALDATE = the moment we accepted the message (RFC 9051 §2.3.3), the same
@@ -504,7 +504,7 @@ export async function startServer(cfg: MailServerConfig): Promise<RunningServer>
     const localLogins: string[] = [];
     for (const rcpt of local) {
       const login = loginForLocalAddress(rcpt);
-      if (login === undefined) throw new MessageRejected(`451 4.2.1 mailbox <${rcpt}> became unavailable — try again later`);
+      if (login === undefined) throw new MessageRejected(`451 4.2.1 mailbox <${rcpt}> became unavailable; try again later`);
       localLogins.push(login);
     }
     // Backpressure: the outbound queue drains serially (~11/s on a small VM), so a runaway or
@@ -694,7 +694,7 @@ function readEnvFile(path: string, varName: string, hint: string): string {
  */
 function requireValidLogin(login: string, source: string): string {
   if (!validLogin(login)) {
-    throw new Error(`${source}: invalid account login ${JSON.stringify(login)} — letters/digits then letters/digits/._- (max 64); it becomes the mailbox database filename`);
+    throw new Error(`${source}: invalid account login ${JSON.stringify(login)}: letters/digits then letters/digits/._- (max 64); it becomes the mailbox database filename`);
   }
   return login;
 }
@@ -717,7 +717,7 @@ export function configFromEnv(): MailServerConfig & { usingDevCert: boolean; dev
   // is an explicit, unsafe opt-in for a throwaway local test on a public interface.
   if (usingDevCert && !isLoopbackHost(host) && process.env.MAIL_ALLOW_DEV_CERT !== '1') {
     throw new Error(
-      `refusing to bind ${host} with the bundled self-signed DEV certificate — its private key is public, so serving it on a public interface exposes account credentials. Set MAIL_TLS_CERT and MAIL_TLS_KEY to a real certificate. (For a deliberate throwaway test, set MAIL_ALLOW_DEV_CERT=1 — never in production.)`,
+      `refusing to bind ${host} with the bundled self-signed DEV certificate: its private key is public, so serving it on a public interface exposes account credentials. Set MAIL_TLS_CERT and MAIL_TLS_KEY to a real certificate. (For a deliberate throwaway test, set MAIL_ALLOW_DEV_CERT=1, never in production.)`,
     );
   }
   // The same rule that keeps the demo/demo dev fallback loopback-only (see startServer): a
@@ -783,7 +783,7 @@ export function configFromEnv(): MailServerConfig & { usingDevCert: boolean; dev
     const empty = accounts.find((a) => a.pass === '');
     if (empty !== undefined) {
       throw new Error(
-        `refusing to seed account ${JSON.stringify(empty.user)} on ${host} with an empty password — it would accept any login. Set a real password (MAIL_PASS or the MAIL_ACCOUNTS entry), or leave it unset and provision with \`node src/main.ts init <login>\`.`,
+        `refusing to seed account ${JSON.stringify(empty.user)} on ${host} with an empty password: it would accept any login. Set a real password (MAIL_PASS or the MAIL_ACCOUNTS entry), or leave it unset and provision with \`node src/main.ts init <login>\`.`,
       );
     }
   }
@@ -825,7 +825,7 @@ export function configFromEnv(): MailServerConfig & { usingDevCert: boolean; dev
 function parseOutboundMode(raw: string | undefined): 'deliver' | 'hold' {
   if (raw === undefined || raw === '' || raw === 'deliver') return 'deliver';
   if (raw === 'hold') return 'hold';
-  throw new Error(`MAIL_OUTBOUND must be "deliver" or "hold", got ${JSON.stringify(raw)} — refusing to guess (a typo here could mean real mail leaves a test instance).`);
+  throw new Error(`MAIL_OUTBOUND must be "deliver" or "hold", got ${JSON.stringify(raw)}: refusing to guess (a typo here could mean real mail leaves a test instance).`);
 }
 
 /** The bundled self-signed certificate, for local development only. */
@@ -844,10 +844,10 @@ function describeBindError(err: unknown): string | null {
   if (e.syscall !== 'listen') return null;
   const port = e.port !== undefined ? String(e.port) : 'a listener port';
   if (e.code === 'EADDRINUSE') {
-    return `cannot start: port ${port} is already in use. Another mail server or a previous instance of this one is running — stop it, or set MAIL_SMTP_PORT / MAIL_SUBMISSION_PORT / MAIL_IMAP_PORT to free ports.`;
+    return `cannot start: port ${port} is already in use. Another mail server or a previous instance of this one is running: stop it, or set MAIL_SMTP_PORT / MAIL_SUBMISSION_PORT / MAIL_IMAP_PORT to free ports.`;
   }
   if (e.code === 'EACCES') {
-    return `cannot start: not permitted to bind port ${port}. Ports below 1024 (25/587/993) need privilege — run as root, grant node the capability once with \`sudo setcap 'cap_net_bind_service=+ep' $(command -v node)\`, or set MAIL_SMTP_PORT / MAIL_SUBMISSION_PORT / MAIL_IMAP_PORT to high ports (≥1024).`;
+    return `cannot start: not permitted to bind port ${port}. Ports below 1024 (25/587/993) need privilege: run as root, grant node the capability once with \`sudo setcap 'cap_net_bind_service=+ep' $(command -v node)\`, or set MAIL_SMTP_PORT / MAIL_SUBMISSION_PORT / MAIL_IMAP_PORT to high ports (≥1024).`;
   }
   return null;
 }
@@ -869,8 +869,8 @@ export function describeCertExpiry(certPem: string, now: number = Date.now()): s
   const expires = Date.parse(cert.validTo);
   if (Number.isNaN(expires)) return null;
   const days = Math.floor((expires - now) / 86_400_000);
-  if (days < 0) return `WARNING: the TLS certificate EXPIRED ${-days} day(s) ago (${cert.validTo}) — every client TLS handshake will fail until it is renewed.`;
-  if (days <= 14) return `WARNING: the TLS certificate expires in ${days} day(s) (${cert.validTo}) — renew now; is the certbot deploy hook wired up (docs/DEPLOYMENT.md)?`;
+  if (days < 0) return `WARNING: the TLS certificate EXPIRED ${-days} day(s) ago (${cert.validTo}): every client TLS handshake will fail until it is renewed.`;
+  if (days <= 14) return `WARNING: the TLS certificate expires in ${days} day(s) (${cert.validTo}): renew now; is the certbot deploy hook wired up (docs/DEPLOYMENT.md)?`;
   return null;
 }
 
@@ -903,14 +903,14 @@ async function main(): Promise<void> {
   log(`  IMAPS            ${cfg.host}:${server.imap.port}`);
   log(`  accounts: ${server.logins.join(', ')}`);
   if (cfg.outboundMode === 'hold') {
-    log('  outbound: HOLD (MAIL_OUTBOUND=hold) — remote mail is queued locally and NEVER relayed. Inspect with `node src/main.ts queue list`; restart without hold to release.');
+    log('  outbound: HOLD (MAIL_OUTBOUND=hold): remote mail is queued locally and NEVER relayed. Inspect with `node src/main.ts queue list`; restart without hold to release.');
   } else {
     log(`  outbound: remote mail is queued and relayed to its MX, with retry${cfg.dkim !== undefined ? ' and DKIM signing' : ''}.`);
   }
   if (cfg.devCertForcedPublic) {
-    log(`  WARNING: MAIL_ALLOW_DEV_CERT=1 is serving the bundled DEV certificate on ${cfg.host} — its private key is PUBLIC (committed to the repo), so anyone can MITM these listeners and capture account credentials. Throwaway tests only; never production.`);
+    log(`  WARNING: MAIL_ALLOW_DEV_CERT=1 is serving the bundled DEV certificate on ${cfg.host}: its private key is PUBLIC (committed to the repo), so anyone can MITM these listeners and capture account credentials. Throwaway tests only; never production.`);
   } else if (cfg.usingDevCert) {
-    log('  NOTE: using the bundled self-signed DEV certificate — set MAIL_TLS_CERT/MAIL_TLS_KEY in production.');
+    log('  NOTE: using the bundled self-signed DEV certificate: set MAIL_TLS_CERT/MAIL_TLS_KEY in production.');
   }
   const certWarn = describeCertExpiry(cfg.tls.cert);
   if (certWarn !== null) log(`  ${certWarn}`);
@@ -925,7 +925,7 @@ async function main(): Promise<void> {
   // (a deliberate omission — restart instead; docs/BACKLOG.md records live cert reload
   // as a candidate), so say that, and stay up.
   process.on('SIGHUP', () => {
-    log('SIGHUP ignored — no live reload; restart the daemon to pick up a renewed certificate or changed configuration (a restart drops connected IMAP sessions).');
+    log('SIGHUP ignored: no live reload; restart the daemon to pick up a renewed certificate or changed configuration (a restart drops connected IMAP sessions).');
   });
 }
 

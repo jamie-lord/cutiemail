@@ -105,7 +105,7 @@ async function cmdRun(args: string[]): Promise<number> {
   // contract). Print the reasons unconditionally and exit 2 (target/config error).
   const allInconclusive = results.length > 0 && results.every((r) => r.outcome === 'inconclusive');
   if (allInconclusive) {
-    stderr.write(`\nAll ${results.length} cases were inconclusive — nothing was verified. Is the target listening at ${target.host}:${target.port}?\n`);
+    stderr.write(`\nAll ${results.length} cases were inconclusive; nothing was verified. Is the target listening at ${target.host}:${target.port}?\n`);
     const reasons = new Map<string, number>();
     for (const r of results) {
       const reason = r.judgement.kind === 'inconclusive' ? r.judgement.reason : '(unknown)';
@@ -118,7 +118,7 @@ async function cmdRun(args: string[]): Promise<number> {
   if (verbose) {
     const inconclusive = results.filter((r) => r.outcome === 'inconclusive');
     if (inconclusive.length > 0) {
-      stdout.write(`\nINCONCLUSIVE (${inconclusive.length}) — usually missing fixtures:\n`);
+      stdout.write(`\nINCONCLUSIVE (${inconclusive.length}), usually missing fixtures:\n`);
       for (const r of inconclusive) {
         const reason = r.judgement.kind === 'inconclusive' ? r.judgement.reason : '';
         stdout.write(`  ${r.testId} (${r.requirementId}): ${reason}\n`);

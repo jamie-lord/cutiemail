@@ -1,4 +1,4 @@
-# 0007 — A modern, opinionated server: the scope cuts, recorded
+# 0007. A modern, opinionated server: the scope cuts, recorded
 
 ## Status
 
@@ -7,10 +7,10 @@ Accepted (2026-07-16).
 ## Context
 
 The project's north star sharpened: this is not only an SMTP-receiver conformance
-suite, it is the test bed for a **whole modern mail server** — one a person can
+suite, it is the test bed for a **whole modern mail server**, one a person can
 spin up easily and use with existing clients (Thunderbird, Apple Mail) to send and
 receive real mail. TypeScript throughout, SQLite for storage, no large libraries
-for the actual mail work, and — the defining principle — **opinionated and
+for the actual mail work, and (the defining principle) **opinionated and
 modern**: it deliberately does not support every ancient server or every legacy
 spec corner when a cleaner solution is bought by dropping them.
 
@@ -22,7 +22,7 @@ records the *choices*, with reasons.
 
 ## Decision
 
-The server — and therefore the test bed that must cover it — makes these cuts:
+The server (and therefore the test bed that must cover it) makes these cuts:
 
 1. **No POP3.** IMAP4rev2 serves every modern client. POP3 (RFC 1939) is a whole
    protocol and harness removed for no loss to the target user.
@@ -34,16 +34,16 @@ The server — and therefore the test bed that must cover it — makes these cut
    > **Amendment (2026-07-17):** the CAPABILITY response now advertises **both**
    > `IMAP4rev1` and `IMAP4rev2` (RFC 9051 §6.1.1 permits, and real rev2 servers do,
    > advertising both). This does **not** reverse the scope cut: the server still
-   > implements only rev2 semantics — there is no separate rev1 behaviour mode, and the
+   > implements only rev2 semantics. There is no separate rev1 behaviour mode, and the
    > rev1 features rev2 removed (`\Recent`/`RECENT`, `SEARCH RECENT`/`NEW`/`OLD`) stay
    > intentionally unimplemented. The `IMAP4rev1` atom is a **compatibility signal**:
    > some clients and tooling gate the connection on seeing `IMAP4rev1`/`IMAP4` in
    > CAPABILITY and refuse the server outright without it (verified: Python's `imaplib`
    > raises "server not IMAP4 compliant" against a rev2-only advertisement). rev2 is a
    > near-superset, so those clients then speak a command subset the server serves
-   > correctly. Real modern MUAs (Apple Mail, Thunderbird) need no such signal — Apple
-   > Mail was driven end-to-end against the rev2-only server before this change — so this
-   > is purely a lower-bound-compatibility widening at no behavioural cost. The residual
+   > correctly. Real modern MUAs (Apple Mail, Thunderbird) need no such signal (Apple
+   > Mail was driven end-to-end against the rev2-only server before this change), so this
+   > is a lower-bound-compatibility widening at no behavioural cost. The residual
    > divergence (a rev1 client issuing a removed `SEARCH` key gets `BAD`; no `\Recent`)
    > is the recorded, accepted gap.
 3. **MTA-STS (RFC 8461), not DANE (RFC 7672),** for outbound TLS policy. DANE
@@ -66,7 +66,7 @@ The server — and therefore the test bed that must cover it — makes these cut
 
 - The test bed is scoped to these cuts: e.g. no POP3 register/corpus is built, the
   IMAP register targets RFC 9051, the TLS harness tests MTA-STS not DANE.
-- Each cut is revisitable, but only with a stated reason — the same bar as any
+- Each cut is revisitable, but only with a stated reason, the same bar as any
   register `deliberatelyUncovered` decision.
 - "Server minimal-first, test suite complete-first" is preserved: the harnesses
   are built ahead of the features, but only for the surface these cuts leave in

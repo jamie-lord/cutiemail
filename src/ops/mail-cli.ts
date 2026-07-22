@@ -97,11 +97,11 @@ export function runMail(
     return 1;
   }
   if (account.mailDbPath === ':memory:') {
-    io.err(`mail ${verb}: ${login}'s mailbox is in-memory — it exists only inside the running daemon and cannot be read from a second process.`);
+    io.err(`mail ${verb}: ${login}'s mailbox is in-memory: it exists only inside the running daemon and cannot be read from a second process.`);
     return 1;
   }
   if (!existsSync(account.mailDbPath)) {
-    io.out(`mail ${verb}: ${login} has no mailbox database yet (${account.mailDbPath}) — nothing has ever been delivered.`);
+    io.out(`mail ${verb}: ${login} has no mailbox database yet (${account.mailDbPath}): nothing has ever been delivered.`);
     return verb === 'list' ? 0 : 1;
   }
 
@@ -165,7 +165,7 @@ export function runMail(
     const headers = sep === -1 ? bytes : bytes.subarray(0, sep);
     io.out(sanitizeForTerminal(headers.toString('latin1')));
     io.out('');
-    io.out(`(headers only — full ${bytes.length}-byte message: mail show ${login} ${uid} --raw)`);
+    io.out(`(headers only, full ${bytes.length}-byte message: mail show ${login} ${uid} --raw)`);
     return 0;
   } finally {
     db.close();

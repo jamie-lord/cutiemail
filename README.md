@@ -1,36 +1,36 @@
 # A mail server, built from the byte up
 
 **cutiemail** is a small, opinionated, self-contained mail server in TypeScript. It sends and
-receives real internet mail and speaks the protocols existing clients (Thunderbird, Apple Mail —
+receives real internet mail and speaks the protocols existing clients (Thunderbird, Apple Mail on
 desktop and phone) drive, storing everything in SQLite. No mail libraries: the SMTP and IMAP engines, the
-MIME parser, and the DKIM/SPF/DMARC crypto are all hand-built on the byte layer. **Zero runtime dependencies** —
+MIME parser, and the DKIM/SPF/DMARC crypto are all hand-built on the byte layer. **Zero runtime dependencies**:
 the only thing you install is Node.js itself; `node_modules` holds nothing but dev tooling
 (the TypeScript type-checker and its type definitions), none of which the server ever loads.
 
 The design goal is best said as the *SQLite of email*:
 correct, minimal, and embeddable rather than a sprawling MTA. Scope is chosen deliberately and
-every omission is a recorded decision, not a gap — see [the working agreement](docs/WORKING-AGREEMENT.md)
+every omission is a recorded decision, not a gap. See [the working agreement](docs/WORKING-AGREEMENT.md)
 for the philosophy, [how it's tested](docs/TESTING.md) for what is done versus
 deliberately left out, and [the backlog](docs/BACKLOG.md) for what's still open and what was declined, with reasons.
 
 It is deployed and live: the daemon runs on a small box under real DNS and exchanges
 authenticated mail with Gmail (SPF, DKIM, and DMARC all passing), read back over IMAPS.
 
-## Why this — and when to use something else
+## Why this, and when to use something else
 
 Stalwart, Maddy, Mox, and Mailcow are all good software, and if you want a batteries-included
-groupware stack or JMAP, use them. cutiemail's bet is different: **radical smallness you can
-actually read**. One process, one language, zero runtime dependencies, plain SQLite files you can
+groupware stack or JMAP, use them. cutiemail's bet is different: **smallness you can
+read**. One process, one language, zero runtime dependencies, plain SQLite files you can
 query with stock `sqlite3`, and a from-scratch implementation where every protocol byte is code in
-this repo — built correctness-first, with the test bed (reference-model storage proofs,
+this repo. It is built correctness-first, with the test bed (reference-model storage proofs,
 mutant-server negative controls, security-reviewed hostile-input surfaces) as the star of the
 show. Deliberately **not**
 here, each recorded as a decision with reasons ([how it's tested](docs/TESTING.md),
 [the backlog](docs/BACKLOG.md)): POP3, JMAP, Sieve, webmail, a spam filter beyond DMARC
 enforcement, multiple domains per instance, and clustering. One domain, a handful of humans, on a
-small box you own — that's the shape it serves best.
+small box you own: that's what it serves best.
 
-**Maturity:** young (v0, one maintainer) but held to a high verification bar — 1,000+
+**Maturity:** young (v0, one maintainer) but held to a high verification bar: 1,000+
 tests including negative controls, security-reviewed hostile-input surfaces, and a production
 instance exchanging authenticated mail with Gmail daily. Run it for mail you care about only after
 reading the honest limitations in [the deployment guide](docs/DEPLOYMENT.md).
@@ -41,19 +41,19 @@ guide is Linux/systemd-only).
 
 ## Run it
 
-Requires **Node.js ≥ 22.18** — it runs the `.ts` files directly, so there is no build step.
+Requires **Node.js ≥ 22.18**. It runs the `.ts` files directly, so there is no build step.
 `npm install` refuses on an older Node with an unsupported-engine error that names the
-required version (that's `.npmrc`'s `engine-strict` at work — much friendlier than the loader
+required version (that's `.npmrc`'s `engine-strict` at work, much friendlier than the loader
 error an old Node would otherwise hit at `npm start`). Note that the Node in Debian/Ubuntu's
 `apt` is usually too old: install Node 22 from
-[NodeSource](https://github.com/nodesource/distributions) instead —
-[the deployment guide](docs/DEPLOYMENT.md) has the exact commands.
+[NodeSource](https://github.com/nodesource/distributions) instead.
+[The deployment guide](docs/DEPLOYMENT.md) has the exact commands.
 
 ```sh
 node --version  # v22.18.0 or newer
 git clone https://github.com/jamie-lord/cutiemail
 cd cutiemail
-npm install     # dev tooling only (the type-checker) — nothing the server runs
+npm install     # dev tooling only (the type-checker), nothing the server runs
 npm start       # the daemon, with dev-friendly defaults
 ```
 
@@ -62,18 +62,18 @@ harmless `ExperimentalWarning: SQLite …`. The `npm` scripts silence it with
 `--disable-warning=ExperimentalWarning`.)
 
 `npm start` opens the databases and starts three listeners: inbound SMTP, submission SMTP (SASL
-PLAIN AUTH over TLS), and IMAPS. It binds `127.0.0.1` only — a private plaything on the machine
+PLAIN AUTH over TLS), and IMAPS. It binds `127.0.0.1` only, a private plaything on the machine
 in front of you; putting it on a real server with real DNS is
 [the deployment guide](docs/DEPLOYMENT.md). Leave it running (it's a foreground daemon) and stop
-it with Ctrl-C or SIGTERM any time — shutdown is graceful and the SQLite databases are crash-safe.
+it with Ctrl-C or SIGTERM any time. Shutdown is graceful and the SQLite databases are crash-safe.
 
 **State lands beside the code**: the control and mailbox databases are created in the working
 directory (`npm start` always runs from the repo root; the startup banner prints the resolved
-path), so run it from the same place each time — or set `MAIL_CONTROL_DB` to an absolute path.
+path), so run it from the same place each time, or set `MAIL_CONTROL_DB` to an absolute path.
 
 There is no config file: the zero-config run needs no variables at all, and everything else is set
 by environment variable (the full list is the [configuration reference](#configuration-reference)
-below). The SQLite files are created on first run — no schema step. On PowerShell, set variables as
+below). The SQLite files are created on first run, with no schema step. On PowerShell, set variables as
 `$env:MAIL_DOMAIN='...'` before `npm start`; the `VAR=value command` one-liners below are
 POSIX-shell syntax.
 
@@ -83,10 +83,10 @@ map of the moving parts (MX, SPF, DKIM, DMARC) before touching a real domain.
 
 ### Send yourself the first email
 
-With no config, `npm start` seeds a `demo`/`demo` account (on loopback binds only — a public
+With no config, `npm start` seeds a `demo`/`demo` account (on loopback binds only: a public
 bind refuses to boot until `init` creates a real account, so this convenience credential can
-never go live on the internet). To prove the whole path works — authenticated submission, local
-delivery, read-back — run the built-in check **in a second terminal, while the daemon runs**,
+never go live on the internet). To prove the whole path works (authenticated submission, local
+delivery, read-back), run the built-in check **in a second terminal, while the daemon runs**,
 with the same `MAIL_*` environment as the daemon (it dials the configured ports; with no
 variables set on either side, the defaults line up):
 
@@ -99,48 +99,48 @@ is deleted after it's read back, so the inbox ends empty; `selftest` also warns 
 greeting doesn't match the expected domain.) To point a real
 client (Thunderbird, Apple Mail) at the local dev instance:
 
-- **IMAP** — `127.0.0.1`, port **5993**, security **SSL/TLS** (implicit).
-- **SMTP (submission)** — `127.0.0.1`, port **5587**, security **STARTTLS** (not implicit TLS;
+- **IMAP**: `127.0.0.1`, port **5993**, security **SSL/TLS** (implicit).
+- **SMTP (submission)**: `127.0.0.1`, port **5587**, security **STARTTLS** (not implicit TLS;
   AUTH is only offered after STARTTLS).
-- **Username** — the account login exactly (`demo`), **not** `demo@mail.example.com`; it is
+- **Username**: the account login exactly (`demo`), **not** `demo@mail.example.com`; it is
   case-sensitive and is not the email address.
 - The bundled dev certificate is self-signed and its name won't match `127.0.0.1` (it's a
   throwaway dev cert, not issued for your machine), so accept the one-time security exception.
 
 The same entry point is the operator toolbox: `node src/main.ts <command>`, run from the repo
-folder — read the pair as one word, the way `systemctl <verb>` is one word:
+folder. Read the pair as one word, the way `systemctl <verb>` is one word:
 
-- **`init <login>`** — first-run bootstrap: creates the primary account (prompts for the
+- **`init <login>`**: first-run bootstrap that creates the primary account (prompts for the
   password, writes SCRAM to the control DB, prints a ready-to-paste systemd unit that carries
   **no** password), and refuses if any account already exists. This is the recommended first
-  step **for a fresh deployment directory** — note that a bare `npm start` has already seeded
-  `demo`/`demo`, which forecloses `init` there (just use `account add` instead);
+  step **for a fresh deployment directory**. Note that a bare `npm start` has already seeded
+  `demo`/`demo`, which forecloses `init` there (use `account add` instead);
   `MAIL_USER`/`MAIL_PASS` are a legacy dev shortcut.
-- **`setup`** — generates a DKIM key (if none exists) and prints the exact DNS records to
-  publish — MX, SPF, DKIM, DMARC, reverse-DNS — as annotated zone lines derived from the
+- **`setup`**: generates a DKIM key (if none exists) and prints the exact DNS records to
+  publish (MX, SPF, DKIM, DMARC, reverse-DNS) as annotated zone lines derived from the
   server's own configuration.
-- **`doctor`** — re-runnable drift check against live DNS and the network: MX, FCrDNS, SPF
+- **`doctor`**: re-runnable drift check against live DNS and the network, covering MX, FCrDNS, SPF
   (evaluated by the server's own RFC 7208 evaluator), the published DKIM key matching the
   local private key, DMARC, certificate validity/expiry, and an outbound port-25 probe.
-- **`selftest <login>`** — end-to-end proof against the *running* daemon: authenticates,
+- **`selftest <login>`**: end-to-end proof against the *running* daemon. It authenticates,
   submits a tagged message to the account, reads it back over IMAPS, and deletes it again.
   `doctor` checks the outside (DNS, cert, port 25); `selftest` checks the mail path itself.
 - **`account add|set-password|enable|disable|list`**, plus **`account alias …`** (route extra
   addresses to an account, ADR 0014) and **`account app-password …`** (revocable per-device
-  credentials, ADR 0017) — all managed in the control database; passwords prompted (or piped),
+  credentials, ADR 0017). All are managed in the control database; passwords prompted (or piped),
   never in argv or the environment, and the running daemon picks changes up with no restart
   (ADR 0012).
-- **`backup <dir>` / `verify`** — a transactionally consistent snapshot of every database
+- **`backup <dir>` / `verify`**: a transactionally consistent snapshot of every database
   while the daemon runs, and a read-only proof that a backup (or the live files) passes
   integrity plus the store's own invariants.
-- **`queue list|retry|cancel` / `dead-letter list|show|requeue|purge`** — what's waiting to go
+- **`queue list|retry|cancel` / `dead-letter list|show|requeue|purge`**: what's waiting to go
   out (with `retry <id>|--all` to skip the backoff after you've fixed a fault, and `cancel` to
-  pull a message — retained in dead-letter, never discarded) and what delivery permanently gave
+  pull a message, retained in dead-letter, never discarded) and what delivery permanently gave
   up on, inspectable down to the retained bytes (`show --raw` writes a replayable `.eml`),
   re-queueable, never silently dropped.
-- **`mail list|show <login>`** — read a delivered mailbox without an IMAP client: uid, date,
+- **`mail list|show <login>`**: read a delivered mailbox without an IMAP client, showing uid, date,
   size, flags, From/Subject per message; `show <uid> --raw` streams the byte-exact `.eml`.
-  Read-only (nothing is marked seen) — the quick "did it arrive" check for a shell or CI.
+  Read-only (nothing is marked seen), the quick "did it arrive" check for a shell or CI.
 
 `node src/main.ts help` lists all of these; a bare `node src/main.ts` starts the daemon.
 
@@ -151,51 +151,51 @@ folder — read the pair as one word, the way `systemctl <verb>` is one word:
 | `MAIL_DOMAIN` | `mail.example.com` | the local mail domain *and* the SMTP greeting/HELO name |
 | `MAIL_HOST` | `127.0.0.1` | bind address (`0.0.0.0` in production) |
 | `MAIL_SMTP_PORT` / `MAIL_SUBMISSION_PORT` / `MAIL_IMAP_PORT` | `2525` / `5587` / `5993` | listener ports (use 25 / 587 / 993 in production) |
-| `MAIL_USER` (+ `MAIL_PASS`) | unset | set **both** to seed a primary account at boot (create-only, ADR 0012); `MAIL_PASS` is ignored unless `MAIL_USER` is set. Prefer `init`/`account` (above), which keep no password in the environment. With neither set and an empty registry, a `demo`/`demo` dev account is seeded so `npm start` just works — on a **loopback bind only**; a public bind refuses to boot instead. |
+| `MAIL_USER` (+ `MAIL_PASS`) | unset | set **both** to seed a primary account at boot (create-only, ADR 0012); `MAIL_PASS` is ignored unless `MAIL_USER` is set. Prefer `init`/`account` (above), which keep no password in the environment. With neither set and an empty registry, a `demo`/`demo` dev account is seeded so `npm start` just works, on a **loopback bind only**; a public bind refuses to boot instead. |
 | `MAIL_ACCOUNTS` | unset | additional accounts, `"user:pass,user2:pass2"` (each gets its own `mail-<user>.db`); create-only, like `MAIL_USER` |
-| `MAIL_CONTROL_DB` | `control.db` | the control database — account registry + outbound queue (created in the **current directory** unless you give a path; point it somewhere real for a deployment) |
-| `MAIL_DB` | `mail.db` | the primary account's mailbox database — only read together with `MAIL_USER`, and also the file the seeded `demo` account uses (so a bare `npm start` creates `control.db` + `mail.db`). Accounts created by `init`/`account` get `mail-<login>.db` beside the control DB instead. For a fully ephemeral run set `MAIL_CONTROL_DB=:memory:` (every mail DB then defaults to `:memory:`). |
-| `MAIL_TLS_CERT` / `MAIL_TLS_KEY` | bundled dev cert | PEM cert/key paths. Unset falls back to a bundled dev cert — but **only on a loopback bind**: the daemon refuses to boot with the dev cert on a non-loopback `MAIL_HOST` (its private key is public), so production must set these (`MAIL_ALLOW_DEV_CERT=1` forces it for a throwaway test). A set path that can't be read fails the boot with a message naming the variable. |
+| `MAIL_CONTROL_DB` | `control.db` | the control database: account registry + outbound queue (created in the **current directory** unless you give a path; point it somewhere real for a deployment) |
+| `MAIL_DB` | `mail.db` | the primary account's mailbox database, only read together with `MAIL_USER`, and also the file the seeded `demo` account uses (so a bare `npm start` creates `control.db` + `mail.db`). Accounts created by `init`/`account` get `mail-<login>.db` beside the control DB instead. For a fully ephemeral run set `MAIL_CONTROL_DB=:memory:` (every mail DB then defaults to `:memory:`). |
+| `MAIL_TLS_CERT` / `MAIL_TLS_KEY` | bundled dev cert | PEM cert/key paths. Unset falls back to a bundled dev cert, but **only on a loopback bind**: the daemon refuses to boot with the dev cert on a non-loopback `MAIL_HOST` (its private key is public), so production must set these (`MAIL_ALLOW_DEV_CERT=1` forces it for a throwaway test). A set path that can't be read fails the boot with a message naming the variable. |
 | `MAIL_DKIM_KEY` / `MAIL_DKIM_SELECTOR` | unset | PEM RSA key + selector to sign outbound mail |
 | `MAIL_TRUSTED_ARC_SEALERS` | unset | comma-separated forwarder domains whose valid ARC chain may rescue a DMARC failure to the inbox |
-| `MAIL_MAX_SIZE` | `26214400` | max accepted message size in octets (25 MiB) — applied to SMTP `SIZE` and the IMAP `APPEND` literal alike |
-| `MAIL_OUTBOUND` | `deliver` | set `hold` for a dev/test sink: remote mail is queued (inspect with `queue list`) but **never relayed** — nothing can escape a test instance (ADR 0019). Any other value refuses to boot. |
-| `MAIL_DEBUG` | unset | `1` logs every received SMTP/IMAP command line to stderr (credentials redacted) — the protocol-level debugging view |
+| `MAIL_MAX_SIZE` | `26214400` | max accepted message size in octets (25 MiB), applied to SMTP `SIZE` and the IMAP `APPEND` literal alike |
+| `MAIL_OUTBOUND` | `deliver` | set `hold` for a dev/test sink: remote mail is queued (inspect with `queue list`) but **never relayed**, so nothing can escape a test instance (ADR 0019). Any other value refuses to boot. |
+| `MAIL_DEBUG` | unset | `1` logs every received SMTP/IMAP command line to stderr (credentials redacted), the protocol-level debugging view |
 
 Embedding it instead of running the daemon? `startServer(config)` takes a `MailServerConfig`
 object directly, with the same knobs plus injection seams (DNS resolvers, the auth throttle, the
 DMARC sampler) that the test suite uses.
 
 To put it on a real box with real DNS and send mail to your own inbox, follow
-[the deployment guide](docs/DEPLOYMENT.md) — the DNS, systemd, and client walkthrough, with an
+[the deployment guide](docs/DEPLOYMENT.md), the DNS, systemd, and client walkthrough, with an
 honest list of what is intentionally naive. Prefer containers? A `Dockerfile` and
-`docker-compose.yml` are at the repo root (`docker compose up -d`) — zero runtime deps and no
+`docker-compose.yml` are at the repo root (`docker compose up -d`). Zero runtime deps and no
 build step make the image just the Node runtime plus the source ([ADR 0020](docs/decisions/0020-container-image.md)).
 
 ### Use it as a dev/test mail server
 
-It makes a surprisingly good Mailpit-style sink for developing an app that sends mail — a *real*
+It makes a good Mailpit-style sink for developing an app that sends mail, a *real*
 SMTP/IMAP server, so your code exercises real protocol behaviour:
 
 ```sh
 MAIL_CONTROL_DB=./devmail.db MAIL_OUTBOUND=hold npm start
 ```
 
-`hold` guarantees nothing is ever relayed to the real internet — fixtures with real-looking
-addresses stay on the box — the seeded `demo`/`demo` account accepts submissions, and `+tag`
+`hold` guarantees nothing is ever relayed to the real internet (fixtures with real-looking
+addresses stay on the box). The seeded `demo`/`demo` account accepts submissions, and `+tag`
 subaddressing gives each test its own address. The file-backed `MAIL_CONTROL_DB` is deliberate:
 the inspection commands run as separate processes, so `queue list` and `mail list demo` can only
-see the queue and mailbox when they share an on-disk database with the daemon — those, plus
+see the queue and mailbox when they share an on-disk database with the daemon. Those, plus
 `selftest demo`, are your assertions. Delete `devmail.db` and any `mail-*.db` when you're done.
-(For a purely ephemeral run use `MAIL_CONTROL_DB=:memory:`, but then assert only over the wire —
-`selftest` or an IMAP client — since a second process can't read another's in-memory database.)
+(For a purely ephemeral run use `MAIL_CONTROL_DB=:memory:`, but then assert only over the wire,
+via `selftest` or an IMAP client, since a second process can't read another's in-memory database.)
 
 ### Your data, your exit
 
 Mail is stored byte-exact, so leaving is as easy as arriving: copy mailboxes out over IMAP with
 any tool (imapsync, a desktop client), read the plain SQLite files directly with stock `sqlite3`,
 or dump a single message as a `.eml` with `mail show <login> <uid> --raw`. Importing 15 years of
-history *in* works the same way — see "Migrating your existing mail" in
+history *in* works the same way. See "Migrating your existing mail" in
 [the deployment guide](docs/DEPLOYMENT.md).
 
 ## What it does
@@ -204,32 +204,33 @@ The ports named below are the standard protocol ports (the production defaults);
 instance from "Run it" uses `2525`/`5587`/`5993` instead, per the [configuration
 reference](#configuration-reference).
 
-- **Receive** — SMTP on 25 with STARTTLS. Rejects bare CR/LF (the SMTP-smuggling class), enforces
+- **Receive**: SMTP on 25 with STARTTLS. Rejects bare CR/LF (the SMTP-smuggling class), enforces
   SIZE, validates recipients against the hosted domain (no open relay, no backscatter), detects
-  mail loops, and times out slow-loris connections. Every inbound message is authenticated —
+  mail loops, and times out slow-loris connections. Every inbound message is authenticated:
   **SPF + DKIM + DMARC** (aligned over the full Public Suffix List) verified over DNS and recorded
   in an `Authentication-Results` header (with any forged copy of that header stripped first). DMARC
   is **enforced**: a `p=quarantine`/`p=reject` failure is filed to the recipient's Junk folder
-  rather than the inbox — never hard-rejected, so legitimate forwarded mail isn't lost. **ARC**
+  rather than the inbox, never hard-rejected, so legitimate forwarded mail isn't lost. **ARC**
   (RFC 8617) is validated, and a valid chain from a forwarder you trust can rescue such a message
   to the inbox. The message is then trace-stamped and delivered into the addressed account's mailbox.
-- **Submit + send** — submission on 587 with SASL PLAIN over TLS. A submitted message is fixed
-  up (RFC 6409 — a missing From/Date/Message-ID is added), trace-stamped, **DKIM-signed**, and
+- **Submit + send**: submission on 587 with SASL PLAIN over TLS. A submitted message is fixed
+  up (RFC 6409: a missing From/Date/Message-ID is added), trace-stamped, **DKIM-signed**, and
   handed to a **persistent SQLite retry queue** that relays it to the recipient's MX over STARTTLS
-  (opportunistic, or **MTA-STS-enforced** — validated-TLS-only, no downgrade — when the destination
-  publishes a policy) with exponential backoff, giving up only after ~5 days. A permanent failure is
-  bounced immediately as a `multipart/report` DSN — never to a null return-path, so bounces can't
-  loop — and a given-up message is retained in a dead-letter table for inspection rather than dropped.
-- **Read** — IMAPS on 993 with the surface a real client actually drives: `IMAP4rev1`+`IMAP4rev2`,
-  `IDLE` (instant new mail), `UIDPLUS`, `SPECIAL-USE` (the Sent/Drafts/Trash/Junk/Archive folders),
-  `CONDSTORE` and `QRESYNC` (a reconnecting client resyncs the delta in one round-trip), plus
-  `BODYSTRUCTURE` and per-part fetch, `SEARCH`/`ESEARCH`, `MOVE`, and multi-connection sync so a
-  phone and a desktop on the same mailbox stay in agreement.
-- **Multiple accounts** — one SQLite database per user (a control database holds the SCRAM
+  with exponential backoff, giving up only after ~5 days. That relay is opportunistic, or
+  **MTA-STS-enforced** (validated-TLS-only, no downgrade) when the destination publishes a policy.
+  A permanent failure is bounced immediately as a `multipart/report` DSN, never to a null
+  return-path, so bounces can't loop. A given-up message is retained in a dead-letter table for
+  inspection rather than dropped.
+- **Read**: IMAPS on 993 with the surface a real client drives. It offers
+  `IMAP4rev1`+`IMAP4rev2`, `IDLE` (instant new mail), `UIDPLUS`, `SPECIAL-USE` (the
+  Sent/Drafts/Trash/Junk/Archive folders), `CONDSTORE` and `QRESYNC` (a reconnecting client
+  resyncs the delta in one round-trip), plus `BODYSTRUCTURE` and per-part fetch, `SEARCH`/`ESEARCH`,
+  `MOVE`, and multi-connection sync so a phone and a desktop on the same mailbox stay in agreement.
+- **Multiple accounts**: one SQLite database per user (a control database holds the SCRAM
   credential registry and the outbound queue; each user gets their own `mail-<user>.db`), with the
   IMAP and submission auth paths behind a per-IP brute-force throttle. Each account can have
   **aliases** and `base+tag` **subaddressing** (extra addresses routed to it, ADR 0014) and
-  revocable per-device **app passwords** (ADR 0017); submission is **sender-authorized** — an
+  revocable per-device **app passwords** (ADR 0017); submission is **sender-authorized**: an
   authenticated account can only send *as* an address it owns, so one account can never spoof
   another's `From` (ADR 0015).
 
@@ -239,7 +240,7 @@ strings" rule is what lets a delivered message be read back byte-exact.
 
 ## How it's built
 
-The tree is really two programs sharing one spine — the runnable server, and a conformance test
+The tree is really two programs sharing one spine: the runnable server, and a conformance test
 bed that drives *the same code* the daemon runs. [The architecture guide](docs/ARCHITECTURE.md) is
 the guided tour: the layering from octet primitives up to the daemon, and a byte-by-byte trace of
 one message from SMTP in to IMAP out. Start there to read the codebase.
@@ -253,7 +254,7 @@ independent disciplines back the 1,000+ tests:
   in-memory reference mailbox are driven through one shared invariant harness and must agree
   operation-for-operation, so persistence can't silently change the semantics.
 - **Every conformance check is proven to detect its own violation.** Each is run both ways
-  against a [mutant server](src/testing/mutant-server.ts) with switchable defects — conformant
+  against a [mutant server](src/testing/mutant-server.ts) with switchable defects: conformant
   against a clean server, non-conformant against exactly the defect it targets. A test never
   shown to fail is not counted as coverage, and no test is allowed to pass for the wrong reason.
 - **Latitude is not scored as failure.** Most of RFC 5321 is SHOULD/MAY. A
@@ -262,8 +263,8 @@ independent disciplines back the 1,000+ tests:
   only a violated MUST is a finding.
 - **Hostile-input hardening, per subsystem.** Every hostile-input surface (inbound SMTP + auth,
   outbound relay, the IMAP sync/extension surface, and the RFC 5322/MIME parsers) is defended and
-  regression-tested against the attacks that matter — auth-header spoofing, DMARC display-spoofing,
-  a TLS hang that could wedge the send queue, MX SSRF, and cross-connection desync — each covered
+  regression-tested against the attacks that matter: auth-header spoofing, DMARC display-spoofing,
+  a TLS hang that could wedge the send queue, MX SSRF, and cross-connection desync, each covered
   by a test that fails on the vulnerable code. Coverage and status are in
   [how it's tested](docs/TESTING.md).
 
@@ -275,14 +276,14 @@ npm run typecheck # tsc --noEmit; strict (noUncheckedIndexedAccess, exactOptiona
 ## The SMTP conformance suite
 
 The receiver's test bed doubles as a standalone tool: an **SMTP conformance suite** you can point
-at *any* mail server. It exists because nothing else quite does — there are good IMAP (Dovecot's
+at *any* mail server. It exists because nothing else quite does. There are good IMAP (Dovecot's
 `imaptest`) and JMAP (Fastmail's JMAP-TestSuite) conformance tools, but for SMTP the field is
 load generators and fakes, not compliance checkers.
 
 Everything traces to a [requirement register](src/register/): the normative statements of RFC 5321
-§§1–7 plus the STARTTLS command-injection requirement of RFC 3207 §4.2, each quoted **verbatim**
+§§1-7 plus the STARTTLS command-injection requirement of RFC 3207 §4.2, each quoted **verbatim**
 (a test checks every quote against the vendored RFC), tagged with its RFC 2119 level, the party it
-binds, and whether it is observable from a receiver socket at all — many bind the client or need a
+binds, and whether it is observable from a receiver socket at all. Many bind the client or need a
 receiving sink, and the register says so rather than hide behind a flattering percentage.
 
 ```sh
@@ -291,11 +292,11 @@ node src/cli.ts list                                  # every corpus case and th
 node src/cli.ts run --config reference-servers/exim.json
 ```
 
-A finding exits 1, a clean run exits 0, a config error exits 2 — so it drops into CI. The `fixture`
+A finding exits 1, a clean run exits 0, a config error exits 2, so it drops into CI. The `fixture`
 block in a target config is how the suite is told about state it cannot create over the wire (a
 valid recipient, a domain the server won't relay to, a declared size limit); a check that needs a
 fixture the run lacks yields *inconclusive*, never a false pass. That in-band-state problem is what
-makes SMTP conformance harder than IMAP — see [src/conformance/fixture.ts](src/conformance/fixture.ts).
+makes SMTP conformance harder than IMAP. See [src/conformance/fixture.ts](src/conformance/fixture.ts).
 
 The flagship coverage is the CRLF/SMTP-smuggling corpus (the `<LF>.<LF>`, `<LF>.<CR><LF>`, and
 `<CR>.<CR>` end-of-data variants) and the RFC 3207 STARTTLS session-security class (pre-handshake
@@ -305,7 +306,7 @@ distilled, with sources, in [the SMTP divergence notes](docs/research/smtp-diver
 **Calibration before trust.** The runner is our own code, so its verdicts are only trustworthy
 once calibrated against known-good MTAs, with every disagreement triaged to *our bug*, *our
 misreading*, or *a genuine divergence*. It has been run against **three independent
-implementations — Exim, mox, and aiosmtpd — with zero false positives**; the triaged divergences
+implementations (Exim, mox, and aiosmtpd) with zero false positives**; the triaged divergences
 (all three honour bare-LF command terminators, a widely-relaxed `MUST NOT`) are recorded in
 [reference-servers/](reference-servers/). A Postfix run is the one target still outstanding
 (it needs a root-capable host), and the roadmap says so.
@@ -318,7 +319,7 @@ add a corpus module, [the corpus authoring guide](src/corpus/AUTHORING.md) is th
 
 ## Contributing & security
 
-Contributions are welcome — read [the contributing guide](CONTRIBUTING.md) first; the project is
+Contributions are welcome. Read [the contributing guide](CONTRIBUTING.md) first; the project is
 deliberately scoped, so the "why it earns its place" bar matters. Found a security bug? Please
 report it privately per [the security policy](SECURITY.md), not in a public issue.
 

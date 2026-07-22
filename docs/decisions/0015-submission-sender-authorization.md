@@ -1,4 +1,4 @@
-# 0015 — Submission sender-authorization (send-as)
+# 0015. Submission sender-authorization (send-as)
 
 ## Status
 
@@ -11,12 +11,12 @@ multi-account model left open.
 Two things were true after aliases (ADR 0014) shipped, and together they were a hole:
 
 1. **Aliases only *received*.** You could give your mailbox the address `sales@`, but you
-   still had to *send* as your login. Sending as an alias — the obvious other half — was
+   still had to *send* as your login. Sending as an alias (the obvious other half) was
    explicitly deferred to here.
 2. **Submission never checked `From`.** The submission handler authenticated the user, then
    relayed whatever `From:` and `MAIL FROM` the client supplied. Any authenticated account
-   could put *any* address in `From` — including **another local account's** (alice sending as
-   bob), the cross-account spoof — and DKIM would then sign it with our key and Gmail would
+   could put *any* address in `From`, including **another local account's** (alice sending as
+   bob), the cross-account spoof. DKIM would then sign it with our key and Gmail would
    accept it as us. At personal scale the blast radius is small, but it is a real
    authorization gap, and it is the same change that enables legitimate send-as. One decision
    settles both.
@@ -35,11 +35,11 @@ At the submission chokepoint, before any routing, signing, delivery, or relay, r
 - the message carries **exactly one `From:` header** (RFC 5322 §3.6.1), whose author address
   the authenticated login **also** owns.
 
-"Owns" is exactly the ADR 0014 routing relation, read in reverse: the address resolves — as a
-login, an alias, or a `base+tag` subaddress, case-insensitively, on our domain — to the
+"Owns" is exactly the ADR 0014 routing relation, read in reverse: the address resolves (as a
+login, an alias, or a `base+tag` subaddress, case-insensitively, on our domain) to the
 authenticated login. It reuses the *same* `registry.resolveLocalPart` chokepoint that inbound
 RCPT uses, so "who may I send as" and "who may receive here" can never drift apart. A
-violation is a **permanent 550**, not a transient error — it is a policy no, not a "try again".
+violation is a **permanent 550**, not a transient error. It is a policy no, not a "try again".
 
 ```mermaid
 flowchart TD
@@ -54,11 +54,11 @@ flowchart TD
 ### The `From:` author is parsed spoof-hardened, and by the same code as DMARC
 
 The author address is extracted with the display-name-decoy defence DMARC already uses (strip
-comments and quoted-strings, take the **last** angle-addr — so `From: "x <a@evil>"
+comments and quoted-strings, take the **last** angle-addr, so `From: "x <a@evil>"
 <victim@bank>` is judged as `victim@bank`, the address the MUA shows). This logic now lives in
 one shared extractor (`src/message/from-author.ts`) that **both** inbound DMARC alignment and
 this gate call. If send-as and DMARC parsed `From` differently, an address one blessed could
-be a different one the other aligns — the divergence-by-two-implementations bug this project
+be a different one the other aligns: the divergence-by-two-implementations bug this project
 rejects on principle. Unifying them also means the existing DMARC spoof-regression corpus now
 guards the send-as parse for free.
 
@@ -72,7 +72,7 @@ reject those clients for a header the submission service is meant to add for the
 
 The envelope `MAIL FROM` becomes the Return-Path and the SPF identity. Letting it be an
 arbitrary address invites backscatter aimed at a victim and SPF misalignment, so it is gated
-too — a submitting client always sets a real return-path (a null sender `<>` is a bounce,
+too. A submitting client always sets a real return-path (a null sender `<>` is a bounce,
 which never originates at submission). `From` on a **foreign domain** is refused outright:
 ADR 0009 fixes one domain per server, so a personal server never relays a third-party
 identity. (A future multi-domain story would widen "our domain" here; recorded, not built.)
@@ -80,11 +80,11 @@ identity. (A future multi-domain story would widen "our domain" here; recorded, 
 ### What this deliberately does NOT do
 
 - **No per-alias send *permissions*.** Every alias of your login is sendable; there is no
-  notion of "this alias may receive but not send". A user owns their addresses uniformly —
-  finer control has no use at this scale and would be state to regret.
+  notion of "this alias may receive but not send". A user owns their addresses uniformly.
+  Finer control has no use at this scale and would be state to regret.
 - **No `Sender:` header synthesis** when `From` is an alias. RFC 6409 permits adding `Sender:`;
-  we don't, because the `From` is genuinely an address of the authenticated user, not a
-  third party sending on their behalf — the case `Sender:` exists for.
+  we don't, because the `From` is an address of the authenticated user, not a
+  third party sending on their behalf. That is the case `Sender:` exists for.
 
 ## Consequences
 
@@ -96,5 +96,5 @@ identity. (A future multi-domain story would widen "our domain" here; recorded, 
   source of truth.
 - The delivery-handler contract gained a typed permanent rejection (`MessageRejected`), so a
   policy 5xx is distinct from the transient 451 an unexpected store error still returns.
-- Revisitable with a stated reason, like every ADR — the obvious future trigger is
+- Revisitable with a stated reason, like every ADR. The obvious future trigger is
   multi-domain support.

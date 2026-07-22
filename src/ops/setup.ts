@@ -98,7 +98,7 @@ export function runSetup(args: string[], io: OpsIo, env: Record<string, string |
     }
   }
   if (domain === undefined || domain === '') {
-    io.err('setup: set MAIL_DOMAIN or pass --domain — generating records for a placeholder domain helps nobody.');
+    io.err('setup: set MAIL_DOMAIN or pass --domain: generating records for a placeholder domain helps nobody.');
     return 2;
   }
   const host = mailHost ?? domain;
@@ -111,7 +111,7 @@ export function runSetup(args: string[], io: OpsIo, env: Record<string, string |
   // `dkim-<selector>.key`, so a value like `../../etc/foo` would steer the writeFileSync location.
   // Constrain it to DNS-label characters (dot-separated), which also forbids `/` and `..`.
   if (!/^[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?(\.[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?)*$/.test(selector)) {
-    io.err(`setup: invalid DKIM selector ${JSON.stringify(selector)} — use DNS-label characters (letters, digits, hyphen; dot-separated).`);
+    io.err(`setup: invalid DKIM selector ${JSON.stringify(selector)}: use DNS-label characters (letters, digits, hyphen; dot-separated).`);
     return 2;
   }
   const keyPath = env.MAIL_DKIM_KEY ?? `dkim-${selector}.key`;
@@ -130,7 +130,7 @@ export function runSetup(args: string[], io: OpsIo, env: Record<string, string |
     return 2;
   }
   if (!key.generated && ed25519 && dkim.keyType !== 'ed25519') {
-    io.err(`setup: note — an existing ${dkim.keyType} key at ${keyPath} takes precedence over --ed25519 (a key is never overwritten).`);
+    io.err(`setup: note, an existing ${dkim.keyType} key at ${keyPath} takes precedence over --ed25519 (a key is never overwritten).`);
   }
 
   // -- the plan ------------------------------------------------------------------

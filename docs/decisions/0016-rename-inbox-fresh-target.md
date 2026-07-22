@@ -1,4 +1,4 @@
-# 0016 — Renaming INBOX produces a fresh mailbox
+# 0016. Renaming INBOX produces a fresh mailbox
 
 ## Status
 
@@ -9,8 +9,8 @@ and adds the catalog-level differential test whose absence let it through.
 
 RFC 9051 §6.3.5 makes renaming INBOX special: INBOX cannot truly be renamed, so its messages
 are *moved* into a newly-created target mailbox and INBOX itself stays, emptied. The project
-has two catalog implementations that must be observably identical — `MemoryCatalog` (the
-reference / differential-test oracle) and `SqliteCatalog` (production) — but they had drifted on
+has two catalog implementations that must be observably identical: `MemoryCatalog` (the
+reference / differential-test oracle) and `SqliteCatalog` (production). But they had drifted on
 exactly what "move INBOX's messages into a new mailbox" means, and there was **no catalog-level
 differential test** to catch it (the existing differential harness only exercised per-mailbox
 operations, never RENAME). That gap is how two INBOX-rename bugs reached production while the
@@ -19,7 +19,7 @@ suite stayed green:
 - The first bug: the source INBOX kept an unchanged HIGHESTMODSEQ and empty expunge log after the
   move, so a QRESYNC client was told "nothing changed" while every cached message had moved out.
 - A second, subtler bug: production **moved INBOX's whole expunge log onto the new target**, so a
-  *second* consecutive INBOX rename stranded the tombstones the first rename created — INBOX
+  *second* consecutive INBOX rename stranded the tombstones the first rename created. INBOX
   again told a client nothing had vanished, the same desync one level deeper.
 
 The first was fixed earlier; the second, and the underlying divergence (production *reparented*
@@ -30,7 +30,7 @@ mailbox), are addressed here.
 
 ### The target is a brand-new mailbox
 
-Renaming INBOX creates a target that looks new, because it *is* new — the reference model's
+Renaming INBOX creates a target that looks new, because it *is* new. The reference model's
 behavior is the decided semantics, and production now conforms to it:
 
 - **UIDs reassigned from 1**, in arrival order. The target never existed before the rename, so
@@ -40,8 +40,8 @@ behavior is the decided semantics, and production now conforms to it:
   so the RFC 7162 §3.1.2.1 invariant HIGHESTMODSEQ ≥ every message's MODSEQ holds by
   construction, satisfied by renumbering rather than by carrying INBOX's
   value.
-- **Empty expunge log.** Nothing has been expunged *from* the target — its messages are all
-  live — so it carries no tombstones. INBOX's tombstones stay on INBOX.
+- **Empty expunge log.** Nothing has been expunged *from* the target (its messages are all
+  live), so it carries no tombstones. INBOX's tombstones stay on INBOX.
 
 ### INBOX keeps its identity and its whole vanished history
 
@@ -68,7 +68,7 @@ Keeping the moved messages' original UIDs and carrying INBOX's high mod-sequence
 (production's former behavior) is also internally consistent *if* the expunge log is not
 migrated. It was rejected because it makes a "new" mailbox present old UIDs and a large,
 discontinuous mod-sequence for no benefit, and because conforming production to the simpler
-reference — rather than the reverse — keeps the reference model the single definition of correct
+reference (rather than the reverse) keeps the reference model the single definition of correct
 behavior.
 
 ## Consequences
@@ -77,8 +77,8 @@ behavior.
   of consecutive INBOX renames each report VANISHED correctly.
 - A new **catalog-level differential harness** (`catalog-parity.test.ts`) serialises every
   mailbox after a nasty CREATE/DELETE/RENAME sequence (including the double INBOX rename) and
-  asserts `SqliteCatalog` and `MemoryCatalog` are byte-for-byte identical — the oracle this class
+  asserts `SqliteCatalog` and `MemoryCatalog` are byte-for-byte identical: the oracle this class
   of bug slipped through for want of. RENAME parity is now covered, not assumed.
 - Production's INBOX-rename does more work (rebuild instead of reparent), but it runs once per
-  RENAME INBOX — a rare operator/client action — inside the existing single transaction.
+  RENAME INBOX (a rare operator/client action) inside the existing single transaction.
 - Revisitable with a stated reason, like every ADR.

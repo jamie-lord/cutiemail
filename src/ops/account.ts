@@ -69,24 +69,24 @@ function runAlias(args: readonly string[], io: OpsIo, registry: AccountRegistry,
         return 2;
       }
       if (local.includes('@')) {
-        io.err(`alias add: give the local-part only (e.g. sales), not the full address — the domain is the server's MAIL_DOMAIN.`);
+        io.err(`alias add: give the local-part only (e.g. sales), not the full address: the domain is the server's MAIL_DOMAIN.`);
         return 2;
       }
       if (!validLogin(local)) {
-        io.err(`alias add: "${local}" is not a valid address local-part — letters/digits then letters/digits/._- (no '+', which is reserved for subaddressing).`);
+        io.err(`alias add: "${local}" is not a valid address local-part: letters/digits then letters/digits/._- (no '+', which is reserved for subaddressing).`);
         return 2;
       }
       if (registry.lookup(login) === undefined) {
-        io.err(`alias add: no account "${login}" in ${dbPath} — create it first with \`account add ${login}\` (or point --db/MAIL_CONTROL_DB at the right control database).`);
+        io.err(`alias add: no account "${login}" in ${dbPath}: create it first with \`account add ${login}\` (or point --db/MAIL_CONTROL_DB at the right control database).`);
         return 1;
       }
       const taken = registry.nameTaken(local);
       if (taken !== undefined) {
-        io.err(`alias add: "${local}" is already a ${taken} — an address resolves to one account.`);
+        io.err(`alias add: "${local}" is already a ${taken}: an address resolves to one account.`);
         return 1;
       }
       registry.addAlias(local, login);
-      io.out(`alias ${local.toLowerCase()} -> ${login} added. The running daemon delivers to it immediately — no restart.`);
+      io.out(`alias ${local.toLowerCase()} -> ${login} added. The running daemon delivers to it immediately, no restart.`);
       return 0;
     }
     case 'remove': {
@@ -129,15 +129,15 @@ function runAppPassword(args: readonly string[], io: OpsIo, registry: AccountReg
         return 2;
       }
       if (!validLogin(name)) {
-        io.err(`app-password add: "${name}" is not a valid name — letters/digits then letters/digits/._- (max 64).`);
+        io.err(`app-password add: "${name}" is not a valid name: letters/digits then letters/digits/._- (max 64).`);
         return 2;
       }
       if (registry.lookup(login) === undefined) {
-        io.err(`app-password add: no account "${login}" in ${dbPath} — create it first with \`account add ${login}\` (or point --db/MAIL_CONTROL_DB at the right control database).`);
+        io.err(`app-password add: no account "${login}" in ${dbPath}: create it first with \`account add ${login}\` (or point --db/MAIL_CONTROL_DB at the right control database).`);
         return 1;
       }
       if (registry.appPasswordNameTaken(login, name)) {
-        io.err(`app-password add: "${login}" already has an app password named "${name}" — remove it first or pick another name.`);
+        io.err(`app-password add: "${login}" already has an app password named "${name}": remove it first or pick another name.`);
         return 1;
       }
       // The registry generates the secret, stores only its SCRAM material, and hands the
@@ -147,7 +147,7 @@ function runAppPassword(args: readonly string[], io: OpsIo, registry: AccountReg
       io.out('');
       io.out(`    ${secret}`);
       io.out('');
-      io.out('Shown ONCE and unrecoverable — copy it now. The primary password still works everywhere;');
+      io.out('Shown ONCE and unrecoverable: copy it now. The primary password still works everywhere;');
       io.out(`revoke just this one any time with \`account app-password remove ${login} ${name}\` (honoured live).`);
       return 0;
     }
@@ -160,7 +160,7 @@ function runAppPassword(args: readonly string[], io: OpsIo, registry: AccountReg
         io.err(`app-password remove: no app password "${name}" for "${login}".`);
         return 1;
       }
-      io.out(`app password "${name}" for ${login} revoked — it no longer authenticates.`);
+      io.out(`app password "${name}" for ${login} revoked; it no longer authenticates.`);
       return 0;
     }
     case 'list': {
@@ -274,7 +274,7 @@ export const MIN_PASSWORD_LENGTH = 8;
 /** Null if `password` satisfies the policy; otherwise a one-line reason to show the operator. */
 export function passwordPolicyError(password: string): string | null {
   if (password.length < MIN_PASSWORD_LENGTH) {
-    return `password too short — use at least ${MIN_PASSWORD_LENGTH} characters (nothing was changed).`;
+    return `password too short: use at least ${MIN_PASSWORD_LENGTH} characters (nothing was changed).`;
   }
   return null;
 }
@@ -307,7 +307,7 @@ export async function runAccount(
   // 'list' takes no login; 'alias'/'app-password' parse their own sub-arguments.
   const needsLogin = verb !== 'list' && verb !== 'alias' && verb !== 'app-password';
   if (needsLogin && (login === undefined || !validLogin(login))) {
-    io.err(`account ${verb}: a login is required — letters/digits then letters/digits/._- (max 64); it names the mailbox database file.`);
+    io.err(`account ${verb}: a login is required: letters/digits then letters/digits/._- (max 64); it names the mailbox database file.`);
     return 2;
   }
 
@@ -321,13 +321,13 @@ export async function runAccount(
         return runAppPassword(positional.slice(1), io, registry, dbPath);
       case 'add': {
         if (registry.lookup(login!) !== undefined) {
-          io.err(`account add: ${login} already exists — use set-password to change its password.`);
+          io.err(`account add: ${login} already exists: use set-password to change its password.`);
           return 1;
         }
         // A login and an alias share one namespace — an address resolves to one account
         // (ADR 0014). Refuse a login that an alias already claims.
         if (registry.nameTaken(login!) === 'alias') {
-          io.err(`account add: "${login}" is already an alias — remove it first (\`account alias remove ${login}\`) or pick another login.`);
+          io.err(`account add: "${login}" is already an alias: remove it first (\`account alias remove ${login}\`) or pick another login.`);
           return 1;
         }
         // Reject a login that case-folds to an existing one: it maps to the same
@@ -337,12 +337,12 @@ export async function runAccount(
         const lc = login!.toLowerCase();
         const clash = registry.list().find((a) => a.login.toLowerCase() === lc);
         if (clash !== undefined) {
-          io.err(`account add: ${login} collides with existing account "${clash.login}" (case-insensitive) — logins must be unique regardless of case.`);
+          io.err(`account add: ${login} collides with existing account "${clash.login}" (case-insensitive): logins must be unique regardless of case.`);
           return 1;
         }
         const password = await readNewPassword(source);
         if (password === null) {
-          io.err('account add: empty password or the two entries did not match — nothing created.');
+          io.err('account add: empty password or the two entries did not match; nothing created.');
           return 1;
         }
         const addPolicyErr = passwordPolicyError(password);
@@ -353,18 +353,18 @@ export async function runAccount(
         const mailDbPath = dbPath === ':memory:' ? ':memory:' : join(dirname(dbPath), `mail-${login}.db`);
         registry.upsert(login!, password, mailDbPath);
         io.out(`account ${login} created (mailbox database: ${mailDbPath}).`);
-        io.out('The running daemon picks this up immediately — no restart needed.');
+        io.out('The running daemon picks this up immediately, no restart needed.');
         return 0;
       }
       case 'set-password': {
         const existing = registry.lookup(login!);
         if (existing === undefined) {
-          io.err(`account set-password: ${login} does not exist in ${dbPath} — use add (or point --db/MAIL_CONTROL_DB at the right control database).`);
+          io.err(`account set-password: ${login} does not exist in ${dbPath}: use add (or point --db/MAIL_CONTROL_DB at the right control database).`);
           return 1;
         }
         const password = await readNewPassword(source);
         if (password === null) {
-          io.err('account set-password: empty password or the two entries did not match — unchanged.');
+          io.err('account set-password: empty password or the two entries did not match; unchanged.');
           return 1;
         }
         const setPolicyErr = passwordPolicyError(password);
@@ -389,7 +389,7 @@ export async function runAccount(
       }
       case 'list': {
         const rows = registry.list();
-        if (rows.length === 0) io.out(`no accounts in ${dbPath} — create one with \`account add <login>\` (a different --db/MAIL_CONTROL_DB may hold the ones you expect).`);
+        if (rows.length === 0) io.out(`no accounts in ${dbPath}: create one with \`account add <login>\` (a different --db/MAIL_CONTROL_DB may hold the ones you expect).`);
         for (const r of rows) {
           const aliases = registry.aliasesFor(r.login);
           const aliasSuffix = aliases.length > 0 ? `  aliases: ${aliases.join(', ')}` : '';
@@ -405,7 +405,7 @@ export async function runAccount(
           // row would discard the credentials while mail-<login>.db kept the mail — a
           // half-destruction pretending to be clean. Surface the recipe instead.
           io.err('account has no remove verb, deliberately: deleting the registry row would strand the mailbox database with all its mail.');
-          io.err(`To decommission an account: \`account disable ${login ?? '<login>'}\` (refuses auth + delivery, keeps the mail), then — only if you truly want the mail gone — delete its mail-<login>.db file yourself.`);
+          io.err(`To decommission an account: \`account disable ${login ?? '<login>'}\` (refuses auth + delivery, keeps the mail), then, only if you truly want the mail gone, delete its mail-<login>.db file yourself.`);
           return 2;
         }
         io.err(`account: unknown verb ${verb}`);

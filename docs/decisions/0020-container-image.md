@@ -1,4 +1,4 @@
-# 0020 — a container image (Dockerfile + compose)
+# 0020. A container image (Dockerfile + compose)
 
 ## Status
 
@@ -11,17 +11,17 @@ omission is a recorded decision" promise.
 ## Context
 
 The bare-metal path (systemd unit, `setcap` for privileged ports, run-as-`mail`-user) is the
-documented one, and it is genuinely good — but it assumes the operator is comfortable on a
-Linux host with systemd. A large slice of self-hosters instead run a Synology/Unraid box or a
+documented one, and it is good. But it assumes the operator is comfortable on a
+Linux host with systemd. A large share of self-hosters instead run a Synology/Unraid box or a
 docker-compose stack and expect a container.
 
 The project is, by construction, almost perfectly container-shaped already:
 
-- **zero runtime dependencies and no build step** — the image is "Node runtime + `src/`", with
+- **zero runtime dependencies and no build step**: the image is "Node runtime + `src/`", with
   no `npm install`, no compile stage, no multi-stage juggling;
-- **configured entirely by environment** — the exact model a container wants;
-- **all state in one directory** (the control DB + per-user mailbox files) — one volume mount;
-- **clean SIGTERM shutdown** — `docker stop` is graceful.
+- **configured entirely by environment**: the exact model a container wants;
+- **all state in one directory** (the control DB + per-user mailbox files): one volume mount;
+- **clean SIGTERM shutdown**: `docker stop` is graceful.
 
 So the cost of providing it is a ~20-line Dockerfile and a compose file, and the cost of *not*
 providing it is turning away an entire deployment audience over nothing.
@@ -39,7 +39,7 @@ Ship a minimal `Dockerfile`, `docker-compose.yml`, and `.dockerignore` at the re
   **real certificate is required** for the public bind, because the daemon refuses to serve the
   bundled dev cert off loopback (its public private key). No hidden default makes an insecure
   bind quietly work.
-- `docker compose exec mail node src/main.ts <command>` is the account/setup/queue surface —
+- `docker compose exec mail node src/main.ts <command>` is the account/setup/queue surface,
   the same single entry point as everywhere else.
 
 ```mermaid
@@ -57,7 +57,7 @@ flowchart LR
 ## What was deliberately not built
 
 - **No bundled TLS automation (ACME sidecar).** Cert provisioning stays the operator's job
-  (mount a cert), consistent with [ADR 0013](0013-no-http-listener.md) — the daemon speaks no
+  (mount a cert), consistent with [ADR 0013](0013-no-http-listener.md). The daemon speaks no
   HTTP, so it cannot answer an ACME HTTP-01 challenge itself. Built-in ACME remains a recorded
   backlog candidate, not a container-specific one.
 - **No published image on a registry (yet).** The Dockerfile builds locally from source, which
@@ -69,6 +69,6 @@ flowchart LR
 ## Verification
 
 The image is source-plus-runtime with no build step, so its correctness is the daemon's own
-(the full suite). The compose file is exercised by hand — `docker compose up`, `selftest`, a
-submission — and the security-critical property (dev cert refused on a public bind) is already
+(the full suite). The compose file is exercised by hand (`docker compose up`, `selftest`, a
+submission), and the security-critical property (dev cert refused on a public bind) is already
 pinned by `main-config.test.ts` and holds identically inside the container.

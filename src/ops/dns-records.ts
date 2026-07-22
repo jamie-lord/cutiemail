@@ -51,7 +51,7 @@ export function dnsRecordsFor(p: DnsPlanParams): readonly DnsRecord[] {
       name: p.mailHost,
       type: isV6(ip) ? 'AAAA' : 'A',
       value: ip,
-      comment: 'the machine itself — where clients and other mail servers connect',
+      comment: 'the machine itself: where clients and other mail servers connect',
     });
   }
   records.push({
@@ -74,7 +74,7 @@ export function dnsRecordsFor(p: DnsPlanParams): readonly DnsRecord[] {
     name: `${p.dkim.selector}._domainkey.${p.domain}`,
     type: 'TXT',
     value: p.dkim.txtValue,
-    comment: 'DKIM public key — verifiers fetch this to check our signatures',
+    comment: 'DKIM public key: verifiers fetch this to check our signatures',
   });
   records.push({
     name: `_dmarc.${p.domain}`,
@@ -129,10 +129,10 @@ export function mtaStsSection(p: DnsPlanParams): string {
   const policy = mtaStsPolicy(p.mailHost);
   const id = createHash('sha256').update(policy, 'utf8').digest('hex').slice(0, 12);
   return [
-    '; OPTIONAL — inbound MTA-STS (RFC 8461): lets senders that honour MTA-STS (Gmail does)',
+    '; OPTIONAL, inbound MTA-STS (RFC 8461): lets senders that honour MTA-STS (Gmail does)',
     `; refuse to deliver mail for @${p.domain} over anything but validated TLS to your MX.`,
     `; Host this exact file at https://mta-sts.${p.domain}/.well-known/mta-sts.txt`,
-    '; (any HTTPS static host works — this server deliberately speaks no HTTP, ADR 0013):',
+    '; (any HTTPS static host works: this server deliberately speaks no HTTP, ADR 0013):',
     ';',
     ...policy.trimEnd().split('\n').map((l) => `;   ${l}`),
     ';',

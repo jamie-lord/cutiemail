@@ -1,4 +1,4 @@
-# 0012 — Accounts are provisioned by CLI; env vars seed create-only
+# 0012. Accounts are provisioned by CLI; env vars seed create-only
 
 ## Status
 
@@ -8,7 +8,7 @@ StoredKey/ServerKey, and this closes the hole that undermined it.
 ## Context
 
 Since ADR 0009 the control database's account registry stores only SCRAM
-StoredKey/ServerKey — never a password. But accounts were *provisioned* by
+StoredKey/ServerKey, never a password. But accounts were *provisioned* by
 re-feeding plaintext passwords through `MAIL_USER`/`MAIL_PASS`/`MAIL_ACCOUNTS` on
 every boot, which means:
 
@@ -24,7 +24,7 @@ The careful key-derivation design was only as strong as its weakest input path.
 
 1. **`node src/main.ts account add|set-password|enable|disable|list`** writes the
    registry directly. Passwords are read from a hidden prompt (twice, must match)
-   or one line of stdin when piped — never from argv, which is world-readable via
+   or one line of stdin when piped, never from argv, which is world-readable via
    `ps`. The daemon consults the registry per auth/delivery operation, so changes
    apply live with no restart (the WAL journal keeps the CLI writer and the
    daemon's readers out of each other's way).
@@ -32,10 +32,10 @@ The careful key-derivation design was only as strong as its weakest input path.
    created (dev ergonomics: `npm start` still works out of the box, and a first
    deploy can bootstrap the primary account from the unit file). If it exists, the
    registry wins: a differing env password is **ignored with a logged warning**
-   naming the fix (`account set-password`). A matching env password logs nothing —
+   naming the fix (`account set-password`). A matching env password logs nothing:
    no false alarm on every boot.
 3. **There is deliberately no `remove` verb.** Deleting the registry row would
-   discard only the salt/keys while the user's `mail-<login>.db` remained on disk —
+   discard only the salt/keys while the user's `mail-<login>.db` remained on disk,
    a half-destruction that looks clean. `disable` refuses auth and inbound
    delivery, destroys nothing, and reverses cleanly; actually deleting a user's
    mail is an explicit `rm` of their database file, not something a management
@@ -50,7 +50,7 @@ The careful key-derivation design was only as strong as its weakest input path.
   recommended flow is `account add` per user, with the env vars reserved for dev
   and first-boot bootstrap.
 - Operators who previously rotated passwords by editing `MAIL_PASS` and
-  restarting will see a warning telling them the env password is now ignored —
+  restarting will see a warning telling them the env password is now ignored:
   the behaviour change is visible, not silent.
 - Verified end-to-end: an account added by CLI while the daemon is running
   authenticates over IMAPS immediately, with no restart and no password
@@ -63,5 +63,5 @@ first-run-only command that creates the primary account from a hidden prompt
 (refusing once any account exists) and prints a unit with no password in it. To
 catch a lingering plaintext seed, both `doctor` and the daemon at startup now warn
 when `MAIL_PASS`/`MAIL_ACCOUNTS` are set but the account already exists (the seed is
-redundant) — turning point 2's "reserve env for bootstrap" from advice into a
+redundant), turning point 2's "reserve env for bootstrap" from advice into a
 visible nudge.

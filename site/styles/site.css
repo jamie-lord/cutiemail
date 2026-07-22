@@ -1,6 +1,6 @@
-/* cutiemail — brand: precise, honest, adorable.
+/* cutiemail brand: precise, honest, adorable.
    Sticker-flat shapes, thick ink-plum borders, hard offset shadows (never blurred).
-   A single warm world (light only) — the brand commits to it deliberately. */
+   A single warm world (light only). The brand commits to it deliberately. */
 
 :root {
   /* palette (from the brand sheet) */
@@ -249,7 +249,7 @@ a.term-pill:active { box-shadow: 0 0 0 var(--bubblegum); transform: translate(4p
 .header-anchor { text-decoration: none; color: var(--dash); padding-left: 8px; opacity: 0; }
 .prose :is(h2, h3, h4):hover .header-anchor { opacity: 1; }
 
-/* code blocks — the ink-plum terminal aesthetic */
+/* code blocks: the ink-plum terminal aesthetic */
 .prose pre {
   background: var(--ink); color: var(--term-text);
   border-radius: 14px; padding: 18px 20px; overflow-x: auto;

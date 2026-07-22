@@ -83,7 +83,7 @@ export async function doctorChecks(p: DoctorParams, deps: DoctorDeps): Promise<C
   try {
     const mxs = await deps.mx(p.domain);
     const hit = mxs.find((m) => stripDot(m.exchange) === stripDot(p.mailHost));
-    if (mxs.length === 0) push('mx', 'fail', `no MX record for ${p.domain} — senders cannot find this server`);
+    if (mxs.length === 0) push('mx', 'fail', `no MX record for ${p.domain}: senders cannot find this server`);
     else if (hit === undefined) push('mx', 'fail', `MX for ${p.domain} points at ${mxs.map((m) => m.exchange).join(', ')}, not ${p.mailHost}`);
     else push('mx', 'ok', `${p.domain} MX ${hit.priority} ${stripDot(hit.exchange)}`);
   } catch (e) {
@@ -112,7 +112,7 @@ export async function doctorChecks(p: DoctorParams, deps: DoctorDeps): Promise<C
       }
     }
     if (bad.length === 0) push('fcrdns', 'ok', `every address reverse-resolves to ${p.mailHost}`);
-    else push('fcrdns', 'fail', `reverse DNS does not confirm this host: ${bad.join('; ')} — set the PTR at your provider`);
+    else push('fcrdns', 'fail', `reverse DNS does not confirm this host: ${bad.join('; ')}: set the PTR at your provider`);
   }
 
   // -- spf (evaluated by the real RFC 7208 evaluator, per address) --------------
@@ -137,12 +137,12 @@ export async function doctorChecks(p: DoctorParams, deps: DoctorDeps): Promise<C
     }
     if (worst === 'ok') push('spf', 'ok', `SPF authorises this host (${verdicts.join('; ')})`);
     else if (worst === 'warn') push('spf', 'warn', `SPF could not be evaluated right now (${verdicts.join('; ')})`);
-    else push('spf', 'fail', `published SPF does not authorise this host (${verdicts.join('; ')}) — re-run setup and compare`);
+    else push('spf', 'fail', `published SPF does not authorise this host (${verdicts.join('; ')}): re-run setup and compare`);
   }
 
   // -- dkim ---------------------------------------------------------------------
   if (p.dkim === undefined) {
-    push('dkim', 'warn', 'DKIM not configured (MAIL_DKIM_KEY/MAIL_DKIM_SELECTOR) — outbound mail relies on SPF alone and will be spam-foldered by big receivers');
+    push('dkim', 'warn', 'DKIM not configured (MAIL_DKIM_KEY/MAIL_DKIM_SELECTOR): outbound mail relies on SPF alone and will be spam-foldered by big receivers');
   } else {
     const name = `${p.dkim.selector}._domainkey.${p.domain}`;
     try {
@@ -150,12 +150,12 @@ export async function doctorChecks(p: DoctorParams, deps: DoctorDeps): Promise<C
       const records = await deps.txt(name);
       const published = records.find((r) => r.includes('p='));
       if (published === undefined) {
-        push('dkim', 'fail', `no DKIM key published at ${name} — run setup and publish the TXT record`);
+        push('dkim', 'fail', `no DKIM key published at ${name}: run setup and publish the TXT record`);
       } else {
         const parsed = parseDkimKeyRecord(Buffer.from(published, 'latin1'));
         const localP = parseDkimKeyRecord(Buffer.from(local.txtValue, 'latin1')).publicKey;
         if (!parsed.valid) push('dkim', 'fail', `the record at ${name} is not usable (${parsed.anomalies.join(', ') || 'malformed'})`);
-        else if (parsed.publicKey !== localP) push('dkim', 'fail', `the key published at ${name} is NOT this server's key — signatures will not verify`);
+        else if (parsed.publicKey !== localP) push('dkim', 'fail', `the key published at ${name} is NOT this server's key: signatures will not verify`);
         else push('dkim', 'ok', `published key at ${name} matches the local private key (${local.keyType})`);
       }
     } catch (e) {
@@ -168,7 +168,7 @@ export async function doctorChecks(p: DoctorParams, deps: DoctorDeps): Promise<C
     const records = await deps.txt(`_dmarc.${p.domain}`);
     const rec = records.find((r) => r.trim().toLowerCase().startsWith('v=dmarc1'));
     if (rec === undefined) {
-      push('dmarc', 'fail', `no DMARC record at _dmarc.${p.domain} — big receivers now expect one; run setup`);
+      push('dmarc', 'fail', `no DMARC record at _dmarc.${p.domain}: big receivers now expect one; run setup`);
     } else {
       const parsed = parseDmarcRecord(Buffer.from(rec, 'latin1'));
       if (!parsed.valid) push('dmarc', 'fail', `the DMARC record does not parse: ${rec}`);
@@ -180,7 +180,7 @@ export async function doctorChecks(p: DoctorParams, deps: DoctorDeps): Promise<C
 
   // -- tls --------------------------------------------------------------------------
   if (p.tls === undefined) {
-    push('tls', 'warn', 'no MAIL_TLS_CERT/MAIL_TLS_KEY configured — the daemon would fall back to the bundled self-signed dev certificate');
+    push('tls', 'warn', 'no MAIL_TLS_CERT/MAIL_TLS_KEY configured: the daemon would fall back to the bundled self-signed dev certificate');
   } else {
     try {
       const cert = new X509Certificate(p.tls.certPem);
@@ -190,8 +190,8 @@ export async function doctorChecks(p: DoctorParams, deps: DoctorDeps): Promise<C
       const keyMatches = p.tls.keyPem === undefined ? true : cert.checkPrivateKey(createPrivateKey(p.tls.keyPem));
       if (days < 0) push('tls', 'fail', `certificate EXPIRED ${-days} day(s) ago (${cert.validTo})`);
       else if (!covers) push('tls', 'fail', `certificate does not cover ${p.mailHost} (subject: ${cert.subject.replace(/\n/g, ' ')})`);
-      else if (!keyMatches) push('tls', 'fail', 'certificate does not match the configured private key — check the cert/key paths');
-      else if (days <= 21) push('tls', 'warn', `certificate expires in ${days} day(s) (${cert.validTo}) — renew soon; is the renewal automated?`);
+      else if (!keyMatches) push('tls', 'fail', 'certificate does not match the configured private key: check the cert/key paths');
+      else if (days <= 21) push('tls', 'warn', `certificate expires in ${days} day(s) (${cert.validTo}): renew soon; is the renewal automated?`);
       else push('tls', 'ok', `certificate covers ${p.mailHost}, valid ${days} more days (${cert.validTo})`);
     } catch (e) {
       push('tls', 'fail', `cannot read the certificate: ${String(e)}`);
@@ -205,7 +205,7 @@ export async function doctorChecks(p: DoctorParams, deps: DoctorDeps): Promise<C
     try {
       const mxs = await deps.mx(p.probeDomain);
       if (mxs.length === 0) {
-        push('dial-25', 'warn', `probe domain ${p.probeDomain} has no MX — cannot test outbound 25`);
+        push('dial-25', 'warn', `probe domain ${p.probeDomain} has no MX: cannot test outbound 25`);
       } else {
         const target = stripDot([...mxs].sort((a, b) => a.priority - b.priority)[0]!.exchange);
         const greeting = await deps.dial25(target);
@@ -213,7 +213,7 @@ export async function doctorChecks(p: DoctorParams, deps: DoctorDeps): Promise<C
         else push('dial-25', 'warn', `${target} answered but not with a 220 greeting: ${greeting.slice(0, 60)}`);
       }
     } catch (e) {
-      push('dial-25', 'fail', `cannot reach a real MX on port 25 (${String(e)}) — most VPS providers block outbound 25 until you ask; without it this server cannot SEND mail`);
+      push('dial-25', 'fail', `cannot reach a real MX on port 25 (${String(e)}): most VPS providers block outbound 25 until you ask; without it this server cannot SEND mail`);
     }
   }
 
@@ -226,11 +226,11 @@ export async function doctorChecks(p: DoctorParams, deps: DoctorDeps): Promise<C
       push('age', 'skip', `RDAP for ${registrable} has no registration event`);
     } else {
       const ageDays = daysUntil(deps.now(), Date.parse(reg));
-      if (ageDays < 30) push('age', 'warn', `${registrable} was registered only ${ageDays} day(s) ago — young domains are spam-foldered while they build reputation`);
+      if (ageDays < 30) push('age', 'warn', `${registrable} was registered only ${ageDays} day(s) ago: young domains are spam-foldered while they build reputation`);
       else push('age', 'ok', `${registrable} registered ${reg.slice(0, 10)} (${ageDays} days ago)`);
     }
   } catch {
-    push('age', 'skip', `RDAP unavailable for ${registrable} — domain age not checked`);
+    push('age', 'skip', `RDAP unavailable for ${registrable}: domain age not checked`);
   }
 
   return results;
@@ -356,7 +356,7 @@ export async function runDoctor(args: string[], io: OpsIo, env: Record<string, s
   if (domain === 'mail.example.com') {
     // The daemon's placeholder default: it has no real DNS, so every check below would fail
     // in a way that looks like a broken deployment rather than an unset variable. Say which.
-    io.err('doctor: MAIL_DOMAIN is still the placeholder default "mail.example.com", which has no real DNS — set MAIL_DOMAIN (or pass --domain <your-domain>) to check your actual deployment.');
+    io.err('doctor: MAIL_DOMAIN is still the placeholder default "mail.example.com", which has no real DNS: set MAIL_DOMAIN (or pass --domain <your-domain>) to check your actual deployment.');
     return 2;
   }
   const dkimKeyPath = env.MAIL_DKIM_KEY;
@@ -404,6 +404,6 @@ export function envSecretsCheck(env: Record<string, string | undefined>): CheckR
   return [{
     name: 'secrets',
     status: 'warn',
-    detail: `${present.join(' and ')} set in the environment — a plaintext password in the unit file / process environment. Once the account exists it is redundant: rotate with \`account set-password\` and drop it from the unit (the registry is the source of truth).`,
+    detail: `${present.join(' and ')} set in the environment: a plaintext password in the unit file / process environment. Once the account exists it is redundant: rotate with \`account set-password\` and drop it from the unit (the registry is the source of truth).`,
   }];
 }

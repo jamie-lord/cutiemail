@@ -4,7 +4,7 @@
   </defs>
   <!-- hard butter offset shadow (down-right, never blurred) -->
   <rect x="13" y="27" width="150" height="110" rx="22" fill="#ffd166"/>
-  <!-- envelope body (fill only — the outline is painted last) -->
+  <!-- envelope body (fill only; the outline is painted last) -->
   <rect x="6" y="20" width="150" height="110" rx="22" fill="#ffb3c9"/>
   <!-- flap (rotated square, clipped to the body) -->
   <g clip-path="url(#env)">

@@ -44,7 +44,7 @@ const QUEUE_USAGE = [
   '',
   'The live outbound queue (postqueue-style controls):',
   '  list               recipients, attempts so far, and when the next attempt is due',
-  '  retry <id>|--all   make a deferred message due NOW (after fixing the fault) —',
+  '  retry <id>|--all   make a deferred message due NOW (after fixing the fault):',
   '                     the daemon relays it on its next tick, within a minute',
   '  cancel <id>        take a message off the live queue; it is RETAINED in',
   '                     dead-letter (inspect/requeue/purge there), never discarded',
@@ -131,13 +131,13 @@ export function runQueue(args: string[], io: OpsIo, env: Record<string, string |
       // due(∞) = every pending entry regardless of when its next attempt is.
       const entries = queue.due(Number.MAX_SAFE_INTEGER);
       for (const e of entries) io.out(queueLine(e, now));
-      io.out(entries.length === 0 ? 'queue: empty — nothing waiting to go out' : `queue: ${entries.length} message(s) pending`);
+      io.out(entries.length === 0 ? 'queue: empty, nothing waiting to go out' : `queue: ${entries.length} message(s) pending`);
       return 0;
     }
     case 'retry': {
       if (parsed.all) {
         const n = queue.retryAllNow(now);
-        io.out(n === 0 ? 'queue retry: nothing pending.' : `queue retry: ${n} message(s) made due now — the daemon relays them on its next tick (within a minute).`);
+        io.out(n === 0 ? 'queue retry: nothing pending.' : `queue retry: ${n} message(s) made due now: the daemon relays them on its next tick (within a minute).`);
         return 0;
       }
       if (id === undefined) {
@@ -145,10 +145,10 @@ export function runQueue(args: string[], io: OpsIo, env: Record<string, string |
         return 2;
       }
       if (!queue.retryNow(id, now)) {
-        io.err(`queue retry: no pending message with id ${id} (it may have delivered, bounced, or been cancelled — check dead-letter list).`);
+        io.err(`queue retry: no pending message with id ${id} (it may have delivered, bounced, or been cancelled; check dead-letter list).`);
         return 1;
       }
-      io.out(`queue ${id} made due now — the daemon relays it on its next tick (within a minute).`);
+      io.out(`queue ${id} made due now: the daemon relays it on its next tick (within a minute).`);
       return 0;
     }
     case 'cancel': {
@@ -160,7 +160,7 @@ export function runQueue(args: string[], io: OpsIo, env: Record<string, string |
         io.err(`queue cancel: no pending message with id ${id}.`);
         return 1;
       }
-      io.out(`queue ${id} cancelled — retained in dead-letter (inspect with \`dead-letter show ${id}\`; \`dead-letter purge ${id}\` is the only true discard).`);
+      io.out(`queue ${id} cancelled: retained in dead-letter (inspect with \`dead-letter show ${id}\`; \`dead-letter purge ${id}\` is the only true discard).`);
       return 0;
     }
   }
@@ -197,7 +197,7 @@ export function runDeadLetter(
     case 'list': {
       const entries = queue.listDeadLetters();
       for (const e of entries) io.out(deadLetterLine(e, now));
-      io.out(entries.length === 0 ? 'dead-letter: empty — nothing has been given up on' : `dead-letter: ${entries.length} retained message(s)`);
+      io.out(entries.length === 0 ? 'dead-letter: empty, nothing has been given up on' : `dead-letter: ${entries.length} retained message(s)`);
       return 0;
     }
     case 'show': {
@@ -226,7 +226,7 @@ export function runDeadLetter(
       const headers = sep === -1 ? e.data : e.data.subarray(0, sep);
       io.out(sanitizeForTerminal(headers.toString('latin1')));
       io.out('');
-      io.out(`(headers only — full ${e.data.length}-byte message: dead-letter show ${id} --raw)`);
+      io.out(`(headers only, full ${e.data.length}-byte message: dead-letter show ${id} --raw)`);
       return 0;
     }
     case 'requeue': {
@@ -235,7 +235,7 @@ export function runDeadLetter(
         io.err(`dead-letter requeue: no retained message with id ${id}`);
         return 1;
       }
-      io.out(`dead-letter ${id} requeued as ${newId} — the relay loop picks it up on its next tick (within a minute on the daemon).`);
+      io.out(`dead-letter ${id} requeued as ${newId}: the relay loop picks it up on its next tick (within a minute on the daemon).`);
       return 0;
     }
     case 'purge': {

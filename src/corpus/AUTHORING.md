@@ -14,7 +14,7 @@ check a group of related requirements against a live server. This is a contract,
    the reply *class* (2yz/4yz/5yz), not the exact code. A test that asserts `550` where the
    spec permits any `5yz` will fail conforming servers that answer `551` or `553`. When in
    doubt, assert `severity(reply) === 5`, not `reply.code === 550`. The register notes call
-   these landmines out per requirement — read them.
+   these landmines out per requirement. Read them.
 
 3. **A declined SHOULD is not a failure.** §1.3 says every keyword use is a conformance
    requirement, but it does NOT promote SHOULD to MUST. The outcome model enforces this, but
@@ -24,7 +24,7 @@ check a group of related requirements against a live server. This is a contract,
 
 4. **A MAY has no failure state.** If a requirement is MAY, you may only return `satisfied`,
    `observed` (with which branch was taken), or `inconclusive`. Returning `violated` for a
-   MAY throws — by design. If you find yourself wanting to fail a server for a MAY, you have
+   MAY throws, by design. If you find yourself wanting to fail a server for a MAY, you have
    misread the requirement.
 
 5. **Every wire-testable requirement needs a Mutant.** A test that has never been shown to
@@ -44,7 +44,7 @@ corpus invents must be RFC 2606.
 ## Preconditions
 
 If a test needs server-side state (a valid recipient, a reject domain, a quota), declare it
-in `needs.fixture`. The runner yields `inconclusive` — never a false failure — when the run
+in `needs.fixture`. The runner yields `inconclusive` (never a false failure) when the run
 lacks it. Do NOT hardcode an address and hope; a test that assumes `postmaster@` exists
 without declaring the need is a test that lies on a server configured differently.
 
@@ -57,18 +57,18 @@ A test body may only observe (via `Conn`) and return a `Judgement`. It cannot se
 register, decide its own `Outcome`, or reach other tests. Keep bodies small: drive the
 exchange, read the replies, and return one of:
 
-- `{ kind: 'satisfied' }` — the required behaviour was observed.
-- `{ kind: 'violated', detail }` — it was not. (Graded by Level: fatal only for MUST-family.)
-- `{ kind: 'observed', branch }` — a MAY branch was taken; name it.
-- `{ kind: 'inconclusive', reason }` — could not tell (rare; usually the runner handles this).
+- `{ kind: 'satisfied' }`: the required behaviour was observed.
+- `{ kind: 'violated', detail }`: it was not. (Graded by Level: fatal only for MUST-family.)
+- `{ kind: 'observed', branch }`: a MAY branch was taken; name it.
+- `{ kind: 'inconclusive', reason }`: could not tell (rare; usually the runner handles this).
 
 Use `conn.expectQuiet(ms)` for requirements whose violation is *action where there should be
-none* — a reply to an unterminated command line, honouring a bare LF. Silence is the pass.
+none*: a reply to an unterminated command line, honouring a bare LF. Silence is the pass.
 
 ## Evidence
 
 You get evidence for free: the runner captures the full byte transcript and the last reply.
-Make `intent` and `rationale` genuinely useful — they are what a human reads when triaging,
+Make `intent` and `rationale` useful: they are what a human reads when triaging,
 and calibration (task #23) assumes the suite is wrong until the transcript proves otherwise.
 
 ## Module shape
@@ -95,7 +95,7 @@ export const MUTANTS: readonly Mutant[] = [
 ```
 
 Register the module in `src/corpus/index.ts` (add to `ALL_CASES` / `ALL_MUTANTS`). The
-coverage report reads those, so an unregistered module is invisible — which the report will
+coverage report reads those, so an unregistered module is invisible, which the report will
 show as uncovered requirements, not as a pass.
 
 Wire the module's `*.test.ts` to the matching harness (all in `negative-control.ts`):
@@ -104,14 +104,14 @@ Wire the module's `*.test.ts` to the matching harness (all in `negative-control.
 
 ## Three kinds of case, three harnesses
 
-- **MUST / MUST NOT** — a `TestCase` + a `Mutant` in `MUTANTS`, proven by `verifyNegativeControls`
+- **MUST / MUST NOT**: a `TestCase` + a `Mutant` in `MUTANTS`, proven by `verifyNegativeControls`
   (clean → not a finding; defect → non-conformant). The default.
-- **SHOULD / MAY** — a `TestCase` (whose `run` returns `violated` on the decline; the outcome
+- **SHOULD / MAY**: a `TestCase` (whose `run` returns `violated` on the decline; the outcome
   model maps that to `permitted-latitude`, never a finding) + a `LatitudeControl` in `CONTROLS`
   giving the `follows`/`declines` mutant defects, proven by `verifyLatitudeControls`. NEVER give
-  a SHOULD/MAY a negative control — a declined SHOULD is not a violation, so a mutant cannot
+  a SHOULD/MAY a negative control: a declined SHOULD is not a violation, so a mutant cannot
   "catch" it, and `coverage.ts` blocks crediting it that way.
-- **Delivery-path (invisible on the connection)** — dot-un-stuffing, case preservation, trace
+- **Delivery-path (invisible on the connection)**: dot-un-stuffing, case preservation, trace
   insertion, body fidelity. A `TestCase` with `needs: { sink: true }` whose `run` drives a
   transaction and reads `conn.sink` (a `SinkView` of the delivered message), + a `Mutant` whose
   defect corrupts the relayed message, proven by `verifySinkControls`. Inconclusive without a
@@ -120,8 +120,8 @@ Wire the module's `*.test.ts` to the matching harness (all in `negative-control.
 ## alsoProves: one defect, several requirements
 
 When two register entries state the SAME wire behaviour in different sections (e.g. NOOP
-unrecognised violates both §4.5.1-b and §4.3.2-e), add an `alsoProves` array to the mutant —
-each entry a `{ requirement, why }` for a requirement the caught test's exchange genuinely also
+unrecognised violates both §4.5.1-b and §4.3.2-e), add an `alsoProves` array to the mutant:
+each entry a `{ requirement, why }` for a requirement the caught test's exchange also
 demonstrates. It is a DELIBERATE, per-claim credit, NOT automatic: an invariant test bounds each
 `alsoProves` to the caught test's own `requirement`/`alsoTouches`, and `coverage.ts` refuses to
 credit a non-MUST this way (SHOULD/MAY go through latitude). Never use it to paper over a gap.

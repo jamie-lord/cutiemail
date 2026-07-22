@@ -85,7 +85,7 @@ function dialPlain(host: string, port: number, what: string): Promise<net.Socket
   return new Promise((res, rej) => {
     const s = net.connect(port, host);
     s.once('connect', () => res(s));
-    s.once('error', (e: NodeJS.ErrnoException) => rej(e.code === 'ECONNREFUSED' ? new Error(`could not connect to the ${what} at ${host}:${port} — is the daemon running?`) : e));
+    s.once('error', (e: NodeJS.ErrnoException) => rej(e.code === 'ECONNREFUSED' ? new Error(`could not connect to the ${what} at ${host}:${port}, is the daemon running?`) : e));
   });
 }
 
@@ -101,7 +101,7 @@ function dialImaps(host: string, port: number): Promise<tls.TLSSocket> {
   return new Promise((res, rej) => {
     const t = tls.connect({ host, port, rejectUnauthorized: false });
     t.once('secureConnect', () => res(t));
-    t.once('error', (e: NodeJS.ErrnoException) => rej(e.code === 'ECONNREFUSED' ? new Error(`could not connect to IMAPS at ${host}:${port} — is the daemon running?`) : e));
+    t.once('error', (e: NodeJS.ErrnoException) => rej(e.code === 'ECONNREFUSED' ? new Error(`could not connect to IMAPS at ${host}:${port}, is the daemon running?`) : e));
   });
 }
 
@@ -118,7 +118,7 @@ async function submitTagged(host: string, port: number, login: string, password:
     // names the server's domain; a mismatch is the cheap tell, so say it out loud.
     const greetHost = /^220 (\S+)/m.exec(greeting)?.[1];
     if (greetHost !== undefined && greetHost.toLowerCase() !== expectedDomain.toLowerCase()) {
-      warn(`  note: the server greets as "${greetHost}" but this selftest expects "${expectedDomain}" — if that surprises you, you may be talking to a different instance; run selftest with the same MAIL_* environment as the daemon.`);
+      warn(`  note: the server greets as "${greetHost}" but this selftest expects "${expectedDomain}": if that surprises you, you may be talking to a different instance; run selftest with the same MAIL_* environment as the daemon.`);
     }
     send(plain, 'EHLO selftest.local');
     await r.until(/^250[ -]/m);
@@ -178,7 +178,7 @@ async function findAndCleanup(host: string, port: number, login: string, passwor
         await r.until(/^x2b (OK|NO|BAD)/m);
       }
     }
-    if (uids.length === 0) throw new Error('submission was accepted but the message never appeared in INBOX over IMAP — delivery or IMAP read is broken');
+    if (uids.length === 0) throw new Error('submission was accepted but the message never appeared in INBOX over IMAP: delivery or IMAP read is broken');
     // Clean up: mark the tag \Deleted and UID EXPUNGE it, so the self-test leaves nothing behind.
     send(sock, `x4 UID STORE ${uids.join(',')} +FLAGS (\\Deleted)`);
     await r.until(/^x4 (OK|NO|BAD)/m);
@@ -223,7 +223,7 @@ export async function runSelftest(args: readonly string[], io: OpsIo, env: Recor
     await findAndCleanup(connectHost, imapPort, login, pw, subject);
     io.out('  ok   message delivered locally, read back over IMAP, and cleaned up');
     io.out('');
-    io.out('selftest PASSED — authenticated submission, local delivery, and IMAP read-back all work.');
+    io.out('selftest PASSED: authenticated submission, local delivery, and IMAP read-back all work.');
     return 0;
   } catch (e) {
     io.err(`selftest FAILED: ${e instanceof Error ? e.message : String(e)}`);

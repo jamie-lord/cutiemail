@@ -6,7 +6,7 @@
  * homepage is bespoke (site/pages/home.html, built to the brand design). Output goes
  * to site/dist/, which Cloudflare Workers serves as static assets.
  *
- * No framework on purpose — a small, readable build for a small, readable project.
+ * No framework on purpose: a small, readable build for a small, readable project.
  */
 import MarkdownIt from 'markdown-it';
 import anchor from 'markdown-it-anchor';
@@ -30,7 +30,7 @@ const adrEntries = readdirSync(join(REPO, 'docs/decisions'))
     const slug = f.replace(/\.md$/, '');
     // Pull the H1 for a readable title.
     const first = readFileSync(join(REPO, 'docs/decisions', f), 'utf8').split('\n').find((l) => l.startsWith('# '));
-    const title = first ? first.replace(/^#\s+\d+\s*[—-]?\s*/, '').trim() : slug;
+    const title = first ? first.replace(/^#\s+\d+\s*[.:-]?\s*/, '').trim() : slug;
     return { src: `docs/decisions/${f}`, url: `/docs/decisions/${slug}/`, title: `${num} · ${title}` };
   });
 
@@ -183,7 +183,7 @@ function writePage(outUrl, html) {
 
 function buildHome() {
   const body = readFileSync(join(HERE, 'pages/home.html'), 'utf8');
-  const html = `${head('cutiemail — a mail server, built from the byte up', 'The SQLite of email: a tiny, self-contained mail server in TypeScript with zero runtime dependencies — small enough to actually read. Real SMTP send + receive, IMAP4rev2, SPF/DKIM/DMARC, plain-SQLite storage.')}
+  const html = `${head('cutiemail: a mail server, built from the byte up', 'The SQLite of email: a tiny, self-contained mail server in TypeScript with zero runtime dependencies, small enough to actually read. Real SMTP send + receive, IMAP4rev2, SPF/DKIM/DMARC, plain-SQLite storage.')}
 ${nav()}
 <main>${body}</main>
 ${footer()}
@@ -206,7 +206,7 @@ function buildDoc(item) {
 ${content}
 <div class="doc-edit"><a href="${ghLink}">Edit this page on GitHub →</a><span>${esc(item.src)}</span></div>
 </div>`;
-  const html = `${head(`${title} · cutiemail docs`, `cutiemail documentation — ${title}`)}
+  const html = `${head(`${title} · cutiemail docs`, `cutiemail documentation: ${title}`)}
 ${nav()}
 <div class="docs">${sidebar(item.url)}${doc}</div>
 ${footer()}
@@ -222,7 +222,7 @@ function build404() {
 ${nav()}
 <main class="wrap" style="text-align:center;padding:80px 32px;">
   <img src="/assets/mascot.svg" alt="" width="120" style="opacity:.9">
-  <h1 style="font-family:var(--font-display);font-size:40px;margin:20px 0 8px;">404 — nothing delivered here</h1>
+  <h1 style="font-family:var(--font-display);font-size:40px;margin:20px 0 8px;">404: nothing delivered here</h1>
   <p style="color:var(--mauve);font-size:18px;">That address didn't resolve. Try the <a href="/docs/">docs</a> or head <a href="/">home</a>.</p>
 </main>
 ${footer()}

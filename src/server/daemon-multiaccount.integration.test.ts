@@ -43,7 +43,7 @@ async function imapInbox(port: number, user: string, pass: string): Promise<{ ok
       if (re.test(all())) return;
       await delay(5);
     }
-    throw new Error(`timed out waiting for ${re} — got ${all()}`);
+    throw new Error(`timed out waiting for ${re}; got ${all()}`);
   };
   try {
     await waitFor(/\* OK/);

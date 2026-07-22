@@ -96,7 +96,7 @@ test('run against an unreachable target exits 2 and says so — never a false gr
   );
   const r = await runCli(['run', '--config', configPath, '--now', '2026-07-15T00:00:00Z']);
   assert.equal(r.code, 2, `expected exit 2 against a dead target, got ${r.code}\n${r.stdout}\n${r.stderr}`);
-  assert.match(r.stderr, /inconclusive — nothing was verified/i);
+  assert.match(r.stderr, /inconclusive; nothing was verified/i);
   assert.match(r.stderr, /Is the target listening/i);
 });
 

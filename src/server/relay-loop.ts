@@ -116,7 +116,7 @@ export class RelayLoop {
     try {
       results = await this.#relay({ from: entry.from, recipients: entry.recipients, data: entry.data });
     } catch (e) {
-      this.#log(`queue ${entry.id}: relay error — ${String(e)}`);
+      this.#log(`queue ${entry.id}: relay error, ${String(e)}`);
       // relayOutbound is designed not to throw, but if it ever does (bug, OOM), treat it
       // as transient for every recipient so the entry ADVANCES its schedule — backoff and
       // eventually give-up + bounce — instead of retrying every tick forever (a stuck row).
@@ -130,7 +130,7 @@ export class RelayLoop {
     for (const r of results) {
       if (r.classification === 'transient') retryLater.push(r.recipient);
       else {
-        this.#log(sanitizeForTerminalLine(`queue ${entry.id} ${r.recipient}: ${r.ok ? 'sent' : 'bounced'} — ${r.detail}`));
+        this.#log(sanitizeForTerminalLine(`queue ${entry.id} ${r.recipient}: ${r.ok ? 'sent' : 'bounced'}, ${r.detail}`));
         if (!r.ok) permanentFailures.push({ recipient: r.recipient, status: '5.0.0', detail: r.detail });
       }
     }
@@ -155,7 +155,7 @@ export class RelayLoop {
           // next try" — was previously answered by NOTHING: deferrals were rescheduled
           // silently and only the final sent/bounced/gave-up outcomes logged.
           const why = results.find((r) => r.classification === 'transient')?.detail ?? 'transient failure';
-          this.#log(sanitizeForTerminalLine(`queue ${entry.id}: deferred for ${retryLater.length} recipient(s) (attempt ${attempts}) — ${why}; next attempt ${new Date(nextAttempt).toISOString()}`));
+          this.#log(sanitizeForTerminalLine(`queue ${entry.id}: deferred for ${retryLater.length} recipient(s) (attempt ${attempts}), ${why}; next attempt ${new Date(nextAttempt).toISOString()}`));
         } else {
           const gaveUp: BouncedRecipient[] = retryLater.map((recipient) => ({ recipient, status: '5.4.7', detail: `delivery time expired after ${attempts} attempts` }));
           for (const g of gaveUp) this.#log(`queue ${entry.id} ${g.recipient}: bounced (gave up after ${attempts} attempts)`);
@@ -169,7 +169,7 @@ export class RelayLoop {
       // The durable settle failed. Do NOT bounce (it would repeat every tick) and do NOT leave
       // the row due (it would re-send every tick): best-effort defer it. If even this write
       // fails the queue store is unwritable and the row stays due until it recovers.
-      this.#log(`queue ${entry.id}: settle failed — ${String(e)}; deferring to avoid re-send/re-bounce`);
+      this.#log(`queue ${entry.id}: settle failed, ${String(e)}; deferring to avoid re-send/re-bounce`);
       try {
         // Defer everything NOT durably settled: the transient (retryLater) recipients AND the
         // permanent-failure recipients whose bounce has not committed (the bounce is emitted only

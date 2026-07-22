@@ -91,7 +91,7 @@ export function verifyDatabase(path: string): VerifyReport {
     const tables = tableNames(db);
     if (tables.has('mailbox') && tables.has('message')) {
       const beyond = count(db, 'SELECT COUNT(*) c FROM message m JOIN mailbox b ON m.mailbox_id = b.id WHERE m.uid >= b.uid_next');
-      if (beyond > 0) findings.push(`${beyond} message(s) with uid >= their mailbox's uid_next — UID allocation is broken`);
+      if (beyond > 0) findings.push(`${beyond} message(s) with uid >= their mailbox's uid_next: UID allocation is broken`);
       const expBeyond = count(db, 'SELECT COUNT(*) c FROM expunged e JOIN mailbox b ON e.mailbox_id = b.id WHERE e.uid >= b.uid_next');
       if (expBeyond > 0) findings.push(`${expBeyond} expunge-log entry(ies) with uid >= uid_next`);
       const orphanMsg = count(db, 'SELECT COUNT(*) c FROM message WHERE mailbox_id NOT IN (SELECT id FROM mailbox)');
@@ -99,7 +99,7 @@ export function verifyDatabase(path: string): VerifyReport {
       const orphanFlag = count(db, 'SELECT COUNT(*) c FROM flag f WHERE NOT EXISTS (SELECT 1 FROM message m WHERE m.mailbox_id = f.mailbox_id AND m.uid = f.uid)');
       if (orphanFlag > 0) findings.push(`${orphanFlag} flag(s) on a nonexistent message`);
       const both = count(db, 'SELECT COUNT(*) c FROM message m JOIN expunged e ON e.mailbox_id = m.mailbox_id AND e.uid = m.uid');
-      if (both > 0) findings.push(`${both} uid(s) both live and expunged — the partition invariant is violated`);
+      if (both > 0) findings.push(`${both} uid(s) both live and expunged: the partition invariant is violated`);
       return { path, kind: 'mail', findings };
     }
 
@@ -113,7 +113,7 @@ export function verifyDatabase(path: string): VerifyReport {
       }
       if (tables.has('outbound_queue') && tables.has('dead_letter')) {
         const both = count(db, 'SELECT COUNT(*) c FROM outbound_queue q JOIN dead_letter d ON d.id = q.id');
-        if (both > 0) findings.push(`${both} message(s) BOTH queued and dead-lettered — the transactional move is broken`);
+        if (both > 0) findings.push(`${both} message(s) BOTH queued and dead-lettered: the transactional move is broken`);
       }
       for (const table of ['outbound_queue', 'dead_letter']) {
         if (!tables.has(table)) continue;
@@ -132,7 +132,7 @@ export function verifyDatabase(path: string): VerifyReport {
       return { path, kind: 'control', findings };
     }
 
-    return { path, kind: 'unrecognized', findings: ['unrecognized schema — not a cutiemail database'] };
+    return { path, kind: 'unrecognized', findings: ['unrecognized schema: not a cutiemail database'] };
   } finally {
     db.close();
   }
@@ -189,12 +189,12 @@ export function runBackup(args: string[], io: OpsIo, env: Record<string, string 
   for (const { source, label } of sources) {
     const name = basename(source);
     if (usedNames.has(name)) {
-      io.err(`backup: two databases share the file name ${name} — refusing an ambiguous backup.`);
+      io.err(`backup: two databases share the file name ${name}: refusing an ambiguous backup.`);
       return 1;
     }
     usedNames.add(name);
     if (!existsSync(source)) {
-      io.out(`  --    ${label}: ${source} not created yet (no mail) — skipped`);
+      io.out(`  --    ${label}: ${source} not created yet (no mail): skipped`);
       continue;
     }
     const dest = join(destDir, name);
@@ -207,7 +207,7 @@ export function runBackup(args: string[], io: OpsIo, env: Record<string, string 
     io.out(`  ok    ${label}: ${source} -> ${dest}`);
     copied++;
   }
-  io.out(`backup: ${copied} database(s) snapshotted into ${destDir} — now run: node src/main.ts verify ${destDir}`);
+  io.out(`backup: ${copied} database(s) snapshotted into ${destDir}. Now run: node src/main.ts verify ${destDir}`);
   return 0;
 }
 
