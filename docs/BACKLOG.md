@@ -7,6 +7,29 @@ in the ledger below, each with its reason, so a cut is a recorded decision rathe
 gap. For what the server already does and how it's proven, see [TESTING.md](TESTING.md) and
 [the decision records](decisions/0000-about-these-decisions.md).
 
+A test-coverage audit (2026-07-21) worked through ~30 candidate gaps: ~25 became
+reproduce-first, negative-controlled tests (the suite is now 1162 cases) and the rest are
+recorded declines in the ledger below or new decision records (ADRs
+[0021](decisions/0021-imap-mailbox-name-encoding.md),
+[0022](decisions/0022-eai-smtputf8-scope.md),
+[0023](decisions/0023-outbound-delivery-semantics.md)). The correctness / usability / security
+queue is empty again but for the one follow-up below.
+
+## Open: correctness follow-up
+
+### rename-INBOX UIDVALIDITY monotonicity
+
+A plain `CREATE` draws UIDVALIDITY from the catalog's monotonic high-water mark, so a
+recreated name can never reuse a deleted incarnation's `(UIDVALIDITY, UID)` space (RFC 9051
+§6.3.4). The one path that does not is the fresh target a `RENAME INBOX` produces: it is
+seeded with **INBOX's own** UIDVALIDITY (the catalog origin), not a value pulled from the
+counter (ADR 0016 fixed its mod-sequence and expunge-log semantics, not this). So `RENAME
+INBOX A`, `DELETE A`, `RENAME INBOX A` again hands both `A` incarnations the same UIDVALIDITY,
+and a client that cached the first could take the second's UIDs as unchanged. Narrow (it needs
+a rename-onto-a-previously-deleted-name sequence, a rare operator/client action) and scoped for
+a follow-up: draw the rename-INBOX target's UIDVALIDITY from the same monotonic counter, and
+add it to the catalog-parity differential oracle.
+
 ## Open: test-bed completeness
 
 The test suite is the one place where completeness is itself the goal, so these stay listed
@@ -114,6 +137,30 @@ clear the bar. Most of these carry a revisit trigger.
   reasoning (Mox rejects it too).
 - **Milter / plugin hooks / external filter integration.** Anti-mission: the project is
   self-contained and opinionated precisely to avoid integration-point complexity.
+
+**Conformance depth and delivery (weighed in the 2026-07-21 coverage audit):**
+
+- **Full EAI / SMTPUTF8 transmission.** Deferred, recorded as [ADR 0022](decisions/0022-eai-smtputf8-scope.md).
+  The envelope is ASCII-only: submission and inbound reject a non-ASCII `MAIL FROM` / `RCPT TO`
+  with `553 5.6.7` (SMTPUTF8 is not advertised), and the delivery client refuses to transmit an
+  internationalized envelope rather than corrupt it. UTF-8 header/body content already parses;
+  only the envelope is out of scope. **Revisit** if EAI submission is ever actually asked for.
+- **DKIM key-record `h=` permitted-hash enforcement.** Declined: `sha1` is already rejected
+  outright (RFC 8301), so honouring a key record that restricts the hash to a set adds no
+  security over what the algorithm gate already denies.
+- **Concurrent per-domain outbound relay.** Declined. The serial single-flight drain is
+  deliberate: the `stop()` / DB-close safety design depends on there being one in-flight relay,
+  and per-message host attempts are already bounded by the MX list. A concurrency rework
+  (head-of-line elimination) exceeds the mission bar at personal scale; the queue drains fast
+  enough that no message waits on an unrelated slow domain in practice.
+- **Prompt permanent bounce for an IPv6-only destination.** An AAAA-only domain (no A, no MX)
+  is not treated as deliverable, since relay is deliberately IPv4-only (PTR reasons). It stays a
+  **transient** failure (the domain may add an A record) rather than a prompt permanent bounce.
+  A prompt v6-only bounce is left as an operator deliverability-policy call, not a default.
+- **`httpsFetchPolicy` timeout / redirect unit tests.** Declined as not cheaply unit-testable:
+  exercising the timeout and no-redirect paths needs a live TLS server answering under the exact
+  `mta-sts.<domain>` name. The non-200 and oversize-truncation paths *are* tested; the
+  end-to-end enforce-mode delivery is covered by the MTA-STS integration suite.
 
 *Previously open, since resolved (recorded so they aren't re-proposed):* dot-stuffing / DATA
 transparency coverage (ADR 0005's revisit trigger fired; the receiving sink was built),

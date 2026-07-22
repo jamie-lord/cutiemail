@@ -43,7 +43,7 @@ suite covers:
 - [0007](0007-modern-opinionated-scope.md), A modern, opinionated server: the scope cuts, recorded
 - [0008](0008-outbound-client-harness.md), The outbound client harness, and the `wire-client` testability kind
 
-**The mail server (0009 to 0020):** the product decisions: storage, delivery, auth, and operations:
+**The mail server (0009 to 0023):** the product decisions: storage, delivery, auth, and operations:
 
 - [0009](0009-multi-account-per-user-database.md), Multi-account: one SQLite database per user
 - [0010](0010-dmarc-quarantine-to-junk.md), Inbound DMARC enforcement: quarantine to Junk, never hard-reject
@@ -57,3 +57,6 @@ suite covers:
 - [0018](0018-selftest-command.md), `selftest` end-to-end command
 - [0019](0019-outbound-hold-mode.md), `MAIL_OUTBOUND=hold`: the outbound sink mode
 - [0020](0020-container-image.md), A container image (Dockerfile + compose)
+- [0021](0021-imap-mailbox-name-encoding.md), IMAP mailbox names are byte-transparent Net-Unicode (no mUTF-7)
+- [0022](0022-eai-smtputf8-scope.md), EAI / SMTPUTF8: the envelope is ASCII-only, for now
+- [0023](0023-outbound-delivery-semantics.md), Outbound delivery semantics: at-least-once, indeterminate post-DATA, worst-authoritative multi-MX

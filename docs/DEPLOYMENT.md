@@ -728,6 +728,19 @@ sudo -u mail node src/main.ts verify /backups/mail-$(date +%F)   # a backup you 
 boundary: SQLite pages carry no checksums, so a bit flipped inside a message blob on disk
 is invisible to it; media-level assurance is the filesystem's job (ZFS/btrfs/restic).
 
+For an on-demand check of the **live** store (not a snapshot), `doctor --store` runs
+`PRAGMA quick_check` over the control database and every mailbox database it references. It is
+read-only and safe against a running daemon (WAL readers don't block the writer), so it answers
+"are my databases still sound on disk" without a stop:
+
+```sh
+sudo -u mail node src/main.ts doctor --store --db /var/lib/mailserver/control.db
+```
+
+It exits non-zero and prints the offending database if any `quick_check` fails. This is the
+b-tree-structure complement to `verify`'s invariant checks; neither sees a bit flipped inside a
+message blob (that stays the filesystem's job).
+
 A backup is the **complete mail store plus the credential registry, in plaintext SQLite**: the
 SCRAM records aren't reversible to passwords, but message bodies are in the clear. Encrypt it
 before it leaves the box (`age`, `restic`, or your backup tool's own encryption).
@@ -751,11 +764,16 @@ weeks), and getting an *encrypted* copy off the box: a backup that only lives on
 protecting is no backup. A systemd timer + oneshot service does the same job if you prefer it to
 cron.
 
-**Restoring from a backup.** Stop the daemon, copy the snapshot files over the live ones beside
-`MAIL_CONTROL_DB`, restart, and confirm:
+**Restoring from a backup.** Stop the daemon, **delete any stale WAL/SHM sidecars** in the data
+directory, copy the snapshot files over the live ones, restart, and confirm:
 
 ```sh
 sudo systemctl stop mailserver
+# Delete stale sidecars FIRST. A -wal / -shm left by an uncleanly-stopped daemon replays into
+# whatever .db sits beside it on the next open, resurrecting state the snapshot never held. The
+# snapshot is self-contained (VACUUM INTO writes a checkpointed db with no sidecar), so remove
+# them before copying.
+sudo rm -f /var/lib/mailserver/*.db-wal /var/lib/mailserver/*.db-shm
 sudo cp /backups/mail-2026-07-21/*.db /var/lib/mailserver/     # control.db + every mail-<login>.db
 sudo chown mail:mail /var/lib/mailserver/*.db
 sudo systemctl start mailserver
@@ -764,9 +782,12 @@ sudo -u mail env MAIL_DOMAIN=mail.example.com MAIL_SUBMISSION_PORT=587 MAIL_IMAP
   node src/main.ts selftest you                                 # the mail path end to end
 ```
 
-`backup` copies the databases whole, so a restore is putting them back. An account present in
-the registry whose mailbox file is missing from the backup comes back as an empty mailbox (its
-credentials and aliases are intact) rather than failing the restore.
+`backup` copies the databases whole, so a restore is putting them back. Restore to the
+**original data directory**: the control registry records each account's mailbox as an
+*absolute* `mail-<login>.db` path, so a snapshot dropped somewhere else leaves the daemon
+opening the old locations (or none). An account present in the registry whose mailbox file is
+missing from the backup comes back as an empty mailbox (its credentials and aliases are intact)
+rather than failing the restore.
 
 **"Did my mail actually leave?"** The outbound queue (transient failures retry on an
 exponential backoff for ~5 days before giving up; the queue survives a restart) and the
@@ -814,9 +835,14 @@ lookup): `doctor` can't see a blocklisting, and a fresh cloud IP can land on one
 ## Upgrading
 
 Because the code *is* the runtime (no build, no compiled artefact), an upgrade is a `git pull`.
-The one trap is that schema migrations run **automatically and forward-only** the first time each
-database is opened, so a new version can migrate your store to a shape the old version won't read.
-Always back up first, and stop the daemon before pulling so nothing is mid-write:
+Schema migrations run **automatically and forward-only** the first time each database is opened.
+Each database carries a schema epoch in `PRAGMA user_version`: migrations *within* an epoch are
+additive (a new table or a defaulted column), so an older binary keeps reading a same-epoch
+database. An upgrade that bumps the epoch stamps the store to the new number, and an **older
+binary then refuses that database outright** with a clear error rather than opening it and
+writing rows it would misread. So a downgrade after an epoch bump needs the pre-upgrade backup,
+not just a code checkout. Always back up first, and stop the daemon before pulling so nothing is
+mid-write:
 
 ```sh
 # 1. back up and verify: this is your rollback (see below)
@@ -837,11 +863,14 @@ sudo -u mail env MAIL_DOMAIN=mail.example.com MAIL_SUBMISSION_PORT=587 MAIL_IMAP
   node src/main.ts selftest you
 ```
 
-**To roll back**, checking out the old code is not enough: migrations are one-way, so an
-already-migrated database may not open under the previous version. Restore the pre-upgrade
-backup you took in step 1 (`git -C /opt/mailserver checkout <old-ref>`, stop the daemon, copy the
-snapshot back over the live databases as in [Restoring from a backup](#day-2-operations-accounts-backups-the-queue),
-start again). That is exactly why step 1 isn't optional.
+**To roll back**, checking out the old code is not enough if the upgrade bumped the schema
+epoch: the previous version will **refuse** the migrated database (`database ... was written by a
+newer cutiemail (schema vN); this binary understands up to vM`), a clean stop rather than a
+silent misread. Restore the pre-upgrade backup you took in step 1 (`git -C /opt/mailserver
+checkout <old-ref>`, stop the daemon, copy the snapshot back over the live databases as in
+[Restoring from a backup](#day-2-operations-accounts-backups-the-queue), start again). That is
+exactly why step 1 isn't optional. (An additive same-epoch upgrade would let the old binary open
+the store, but restoring the matching backup is still the clean rollback.)
 
 ## Decommissioning
 
