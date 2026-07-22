@@ -7,6 +7,7 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import net from 'node:net';
 import tls from 'node:tls';
 import { DatabaseSync } from 'node:sqlite';
 import { deliver } from '../client/deliver.ts';
@@ -62,6 +63,32 @@ test('IMAPS: a delivered message is fetched back byte-exact over an encrypted IM
   } finally {
     await imap.close();
     await smtp.close();
+    db.close();
+  }
+});
+
+test('IMAPS: a TLS handshake that begins but never completes is dropped within the deadline', async () => {
+  // A handshake slowloris: open the TCP connection, send a byte that opens a TLS record, then
+  // withhold the rest forever. Without an explicit handshakeTimeout Node holds the slot for its
+  // 120s default; the tight deadline drops it. A tiny timeout keeps the test fast.
+  const db = new DatabaseSync(':memory:');
+  const mailbox = SqliteMailbox.open(db);
+  const imap = await ImapServer.start(mailbox, { tls: { key: TEST_KEY, cert: TEST_CERT }, handshakeTimeoutMs: 300 });
+  try {
+    const sock = net.connect(imap.port, '127.0.0.1');
+    sock.on('error', () => {}); // the server tearing down the half-open handshake surfaces as an error
+    await new Promise<void>((r) => sock.once('connect', () => r()));
+    sock.write(Buffer.from([0x16])); // the first octet of a TLS record; nothing more is sent
+    const start = Date.now();
+    const closed = await new Promise<boolean>((resolve) => {
+      sock.once('close', () => resolve(true));
+      setTimeout(() => resolve(false), 3000).unref();
+    });
+    assert.ok(closed, 'the half-open handshake socket is closed by the server');
+    assert.ok(Date.now() - start < 2500, 'and dropped near the handshake deadline, not the 120s default');
+    sock.destroy();
+  } finally {
+    await imap.close();
     db.close();
   }
 });

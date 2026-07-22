@@ -11,10 +11,26 @@ import { canonicalMailboxName } from './mailbox-name.ts';
 export class MemoryCatalog {
   readonly #boxes = new Map<string, Mailbox>();
   readonly #uidValidity: number;
+  /**
+   * The highest UIDVALIDITY ever assigned by this catalog — a monotonic high-water mark, so
+   * a mailbox CREATEd after another was DELETEd never reuses the deleted incarnation's
+   * (UIDVALIDITY, UID) space (RFC 9051 §6.3.4 MUST). Without this, DELETE Work then CREATE Work
+   * handed the new mailbox UIDVALIDITY 1 and UIDs from 1 again, so an offline-caching client
+   * showed stale cached bodies against the recycled (UIDVALIDITY, UID) pairs. Seeded to the
+   * catalog's initial UIDVALIDITY; every create() bumps it. Kept in lockstep with SqliteCatalog.
+   */
+  #uidValidityHwm: number;
 
   constructor(uidValidity = 1) {
     this.#uidValidity = uidValidity;
+    this.#uidValidityHwm = uidValidity;
     this.#boxes.set('INBOX', new Mailbox(uidValidity));
+  }
+
+  /** Advance and return the next UIDVALIDITY — strictly greater than any previously assigned. */
+  #nextUidValidity(): number {
+    this.#uidValidityHwm += 1;
+    return this.#uidValidityHwm;
   }
 
   listNames(): readonly string[] {
@@ -29,7 +45,9 @@ export class MemoryCatalog {
   create(name: string): Mailbox | undefined {
     const canon = canonicalMailboxName(name);
     if (this.#boxes.has(canon)) return undefined;
-    const box = new Mailbox(this.#uidValidity);
+    // A monotonic UIDVALIDITY (never the catalog's seed value again), so a recreated name
+    // cannot reuse a prior incarnation's (UIDVALIDITY, UID) space — RFC 9051 §6.3.4.
+    const box = new Mailbox(this.#nextUidValidity());
     this.#boxes.set(canon, box);
     return box;
   }

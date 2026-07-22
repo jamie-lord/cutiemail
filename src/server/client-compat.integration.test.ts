@@ -176,16 +176,23 @@ test('the Thunderbird folder workflow: CREATE Trash, APPEND to Sent, MOVE to del
     await s.waitFor('+ Ready');
     s.raw(`${sentMsg}\r\n`);
     const appended = await s.waitFor('f7 ');
-    assert.match(appended, /f7 OK \[APPENDUID 1 1\] APPEND completed/, 'APPEND returns the UIDPLUS APPENDUID of the filed message');
+    // Sent was CREATEd after Trash, so the monotonic UIDVALIDITY counter (RFC 9051 §6.3.4) puts it
+    // at 3 (INBOX 1, Trash 2, Sent 3) — a recreated name can never reuse a prior incarnation's space.
+    assert.match(appended, /f7 OK \[APPENDUID 3 1\] APPEND completed/, 'APPEND returns the UIDPLUS APPENDUID of the filed message');
     assert.equal(catalog.get('Sent')!.messages.length, 1, 'the sent copy is filed');
     assert.ok(catalog.get('Sent')!.messages[0]!.flags.has('\\Seen'), 'APPEND flags are applied');
 
     // Delete-via-Trash: TB moves the message (rev2 MOVE), numbering stays consistent.
     await s.run('f8', 'SELECT "INBOX"');
     const move = await s.run('f9', 'UID MOVE 2 "Trash"');
-    assert.match(move, /f9 OK \[COPYUID 1 2 1\] MOVE completed/, 'MOVE reports COPYUID (src uid 2 -> dst uid 1 in Trash)');
+    // RFC 9051 §6.4.8 / RFC 6851: MOVE reports COPYUID in an UNTAGGED OK sent BEFORE the EXPUNGE,
+    // then a tagged OK with no COPYUID. (The old code wrongly put COPYUID in the tagged OK, after
+    // the EXPUNGE.)
+    assert.match(move, /^\* OK \[COPYUID 2 2 1\] moved\r$/m, 'MOVE reports COPYUID as an untagged OK (Trash UIDVALIDITY 2; src uid 2 -> dst uid 1)');
     assert.match(move, /^\* 2 EXPUNGE\r$/m, 'MOVE reports the expunged sequence number');
-    assert.match(move, /^f9 OK/m);
+    assert.match(move, /^f9 OK MOVE completed\r$/m, 'the tagged OK carries no COPYUID');
+    // COPYUID must precede the EXPUNGE on the wire.
+    assert.ok(move.indexOf('[COPYUID') < move.indexOf('2 EXPUNGE'), 'COPYUID is sent before the EXPUNGE');
     assert.equal(inbox.messages.length, 1, 'the message left INBOX');
     assert.equal(catalog.get('Trash')!.messages.length, 1, 'and landed in Trash');
     assert.ok(catalog.get('Trash')!.messages[0]!.raw.includes(Buffer.from('bin me')), 'byte content preserved through the move');

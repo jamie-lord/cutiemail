@@ -138,6 +138,7 @@ const AUTOLOGOUT_MS = 1_800_000;
 const MAX_SEARCH_KEYS = 64; // top-level SEARCH keys; a real query uses a handful (DoS bound)
 const MAX_SEARCH_NODES = 256; // TOTAL keys across the tree incl. nested OR/NOT (recursion DoS bound)
 const MAX_CONNECTIONS = 512; // concurrent-connection ceiling per listener (pre-auth DoS bound)
+const HANDSHAKE_TIMEOUT_MS = 10_000; // IMAPS TLS-handshake deadline (handshake-slowloris bound)
 
 /**
  * Server-wide ceiling on bytes queued for slow-reading clients. The server frames a whole FETCH
@@ -235,6 +236,16 @@ const unquote = (s: string): string => s.replace(/^"|"$/g, '');
  * a literal — the same discipline envelope.imapString / body-structure.qstr already apply
  * (mailbox names are owner-created, so this is an interop-correctness fix, not a
  * cross-trust-boundary bypass).
+ *
+ * ENCODING DECISION (RFC 9051 §5.1). rev2 mailbox names are Net-Unicode (UTF-8) on the wire, and
+ * rev2 REMOVED the rev1 modified-UTF-7 encoding. cutiemail is byte-transparent: a name is the exact
+ * octet sequence the client sent (the whole server reads/writes latin1, so one JS char == one wire
+ * byte, and `name.length` is the true octet count for the literal header). A UTF-8 name round-trips
+ * verbatim through CREATE/LIST/SELECT/STATUS; an octet outside atom/quoted-string range forces a
+ * literal so the bytes are preserved exactly. We NEVER interpret modified-UTF-7: an mUTF-7-shaped
+ * name like `Fo&AOk-o` is stored and returned as those literal ASCII bytes, not decoded to `Foéo`.
+ * This is the deliberate rev2 position; a legacy client still speaking mUTF-7 gets its own bytes
+ * back, which is self-consistent for that client.
  */
 function imapMailboxAstring(name: string): string {
   // A control octet OR an 8-bit byte can appear in neither an atom nor a quoted-string (both are
@@ -295,6 +306,18 @@ function parseImapDate(s: string): number | null {
 interface SearchContext {
   readonly largestUid: number;
   readonly count: number;
+}
+
+/**
+ * A syntactically valid sequence-set (RFC 9051 §9 `sequence-set`): comma-separated items, each a
+ * number/`*` or a `num:num` range. A command whose set does not match this must be answered BAD
+ * rather than silently resolving to the empty set and returning a no-op OK (a lie: the client asked
+ * to address messages and got neither data nor an error). `$` (SEARCHRES) is handled separately.
+ */
+const SEQ_ITEM = String.raw`(\d+|\*)(:(\d+|\*))?`;
+const SEQUENCE_SET_RE = new RegExp(`^${SEQ_ITEM}(,${SEQ_ITEM})*$`);
+function isSequenceSet(s: string): boolean {
+  return SEQUENCE_SET_RE.test(s);
 }
 
 /** Compress a sorted ascending list of numbers to an IMAP sequence-set: "1,3:5,8". */
@@ -523,8 +546,19 @@ interface FetchAtts {
   bodySections: { section: string; partial?: { origin: number; count: number }; peek: boolean }[];
 }
 
-/** Parse the text after the sequence-set of a FETCH into the requested atts. */
-function parseFetchAtts(spec: string): FetchAtts {
+/**
+ * Parse the text after the sequence-set of a FETCH into the requested atts. `ok` is false when the
+ * spec names a data item we do not implement (RFC 9051 §6.4.5): the caller answers a tagged BAD
+ * rather than silently degrading to FLAGS+UID, which would hand the client the wrong response for
+ * the item it actually asked for. A mix of known and unknown items is also `ok: false`. The caller
+ * strips any CONDSTORE (CHANGEDSINCE …) modifier before calling, so only true data items are here.
+ */
+function parseFetchAtts(spec: string): { atts: FetchAtts; ok: boolean } {
+  let ok = true;
+  // BINARY / BINARY.SIZE / BINARY.PEEK (RFC 3516) are deliberately out of scope. Reject their
+  // syntax loudly rather than let a "BINARY[1]" leak through as an unrecognised BODY section that
+  // silently serves the whole body — the client asked for decoded content and must be told no.
+  if (/\bBINARY(\.SIZE|\.PEEK)?\s*\[/i.test(spec)) ok = false;
   const atts: FetchAtts = {
     uid: false,
     flags: false,
@@ -575,8 +609,11 @@ function parseFetchAtts(spec: string): FetchAtts {
       if (t !== 'FAST') atts.envelope = true;
       if (t === 'FULL') atts.body = true; // FULL = ALL + BODY (non-extensible)
     }
+    // An empty token (from the () wrapping or the BODY[...] placeholder space) is not a data item;
+    // anything else is a FETCH att we do not implement — reject the whole FETCH (§6.4.5).
+    else if (t !== '') ok = false;
   }
-  return atts;
+  return { atts, ok };
 }
 
 /** The header block of a message (up to and including the blank separator line). */
@@ -634,6 +671,7 @@ export class ImapServer {
   readonly #authenticate: ((user: string, pass: string) => boolean) | undefined;
   readonly #notifier: MailboxNotifier | undefined;
   readonly #resolveAccount: ((login: string) => { catalog: ServableCatalog; notifier?: MailboxNotifier } | undefined) | undefined;
+  readonly #isEnabled: ((login: string) => boolean) | undefined;
   readonly #autologoutMs: number;
   readonly #throttle: AuthThrottle | undefined;
   readonly #maxWriteBacklog: number;
@@ -657,6 +695,7 @@ export class ImapServer {
     maxAppendInflight = MAX_APPEND_INFLIGHT,
     log?: (line: string) => void,
     maxAppendLiteral = MAX_APPEND_LITERAL,
+    isEnabled?: (login: string) => boolean,
   ) {
     this.#server = server;
     this.port = port;
@@ -664,6 +703,7 @@ export class ImapServer {
     this.#authenticate = authenticate;
     this.#notifier = notifier;
     this.#resolveAccount = resolveAccount;
+    this.#isEnabled = isEnabled;
     this.#autologoutMs = autologoutMs;
     this.#throttle = throttle;
     this.#maxWriteBacklog = maxWriteBacklog;
@@ -724,6 +764,13 @@ export class ImapServer {
       notifier?: MailboxNotifier;
       autologoutMs?: number;
       resolveAccount?: (login: string) => { catalog: ServableCatalog; notifier?: MailboxNotifier } | undefined;
+      /**
+       * Is this login still enabled? Consulted on every command of an already-authenticated
+       * session (not just at LOGIN), so `account disable` cuts a live IMAP connection at its
+       * next command instead of leaving a compromised credential in use until a daemon restart.
+       * Cheap (an in-memory registry lookup). Absent = single-account/test mode, no recheck.
+       */
+      isEnabled?: (login: string) => boolean;
       throttle?: AuthThrottle;
       /** Server-wide slow-consumer write-backlog budget in bytes (default 256 MiB). Tests set it small. */
       maxWriteBacklog?: number;
@@ -738,15 +785,37 @@ export class ImapServer {
        * message (Gmail accepts up to 50 MB) hits an invisible second ceiling.
        */
       maxAppendLiteral?: number;
+      /** Per-listener concurrent-connection ceiling (default 512). Tests override it small. */
+      maxConnections?: number;
+      /**
+       * TLS handshake deadline in ms (IMAPS only; default 10 s). A client that opens the TCP
+       * connection but never completes the TLS handshake otherwise pins a slot for Node's 120 s
+       * default — a handshake slowloris. Tests set it tiny to prove the drop.
+       */
+      handshakeTimeoutMs?: number;
     } = {},
   ): Promise<ImapServer> {
     const catalog: ServableCatalog = 'listNames' in target ? target : inboxOnly(target);
-    const server = options.tls !== undefined ? tls.createServer({ key: options.tls.key, cert: options.tls.cert }) : net.createServer();
+    // IMAPS: bound the TLS handshake explicitly (RFC-agnostic hardening). Node's default is 120 s,
+    // long enough that a handful of half-open handshakes tie up connection slots; a tight deadline
+    // drops a peer that starts but never finishes the handshake.
+    const server = options.tls !== undefined
+      ? tls.createServer({ key: options.tls.key, cert: options.tls.cert, handshakeTimeout: options.handshakeTimeoutMs ?? HANDSHAKE_TIMEOUT_MS })
+      : net.createServer();
+    if (options.tls !== undefined) {
+      // A handshakeTimeout emits 'tlsClientError' but, on its own, leaves the underlying TCP socket
+      // OPEN and still counted against maxConnections — so a handshake slowloris (open, dribble one
+      // byte, never finish) would pin listener slots for nothing. Destroy the socket on any
+      // client-side TLS error (timeout or a malformed ClientHello) to actually reclaim the slot.
+      (server as tls.Server).on('tlsClientError', (_err: Error, tlsSocket: tls.TLSSocket) => {
+        tlsSocket?.destroy();
+      });
+    }
     // Bound concurrent connections so a pre-auth flood / slowloris (connections that dribble
     // bytes to dodge the inactivity timeout) cannot exhaust file descriptors or memory — the
     // single-threaded daemon has no per-IP accounting, so a global ceiling is the backstop.
     // Far above any real client fan-out (a few clients × a handful each).
-    server.maxConnections = MAX_CONNECTIONS;
+    server.maxConnections = options.maxConnections ?? MAX_CONNECTIONS;
     return new Promise((resolve, reject) => {
       // Reject cleanly on a bind failure (EADDRINUSE / EACCES on privileged 993 without
       // root/setcap) instead of letting an unhandled 'error' event crash the process while this
@@ -756,7 +825,7 @@ export class ImapServer {
         server.removeListener('error', reject);
         const addr = server.address();
         const port = typeof addr === 'object' && addr !== null ? addr.port : 0;
-        const imap = new ImapServer(server, port, catalog, options.authenticate, options.notifier, options.autologoutMs, options.resolveAccount, options.throttle, options.maxWriteBacklog, options.maxAppendInflight, options.log, options.maxAppendLiteral);
+        const imap = new ImapServer(server, port, catalog, options.authenticate, options.notifier, options.autologoutMs, options.resolveAccount, options.throttle, options.maxWriteBacklog, options.maxAppendInflight, options.log, options.maxAppendLiteral, options.isEnabled);
         const event = options.tls !== undefined ? 'secureConnection' : 'connection';
         server.on(event, (sock: net.Socket) => {
           imap.#sockets.add(sock);
@@ -908,7 +977,7 @@ export class ImapServer {
     const noteAuthFailure = (user?: string): void => {
       this.#throttle?.recordFailure(ip);
       this.#log?.(`imap auth failed${user !== undefined ? ` for ${JSON.stringify(user)}` : ''} from ${ip}`);
-      if (this.#throttle?.isBlocked(ip) === true) this.#log?.(`auth throttle engaged for ${ip} (imap) — refusing further attempts while the window drains`);
+      if (this.#throttle?.isBlocked(ip) === true) this.#log?.(`auth throttle engaged for ${ip} (imap), refusing further attempts while the window drains`);
     };
     const noteAuthSuccess = (): void => this.#throttle?.recordSuccess(ip);
     let selected: ServableMailbox | null = null;
@@ -928,6 +997,11 @@ export class ImapServer {
     // QRESYNC (RFC 7162) — enabled by ENABLE QRESYNC. Unlocks SELECT (QRESYNC ...) fast
     // reconnect and the VANISHED FETCH modifier. Implies CONDSTORE.
     let qresync = false;
+    // IMAP4rev2 (RFC 9051) enabled for the session by ENABLE IMAP4REV2. Once enabled, a plain
+    // SEARCH answers with the ESEARCH form instead of the legacy `* SEARCH` (§6.4.4). Not enabled
+    // by default: an un-ENABLEd session keeps the rev1-shaped `* SEARCH` reply as a deliberate
+    // compatibility position (a rev2 server MAY speak rev1 shapes until the client opts in).
+    let imap4rev2 = false;
 
     /** A flag set in a canonical, order-independent form, for change detection. */
     const flagKey = (flags: Iterable<string>): string => [...flags].sort().join(' ');
@@ -1030,6 +1104,7 @@ export class ImapServer {
     // with no LOGIN at all. `pendingAuth` holds the tag of an AUTHENTICATE PLAIN that
     // is awaiting its base64 SASL response on the next line.
     let authenticated = false;
+    let authedLogin: string | null = null; // the login bound on success, for the mid-session disable recheck
     let pendingAuth: string | null = null;
     let readOnly = false; // set when the mailbox was opened with EXAMINE, not SELECT
     // The catalog + notifier THIS connection serves. Without a resolver they stay the
@@ -1039,11 +1114,15 @@ export class ImapServer {
     let connCatalog = this.#catalog;
     let connNotifier = this.#notifier;
     const bindAccount = (login: string): boolean => {
-      if (this.#resolveAccount === undefined) return true; // single-account mode: nothing to rebind
+      if (this.#resolveAccount === undefined) {
+        authedLogin = login; // single-account mode: nothing to rebind, but remember who for the disable recheck
+        return true;
+      }
       const acct = this.#resolveAccount(login);
       if (acct === undefined) return false; // credentials verified but account unknown/disabled
       connCatalog = acct.catalog;
       connNotifier = acct.notifier;
+      authedLogin = login;
       return true;
     };
     sock.on('error', () => {});
@@ -1133,7 +1212,7 @@ export class ImapServer {
             // AUTHENTICATE-initiation gates): refuse a blocked IP WITHOUT checking the
             // password, so an IP that crossed the threshold on another connection between
             // the command and its continuation gets no free guess here.
-            write(sock, `${authTag} NO [AUTHENTICATIONFAILED] too many attempts — try later`);
+            write(sock, `${authTag} NO [AUTHENTICATIONFAILED] too many attempts, try later`);
           } else {
             const authedUser = this.#saslPlainUser(line.trim());
             if (authedUser !== null && bindAccount(authedUser)) {
@@ -1171,8 +1250,18 @@ export class ImapServer {
         // RFC 9051 §3: reject any command that needs Authenticated state before LOGIN
         // succeeds. This is the gate that stops unauthenticated mailbox access.
         if (!authenticated && !PREAUTH_COMMANDS.has(cmd)) {
-          write(sock, `${tag} NO not authenticated — LOGIN or AUTHENTICATE first`);
+          write(sock, `${tag} NO not authenticated, LOGIN or AUTHENTICATE first`);
           continue;
+        }
+
+        // Containment for a disabled/compromised account: `account disable` must cut a session
+        // that is ALREADY authenticated, not only refuse the next LOGIN. Re-check enabled status
+        // on every authenticated command (a cheap in-memory registry lookup) and drop the
+        // connection with BYE the moment the account is disabled.
+        if (authenticated && authedLogin !== null && this.#isEnabled !== undefined && !this.#isEnabled(authedLogin)) {
+          write(sock, '* BYE account disabled');
+          sock.destroy(); // fires the socket 'close' handler, which unsubscribes any IDLE
+          return;
         }
 
         // Never let a malformed command crash the connection or the process —
@@ -1214,9 +1303,32 @@ export class ImapServer {
               // A bare-root probe: the reference IS a valid mailbox reference.
               write(sock, '* LIST (\\Noselect) "/" ""');
             } else {
-              const allNames = connCatalog.listNames();
+              const realNames = connCatalog.listNames();
+              // CREATE "a/b/c" does not materialise the superior names "a" and "a/b" (RFC 9051
+              // §6.3.4 leaves that a SHOULD). Without surfacing them, a %-walk (which matches
+              // within one hierarchy level: matchNames %=[^/]*) never sees "a", so the child is
+              // undiscoverable. Per §6.3.9 we list each such intermediate as (\NonExistent
+              // \HasChildren): it names a level in the path that has children but is not itself a
+              // selectable mailbox (SELECT/STATUS of it still return NO — it does not exist). We
+              // do NOT auto-create the parents (that would mint phantom selectable mailboxes with
+              // their own UIDVALIDITY); we merely make the hierarchy walkable.
+              const phantoms = new Set<string>();
+              for (const n of realNames) {
+                const segs = n.split('/');
+                for (let k = 1; k < segs.length; k++) {
+                  const anc = segs.slice(0, k).join('/');
+                  if (!realNames.includes(anc)) phantoms.add(anc);
+                }
+              }
+              const allNames = [...realNames, ...phantoms];
               for (const name of matchNames(reference, pattern, allNames)) {
                 if (onlySpecialUse && SPECIAL_USE[name] === undefined) continue;
+                if (phantoms.has(name)) {
+                  // A non-existent intermediate: never carries special-use or subscription state.
+                  if (onlySpecialUse) continue;
+                  write(sock, `* LIST (\\NonExistent \\HasChildren) "/" ${imapMailboxAstring(name)}`);
+                  continue;
+                }
                 const attrs = wantSubscribed ? listAttributes(name, allNames).replace(/\)$/, ' \\Subscribed)') : listAttributes(name, allNames);
                 write(sock, `* LIST ${attrs} "/" ${imapMailboxAstring(name)}`);
               }
@@ -1405,6 +1517,13 @@ export class ImapServer {
               write(sock, `${tag} BAD QRESYNC parameter used without ENABLE QRESYNC`);
               break;
             }
+            // RFC 9051 §6.3.2 MUST: "When deselecting a selected mailbox, the server MUST return an
+            // untagged OK with a [CLOSED] response code." SELECT/EXAMINE deselects whatever was
+            // selected — even when the new SELECT then fails on a missing mailbox — so emit CLOSED
+            // before any of the new mailbox's untagged responses. CLOSE/UNSELECT do NOT emit it
+            // (their response is the tagged OK alone). A BAD (bad QRESYNC syntax, handled above)
+            // does not deselect, so no CLOSED there either.
+            if (selected !== null) write(sock, '* OK [CLOSED] previous mailbox closed');
             const name = qarg(1) || 'INBOX';
             const box = connCatalog.get(name);
             if (box === undefined) {
@@ -1431,10 +1550,23 @@ export class ImapServer {
             knownFlags = new Map(selIdx.map((m) => [m.uid, flagKey(m.flags)]));
             // EXAMINE opens read-only (RFC 9051 §6.3.2): no flag changes, no EXPUNGE.
             readOnly = cmd === 'EXAMINE';
+            // RFC 9051 §6.3.2 REQUIRED: the SELECT/EXAMINE response set includes an untagged LIST
+            // for the mailbox being opened (rev2 folded the old mailbox-identity responses into it).
+            write(sock, `* LIST ${listAttributes(selectedName, connCatalog.listNames())} "/" ${imapMailboxAstring(name)}`);
             write(sock, `* ${selIdx.length} EXISTS`);
-            write(sock, '* FLAGS (\\Seen \\Answered \\Flagged \\Deleted \\Draft)');
-            // Read-only advertises no settable permanent flags.
-            write(sock, `* OK [PERMANENTFLAGS (${readOnly ? '' : '\\Seen \\Answered \\Flagged \\Deleted \\Draft'})] flags stored`);
+            // FLAGS lists the system flags plus every keyword currently in use in this mailbox
+            // (RFC 9051 §7.1) — a keyword is any flag without a leading backslash (Thunderbird
+            // tags: $Label1, $Forwarded). Surfacing them tells a reconnecting client its tags are
+            // real, live flags.
+            const SYSTEM_FLAGS = '\\Seen \\Answered \\Flagged \\Deleted \\Draft';
+            const keywords = [...new Set(selIdx.flatMap((m) => [...m.flags]).filter((f) => !f.startsWith('\\')))].sort();
+            write(sock, `* FLAGS (${keywords.length > 0 ? `${SYSTEM_FLAGS} ${keywords.join(' ')}` : SYSTEM_FLAGS})`);
+            // PERMANENTFLAGS (RFC 9051 §7.1): a read-write mailbox advertises the settable system
+            // flags AND `\*`, the signal that the client MAY create new keywords and they persist —
+            // the server does durably store arbitrary keywords, so without `\*` a conformant client
+            // (Thunderbird tagging) concludes its keywords will be lost and never stores them.
+            // A read-only (EXAMINE) mailbox advertises none: nothing can be changed.
+            write(sock, `* OK [PERMANENTFLAGS (${readOnly ? '' : `${SYSTEM_FLAGS} \\*`})] flags stored`);
             write(sock, `* OK [UIDVALIDITY ${box.uidValidity}] UIDs valid`);
             write(sock, `* OK [UIDNEXT ${box.uidNext}] Predicted next UID`);
             // RFC 7162 §3.1.2.2: a CONDSTORE server MUST send HIGHESTMODSEQ on EVERY
@@ -1477,15 +1609,37 @@ export class ImapServer {
               break;
             }
             const set = arg(1);
+            // The `$` search-result marker (SEARCHRES, RFC 5182) is a declined-scope extension
+            // (ADR 0007): we never fill it, so a FETCH addressing it is a tagged BAD rather than a
+            // silent empty result (the set parsed to NaN and matched nothing, lying to the client).
+            if (set === '$') {
+              write(sock, `${tag} BAD SEARCHRES ($) is not supported`);
+              break;
+            }
+            // A malformed sequence-set ("FETCH abc") is a tagged BAD, not a silent empty OK
+            // (RFC 9051 §9 grammar). The old code let parseSequenceSet return nothing and answered
+            // OK with no data — indistinguishable from "no matches" to the client.
+            if (!isSequenceSet(set)) {
+              write(sock, `${tag} BAD FETCH: invalid sequence set`);
+              break;
+            }
             // Everything after the set is the att spec (may contain spaces).
             const specStart = line.indexOf(set, tag.length) + set.length;
             const spec = line.slice(specStart);
-            const atts = parseFetchAtts(spec);
             // (CHANGEDSINCE n) (RFC 7162 §3.1.4.1): return only messages whose
             // mod-sequence exceeds n — a reconnecting client's "what changed?" query. It
             // both enables CONDSTORE and implies the MODSEQ data item.
             const csMatch = /\(\s*CHANGEDSINCE\s+(\d+)(?:\s+VANISHED)?\s*\)/i.exec(spec);
             const changedSince = csMatch ? Number(csMatch[1]) : null;
+            // Validate the data items with the CONDSTORE modifier group removed, so CHANGEDSINCE/
+            // VANISHED are not mistaken for unknown data items. An unimplemented att (or a mix of
+            // known + unknown) is a tagged BAD (RFC 9051 §6.4.5), not a silent FLAGS+UID fallback.
+            const attSpec = csMatch ? spec.replace(csMatch[0], ' ') : spec;
+            const { atts, ok: attsOk } = parseFetchAtts(attSpec);
+            if (!attsOk) {
+              write(sock, `${tag} BAD FETCH: unsupported or unknown data item`);
+              break;
+            }
             if (changedSince !== null || atts.modseq) condstore = true;
             if (condstore) atts.modseq = true; // once enabled, every FETCH carries MODSEQ
             // (CHANGEDSINCE n VANISHED) (RFC 7162 §3.2.5.2): also report, as one
@@ -1494,8 +1648,11 @@ export class ImapServer {
             // modifier is valid ONLY on a UID FETCH and ONLY with CHANGEDSINCE; misuse is
             // a tagged BAD (§3.2.6), not silently ignored.
             const wantsVanished = /\bVANISHED\b/i.test(spec);
-            if (wantsVanished && (!uidMode || changedSince === null)) {
-              write(sock, `${tag} BAD VANISHED requires UID FETCH with CHANGEDSINCE`);
+            // RFC 7162 §3.2.6: the VANISHED FETCH modifier requires the session to have ENABLEd
+            // QRESYNC (not merely CONDSTORE), AND a UID FETCH with CHANGEDSINCE. Any misuse — here
+            // including a session that never enabled QRESYNC — is a tagged BAD, not silently ignored.
+            if (wantsVanished && (!qresync || !uidMode || changedSince === null)) {
+              write(sock, `${tag} BAD VANISHED requires ENABLE QRESYNC with a UID FETCH and CHANGEDSINCE`);
               break;
             }
             if (wantsVanished) {
@@ -1545,6 +1702,16 @@ export class ImapServer {
             if (rm !== null) {
               returnOpts = (rm[1] ?? '').trim().split(/\s+/).filter((x) => x.length > 0).map((s) => s.toUpperCase());
               if (returnOpts.length === 0) returnOpts = ['ALL']; // RETURN () defaults to ALL
+              // RFC 9051 §6.4.4: "Options that are not defined by extensions the server supports MUST
+              // be rejected with a BAD response." We implement MIN/MAX/ALL/COUNT. SAVE (SEARCHRES,
+              // the `$` marker) is a deliberate declined-scope decision (ADR 0007's curated-extension
+              // stance) — so RETURN (SAVE) and any unknown option (RETURN (BOGUS)) are a BAD, never
+              // silently ignored (which would leave a client waiting for a `$` we will never fill).
+              const KNOWN_RETURN = new Set(['MIN', 'MAX', 'ALL', 'COUNT']);
+              if (returnOpts.some((o) => !KNOWN_RETURN.has(o))) {
+                write(sock, `${tag} BAD SEARCH: unsupported RETURN option`);
+                break;
+              }
               criteria = criteria.slice(rm[0].length);
             }
             const sel = selected;
@@ -1603,17 +1770,25 @@ export class ImapServer {
                 if (m.modseq > highestHitModseq) highestHitModseq = m.modseq;
               }
             });
-            if (returnOpts !== null) {
-              // ESEARCH aggregate reply (RFC 9051 §7.3.4).
+            // ESEARCH aggregate reply (RFC 9051 §7.3.4 / §6.4.4). Emitted for an explicit RETURN
+            // search ALWAYS (even on zero hits — the correlator TAG is the whole point of ESEARCH),
+            // and for a plain SEARCH once the session has ENABLEd IMAP4rev2 (its default result
+            // option is ALL). An un-ENABLEd session still gets the legacy `* SEARCH`.
+            const emitEsearch = (opts: readonly string[]): void => {
               const parts: string[] = [`(TAG "${tag}")`];
               if (uidMode) parts.push('UID');
-              if (returnOpts.includes('MIN') && hits.length > 0) parts.push(`MIN ${hits[0]}`);
-              if (returnOpts.includes('MAX') && hits.length > 0) parts.push(`MAX ${hits[hits.length - 1]}`);
-              if (returnOpts.includes('ALL') && hits.length > 0) parts.push(`ALL ${compressSequenceSet(hits)}`);
-              if (returnOpts.includes('COUNT')) parts.push(`COUNT ${hits.length}`);
+              if (opts.includes('MIN') && hits.length > 0) parts.push(`MIN ${hits[0]}`);
+              if (opts.includes('MAX') && hits.length > 0) parts.push(`MAX ${hits[hits.length - 1]}`);
+              if (opts.includes('ALL') && hits.length > 0) parts.push(`ALL ${compressSequenceSet(hits)}`);
+              if (opts.includes('COUNT')) parts.push(`COUNT ${hits.length}`);
               // RFC 7162 §3.1.5: a MODSEQ search returns the highest mod-seq among matches.
               if (usesModseq && hits.length > 0) parts.push(`MODSEQ ${highestHitModseq}`);
               write(sock, `* ESEARCH ${parts.join(' ')}`);
+            };
+            if (returnOpts !== null) {
+              emitEsearch(returnOpts);
+            } else if (imap4rev2) {
+              emitEsearch(['ALL']);
             } else {
               const modseqSuffix = usesModseq && hits.length > 0 ? ` (MODSEQ ${highestHitModseq})` : '';
               write(sock, `* SEARCH${hits.length > 0 ? ' ' + hits.join(' ') : ''}${modseqSuffix}`);
@@ -1753,20 +1928,32 @@ export class ImapServer {
                 dstUids.push(target.append(c.body, c.flags, c.internalDate));
               }
             });
+            const copyuidCode = srcUids.length > 0 ? `[COPYUID ${target.uidValidity} ${srcUids.join(',')} ${dstUids.join(',')}]` : '';
             if (cmd === 'MOVE') {
+              // RFC 9051 §6.4.8 (with RFC 6851): the untagged OK [COPYUID] MUST be sent BEFORE the
+              // EXPUNGE/VANISHED responses that report the moved messages leaving the source — a
+              // client needs the src→dst UID mapping while its cached source UIDs still exist, not
+              // after they have been renumbered away. The old code ran syncSelected() (the
+              // EXPUNGE/VANISHED) first and only then wrote COPYUID in the tagged OK, the wrong order.
+              if (copyuidCode !== '') write(sock, `* OK ${copyuidCode} moved`);
               const selForMove = selected; // non-null (guarded at case entry)
               selForMove.transaction(() => {
                 for (const uid of srcUids) selForMove.expunge(uid);
               });
+              // Now announce the removals (our own + any peer's) in one consistent renumber against
+              // the client's view (VANISHED under QRESYNC, else descending EXPUNGE).
+              syncSelected();
+              if (dstUids.length > 0) connNotifier?.notify(canonicalMailboxName(targetName));
+              if (srcUids.length > 0 && selectedName !== null) connNotifier?.notify(selectedName);
+              write(sock, `${tag} OK ${cmd} completed`);
+            } else {
+              // COPY leaves the source in place, so it has no EXPUNGEs of its own; UIDPLUS returns
+              // COPYUID in the tagged OK (RFC 9051 §6.4.7). syncSelected() still relays any peer
+              // change first.
+              syncSelected();
+              if (dstUids.length > 0) connNotifier?.notify(canonicalMailboxName(targetName));
+              write(sock, `${tag} OK ${copyuidCode !== '' ? copyuidCode + ' ' : ''}${cmd} completed`);
             }
-            // Announce the peer's EXPUNGE(s) AND (for MOVE) our own removals in one consistent
-            // renumber against the client's view (VANISHED under QRESYNC, else descending EXPUNGE).
-            syncSelected();
-            // Wake connections idling on the destination (and, for MOVE, the source).
-            if (dstUids.length > 0) connNotifier?.notify(canonicalMailboxName(targetName));
-            if (cmd === 'MOVE' && srcUids.length > 0 && selectedName !== null) connNotifier?.notify(selectedName);
-            const copyuid = srcUids.length > 0 ? `[COPYUID ${target.uidValidity} ${srcUids.join(',')} ${dstUids.join(',')}] ` : '';
-            write(sock, `${tag} OK ${copyuid}${cmd} completed`);
             break;
           }
           case 'EXPUNGE': {
@@ -1776,6 +1963,14 @@ export class ImapServer {
             }
             if (readOnly) {
               write(sock, `${tag} NO mailbox is read-only (opened with EXAMINE)`);
+              break;
+            }
+            // UID EXPUNGE (RFC 4315) REQUIRES a sequence set in its grammar. A bare `UID EXPUNGE`
+            // (or one with a malformed set) must be a tagged BAD — the old code silently fell
+            // through to a FULL EXPUNGE of every \Deleted message, a dangerous over-removal never
+            // the client asked for. Plain (non-UID) EXPUNGE takes no set and is unaffected.
+            if (uidMode && !isSequenceSet(arg(1))) {
+              write(sock, `${tag} BAD UID EXPUNGE requires a sequence set`);
               break;
             }
             // Reconcile any peer changes FIRST (EXPUNGE responses are permitted during an
@@ -1867,11 +2062,18 @@ export class ImapServer {
             }
             break;
           case 'ENABLE': {
-            // RFC 9051 §6.3.1: echo back the requested capabilities we support.
+            // RFC 9051 §6.3.1: "The ENABLE command is only valid in the authenticated state, before
+            // any mailbox is selected." Issued with a mailbox selected it is a tagged BAD — a client
+            // that has already SELECTed cannot change the enabled-extension set mid-session.
+            if (selected !== null) {
+              write(sock, `${tag} BAD ENABLE not permitted with a mailbox selected`);
+              break;
+            }
+            // Echo back the requested capabilities we support.
             const enabled: string[] = [];
             for (const a of qargs) {
               const u = a.toUpperCase();
-              if (u === 'IMAP4REV2') enabled.push('IMAP4rev2');
+              if (u === 'IMAP4REV2') { imap4rev2 = true; enabled.push('IMAP4rev2'); }
               else if (u === 'CONDSTORE') { condstore = true; enabled.push('CONDSTORE'); }
               // QRESYNC (RFC 7162 §3.2.4) implies CONDSTORE and unlocks SELECT (QRESYNC …)
               // plus the VANISHED FETCH modifier.

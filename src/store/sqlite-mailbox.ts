@@ -41,7 +41,27 @@ CREATE TABLE IF NOT EXISTS expunged (
   mod_seq INTEGER NOT NULL,
   PRIMARY KEY (mailbox_id, uid)
 );
+CREATE TABLE IF NOT EXISTS catalog_meta (
+  id INTEGER PRIMARY KEY CHECK (id = 0),
+  uid_validity_hwm INTEGER NOT NULL
+);
 `;
+
+/**
+ * Seed the catalog-wide UIDVALIDITY high-water mark (RFC 9051 §6.3.4). It must be at least the
+ * highest UIDVALIDITY any mailbox currently holds AND the requested seed, so the next CREATE assigns
+ * a strictly-greater value than any live OR previously-deleted incarnation. A database created before
+ * this table existed has none, so seed from MAX(uid_validity) over its mailboxes (falling back to the
+ * requested value) — never lower, or a recreated name could reuse a live mailbox's (UIDVALIDITY, UID)
+ * space. An existing row is left untouched: it already tracks names that have since been deleted.
+ */
+function migrateCatalogMeta(db: DatabaseSync, uidValidity: number): void {
+  const has = db.prepare('SELECT 1 FROM catalog_meta WHERE id = 0').get() !== undefined;
+  if (has) return;
+  const maxRow = db.prepare('SELECT COALESCE(MAX(uid_validity), 0) AS m FROM mailbox').get() as { m: number };
+  const seed = Math.max(uidValidity, Number(maxRow.m));
+  db.prepare('INSERT INTO catalog_meta (id, uid_validity_hwm) VALUES (0, ?)').run(seed);
+}
 
 /** Add the name column to databases created before multi-mailbox existed. */
 function migrateNameColumn(db: DatabaseSync): void {
@@ -314,9 +334,22 @@ export class SqliteCatalog {
     db.exec(SCHEMA);
     migrateNameColumn(db);
     migrateModseqColumns(db);
+    migrateCatalogMeta(db, uidValidity);
     const cat = new SqliteCatalog(db);
-    if (cat.get('INBOX') === undefined) cat.create('INBOX', uidValidity);
+    // Seed INBOX at exactly the requested UIDVALIDITY (not the monotonic counter): it is the
+    // catalog's origin, and the high-water mark was initialised to this same value, so the first
+    // CREATE after it lands one higher. Insert it directly rather than via create() (which would
+    // bump the counter and hand INBOX UIDVALIDITY+1).
+    if (cat.get('INBOX') === undefined) {
+      db.prepare('INSERT INTO mailbox (id, uid_validity, uid_next, name) VALUES (1, ?, 1, ?)').run(uidValidity, 'INBOX');
+    }
     return cat;
+  }
+
+  /** Advance and return the next UIDVALIDITY — strictly greater than any previously assigned. */
+  #nextUidValidity(): number {
+    this.#db.prepare('UPDATE catalog_meta SET uid_validity_hwm = uid_validity_hwm + 1 WHERE id = 0').run();
+    return Number((this.#db.prepare('SELECT uid_validity_hwm FROM catalog_meta WHERE id = 0').get() as { uid_validity_hwm: number }).uid_validity_hwm);
   }
 
   listNames(): readonly string[] {
@@ -333,9 +366,12 @@ export class SqliteCatalog {
   }
 
   /** Create a mailbox. Returns undefined if the name already exists. */
-  create(name: string, uidValidity = 1): SqliteMailbox | undefined {
+  create(name: string): SqliteMailbox | undefined {
     const canon = canonicalMailboxName(name);
     if (this.get(canon) !== undefined) return undefined;
+    // A monotonic UIDVALIDITY (never a value handed out before), so a name recreated after a
+    // DELETE cannot reuse the deleted incarnation's (UIDVALIDITY, UID) space — RFC 9051 §6.3.4.
+    const uidValidity = this.#nextUidValidity();
     const next = this.#db.prepare('SELECT COALESCE(MAX(id), 0) + 1 AS id FROM mailbox').get() as { id: number };
     this.#db.prepare('INSERT INTO mailbox (id, uid_validity, uid_next, name) VALUES (?, ?, 1, ?)').run(Number(next.id), uidValidity, canon);
     // The row is inserted and the schema is present — attach without re-running DDL.

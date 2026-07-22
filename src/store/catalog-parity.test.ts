@@ -21,6 +21,7 @@ import { SqliteCatalog } from './sqlite-mailbox.ts';
 interface MailboxView {
   readonly messages: ReadonlyArray<{ uid: number; modseq: number; flags: string[]; body: string }>;
   readonly uidNext: number;
+  readonly uidValidity: number;
   readonly highestModseq: number;
   readonly expungedFrom0: number[];
 }
@@ -32,6 +33,7 @@ interface CatalogLike {
     storeFlags(uid: number, mode: 'add' | 'remove' | 'replace', flags: readonly string[]): void;
     readonly messages: ReadonlyArray<{ uid: number; modseq: number; flags: ReadonlySet<string>; raw: Buffer }>;
     readonly uidNext: number;
+    readonly uidValidity: number;
     readonly highestModseq: number;
     expungedSince(modseq: number): number[];
   } | undefined;
@@ -48,6 +50,10 @@ function viewOf(cat: CatalogLike): Record<string, MailboxView> {
     out[name] = {
       messages: mb.messages.map((m) => ({ uid: m.uid, modseq: m.modseq, flags: [...m.flags].sort(), body: m.raw.toString('latin1') })),
       uidNext: mb.uidNext,
+      // UIDVALIDITY is part of the observable view too (RFC 9051 §6.3.4): a monotonic-counter
+      // divergence between the backends would recreate a name with a different validity in one
+      // implementation than the other, which this parity assert now catches.
+      uidValidity: mb.uidValidity,
       highestModseq: mb.highestModseq,
       expungedFrom0: mb.expungedSince(0),
     };
@@ -78,6 +84,11 @@ function exerciseCatalog(cat: CatalogLike): Record<string, MailboxView> {
   assert.equal(cat.rename('Work', 'Projects'), 'ok');
   assert.equal(cat.delete('Backup'), true);
 
+  // Delete-then-recreate a name: the recreated mailbox must get a fresh, higher UIDVALIDITY in
+  // BOTH backends identically (RFC 9051 §6.3.4), never the deleted incarnation's — so the
+  // monotonic counter has to advance in lockstep. Recreate 'Backup' (just deleted above).
+  assert.notEqual(cat.create('Backup'), undefined, 'the recreated Backup is created');
+
   return viewOf(cat);
 }
 
@@ -85,6 +96,32 @@ test('SqliteCatalog and MemoryCatalog are observably identical across CREATE/DEL
   const mem = exerciseCatalog(new MemoryCatalog(1));
   const sql = exerciseCatalog(SqliteCatalog.open(new DatabaseSync(':memory:'), 1));
   assert.deepEqual(sql, mem);
+});
+
+test('DELETE then CREATE of the same name assigns a strictly-greater UIDVALIDITY (RFC 9051 §6.3.4, both implementations)', () => {
+  // An INVARIANT assertion, not parity: reusing UIDVALIDITY 1 on a recreated name is a bug BOTH
+  // backends shared before this fix (both hardcoded uidValidity = 1 in create()), so the
+  // differential oracle above is blind to it — it only catches the two DIVERGING. An offline
+  // client that cached (UIDVALIDITY 1, UID 1..n) for the old Work would show those stale bodies
+  // for the new Work's freshly-assigned UID 1..m. The recreated mailbox must therefore never
+  // reuse a prior incarnation's (UIDVALIDITY, UID) space.
+  for (const cat of [new MemoryCatalog(1) as CatalogLike, SqliteCatalog.open(new DatabaseSync(':memory:'), 1)]) {
+    cat.create('Work');
+    cat.get('Work')!.append(Buffer.from('old body'));
+    const firstValidity = cat.get('Work')!.uidValidity;
+    assert.equal(cat.delete('Work'), true);
+    cat.create('Work');
+    const secondValidity = cat.get('Work')!.uidValidity;
+    assert.ok(
+      secondValidity > firstValidity,
+      `recreated Work UIDVALIDITY ${secondValidity} must exceed the deleted incarnation's ${firstValidity}`,
+    );
+    assert.equal(cat.get('Work')!.messages.length, 0, 'the recreated mailbox is empty');
+    // And a third incarnation climbs again — the counter is monotonic, never merely toggled.
+    assert.equal(cat.delete('Work'), true);
+    cat.create('Work');
+    assert.ok(cat.get('Work')!.uidValidity > secondValidity, 'each recreation strictly increases');
+  }
 });
 
 test('the double INBOX rename does not strand INBOX tombstones (both implementations)', () => {

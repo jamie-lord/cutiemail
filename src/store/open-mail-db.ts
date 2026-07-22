@@ -27,6 +27,16 @@ import { chmodSync } from 'node:fs';
 export const BUSY_TIMEOUT_MS = 5000;
 
 /**
+ * The on-disk schema epoch this binary understands, stamped into PRAGMA user_version.
+ * Migrations within a version are additive (a new table or a defaulted column, applied in
+ * place by the owning catalog/registry), so an OLDER file is upgraded transparently. A file
+ * carrying a HIGHER version was written by a newer cutiemail and is refused rather than opened
+ * and written with semantically-degraded rows. Bump this whenever a schema change would make
+ * an older binary's writes wrong (not merely for an additive column an older binary ignores).
+ */
+export const SCHEMA_VERSION = 1;
+
+/**
  * Force a mail-database file to owner-only (0600) permissions. The DB holds SCRAM
  * credential material (salt/iterations/stored_key/server_key) and raw message bytes —
  * never group/world readable. The daemon's 0o077 umask makes NEW files 0600, but this
@@ -50,9 +60,24 @@ export function openMailDb(path: string): DatabaseSync {
   db.exec(`PRAGMA busy_timeout=${BUSY_TIMEOUT_MS}`);
   try {
     db.exec('PRAGMA journal_mode=WAL');
+    // NORMAL is the correct WAL pairing: an fsync at checkpoint rather than one per commit,
+    // the trade the crash suite's recorded scope already assumes (WAL's own default is FULL).
+    db.exec('PRAGMA synchronous=NORMAL');
   } catch {
-    /* :memory: and some builds don't support WAL — harmless */
+    /* :memory: and some builds don't support WAL/synchronous, harmless */
   }
+  // Schema-version gate: refuse a database written by a NEWER cutiemail rather than opening it
+  // and writing rows it will misread. Migrations within a version are additive, so a strictly
+  // OLDER file is stamped forward and upgraded in place by its owning catalog/registry; only a
+  // strictly-newer on-disk version is fatal.
+  const onDisk = Number((db.prepare('PRAGMA user_version').get() as { user_version: number }).user_version);
+  if (onDisk > SCHEMA_VERSION) {
+    db.close();
+    throw new Error(
+      `database ${path} was written by a newer cutiemail (schema v${onDisk}); this binary understands up to v${SCHEMA_VERSION}. Upgrade the binary, or restore a backup taken by this version.`,
+    );
+  }
+  if (onDisk < SCHEMA_VERSION) db.exec(`PRAGMA user_version=${SCHEMA_VERSION}`);
   // Tighten on the way in, so a handle opened on a pre-hardening 0644 file heals it.
   secureMailDbFile(path);
   return db;
