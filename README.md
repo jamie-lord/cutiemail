@@ -30,7 +30,7 @@ here, each recorded as a decision with reasons ([how it's tested](docs/TESTING.m
 enforcement, multiple domains per instance, and clustering. One domain, a handful of humans, on a
 small box you own — that's the shape it serves best.
 
-**Maturity:** young (v0, one maintainer) but held to an unusually high verification bar — 1,000+
+**Maturity:** young (v0, one maintainer) but held to a high verification bar — 1,000+
 tests including negative controls, security-reviewed hostile-input surfaces, and a production
 instance exchanging authenticated mail with Gmail daily. Run it for mail you care about only after
 reading the honest limitations in [the deployment guide](docs/DEPLOYMENT.md).
@@ -65,15 +65,17 @@ harmless `ExperimentalWarning: SQLite …`. The `npm` scripts silence it with
 PLAIN AUTH over TLS), and IMAPS. It binds `127.0.0.1` only — a private plaything on the machine
 in front of you; putting it on a real server with real DNS is
 [the deployment guide](docs/DEPLOYMENT.md). Leave it running (it's a foreground daemon) and stop
-it with Ctrl-C or SIGTERM any time — shutdown is graceful and the SQLite databases are
-crash-safe. **State lands beside the code**: the control and mailbox databases are created in
-the working directory (`npm start` always runs from the repo root; the startup banner prints the
-resolved path), so run it from the same place each time — or set `MAIL_CONTROL_DB` to an
-absolute path. There is no config file and the zero-config run needs no variables at all —
-everything is configured by environment variable (the full list is in the
-[configuration reference](#configuration-reference) below), and the SQLite files are created on
-first run (no schema step). On PowerShell, set variables as `$env:MAIL_DOMAIN='...'` before
-`npm start` (the `VAR=value command` one-liners below are POSIX-shell syntax).
+it with Ctrl-C or SIGTERM any time — shutdown is graceful and the SQLite databases are crash-safe.
+
+**State lands beside the code**: the control and mailbox databases are created in the working
+directory (`npm start` always runs from the repo root; the startup banner prints the resolved
+path), so run it from the same place each time — or set `MAIL_CONTROL_DB` to an absolute path.
+
+There is no config file: the zero-config run needs no variables at all, and everything else is set
+by environment variable (the full list is the [configuration reference](#configuration-reference)
+below). The SQLite files are created on first run — no schema step. On PowerShell, set variables as
+`$env:MAIL_DOMAIN='...'` before `npm start`; the `VAR=value command` one-liners below are
+POSIX-shell syntax.
 
 New to running mail? Start with the picture in
 [the deployment guide's "The shape of it"](docs/DEPLOYMENT.md#the-shape-of-it) for a plain-English
@@ -102,7 +104,8 @@ client (Thunderbird, Apple Mail) at the local dev instance:
   AUTH is only offered after STARTTLS).
 - **Username** — the account login exactly (`demo`), **not** `demo@mail.example.com`; it is
   case-sensitive and is not the email address.
-- The bundled dev certificate is self-signed, so accept the one-time security exception.
+- The bundled dev certificate is self-signed and its name won't match `127.0.0.1` (it's a
+  throwaway dev cert, not issued for your machine), so accept the one-time security exception.
 
 The same entry point is the operator toolbox: `node src/main.ts <command>`, run from the repo
 folder — read the pair as one word, the way `systemctl <verb>` is one word:
@@ -175,13 +178,17 @@ It makes a surprisingly good Mailpit-style sink for developing an app that sends
 SMTP/IMAP server, so your code exercises real protocol behaviour:
 
 ```sh
-MAIL_CONTROL_DB=:memory: MAIL_OUTBOUND=hold npm start
+MAIL_CONTROL_DB=./devmail.db MAIL_OUTBOUND=hold npm start
 ```
 
-`:memory:` keeps every database ephemeral, `hold` guarantees nothing is ever relayed to the real
-internet (fixtures with real-looking addresses stay on the box, visible in `queue list`), the
-seeded `demo`/`demo` account accepts submissions, `+tag` subaddressing gives each test its own
-address, and `mail list demo` / `selftest demo` are your assertions.
+`hold` guarantees nothing is ever relayed to the real internet — fixtures with real-looking
+addresses stay on the box — the seeded `demo`/`demo` account accepts submissions, and `+tag`
+subaddressing gives each test its own address. The file-backed `MAIL_CONTROL_DB` is deliberate:
+the inspection commands run as separate processes, so `queue list` and `mail list demo` can only
+see the queue and mailbox when they share an on-disk database with the daemon — those, plus
+`selftest demo`, are your assertions. Delete `devmail.db` and any `mail-*.db` when you're done.
+(For a purely ephemeral run use `MAIL_CONTROL_DB=:memory:`, but then assert only over the wire —
+`selftest` or an IMAP client — since a second process can't read another's in-memory database.)
 
 ### Your data, your exit
 
@@ -192,6 +199,10 @@ history *in* works the same way — see "Migrating your existing mail" in
 [the deployment guide](docs/DEPLOYMENT.md).
 
 ## What it does
+
+The ports named below are the standard protocol ports (the production defaults); the local dev
+instance from "Run it" uses `2525`/`5587`/`5993` instead, per the [configuration
+reference](#configuration-reference).
 
 - **Receive** — SMTP on 25 with STARTTLS. Rejects bare CR/LF (the SMTP-smuggling class), enforces
   SIZE, validates recipients against the hosted domain (no open relay, no backscatter), detects
@@ -301,7 +312,7 @@ implementations — Exim, mox, and aiosmtpd — with zero false positives**; the
 
 ## Design decisions
 
-Recorded as ADRs in [docs/decisions/](docs/decisions/): why RFC 5321 rather than the unpublished 5321bis,
+Recorded as ADRs in [docs/decisions/](docs/decisions/0000-about-these-decisions.md): why RFC 5321 rather than the unpublished 5321bis,
 why a from-scratch TypeScript runner, and what the deliberately minimal toolchain leaves out. To
 add a corpus module, [the corpus authoring guide](src/corpus/AUTHORING.md) is the contract.
 

@@ -1,5 +1,6 @@
 {
   "name": "exim-4.98-reference",
+  "note": "Separate docker-compose profile (port 2527, image exim/exim4:4.98). The published Exim result (59 conformant / 2 non-conformant) came from the native install in exim-local.json (Exim 4.99.4, port 2526); this Docker path is untested here.",
   "serverDomain": "exim.example.com",
   "host": "127.0.0.1",
   "port": 2527,

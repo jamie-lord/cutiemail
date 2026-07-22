@@ -130,6 +130,14 @@ of people:
   and the literal framing) — bounded by the 25 MiB size cap × the connection budget.
 - **Body/header `SEARCH` is inherently O(mailbox)** — it must stream each candidate, though now
   one row at a time, never a whole-mailbox allocation.
+- **Disk is the sizing constraint, not CPU or memory.** The store is the messages themselves, so
+  as a rough rule **store size ≈ raw mail size** (SQLite's per-message overhead is small against
+  the RFC 822 bytes), plus headroom for the outbound queue (each queued row holds a whole signed
+  message, bounded by the 10,000-row depth cap × the 25 MiB size cap) and the WAL. Size the volume
+  for the mail you expect to keep, with margin. If the disk *does* fill, inbound delivery fails
+  **transiently** — the storage write throws, and the SMTP receiver answers `451` rather than
+  losing the message, so the sending MX retries and mail waits for you to free space rather than
+  vanishing. (Submission over the queue-depth cap likewise gets a transient `451`.)
 
 One further lever is known and deliberately not pulled: resolving a sequence set to UIDs before
 touching metadata would make a bounded `FETCH` O(matched) instead of O(mailbox), cutting the

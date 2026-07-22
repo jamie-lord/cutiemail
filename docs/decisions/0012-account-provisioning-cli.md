@@ -52,9 +52,9 @@ The careful key-derivation design was only as strong as its weakest input path.
 - Operators who previously rotated passwords by editing `MAIL_PASS` and
   restarting will see a warning telling them the env password is now ignored —
   the behaviour change is visible, not silent.
-- Live-verified on a deployed instance: an account added by CLI while the
-  daemon was running authenticated over IMAPS immediately, no restart, no
-  password anywhere in the environment.
+- Verified end-to-end: an account added by CLI while the daemon is running
+  authenticates over IMAPS immediately, with no restart and no password
+  anywhere in the environment.
 
 ## Follow-up (2026-07-18)
 

@@ -18,6 +18,14 @@ mox-0.0.15:    37 conformant, 2 non-conformant, 1 latitude, 28 inconclusive
 aiosmtpd-1.4.6: 59 conformant, 4 non-conformant, 0 latitude,  6 inconclusive (STARTTLS on)
 ```
 
+> The Exim and mox rows each sum to 68 (the suite size at the time), but the aiosmtpd
+> STARTTLS-on row sums to 69. This is not a double-count: that figure was captured against
+> the **69-case** suite — after the `mail-resets-prior-recipient-state` case (R-5321-3.3-b)
+> was added, see [CALIBRATION-aiosmtpd.md](CALIBRATION-aiosmtpd.md) — whereas the Exim and mox
+> rows are from the earlier 68-case suite. The extra case (R-5321-3.3-b) grades inconclusive
+> against aiosmtpd, so it lands in that row's inconclusive count. Re-run Exim and mox against
+> the current corpus to bring all three rows onto the same suite size.
+
 Every finding on every server was triaged to a genuine cause — the suite made **no false
 accusation against any of three independent implementations**. mox's high inconclusive count is
 honest: `mox localserve` rejects the test MAIL FROM domain (`conformance-suite.invalid`) with a

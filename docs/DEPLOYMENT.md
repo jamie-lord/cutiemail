@@ -51,6 +51,14 @@ Four things decide whether this is worth your afternoon (it takes about one):
   in full.
 - **An hour or two**, most of it waiting for DNS.
 
+The walkthrough assumes a **Debian/Ubuntu** box — every package command below is
+Debian-family (`apt-get`, `ufw`, the NodeSource `.deb` script). On RHEL-family
+distros (Fedora, Rocky, AlmaLinux) substitute `dnf` for `apt-get` and `firewalld`
+for `ufw`, and use NodeSource's
+[rpm setup script](https://github.com/nodesource/distributions#rpm-distributions)
+in place of the deb one. Everything else — the CLI, the systemd unit, the DNS — is
+identical.
+
 ## The whole job, in order
 
 Every step links to its section; do them top to bottom — each one depends on
@@ -66,7 +74,9 @@ the ones before it:
 8. [Point your mail client at it](#pointing-your-mail-client-at-it) and email yourself from Gmail.
 
 Prefer containers? [Running it in a container](#running-it-in-a-container) replaces
-steps 2, 3, and 6. In a hurry? The throwaway box below automates all of it.
+steps 2, 3, and 6. In a hurry? The throwaway box below automates all of it. Once it's
+live, [Upgrading](#upgrading) covers pulling a new version safely, and
+[Decommissioning](#decommissioning) is the teardown when you're done.
 
 ## Quick start: a throwaway Hetzner box (receiving)
 
@@ -223,6 +233,20 @@ docker compose up -d
 docker compose logs -f
 ```
 
+**Just trying it locally?** The real-certificate requirement is there to stop you serving
+the repo's public dev key on a public bind — it isn't in your way on a throwaway local run.
+Two ways past it: set `MAIL_ALLOW_DEV_CERT: 1` in the environment to serve the bundled
+self-signed dev cert (your client will warn about it, and the same public-key caveat applies —
+never do this where anyone outside can reach the box), or mint your own self-signed cert into
+`./tls` in one line:
+
+```sh
+openssl req -x509 -newkey rsa:2048 -nodes \
+  -keyout tls/key.pem -out tls/cert.pem -days 365 -subj "/CN=$MAIL_DOMAIN"
+```
+
+Let's Encrypt (step 1 above) stays the production answer; these are for a local kick of the tyres.
+
 One named volume (`/data`) holds every database and the DKIM key; the container binds the
 unprivileged ports internally and maps them to 25/587/993 on the host, so nothing inside needs
 a privileged-port capability. If a step is skipped the daemon says so instead of guessing — a
@@ -281,8 +305,13 @@ reachability from the internet — see the firewall note under [What you need](#
 
 It exits 1 on any failure, so it works as a cron'd health check; re-run it whenever
 deliverability "suddenly" changes, because the usual cause is drift in exactly the
-things it checks (an expired certificate, a changed IP, a lost PTR). The table
-explains what each record is *for*:
+things it checks (an expired certificate, a changed IP, a lost PTR). Two things it
+does **not** check: it refuses the literal placeholder `mail.example.com` (it has no
+real DNS), so substitute your real domain as everywhere in this guide; and it does not
+test whether your IP has landed on a blocklist (Spamhaus, Barracuda, and the like) — so
+if DNS, PTR, and cert all come back green but mail is suddenly rejected or spam-foldered,
+check the IP against the major blocklists by hand (see
+[Known limitations](#known-limitations)). The table explains what each record is *for*:
 
 One warning that outranks the table: **if your DNS host can proxy traffic (Cloudflare's
 orange cloud), turn it OFF for the A record** — set it to *DNS only*. Mail protocols
@@ -301,9 +330,14 @@ failures says why. Cloudflare's default for a new A record is *proxied*.
 
 All three align because the From domain, the DKIM `d=`, and the SPF domain are the
 same name — so a receiver checking DMARC sees SPF *and* DKIM pass for the sending
-domain, which is what moves mail from spam to the inbox. `setup` publishes `p=quarantine`;
-use `--dmarc-policy none` (monitor only) while you're still testing, then move to
-`quarantine`/`reject` once you trust your setup.
+domain. That is what receivers require before they will even *consider* your
+reputation — a prerequisite for the inbox, not a guarantee of it (see
+[Known limitations](#known-limitations) on why passing auth is only half the job).
+
+`setup` publishes `p=quarantine`. If you'd rather ease in, start at `p=none`
+(`--dmarc-policy none`) while you confirm SPF and DKIM actually align — add a `rua=`
+address to the record and read the aggregate reports receivers send back — then tighten
+to `quarantine`/`reject` once the reports show clean passes and you trust your setup.
 
 `setup` also prints an **optional inbound MTA-STS** section: the exact policy file to
 host at `https://mta-sts.<domain>/.well-known/mta-sts.txt` (any static HTTPS host — this
@@ -340,9 +374,15 @@ straight to the registry — so no plaintext password ever lands in the unit or
 `/proc/<pid>/environ`:
 
 ```sh
-sudo -u mail node src/main.ts init you --db /var/lib/mailserver/control.db
+sudo -u mail env MAIL_DOMAIN=mail.example.com \
+  node src/main.ts init you --db /var/lib/mailserver/control.db
 # prompts (twice, hidden) for the password, then prints a passwordless unit to run
 ```
+
+Pass `MAIL_DOMAIN` here even though `init` doesn't strictly need it: the unit it prints
+back embeds whatever domain it sees, so without it the suggested unit carries the
+placeholder `MAIL_DOMAIN=mail.example.com`. Either set it as above, or replace that line
+with your real domain before you install the unit.
 
 `init` is first-run-only — it refuses once any account exists (use `account add` after) — and
 it is not optional in this flow: on a public bind the daemon **refuses to boot with zero
@@ -407,6 +447,11 @@ exit       # leave the root shell
 Serve `fullchain.pem` (not `cert.pem`) — clients need the intermediate. Without
 the hook, certbot renews into `/etc/letsencrypt` while the daemon keeps serving
 the stale copy until it expires ~30 days later.
+
+The apt certbot installs a systemd timer that runs `renew` twice daily and fires the
+deploy hook above when a cert is actually renewed — no separate cron needed. Confirm it's
+active with `systemctl list-timers certbot.timer`; some snap and pip installs don't add
+one, in which case add your own timer or cron entry running `certbot renew`.
 
 ### The systemd unit
 
@@ -499,6 +544,23 @@ authentication with its source IP — the raw material for spotting a credential
 is no built-in fail2ban integration; see [Known limitations](#known-limitations)). A transient
 failure is retried on a backoff from the persistent SQLite queue (below); a `5xx` bounces at once.
 
+A representative slice of that trail, one gloss each:
+
+```text
+inbound 4b2f: from=<alice@gmail.com> to=<you@mail.example.com> size=4213 dkim=pass spf=pass dmarc=pass filed=INBOX
+    ^ accepted inbound — all three auth checks passed, delivered to the inbox
+inbound e7a1: from=<spammer@evil.test> to=<you@mail.example.com> size=902 dkim=none spf=fail dmarc=fail filed=Junk
+    ^ accepted but failing DMARC — filed to Junk, not rejected (a trusted ARC sealer could still rescue it)
+submission 9c1d: user=you from=<you@mail.example.com> local=0 remote=1 queued=42 size=1876
+    ^ accepted submission from an authenticated client — one remote recipient, enqueued as id 42
+queue 42: deferred for 1 recipient(s) (attempt 2) — 421 4.7.0 try again later; next attempt 2026-07-22T14:03:11.000Z
+    ^ transient relay failure — retried on backoff from the persistent queue, not lost
+queue 42 bob@example.net: bounced (gave up after 12 attempts)
+    ^ delivery permanently gave up — sender gets a bounce, the bytes land in dead-letter
+submission auth failed for "you" from 203.0.113.7
+    ^ a failed login with its source IP (imap auth failed ... from ... is the IMAP-side equivalent)
+```
+
 ### Verify it end to end
 
 Two checks, in order. First `doctor` proves the *outside* — DNS, PTR, SPF, the DKIM key
@@ -513,7 +575,9 @@ sudo -u mail env MAIL_DOMAIN=mail.example.com \
 ```
 
 Then `selftest` proves the *mail path itself*, before pointing a client at it — authenticated
-submission, local delivery, and IMAP read-back, in one command against the running daemon:
+submission, local delivery, and IMAP read-back, in one command against the running daemon
+(it prompts for the account's password — submission and IMAP both authenticate as that login —
+or reads one line from stdin when piped):
 
 ```sh
 sudo -u mail env MAIL_DOMAIN=mail.example.com MAIL_SUBMISSION_PORT=587 MAIL_IMAP_PORT=993 \
@@ -669,6 +733,25 @@ A backup is the **complete mail store plus the credential registry, in plaintext
 SCRAM records aren't reversible to passwords, but message bodies are in the clear. Encrypt it
 before it leaves the box (`age`, `restic`, or your backup tool's own encryption).
 
+**Make it nightly.** The one command above is easy to wire into a timer so backups happen
+whether or not you remember. A cron entry that snapshots, verifies, prunes to a retention window,
+and ships an encrypted copy off-box:
+
+```sh
+# /etc/cron.d/mailserver-backup — 03:15 nightly, as the daemon's user
+15 3 * * * mail cd /opt/mailserver && dest=/backups/mail-$(date +\%F) && \
+  node --disable-warning=ExperimentalWarning src/main.ts backup "$dest" --db /var/lib/mailserver/control.db && \
+  node --disable-warning=ExperimentalWarning src/main.ts verify "$dest" && \
+  age -r <your-age-recipient> "$dest"/*.db && rclone copy "$dest" remote:mail-backups/ && \
+  find /backups -maxdepth 1 -name 'mail-*' -mtime +14 -exec rm -rf {} +
+```
+
+Swap `age`/`rclone` for whatever your backup tool uses; the load-bearing parts are `backup`
+then `verify` (never trust an unverified snapshot), a retention prune (`-mtime +14` keeps two
+weeks), and getting an *encrypted* copy off the box — a backup that only lives on the box it's
+protecting is no backup. A systemd timer + oneshot service does the same job if you prefer it to
+cron.
+
 **Restoring from a backup** — stop the daemon, copy the snapshot files over the live ones beside
 `MAIL_CONTROL_DB`, restart, and confirm:
 
@@ -703,6 +786,91 @@ sudo -u mail node src/main.ts mail list you --db /var/lib/mailserver/control.db 
 
 A permanently-failed message always does two things: the sender gets a `multipart/report`
 bounce, and the bytes land in the dead-letter store until an explicit `purge`.
+
+## Keeping an eye on it
+
+A single-box mail server doesn't need a metrics stack — a cron'd `doctor` (a health check that
+exits non-zero on drift, [above](#dns)) plus a couple of threshold one-liners cover the things
+that actually go wrong. Three worth wiring up:
+
+```sh
+# queue not draining — alert if more than N messages are stuck waiting to relay
+[ "$(sudo -u mail node src/main.ts queue list --db /var/lib/mailserver/control.db | wc -l)" -gt 50 ] \
+  && echo "mail queue backing up" | mail -s "queue depth" you@elsewhere.example
+
+# anything in dead-letter is delivery that permanently gave up — you want to know
+[ "$(sudo -u mail node src/main.ts dead-letter list --db /var/lib/mailserver/control.db | wc -l)" -gt 0 ] \
+  && echo "dead-letter is non-empty" | mail -s "dead-letter" you@elsewhere.example
+
+# free space on the data volume — the store grows with the mailboxes; alert under ~10%
+df --output=pcent /var/lib/mailserver | tail -1 | tr -dc 0-9 | awk '$1 > 90 { print "disk >90% on mail volume" }'
+```
+
+Two more habits, no tooling needed: **watch free disk** on the data volume (a full disk makes
+inbound delivery fail *transiently*, so senders retry rather than lose mail — see
+[Performance](PERFORMANCE.md#the-ceilings) — but you don't want to run there), and **check the
+IP against the major blocklists periodically** (Spamhaus, Barracuda, and mxtoolbox's combined
+lookup) — `doctor` can't see a blocklisting, and a fresh cloud IP can land on one without warning.
+
+## Upgrading
+
+Because the code *is* the runtime — no build, no compiled artefact — an upgrade is a `git pull`.
+The one trap is that schema migrations run **automatically and forward-only** the first time each
+database is opened, so a new version can migrate your store to a shape the old version won't read.
+Always back up first, and stop the daemon before pulling so nothing is mid-write:
+
+```sh
+# 1. back up and verify — this is your rollback (see below)
+sudo -u mail node src/main.ts backup /backups/pre-upgrade-$(date +%F) --db /var/lib/mailserver/control.db
+sudo -u mail node src/main.ts verify  /backups/pre-upgrade-$(date +%F)
+
+# 2. stop, pull (as the checkout's owner — root here, since it was cloned with sudo), start
+sudo systemctl stop mailserver
+sudo git -C /opt/mailserver pull
+sudo systemctl start mailserver
+
+# 3. prove it — the outside, then the mail path
+sudo -u mail env MAIL_DOMAIN=mail.example.com \
+  MAIL_TLS_CERT=/var/lib/mailserver/tls/cert.pem \
+  MAIL_DKIM_KEY=/var/lib/mailserver/dkim/mail.key MAIL_DKIM_SELECTOR=s1 \
+  node src/main.ts doctor
+sudo -u mail env MAIL_DOMAIN=mail.example.com MAIL_SUBMISSION_PORT=587 MAIL_IMAP_PORT=993 \
+  node src/main.ts selftest you
+```
+
+**To roll back**, checking out the old code is not enough — migrations are one-way, so an
+already-migrated database may not open under the previous version. Restore the pre-upgrade
+backup you took in step 1 (`git -C /opt/mailserver checkout <old-ref>`, stop the daemon, copy the
+snapshot back over the live databases as in [Restoring from a backup](#day-2-operations-accounts-backups-the-queue),
+start again). That is exactly why step 1 isn't optional.
+
+## Decommissioning
+
+Tearing it down cleanly is setup in reverse — stop the service, take the secrets and mail with
+you (or destroy them deliberately), and pull the DNS so nothing points at a dead host:
+
+```sh
+# 1. stop and remove the service
+sudo systemctl disable --now mailserver
+sudo rm /etc/systemd/system/mailserver.service
+sudo systemctl daemon-reload
+
+# 2. take a final backup BEFORE you delete anything (skip only if you truly want the mail gone)
+sudo -u mail node src/main.ts backup /backups/final-$(date +%F) --db /var/lib/mailserver/control.db
+
+# 3. remove the data directory — this holds the DKIM PRIVATE KEY and every message in cleartext.
+#    `rm -rf` is enough on most disks; on an SSD, disk-level secure erase is illusory, so if the
+#    box is a VM, destroying the instance's disk is the real guarantee.
+sudo rm -rf /var/lib/mailserver
+
+# 4. the certificate and its renewal hook
+sudo certbot delete --cert-name mail.example.com
+sudo rm -f /etc/letsencrypt/renewal-hooks/deploy/mailserver-tls.sh
+```
+
+Finally, **remove the DNS records** you published (A, MX, PTR, and the SPF/DKIM/DMARC TXT records)
+at your DNS host and VPS provider — a lingering MX pointing at a host that no longer answers just
+delays mail for anyone who writes to the old address. Then delete the box.
 
 ## What actually happens on send and receive
 
@@ -745,6 +913,17 @@ Both paths are the real code — the same `smtp-receiver`, `sqlite-mailbox`,
 
 These are deliberate and recorded:
 
+- **Deliverability is more than DNS.** Getting SPF/DKIM/DMARC right gets you *past* a
+  receiver's authentication checks; it does nothing for the other half of the decision, your
+  IP and domain **reputation**, and this guide can't hand you that. Concretely: a brand-new
+  cloud IP — exactly the throwaway-VPS path recommended above — is often *already* on a
+  blocklist from whoever held it last, so check it against
+  [Spamhaus](https://check.spamhaus.org/) and [mxtoolbox](https://mxtoolbox.com/blacklists.aspx)
+  before trusting it. Microsoft (Outlook.com / Office 365) blocks large swathes of cloud IP
+  ranges outright and expects you to enrol in [SNDS](https://sendersupport.olc.protection.outlook.com/snds/)
+  and JMRP even with flawless auth. New domains and IPs are trusted slowly — reputation *warms
+  up* over weeks of low, steady, wanted volume. And every "it reached the inbox" proof in this
+  guide is Gmail: Gmail accepting your mail is a good sign, not universal acceptance.
 - **DKIM signing is opt-in.** Without `MAIL_DKIM_KEY` (a PEM private key, RSA
   ≥1024-bit or Ed25519) and `MAIL_DKIM_SELECTOR` set, outbound delivery relies
   on SPF alone — accepted by the big providers, but reliably spam-foldered. The

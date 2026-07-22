@@ -270,6 +270,8 @@ a.term-pill:active { box-shadow: 0 0 0 var(--bubblegum); transform: translate(4p
 
 /* docs page header + footer nav */
 .doc-top { font-family: var(--font-mono); font-size: 13px; color: var(--mauve); margin-bottom: 6px; }
+.doc-top a { color: inherit; text-decoration: none; }
+.doc-top a:hover { color: var(--pink); text-decoration: underline; }
 .doc-edit { margin-top: 48px; padding-top: 20px; border-top: 3px dashed var(--dash); font-size: 14px; color: var(--mauve); display: flex; justify-content: space-between; flex-wrap: wrap; gap: 12px; }
 .doc-edit a { font-weight: 700; text-decoration: none; }
 

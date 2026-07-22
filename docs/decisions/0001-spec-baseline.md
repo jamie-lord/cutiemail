@@ -89,7 +89,7 @@ Out of scope for v1, with reasons:
 - **RFC 3461 (DSN), 3798 (MDN)** — orthogonal to transport conformance.
 - **RFC 7504 (NULL MX), 5321 §5 DNS resolution** — requires controlled DNS; the suite asserts on-wire
   behaviour against a given host:port and does not drive resolution. Revisit if precondition
-  management (task #12) grows a DNS fixture.
+  management grows a DNS fixture.
 - **SPF/DKIM/DMARC/ARC** — separate corpora already exist and are vendorable (open-spf.org RFC 7208
   suite; ValiMail `arc_test_suite`). Not our job to re-derive.
 

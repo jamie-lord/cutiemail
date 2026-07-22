@@ -4,7 +4,7 @@
   <section class="hero">
     <div class="hero__mascot"><img src="/assets/mascot.svg" alt="Cuti, the cutiemail mascot" width="150" height="131"></div>
     <h1>A mail server,<br>built from the byte up.</h1>
-    <p class="hero__sub">cutiemail is a small, self-contained mail server in TypeScript. It sends and receives real internet mail, works with Thunderbird and Apple Mail, and keeps your mailbox in plain SQLite files you own. Zero runtime dependencies, and honest about what it leaves out.</p>
+    <p class="hero__sub">cutiemail is the SQLite of email: a small, self-contained mail server in TypeScript you can actually read. It sends and receives real internet mail, works with Thunderbird and Apple Mail, and keeps your mailbox in plain SQLite files you own. Zero runtime dependencies, and honest about what it leaves out.</p>
     <div class="hero__cta">
       <a class="term-pill" href="#start" aria-label="try it on your laptop — the two-minute quick start"><span class="p">$</span> npm start<span class="caret"></span></a>
       <a class="btn btn--primary" href="/docs/deployment/">host real email →</a>
@@ -20,7 +20,7 @@
 
   <!-- quick start -->
   <section id="start" class="wrap-narrow section" style="padding-top: 8px;">
-    <p class="note-mono" style="color: var(--mauve); margin-bottom: 14px;">Two minutes, on the machine in front of you. The only prerequisite is <a href="https://nodejs.org/">Node.js</a> 22.18 or newer (<code>node --version</code> to check — Debian/Ubuntu's apt version is too old). Putting it on a real server with real DNS is <a href="/docs/deployment/">the deployment guide</a>.</p>
+    <p class="note-mono" style="color: var(--mauve); margin-bottom: 14px;">Two minutes, on the machine in front of you. You need <a href="https://nodejs.org/">Node.js</a> 22.18 or newer (<code>node --version</code> to check — Debian/Ubuntu's apt version is too old; npm ships inside Node) and <code>git</code>, which most machines already have. Putting it on a real server with real DNS is <a href="/docs/deployment/">the deployment guide</a>.</p>
     <div class="term">
       <div class="term__bar">
         <span class="term__dot" style="background: var(--bubblegum);"></span>
@@ -48,7 +48,7 @@
         <div><span class="ok">✓ selftest PASSED — authenticated submission, local delivery, and IMAP read-back all work.</span></div>
       </div>
     </div>
-    <p class="note-mono" style="color: var(--mauve);">A <code>demo/demo</code> account is seeded so it just works (on your machine only — it never comes to life on a public server). Point Thunderbird or Apple Mail at <code>127.0.0.1:5993</code> — username <code>demo</code>, not an email address — and say hi to yourself.</p>
+    <p class="note-mono" style="color: var(--mauve);">A <code>demo/demo</code> account is seeded so it just works (on your machine only — it never comes to life on a public server). Point Thunderbird or Apple Mail at IMAP <code>127.0.0.1:5993</code> and SMTP <code>127.0.0.1:5587</code> (STARTTLS) — username <code>demo</code>, not an email address — accept the one-time self-signed-certificate warning, and say hi to yourself.</p>
   </section>
 
   <!-- what it does -->
@@ -81,7 +81,7 @@
   <section class="wrap section">
     <div class="panel panel--blush">
       <div class="panel__col" style="flex: 1.2;">
-        <h2 style="font-size: clamp(24px, 4vw, 30px); margin: 0 0 12px;">Also: a very good pretend internet.</h2>
+        <h2 style="font-size: clamp(24px, 4vw, 32px); margin: 0 0 12px;">A very good pretend internet.</h2>
         <p style="font-size: 16px; line-height: 1.65; color: var(--mauve); margin: 0;">Building an app that sends mail? Run cutiemail as a Mailpit-style sink. Except it's a <em>real</em> SMTP/IMAP server, so your code exercises real protocol behaviour. <code>hold</code> mode guarantees nothing ever escapes the box.</p>
       </div>
       <div class="panel__col term" style="box-shadow: none; padding: 20px 24px;">
@@ -138,10 +138,11 @@
       </div>
       <div class="panel__col" style="background: var(--term-deep); border: 2px solid #6b3a52; border-radius: 16px; padding: 22px 26px; font-family: var(--font-mono); font-size: 13.5px; line-height: 2;">
         <div><span style="color: var(--bubblegum);">$</span> node src/cli.ts run \</div>
-        <div style="padding-left: 16px; color: #d9b8c8;">--config reference-servers/exim.json</div>
+        <div style="padding-left: 16px; color: #d9b8c8;">--config reference-servers/exim-local.json</div>
         <div style="color: var(--mint);">✓ 59 conformant · 0 false positives</div>
         <div style="color: var(--butter);">~ 2 divergences — real, triaged, recorded</div>
-        <div style="color: var(--term-comment);"># exits non-zero on findings — drops straight into CI</div>
+        <div style="color: var(--term-comment);"># aim it at any live SMTP server — setup in reference-servers/</div>
+        <div style="color: var(--term-comment);"># exits non-zero on findings, so it drops straight into CI</div>
       </div>
     </div>
   </section>
@@ -152,7 +153,7 @@
       <div class="callout__icon">!</div>
       <div>
         <h3>An honest note before you trust it</h3>
-        <p>cutiemail is young (v0, one maintainer), held to an unusually high verification bar, with a production instance exchanging authenticated mail with Gmail daily. Today it belongs on a spare domain or a subdomain — there's no spam filter and no third-party security review yet — not as the only home of mail you can't lose. The full list of limitations, and the cutover path for later, is in <a href="/docs/deployment/">the deployment guide</a>.</p>
+        <p>cutiemail is young (v0, one maintainer), held to a high verification bar — over a thousand tests, each proven able to fail against a deliberately broken build — with a production instance exchanging authenticated mail with Gmail daily. Today it belongs on a spare domain or a subdomain — there's no spam filter or third-party security review yet, and a brand-new server's IP earns its sending reputation slowly — not as the only home of mail you can't lose. The full list of limitations, and the cutover path for later, is in <a href="/docs/deployment/">the deployment guide</a>.</p>
       </div>
     </div>
   </section>

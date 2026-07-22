@@ -5,7 +5,7 @@ a one-sentence, mission-rooted reason it matters — the bar the
 [working agreement](WORKING-AGREEMENT.md) sets. Everything that was weighed and **declined** is
 in the ledger below, each with its reason, so a cut is a recorded decision rather than a silent
 gap. For what the server already does and how it's proven, see [TESTING.md](TESTING.md) and
-[docs/decisions/](decisions/).
+[the decision records](decisions/0000-about-these-decisions.md).
 
 ## Open — test-bed completeness
 

@@ -7,8 +7,10 @@ nature — a parser or auth bug here is an internet-facing bug — so reports ar
 This is a personal, correctness-focused project, not a funded security programme: there is no
 bounty, and responses are best-effort by one maintainer. What there *is* is a real appetite to fix
 exploitable bugs, and a codebase built to be reproduced against — every hostile-input surface has
-been through security review, with a regression test for each defended attack (see
-[docs/TESTING.md](docs/TESTING.md)).
+been through the maintainer's own security review, with a regression test for each defended attack
+(see [docs/TESTING.md](docs/TESTING.md)). There has been **no third-party security audit** yet —
+it's on the honest-limitations list in [the deployment guide](docs/DEPLOYMENT.md), and independent
+scrutiny is exactly what a report like yours contributes.
 
 ## Reporting a vulnerability
 

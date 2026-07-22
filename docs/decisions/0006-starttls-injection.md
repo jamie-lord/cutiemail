@@ -39,31 +39,25 @@ mutant-server infrastructure it seemed to need.
    convicts. The mutant server models this with an `injectAfterStartTls` defect
    and an `awaitingTls` session state; no cert, no `tls.TLSSocket` server side.
 
-## Consequences / scope left on the table (deliberately)
+## Consequences
 
-- **The TLS-terminating mutant is now BUILT** (opt-in `terminateTls`): `#handle` was
-  refactored into `#attachSession(sock, state, greet)` that re-attaches the command
-  loop to an upgraded server-side `tls.TLSSocket` (self-signed test cert in
-  `src/testing/tls-test-cert.ts`), with the session state RESET to initial after the
-  handshake unless the `keepStateAcrossStartTls` defect retains it. This covers the
-  **RFC 3207 §4.2 post-handshake session reset** ("the SMTP protocol is reset to the
-  initial state") — proven both ways in `tls-session.integration.test.ts`: a
-  conformant server refuses a post-TLS MAIL that lacks a fresh EHLO (503), a
-  state-retaining server wrongly accepts it (250). It uses `Wire` directly (with
-  `rejectUnauthorized:false` for the self-signed cert) rather than the corpus `Conn`
-  path, which is the right home until a calibration-time real-cert server exists.
-- **The smuggle-into-TLS injection variant is now BUILT too** (`smuggleIntoTls`
-  defect): after the handshake, the plaintext pipelined before it is fed into the
-  encrypted session via `#attachSession`'s `initialBuf`, so the injected command
-  runs in the authenticated context. `tls-session.integration.test.ts` proves it
-  both ways (pipeline `STARTTLS<CRLF>NOOP<CRLF>`, complete the handshake, then read
-  unprompted — a vulnerable server replays the smuggled NOOP inside TLS, a
-  conformant one is silent).
+All three STARTTLS variants are covered, each proven both ways (a conformant server stays
+silent; a vulnerable one is convicted by the extra reply) in
+`tls-session.integration.test.ts`:
 
-**Update (later same session): the deferral above is CLOSED.** All three STARTTLS
-variants are now covered — pre-handshake plaintext injection (the corpus case),
-smuggle-into-TLS, and the §4.2 post-handshake session reset — via the opt-in
-`terminateTls` TLS-terminating mutant and `tls-session.integration.test.ts`.
-- `EXTRACTED_SECTIONS` lists bare section numbers, so RFC 3207 §4.2 and RFC 5321
-  §4.2 share the string "4.2" in the coverage header. Harmless today (the ids
-  disambiguate); revisit if a second RFC 3207 section lands.
+- **Pre-handshake plaintext injection** — the corpus case above: `STARTTLS<CRLF>NOOP<CRLF>`
+  in one TCP segment, read the 220, then assert silence. No live TLS handshake needed.
+- **Post-handshake session reset** (RFC 3207 §4.2, "the SMTP protocol is reset to the initial
+  state") — an opt-in TLS-terminating mutant (`terminateTls`) re-attaches the command loop to
+  an upgraded server-side `tls.TLSSocket` (self-signed test cert) with the session state reset
+  after the handshake, unless the `keepStateAcrossStartTls` defect retains it. A conformant
+  server refuses a post-TLS `MAIL` that lacks a fresh `EHLO` (503); a state-retaining one
+  wrongly accepts it (250).
+- **Smuggle-into-TLS** (`smuggleIntoTls` defect) — plaintext pipelined before the handshake is
+  fed into the encrypted session so the injected command would run in the authenticated
+  context; a vulnerable server replays the smuggled command inside TLS, a conformant one is
+  silent.
+
+One coverage-header wrinkle: `EXTRACTED_SECTIONS` lists bare section numbers, so RFC 3207 §4.2
+and RFC 5321 §4.2 share the string "4.2". Harmless today (the ids disambiguate); revisit if a
+second RFC 3207 section lands.

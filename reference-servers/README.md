@@ -22,6 +22,11 @@ daemon — own config, own spool, a high port, no root, the host's system mail u
 | mox | 0.0.15 (`brew install mox`) | 37 / 2 / 28 | **0** |
 | aiosmtpd | 1.4.6 (pip, venv) | 59 / 4 / 6 | **0** |
 
+(The aiosmtpd row totals one higher because it was captured against a later, 69-case corpus — the
+`mail`-resets-recipient-state case (`R-5321-3.3-b`) was added after the Exim and mox runs, and it
+grades *inconclusive* there. Re-running all three on the current corpus would align the totals;
+see `CALIBRATION-differential.md`.)
+
 Every finding was triaged to a real cause — a genuine byte-verified divergence (all three
 honour bare-LF command terminators, `R-5321-2.3.8-a`/`R-5321-4.1.1.4-i`; aiosmtpd additionally
 accepts NUL/BEL control octets) or our own minimal test config — never a suite bug or an RFC

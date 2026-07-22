@@ -51,8 +51,9 @@ flowchart TD
 
 ### Identity
 
-The **login name stays the bare username** (`test`), not the full address — the deployed
-Apple Mail account authenticates as `test`, and changing that would break a live client.
+The **login name stays the bare username** (e.g. `test`), not the full address — an
+already-configured client authenticates with the bare username, and changing that would break
+its saved account.
 The registry maps `login → {credential, mailDbPath, enabled}`, and delivery matches the
 address `login@domain` to the same account. (A future multi-domain story can widen the
 key; not now.)
@@ -94,17 +95,17 @@ scoped to one user. No change to `MailboxNotifier` itself; we simply hold one pe
 - **Bounces:** a bounce for a local sender lands in that sender's INBOX; otherwise it
   relays with a null return-path, unchanged.
 
-### Passwords (closes roadmap #13)
+### Passwords
 
 The registry persists **only SCRAM stored keys** (never the password), reusing the
-existing `AccountStore` derivation. This is the accounts/auth backend the roadmap listed
-as `[build]`. Brute-force lockout remains a recorded later nice-to-have.
+existing `AccountStore` derivation — the accounts/auth backend the multi-account design
+needs. Brute-force lockout remains a recorded later nice-to-have.
 
 ### Migration
 
-The box's existing `mail.db` becomes user `test`'s mail DB: the registry seeds `test`
-with its `mailDbPath` pointed at the existing file. **No data loss, no re-sync for the
-live Apple Mail client.**
+An existing single-account `mail.db` becomes that user's mail DB: the registry seeds the
+account with its `mailDbPath` pointed at the existing file. **No data loss, and no re-sync
+for an already-connected client.**
 
 ## Consequences
 
@@ -119,7 +120,7 @@ live Apple Mail client.**
      stays independently consistent and the registry survives.
   4. **Differential** — the per-user `SqliteCatalog` still passes the reference-vs-SQLite
      differential harness (unchanged schema, just one file each).
-  5. **Live** — 2–3 real accounts provisioned on a live deployment, each driven with Apple Mail;
+  5. **Live** — multiple real accounts provisioned and each driven with a real IMAP client;
      isolation and per-user delivery verified end to end.
 - Config grows from `{user, pass}[]` to accounts that may name a mail-DB path (default
   `mail-<login>.db` beside the control DB).
@@ -127,27 +128,19 @@ live Apple Mail client.**
   is purely additive — so this is not a rewrite of the IMAP server, only a new seam.
 - Revisitable, like every ADR, with a stated reason.
 
-## Outcome (2026-07-17)
+## Outcome
 
-Built, tested, deployed, and live-verified. The verification above landed as:
+Built and verified against the five obligations above. Two points are worth recording beyond
+"it passed":
 
-1. **Isolation** — `imap-multiaccount.integration.test.ts` (resolver level, with a negative
-   control proving a mis-wired resolver leaks) and `daemon-multiaccount.integration.test.ts`
-   (end-to-end through the real SQLite stores). **Live:** on the deployed server, a second account
-   `alice` was provisioned beside `test`; `test`→`alice` and `alice`→`test` submissions each
-   landed only in the recipient's mailbox, invisible to the other.
-2. **Concurrency** — a same-user two-connection sync test (a phone and desktop on one
-   account see each other's changes via the shared cached store), plus two live accounts
-   served concurrently by the deployed daemon.
-3. **Crash consistency** — **deliberately not given a new test.** Each per-user DB is the
-   *identical* `SqliteCatalog` + WAL already proven to survive `kill -9` by
-   `sqlite-crash.integration.test.ts`; the multi-account layer changes no storage internals,
-   so a multi-DB crash test would pass for a reason already covered (against the project's
-   "no test that passes for the wrong reason" rule). The control DB's registry durability is
-   proven by `account-registry.test.ts`'s close/reopen test. Recorded as a reasoned omission.
-4. **Differential** — the per-user catalog is the unchanged `SqliteCatalog`, still covered by
-   the existing reference-vs-SQLite differential harness.
-5. **Live migration** — the deployment's existing `mail.db` became user `test`'s store with **zero
-   data loss** (all 25 messages + custom folders preserved) and **no re-sync for Apple Mail**,
-   which reconnected transparently. `control.db` (registry + queue) and `mail-alice.db` are
-   separate files, as designed. Unknown local recipients are rejected `550` at RCPT.
+- **Crash consistency was deliberately not given a new test.** Each per-user database is the
+  *identical* `SqliteCatalog` + WAL already proven to survive `kill -9`; the multi-account layer
+  changes no storage internals, so a new multi-DB crash test would pass for a reason already
+  covered — against the project's "no test that passes for the wrong reason" rule. The control
+  database's registry durability is proven by its own close/reopen test.
+- **Isolation carries a negative control** — a deliberately mis-wired resolver leaks, proving the
+  isolation test can actually detect a leak.
+
+Verified end-to-end with a real IMAP client: separate accounts served concurrently, each user's
+mail delivered only to their own mailbox, and a pre-existing single-account database migrated in
+place with no data loss and no client re-sync. Unknown local recipients are rejected `550` at RCPT.

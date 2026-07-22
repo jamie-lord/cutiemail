@@ -13,6 +13,14 @@
 #                                                 # exact DNS records to publish
 #   5. docker compose up -d
 #
+# Just trying it locally? Step 1's real cert is only to stop you serving the repo's
+# public dev key where others can reach it. For a throwaway local run, either set
+# MAIL_ALLOW_DEV_CERT: 1 in the environment below to serve the bundled dev cert (your
+# client will warn; same public-key caveat — local only), or mint a self-signed one:
+#   openssl req -x509 -newkey rsa:2048 -nodes \
+#     -keyout tls/key.pem -out tls/cert.pem -days 365 -subj "/CN=$MAIL_DOMAIN"
+# Let's Encrypt stays the production answer.
+#
 # Day 2:
 #   docker compose logs -f                                      # per-message + auth-failure trail
 #   docker compose exec mail node src/main.ts account add anna  # manage accounts, no restart

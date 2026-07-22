@@ -195,6 +195,10 @@ async function findAndCleanup(host: string, port: number, login: string, passwor
  * hidden prompt (or one stdin line when piped), never from argv.
  */
 export async function runSelftest(args: readonly string[], io: OpsIo, env: Record<string, string | undefined>, password?: string): Promise<number> {
+  if (args[0] === '--help' || args[0] === '-h') {
+    io.out(USAGE);
+    return 0;
+  }
   const login = args[0];
   if (login === undefined || !validLogin(login)) {
     io.err(login === undefined ? 'selftest: a login is required.' : `selftest: invalid login ${JSON.stringify(login)}.`);

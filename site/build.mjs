@@ -117,6 +117,7 @@ function head(title, desc) {
 <meta property="og:title" content="${esc(title)}">
 <meta property="og:description" content="${esc(desc)}">
 <meta property="og:type" content="website">
+<meta property="og:site_name" content="cutiemail">
 <meta name="theme-color" content="#fff6f0">
 <link rel="icon" href="/favicon.svg" type="image/svg+xml">
 ${FONTS}
@@ -182,7 +183,7 @@ function writePage(outUrl, html) {
 
 function buildHome() {
   const body = readFileSync(join(HERE, 'pages/home.html'), 'utf8');
-  const html = `${head('cutiemail — a mail server, built from the byte up', 'A small, self-contained mail server in TypeScript. Full SMTP send + receive, IMAP4rev2, SPF/DKIM/DMARC, SQLite storage, zero runtime dependencies.')}
+  const html = `${head('cutiemail — a mail server, built from the byte up', 'The SQLite of email: a tiny, self-contained mail server in TypeScript with zero runtime dependencies — small enough to actually read. Real SMTP send + receive, IMAP4rev2, SPF/DKIM/DMARC, plain-SQLite storage.')}
 ${nav()}
 <main>${body}</main>
 ${footer()}
@@ -201,7 +202,7 @@ function buildDoc(item) {
   const title = item.title.replace(/^\d+\s·\s/, '');
   const ghLink = GH_BLOB + item.src;
   const doc = `<div class="prose">
-<p class="doc-top">docs</p>
+<p class="doc-top"><a href="/docs/">docs</a></p>
 ${content}
 <div class="doc-edit"><a href="${ghLink}">Edit this page on GitHub →</a><span>${esc(item.src)}</span></div>
 </div>`;

@@ -47,7 +47,7 @@ Point 4 is the one that would have bitten regardless of language.
 ## Mitigations
 
 - **MPT stays a design reference.** Its script/expectation format and `ExternalHostSystem` model are
-  prior art worth reading before inventing our own (see decision 0004, task #8, task #11).
+  prior art worth reading before inventing our own (see decision 0004).
 - **Its portability model is the thing to copy**: connect to host:port, no spawning or managing the
   server under test, configurable expected greeting. That is precisely what makes MPT usable against
   non-James servers and what makes Cassandane unusable against non-Cyrus ones.
@@ -56,7 +56,8 @@ Point 4 is the one that would have bitten regardless of language.
 
 ## Consequences
 
-- Tasks #6–#11 exist because of this decision.
-- We own the runner's bugs. Calibration against Postfix/Exim (task #23) is therefore not optional
-  polish — it is the only thing standing between us and confidently reporting our own defects as
-  other people's non-conformance.
+- The runner, its script/expectation format, and its calibration are now work this project owns
+  rather than inherits.
+- We own the runner's bugs. Calibration against Postfix/Exim is therefore not optional polish — it
+  is the only thing standing between us and confidently reporting our own defects as other people's
+  non-conformance.

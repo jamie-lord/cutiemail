@@ -208,7 +208,7 @@ deployment through connect, IDLE push, send, flag changes, and delete/EXPUNGE; a
 ## Opinionated cuts
 
 Deliberate scope decisions, recorded so they are never mistaken for gaps (the full ledger with
-reasons is in [BACKLOG.md](BACKLOG.md) and [docs/decisions/](decisions/)):
+reasons is in [BACKLOG.md](BACKLOG.md) and [the decision records](decisions/0000-about-these-decisions.md)):
 
 - **No POP3.** IMAP4rev2 serves every modern client; POP3 is a whole protocol and harness
   bought for nothing.

@@ -7,7 +7,7 @@ strong philosophy — reading it first will save us both time.
 - **The mission and the bar:** [docs/WORKING-AGREEMENT.md](docs/WORKING-AGREEMENT.md).
 - **What's done vs. deliberately left open:** [docs/TESTING.md](docs/TESTING.md).
 - **How the pieces fit:** [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
-- **Why things are the way they are:** [docs/decisions/](docs/decisions/) (the ADRs).
+- **Why things are the way they are:** [the decision records](docs/decisions/0000-about-these-decisions.md) (the ADRs).
 
 ## What makes a good contribution
 
