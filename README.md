@@ -1,3 +1,5 @@
+[![cutiemail: a small, self-contained mail server in TypeScript](https://cuti.email/assets/banner.png)](https://cuti.email)
+
 # A mail server, built from the byte up
 
 **cutiemail** is a small, opinionated, self-contained mail server in TypeScript. It sends and
