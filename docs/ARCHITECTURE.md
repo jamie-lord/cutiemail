@@ -1,6 +1,6 @@
 # Architecture: how this is built
 
-The 150 files are really two programs that share one spine:
+The ~200 source files are really two programs that share one spine:
 
 - **A mail server** you can `npm start`: SMTP in, IMAP out, SQLite in the middle.
 - **A whole-server conformance test bed**: a fixed register of what the RFCs

@@ -7,9 +7,11 @@ MIME parser, and the DKIM/SPF/DMARC crypto are all hand-built on the byte layer.
 the only thing you install is Node.js itself; `node_modules` holds nothing but dev tooling
 (the TypeScript type-checker and its type definitions), none of which the server ever loads.
 
-The design goal is best said as the *SQLite of email*:
-correct, minimal, and embeddable rather than a sprawling MTA. Scope is chosen deliberately and
-every omission is a recorded decision, not a gap. See [the working agreement](docs/WORKING-AGREEMENT.md)
+The design goal is best said as the *SQLite of email*. Email can't be serverless the way SQLite
+is (something has to answer when the rest of the internet knocks on port 25), so the phrase means
+everything else people reach for SQLite for: small enough to read, zero configuration to start,
+zero runtime dependencies, your mail in plain files you can query, and correctness treated as the
+product. Scope is chosen deliberately and every omission is a recorded decision, not a gap. See [the working agreement](docs/WORKING-AGREEMENT.md)
 for the philosophy, [how it's tested](docs/TESTING.md) for what is done versus
 deliberately left out, and [the backlog](docs/BACKLOG.md) for what's still open and what was declined, with reasons.
 
@@ -162,7 +164,7 @@ folder. Read the pair as one word, the way `systemctl <verb>` is one word:
 | `MAIL_OUTBOUND` | `deliver` | set `hold` for a dev/test sink: remote mail is queued (inspect with `queue list`) but **never relayed**, so nothing can escape a test instance (ADR 0019). Any other value refuses to boot. |
 | `MAIL_DEBUG` | unset | `1` logs every received SMTP/IMAP command line to stderr (credentials redacted), the protocol-level debugging view |
 
-Embedding it instead of running the daemon? `startServer(config)` takes a `MailServerConfig`
+Running it from your own code instead of as a standalone daemon? `startServer(config)` takes a `MailServerConfig`
 object directly, with the same knobs plus injection seams (DNS resolvers, the auth throttle, the
 DMARC sampler) that the test suite uses.
 
