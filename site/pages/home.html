@@ -55,7 +55,7 @@
   <section class="wrap section">
     <div class="section__head">
       <h2>A whole mail server. Actually whole.</h2>
-      <p>No mail libraries: the SMTP and IMAP engines, the MIME parser, and the DKIM crypto are all code in this repo.</p>
+      <p>No mail libraries: the SMTP and IMAP engines, the MIME parser, and the SPF/DKIM/DMARC logic are all code in this repo, over Node's own <code>node:crypto</code> and <code>node:sqlite</code>.</p>
     </div>
     <div class="grid-3">
       <div class="card">
@@ -106,7 +106,7 @@
         <div class="heart-list" style="margin-top: 14px;">
           <div><span class="hh">♥</span><span>One process, one language, zero runtime dependencies</span></div>
           <div><span class="hh">♥</span><span>Plain SQLite files you can query with stock <code>sqlite3</code></span></div>
-          <div><span class="hh">♥</span><span>Every protocol byte is code in this repo, nothing imported, nothing hidden</span></div>
+          <div><span class="hh">♥</span><span>Every protocol byte is code in this repo, nothing pulled from npm, nothing hidden</span></div>
           <div><span class="hh">♥</span><span>Leaving is as easy as arriving: byte-exact storage, plain <code>.eml</code> out</span></div>
         </div>
       </div>

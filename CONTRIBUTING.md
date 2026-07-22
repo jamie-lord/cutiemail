@@ -33,8 +33,9 @@ the work.
 These are the invariants the whole codebase is built on. A change that breaks one won't be merged:
 
 - **Zero runtime dependencies.** The only things in `node_modules` are the type-checker and Node's
-  own types (`devDependencies`). No mail libraries: the SMTP/IMAP engines, MIME parser, and crypto
-  are hand-built. If you reach for a dependency, that's the signal to reconsider.
+  own types (`devDependencies`). No mail libraries: the SMTP/IMAP engines, MIME parser, and the
+  SPF/DKIM/DMARC logic are hand-built over Node's `node:crypto` and `node:sqlite`. If you reach for
+  a dependency, that's the signal to reconsider.
 - **Bytes, never strings.** Message content is a `Buffer` from the socket to the SQLite `BLOB` and
   back, never round-tripped through a JavaScript string. That rule is what makes a delivered
   message readable back byte-exact.

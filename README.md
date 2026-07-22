@@ -5,7 +5,8 @@
 **cutiemail** is a small, opinionated, self-contained mail server in TypeScript. It sends and
 receives real internet mail and speaks the protocols existing clients (Thunderbird, Apple Mail on
 desktop and phone) drive, storing everything in SQLite. No mail libraries: the SMTP and IMAP engines, the
-MIME parser, and the DKIM/SPF/DMARC crypto are all hand-built on the byte layer. **Zero runtime dependencies**:
+MIME parser, and the SPF/DKIM/DMARC logic are all written here on the byte layer, over Node's own
+`node:crypto` and `node:sqlite`. **Zero runtime dependencies**:
 the only thing you install is Node.js itself; `node_modules` holds nothing but dev tooling
 (the TypeScript type-checker and its type definitions), none of which the server ever loads.
 

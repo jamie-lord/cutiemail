@@ -1,8 +1,8 @@
 # Security policy
 
 cutiemail is a from-scratch mail server: it hand-builds the SMTP and IMAP engines, the MIME
-parser, and the SPF/DKIM/DMARC/ARC crypto on the byte layer. That makes it security-sensitive by
-nature. A parser or auth bug here is an internet-facing bug, so reports are welcome.
+parser, and the SPF/DKIM/DMARC/ARC logic on the byte layer, over Node's own crypto primitives. That
+makes it security-sensitive by nature. A parser or auth bug here is an internet-facing bug, so reports are welcome.
 
 This is a personal, correctness-focused project, not a funded security programme: there is no
 bounty, and responses are best-effort by one maintainer. What there *is* is a real appetite to fix
