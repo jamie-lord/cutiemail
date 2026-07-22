@@ -720,6 +720,21 @@ export function configFromEnv(): MailServerConfig & { usingDevCert: boolean; dev
       `refusing to bind ${host} with the bundled self-signed DEV certificate — its private key is public, so serving it on a public interface exposes account credentials. Set MAIL_TLS_CERT and MAIL_TLS_KEY to a real certificate. (For a deliberate throwaway test, set MAIL_ALLOW_DEV_CERT=1 — never in production.)`,
     );
   }
+  // The same rule that keeps the demo/demo dev fallback loopback-only (see startServer): a
+  // well-known credential must never come to life on real ports. MAIL_USER with an unset or
+  // empty MAIL_PASS would otherwise seed the (documented) primary login with the well-known
+  // default password 'demo' — or an empty password — on public 587/993, behind only an
+  // advisory log line. On loopback the convenience default stands; a public bind must set a
+  // real MAIL_PASS, or leave MAIL_USER unset and provision with `init` (SCRAM in the registry).
+  if (
+    process.env.MAIL_USER !== undefined
+    && !isLoopbackHost(host)
+    && (process.env.MAIL_PASS === undefined || process.env.MAIL_PASS === '')
+  ) {
+    throw new Error(
+      `refusing to seed account ${JSON.stringify(process.env.MAIL_USER)} on ${host}: MAIL_USER is set but MAIL_PASS is empty, so the account would take a well-known default password on a public interface. Set MAIL_PASS to a real passphrase, or leave MAIL_USER unset and provision with \`node src/main.ts init <login>\`.`,
+    );
+  }
   // The bundled dev certificate is imported lazily only when no real cert is given.
   const dev = usingDevCert
     ? loadDevCert()
