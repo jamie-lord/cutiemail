@@ -210,6 +210,13 @@ function buildDoc(item) {
   const raw = readFileSync(srcAbs, 'utf8');
   const env = {};
   let content = md.render(raw, env);
+  // The README opens with a linked hero banner to brighten the GitHub page. On the website the
+  // nav and this page's own H1 already carry that identity, so the raster banner is a redundant
+  // third restatement here; drop the leading banner paragraph from the web render. It stays in
+  // the README as served by GitHub.
+  if (item.src === 'README.md') {
+    content = content.replace(/^\s*<p>\s*<a[^>]*>\s*<img[^>]*banner\.png[^>]*>\s*<\/a>\s*<\/p>\s*/i, '');
+  }
   content = wrapTables(processLinks(content, item.src));
   const title = item.title.replace(/^\d+\s·\s/, '');
   const ghLink = GH_BLOB + item.src;
