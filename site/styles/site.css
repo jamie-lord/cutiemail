@@ -208,6 +208,8 @@ a.term-pill:active { box-shadow: 0 0 0 var(--bubblegum); transform: translate(4p
 .footer__inner { max-width: var(--maxw); margin: 0 auto; display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 20px; }
 .footer__brand { display: flex; align-items: center; gap: 10px; font-size: 14px; color: var(--mauve); }
 .footer__brand img { height: 22px; }
+.footer__brand a { color: inherit; }
+.footer__brand a:hover { color: var(--pink); }
 .footer__links { display: flex; gap: 22px; font-weight: 800; font-size: 14px; align-items: center; }
 .footer__links a { text-decoration: none; }
 .footer__links .dom { font-family: var(--font-mono); font-weight: 500; color: var(--mauve); }

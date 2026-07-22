@@ -138,7 +138,7 @@ function nav() {
 
 function footer() {
   return `<footer class="footer"><div class="footer__inner">
-  <div class="footer__brand"><img src="/assets/mascot-mark.svg" alt="">made with <span style="color:var(--pink)">♥</span> and zero dependencies · MIT © Jamie Lord</div>
+  <div class="footer__brand"><img src="/assets/mascot-mark.svg" alt="">made with <span style="color:var(--pink)">♥</span> and zero dependencies · MIT © <a href="https://lord.technology">Jamie Lord</a></div>
   <div class="footer__links"><a href="/docs/">docs</a><a href="${GH}">github</a><span class="dom">cuti.email</span></div>
 </div></footer>`;
 }
