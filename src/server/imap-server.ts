@@ -505,43 +505,87 @@ function canonicalFlag(f: string): string {
  * treated everything else as an exact name — so `INBOX/%`, `qbox*`, and every other
  * real pattern a client uses to walk the hierarchy matched nothing.
  */
+/** Product of |pattern|×|name| below which the exact DP runs. Real patterns/names are tens of
+ *  chars (product < 10k); the fallback only engages for a hostile huge pattern×name. */
+const LIST_DP_BUDGET = 262_144;
+
 /**
- * Match one mailbox name against an IMAP LIST pattern. `*` matches any run including the '/'
- * hierarchy separator; `%` matches any run NOT crossing '/'; every other character is a literal.
- *
- * This is a LINEAR two-pointer glob (greedy with a single backtrack point per wildcard), NOT a
- * regex. The previous version compiled the pattern to `[^/]*[^/]*…` and let V8's backtracking
- * engine run it: k adjacent wildcards against a failing tail cost O(name^k) — and both the pattern
- * (off the wire) and the name (via CREATE, which imposes no length limit) are attacker-controlled,
- * so a single authenticated `LIST "" %%%%%%%%%%%%b` against a long mailbox froze the whole (single)
- * event loop for minutes. A glob over these two wildcard classes needs no backtracking engine.
+ * Exact IMAP LIST match by bottom-up dynamic programming — correct for any mix of `*`, `%`, and
+ * literals. O(|pattern|×|name|) time, O(|name|) space, no backtracking (so no ReDoS, unlike the
+ * original regex the ReDoS fix removed). `*` matches any run including '/'; `%` matches any run
+ * not crossing '/'. Gated by LIST_DP_BUDGET so a hostile huge pattern×name can't make it costly.
  */
-function matchesListPattern(pat: string, name: string): boolean {
-  let i = 0; // index into name
-  let j = 0; // index into pattern
-  let iStar = -1; // where the most recent wildcard began absorbing in `name`
-  let jStar = -1; // that wildcard's position in `pattern`
-  let pctStar = false; // was that wildcard a '%' (must not cross '/')?
+function matchGlobExact(pat: string, name: string): boolean {
+  const n = name.length;
+  let prev = new Array<boolean>(n + 1).fill(false);
+  prev[0] = true; // empty pattern matches empty name prefix
+  for (let ip = 1; ip <= pat.length; ip++) {
+    const c = pat[ip - 1]!;
+    const cur = new Array<boolean>(n + 1).fill(false);
+    if (c === '*' || c === '%') {
+      cur[0] = prev[0]!; // a wildcard can match the empty run
+      for (let j = 1; j <= n; j++) cur[j] = prev[j]! || (cur[j - 1]! && (c === '*' || name[j - 1] !== '/'));
+    } else {
+      for (let j = 1; j <= n; j++) cur[j] = prev[j - 1]! && c === name[j - 1];
+    }
+    prev = cur;
+  }
+  return prev[n]!;
+}
+
+/**
+ * Linear fallback for pathological |pattern|×|name| (over LIST_DP_BUDGET): a two-pointer glob with
+ * adjacent wildcard runs collapsed (any run containing `*` → `*`, since `*` dominates `%`). It is
+ * ReDoS-free and fails CLOSED — it may under-match an exotic `*`…literal…`%` pattern that crosses
+ * '/', so a client sees fewer of its OWN mailboxes; it never over-matches, so it can never list
+ * another account's mail. Only reachable for absurdly large inputs the exact DP declines.
+ */
+function matchGlobLinear(pat: string, name: string): boolean {
+  let collapsed = '';
+  for (let k = 0; k < pat.length; ) {
+    const ch = pat[k]!;
+    if (ch === '*' || ch === '%') {
+      let star = false;
+      while (k < pat.length && (pat[k] === '*' || pat[k] === '%')) star ||= pat[k++] === '*';
+      collapsed += star ? '*' : '%';
+    } else collapsed += pat[k++];
+  }
+  let i = 0;
+  let j = 0;
+  let iStar = -1;
+  let jStar = -1;
+  let pctStar = false;
   while (i < name.length) {
-    const pc = pat[j];
-    if (j < pat.length && (pc === '*' || pc === '%')) {
+    const pc = collapsed[j];
+    if (j < collapsed.length && (pc === '*' || pc === '%')) {
       iStar = i;
       jStar = j;
       pctStar = pc === '%';
-      j++; // the wildcard matches the empty run for now; extend it on backtrack
-    } else if (j < pat.length && pc === name[i]) {
+      j++;
+    } else if (j < collapsed.length && pc === name[i]) {
       i++;
       j++;
     } else if (iStar >= 0 && (!pctStar || name[iStar] !== '/')) {
-      // Extend the last wildcard to absorb name[iStar]; a '%' may not absorb the '/' separator.
       i = ++iStar;
       j = jStar + 1;
     } else {
       return false;
     }
   }
-  while (j < pat.length && (pat[j] === '*' || pat[j] === '%')) j++; // trailing wildcards match empty
-  return j === pat.length;
+  while (j < collapsed.length && (collapsed[j] === '*' || collapsed[j] === '%')) j++;
+  return j === collapsed.length;
+}
+
+/**
+ * Match one mailbox name against an IMAP LIST pattern. `*` matches any run including the '/'
+ * hierarchy separator; `%` matches any run NOT crossing '/'; every other character is a literal.
+ * Exact (DP) for realistic sizes; a bounded linear fallback for hostile huge inputs. This replaced
+ * the original regex compile (`[^/]*[^/]*…`), whose V8 backtracking was a catastrophic ReDoS —
+ * both the pattern (off the wire) and the name (via CREATE) are attacker-controlled, so a single
+ * authenticated `LIST "" %%%%%%%%%%%%b` against a long mailbox froze the whole event loop.
+ */
+function matchesListPattern(pat: string, name: string): boolean {
+  return pat.length * name.length <= LIST_DP_BUDGET ? matchGlobExact(pat, name) : matchGlobLinear(pat, name);
 }
 
 function matchNames(reference: string, pattern: string, names: readonly string[]): readonly string[] {
@@ -1454,7 +1498,16 @@ export class ImapServer {
               write(sock, `${tag} BAD APPEND syntax`);
               break;
             }
-            const flags = (m[2] ?? '').split(/\s+/).filter((f) => f.length > 0).map(canonicalFlag);
+            // Validate flag/keyword tokens against the flag ABNF (atom chars), matching STORE
+            // (which uses /\\?[\w$.-]+/). Without this, APPEND accepted `"`/`(` in a flag; the
+            // token is stored verbatim and later echoed into `* FETCH (FLAGS (…))` / the SELECT
+            // `* FLAGS (…)` line, producing malformed atoms/unbalanced parens that desync a client.
+            const flagTokens = (m[2] ?? '').split(/\s+/).filter((f) => f.length > 0);
+            if (flagTokens.some((f) => !/^\\?[\w$.-]+$/.test(f))) {
+              write(sock, `${tag} BAD APPEND flag syntax`);
+              break;
+            }
+            const flags = flagTokens.map(canonicalFlag);
             // RFC 9051 §6.3.12: use the client-supplied date-time as INTERNALDATE when
             // present (mail restore/migration relies on it); otherwise stamp now.
             const appendDate = m[3] !== undefined ? parseImapDateTime(m[3]) : null;

@@ -224,3 +224,32 @@ test('MAIL_OUTBOUND parses deliver/hold and fails loud on anything else', () => 
   // A typo must never silently become a really-relaying server.
   withEnv({ MAIL_OUTBOUND: 'holdd' }, () => assert.throws(() => configFromEnv(), /MAIL_OUTBOUND must be/));
 });
+
+test('seedAccounts skips a login that collides case-insensitively (env-seed uniqueness, like the CLI)', async () => {
+  const { seedAccounts } = await import('./main.ts');
+  const { AccountRegistry } = await import('./store/account-registry.ts');
+  const { DatabaseSync } = await import('node:sqlite');
+  const reg = AccountRegistry.open(new DatabaseSync(':memory:'));
+  const logs: string[] = [];
+  // Two logins differing only in case would share one mail-<login>.db on a case-insensitive FS.
+  seedAccounts(
+    reg,
+    [
+      { user: 'Alice', pass: 'password1', mailDbPath: ':memory:' },
+      { user: 'alice', pass: 'password2', mailDbPath: ':memory:' },
+    ],
+    (l) => logs.push(l),
+  );
+  const logins = reg.list().map((a) => a.login);
+  assert.equal(logins.length, 1, 'only the first of a case-colliding pair is seeded');
+  assert.equal(logins[0], 'Alice');
+  assert.ok(logs.some((l) => /SKIPPED.*collides/.test(l)), 'the collision is warned about');
+
+  // Control: distinct logins are both seeded.
+  const reg2 = AccountRegistry.open(new DatabaseSync(':memory:'));
+  seedAccounts(reg2, [
+    { user: 'bob', pass: 'password1', mailDbPath: ':memory:' },
+    { user: 'carol', pass: 'password2', mailDbPath: ':memory:' },
+  ], () => {});
+  assert.equal(reg2.list().length, 2, 'distinct logins are both seeded');
+});

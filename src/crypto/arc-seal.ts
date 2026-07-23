@@ -60,6 +60,9 @@ export function verifySeal(input: Buffer, bValueBase64: string, keyType: 'rsa' |
       return verifyEd25519(input, bValueBase64, importEd25519PublicKey(Buffer.from(publicKeyBase64, 'base64')));
     }
     const key = createPublicKey({ key: Buffer.from(publicKeyBase64, 'base64'), format: 'der', type: 'spki' });
+    // RFC 8301 RSA floor, mirroring the DKIM and ARC-AMS paths: reject a seal signed by a sub-1024
+    // -bit key (a weak intermediate-hop key would otherwise skip the floor the AMS path enforces).
+    if ((key.asymmetricKeyDetails?.modulusLength ?? 0) < 1024) return false;
     return verifySignature(input, bValueBase64, key, 'RSA-SHA256');
   } catch {
     return false;

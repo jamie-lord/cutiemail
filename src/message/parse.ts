@@ -51,6 +51,17 @@ export const MAX_HEADERS = 1000;
  * -digit KB, not hundreds.
  */
 export const MAX_HEADER_SECTION_BYTES = 256 * 1024;
+/**
+ * Cap on the number of recorded anomalies. Pass 1 records per-LINE octet anomalies (bare-lf,
+ * nul-octet, eight-bit, bare-cr, over-long) across the WHOLE message — header AND body — so a
+ * hostile body of e.g. millions of `\0\x80\r\n` lines (all CRLF, so it passes the bare-newline
+ * smuggling filter, and NUL/8-bit are not filtered in DATA) would push one Anomaly object per line
+ * with no ceiling: ~13M objects / ~800 MB heap on a 25 MiB message, ×3 per inbound parse
+ * (DKIM+DMARC+ARC) → OOM. The MAX_HEADER_SECTION_BYTES cap bounds pass 2 only; this bounds pass 1.
+ * Anomalies are structural observations the corpus asserts on by PRESENCE, so truncating past a
+ * generous cap loses nothing real — 10 000 is far above any legitimate message.
+ */
+export const MAX_ANOMALIES = 10_000;
 
 /** Defects that make the parser violate a specific message-format requirement. */
 export interface ParserDefects {
@@ -130,6 +141,14 @@ const isWsp = (b: number | undefined): boolean => b === SP || b === HTAB;
 
 export function parseMessage(input: Buffer, defects: ParserDefects = {}): Message {
   const anomalies: Anomaly[] = [];
+  // Record an anomaly, but never let the list grow without bound: a hostile body can trigger one
+  // per-line anomaly for millions of lines. Past MAX_ANOMALIES we drop further ones and leave a
+  // single 'too-many-anomalies' marker (see MAX_ANOMALIES).
+  const overflow: Anomaly = { kind: 'too-many-anomalies', line: 0 };
+  const pushAnomaly = (a: Anomaly): void => {
+    if (anomalies.length < MAX_ANOMALIES) anomalies.push(a);
+    else if (anomalies.length === MAX_ANOMALIES) anomalies.push(overflow);
+  };
 
   // Pass 1: per-line octet-level anomalies (recorded across the whole message) + locate the
   // header/body boundary (the first EMPTY line). Streaming — no per-line array is retained, so
@@ -137,18 +156,18 @@ export function parseMessage(input: Buffer, defects: ParserDefects = {}): Messag
   let boundaryBodyOffset = -1;
   forEachLine(input, (buf, start, end, terminator, lineNo, bodyOffset) => {
     const len = end - start;
-    if (!defects.dontFlagOverlongLine && len > MAX_LINE) anomalies.push({ kind: 'line-over-998', line: lineNo });
-    if (terminator === 'lf') anomalies.push({ kind: 'bare-lf', line: lineNo });
+    if (!defects.dontFlagOverlongLine && len > MAX_LINE) pushAnomaly({ kind: 'line-over-998', line: lineNo });
+    if (terminator === 'lf') pushAnomaly({ kind: 'bare-lf', line: lineNo });
     if (!defects.acceptNonAsciiSilently) {
       let flaggedNul = false;
       let flagged8 = false;
       for (let j = start; j < end; j++) {
         const b = buf[j]!;
         if (b === NUL && !flaggedNul) {
-          anomalies.push({ kind: 'nul-octet', line: lineNo });
+          pushAnomaly({ kind: 'nul-octet', line: lineNo });
           flaggedNul = true;
         } else if (b >= 0x80 && !flagged8) {
-          anomalies.push({ kind: 'eight-bit', line: lineNo });
+          pushAnomaly({ kind: 'eight-bit', line: lineNo });
           flagged8 = true;
         }
       }
@@ -158,7 +177,7 @@ export function parseMessage(input: Buffer, defects: ParserDefects = {}): Messag
     if (!defects.acceptEmbeddedCr) {
       for (let j = start; j < end; j++) {
         if (buf[j] === CR) {
-          anomalies.push({ kind: 'bare-cr', line: lineNo });
+          pushAnomaly({ kind: 'bare-cr', line: lineNo });
           break;
         }
       }
@@ -167,7 +186,7 @@ export function parseMessage(input: Buffer, defects: ParserDefects = {}): Messag
   });
 
   const body = boundaryBodyOffset === -1 ? Buffer.alloc(0) : input.subarray(boundaryBodyOffset);
-  if (boundaryBodyOffset === -1) anomalies.push({ kind: 'no-empty-line', line: 0 });
+  if (boundaryBodyOffset === -1) pushAnomaly({ kind: 'no-empty-line', line: 0 });
 
   // Pass 2: assemble header fields from the lines BEFORE the boundary, honouring folding (a line
   // starting with SP/HTAB continues the previous field). Stops at the boundary line.
@@ -199,7 +218,7 @@ export function parseMessage(input: Buffer, defects: ParserDefects = {}): Messag
     headerBytes += len + 2;
     if (capHeaderBytes && headerBytes > MAX_HEADER_SECTION_BYTES) {
       if (!headerBytesCapHit) {
-        anomalies.push({ kind: 'header-section-over-cap', line: lineNo });
+        pushAnomaly({ kind: 'header-section-over-cap', line: lineNo });
         headerBytesCapHit = true;
       }
       flush();
@@ -218,7 +237,7 @@ export function parseMessage(input: Buffer, defects: ParserDefects = {}): Messag
     flush();
     if (capHeaders && headers.length >= MAX_HEADERS) {
       if (!headerCapHit) {
-        anomalies.push({ kind: 'too-many-headers', line: lineNo });
+        pushAnomaly({ kind: 'too-many-headers', line: lineNo });
         headerCapHit = true;
       }
       cur = null; // no later continuation appends to a capped header (already null after flush)
@@ -233,7 +252,7 @@ export function parseMessage(input: Buffer, defects: ParserDefects = {}): Messag
     }
     if (colon === -1) {
       // A header-section line with no colon (and not a fold) is malformed.
-      if (len > 0) anomalies.push({ kind: 'header-no-colon', line: lineNo });
+      if (len > 0) pushAnomaly({ kind: 'header-no-colon', line: lineNo });
       return;
     }
     const name = buf.subarray(start, colon);
@@ -241,7 +260,7 @@ export function parseMessage(input: Buffer, defects: ParserDefects = {}): Messag
     // Anything else — a space, a control octet, an 8-bit byte — is a malformed/spoofed field
     // name and the disguise a smuggled header hides behind.
     if (!defects.acceptInvalidFieldNameChars && name.some((b) => b < 33 || b > 126)) {
-      anomalies.push({ kind: 'field-name-invalid-char', line: lineNo });
+      pushAnomaly({ kind: 'field-name-invalid-char', line: lineNo });
     }
     cur = { name, valueParts: [buf.subarray(colon + 1, end)], lineNo };
   });
