@@ -12,7 +12,7 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { parseMessage, hasHeader, hasAnomaly, MAX_HEADERS } from './parse.ts';
+import { parseMessage, hasHeader, hasAnomaly, MAX_HEADERS, MAX_HEADER_SECTION_BYTES } from './parse.ts';
 import type { ParserDefects } from './parse.ts';
 import { messageRequirement } from '../register/message/index.ts';
 import type { MessageRequirementId } from '../register/message/index.ts';
@@ -80,6 +80,37 @@ test('the header-count cap engages exactly at MAX_HEADERS and is off below it (d
   const uncapped = parseMessage(overCap, defect);
   assert.ok(!hasAnomaly(uncapped, 'too-many-headers'), 'dontCapHeaderCount must be detectable');
   assert.equal(uncapped.headers.length, MAX_HEADERS + 50, 'without the cap every field is materialised');
+});
+
+test('a single header folded across millions of lines is capped by bytes (header-section-over-cap)', () => {
+  // MAX_HEADERS caps the field COUNT, not the bytes of ONE field. A single header folded across
+  // ~8M ` \r\n` continuation lines is one field, so the count cap never trips — without the byte
+  // cap this accumulates ~2 GB and stalls the (single) event loop, and inbound mail is parsed 3x.
+  const fold = ' \r\n'.repeat(8_000_000); // one field, ~24 MiB of continuation lines, < SIZE default
+  const big = b(`From: a@example.com${CRLF}X: a\r\n${fold}${CRLF}body`);
+  const start = process.hrtime.bigint();
+  const msg = parseMessage(big);
+  const ms = Number(process.hrtime.bigint() - start) / 1e6;
+  assert.ok(hasAnomaly(msg, 'header-section-over-cap'), 'the header-section byte cap is recorded as an anomaly');
+  // The assembled X value must be bounded by the cap, not the full ~24 MiB of folds.
+  const x = msg.headers.find((h) => h.name.toString('latin1') === 'X');
+  assert.ok(x !== undefined && x.value.length <= MAX_HEADER_SECTION_BYTES + 8, 'the folded value is bounded by the byte cap');
+  assert.ok(ms < 1500, `a monster folded header must parse in bounded time (took ${ms.toFixed(0)}ms)`);
+});
+
+test('the header-byte cap is off below it and detectable via dontCapHeaderBytes', () => {
+  // A realistic header section (well under the cap) is untouched: no anomaly, folding preserved.
+  const legit = b(`From: a@example.com${CRLF}Subject: a${CRLF} folded continuation${CRLF}${CRLF}body`);
+  const ok = parseMessage(legit);
+  assert.ok(!hasAnomaly(ok, 'header-section-over-cap'), 'a normal folded header is not flagged');
+  const subject = ok.headers.find((h) => h.name.toString('latin1') === 'Subject');
+  assert.ok(subject !== undefined && /folded continuation/.test(subject.value.toString('latin1')), 'legit folding is preserved');
+
+  // Negative control: disabling the cap accumulates the whole (bounded-here) folded field and never flags.
+  const overCap = b(`X: a\r\n${' \r\n'.repeat(MAX_HEADER_SECTION_BYTES)}${CRLF}body`);
+  assert.ok(hasAnomaly(parseMessage(overCap), 'header-section-over-cap'), 'over the cap is flagged');
+  const defect: ParserDefects = { dontCapHeaderBytes: true };
+  assert.ok(!hasAnomaly(parseMessage(overCap, defect), 'header-section-over-cap'), 'dontCapHeaderBytes must be detectable');
 });
 
 test('R-5322-2.1.1-a: a line over 998 octets is flagged (and the defect is caught)', () => {

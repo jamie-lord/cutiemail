@@ -71,9 +71,14 @@ test('mailboxCount counts the mailboxes in a single From value (the mailbox-list
   // aligned DKIM) rides in while an MUA may render the first, victim, address.
   assert.equal(mailboxCount('victim@bank.com, x@evil.com'), 2, 'two mailboxes in one value');
   assert.equal(mailboxCount('<victim@bank.com>, <x@evil.com>'), 2, 'two angle-addrs too');
+  // The comma-LESS two-angle evasion: two mailboxes, no separator, so a comma-only count reports 1
+  // and the send-as gate would bless one while a recipient MUA could render the other.
+  assert.equal(mailboxCount('<bob@example.com> <alice@example.com>'), 2, 'two angle-addrs with no comma');
   // A single mailbox stays 1 regardless of a comma hidden in a quoted display-name or comment.
   assert.equal(mailboxCount('<victim@bank.com>'), 1);
+  assert.equal(mailboxCount('Alice <alice@example.com>'), 1, 'display-name form is one mailbox');
   assert.equal(mailboxCount('"Alice, Example" <alice@example.com>'), 1, 'quoted comma is not a separator');
+  assert.equal(mailboxCount('"x <a@evil.com>" <victim@bank.com>'), 1, 'quoted decoy angle-addr is not counted');
   assert.equal(mailboxCount('(a, comment) alice@example.com'), 1, 'comment comma is not a separator');
   assert.equal(mailboxCount('Just A Name'), 0, 'no addr-spec, no mailbox');
 });

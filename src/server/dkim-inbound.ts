@@ -142,10 +142,14 @@ async function verifyOneSignature(rawValue: string, headers: ReturnType<typeof p
   const lTag = sig.tags.get('l');
   const lengthLimit = lTag !== undefined && /^\d+$/.test(lTag) ? Number(lTag) : undefined;
 
-  // RFC 6376 §3.5: l= must not exceed the canonicalised body length. An overlong l=
-  // is malformed and (with the append caveat of §8.2) a red flag; the receive path
-  // must apply the same check the body-hash verifier does, not honour it blindly.
-  if (lengthLimit !== undefined && lengthLimit > memo.canonicalized(bodyCanon).length) {
+  // RFC 6376 §8.2 (the "l=" partial-body caveat): a signature whose l= does not cover the WHOLE
+  // canonicalised body must not yield a pass. Honouring a partial l= is a spoof vector — an
+  // attacker who captured ONE l=-signed message from a domain can append an entirely new body
+  // after the signed prefix and it still verifies, then DMARC-aligns the forgery into the inbox
+  // under the domain's identity (no key needed). An overlong l= (> body length) is likewise
+  // malformed. We never emit l= ourselves, so requiring full-body coverage costs legitimate mail
+  // nothing. `!==` catches both the append (l < length) and the overlong (l > length) cases.
+  if (lengthLimit !== undefined && lengthLimit !== memo.canonicalized(bodyCanon).length) {
     return { verdict: 'fail', domain: sig.domain };
   }
 

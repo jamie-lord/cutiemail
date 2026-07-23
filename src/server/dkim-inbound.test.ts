@@ -259,6 +259,29 @@ test('an l= exceeding the body length is rejected before the DNS key fetch (RFC 
   assert.ok(validCalls >= 1, 'a valid l= must not be blocked by the overlong-l= guard');
 });
 
+test('a partial l= (body-append forgery) is rejected — RFC 6376 §8.2', async () => {
+  // The forgery: capture one message legitimately l=-signed by a domain, keep the signed prefix +
+  // signature, and append an arbitrary new body. The body hash still matches (it only covers the
+  // prefix), so honouring l= would verify PASS and DMARC would align the forgery into the inbox.
+  // Requiring l= to cover the WHOLE body closes it.
+  const der = generateKeyPairSync('rsa', { modulusLength: 2048 }).publicKey.export({ type: 'spki', format: 'der' }).toString('base64');
+  const prefix = Buffer.from('the original, signed body\r\n', 'latin1');
+  const prefixLen = canonicalizedBodyLength(prefix, 'relaxed');
+  const forgedBody = Buffer.concat([prefix, Buffer.from('APPENDED PHISHING CONTENT the sender never signed\r\n', 'latin1')]);
+  // bh is computed over just the prefix (l bytes) — exactly what a genuine l= signature carries.
+  const bh = computeBodyHash(forgedBody, 'relaxed', 'sha256', prefixLen);
+  const headerBlock = 'From: a@example.com\r\nSubject: s\r\n\r\n' + forgedBody.toString('latin1');
+  const msg = Buffer.from(`DKIM-Signature: v=1; a=rsa-sha256; c=relaxed/relaxed; d=example.com; s=s; h=from:subject; l=${prefixLen}; bh=${bh}; b=AAAA\r\n${headerBlock}`, 'latin1');
+
+  let calls = 0;
+  const result = await verifyDkim(msg, async () => {
+    calls++;
+    return keyRecord(der);
+  });
+  assert.equal(result.verdict, 'fail', 'a partial-body l= must not verify (append forgery)');
+  assert.equal(calls, 0, 'a partial l= is rejected before the DNS key fetch');
+});
+
 test('a signature that does not cover the From header is rejected (RFC 6376 §5.4)', async () => {
   const { generateKeyPairSync } = await import('node:crypto');
   const k = generateKeyPairSync('rsa', { modulusLength: 2048 });

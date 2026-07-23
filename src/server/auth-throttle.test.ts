@@ -81,3 +81,15 @@ test('the tracked-IP map is bounded (a flood of distinct IPs cannot grow it with
   // proves the map did not retain all 50.
   assert.equal(t.isBlocked('10.0.0.0'), false);
 });
+
+test('an attacker rotating source addresses within one IPv6 /64 is still blocked (no evasion)', () => {
+  // A single /64 holds 2^64 host addresses; keying the full address would give each its own budget.
+  // The throttle keys on the /64, so guesses from different hosts in one /64 accumulate together.
+  const t = new AuthThrottle({ maxFailures: 3, now: () => 1000 });
+  t.recordFailure('2001:db8:abcd:1234::1');
+  t.recordFailure('2001:db8:abcd:1234:5555::9');
+  t.recordFailure('2001:db8:abcd:1234:ffff:ffff:ffff:ffff');
+  assert.equal(t.isBlocked('2001:db8:abcd:1234::42'), true, 'a fresh host in the same /64 is already blocked');
+  // A different /64 is independent (a real other network is not collaterally blocked).
+  assert.equal(t.isBlocked('2001:db8:abcd:9999::1'), false, 'a different /64 has its own budget');
+});

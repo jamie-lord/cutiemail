@@ -106,11 +106,43 @@ function countLines(body: Buffer): number {
  */
 const MAX_MIME_DEPTH = 100;
 
+/**
+ * Cap on the TOTAL bytes re-parsed across one FETCH BODYSTRUCTURE. The depth cap alone bounds
+ * recursion depth, not depth×payload: a message/rfc822 part re-parses its (near-full) payload at
+ * every level, so 100 levels of a 20 MiB payload is ~2 GB of re-scanning that froze the (single)
+ * event loop for ~26 s on a single fetch. This bounds the cumulative parse work regardless of how
+ * the nesting and payload combine; a normally-structured message re-parses a small multiple of its
+ * own size, far under this. Past the budget a part is emitted as an opaque leaf, not recursed into.
+ */
+const MAX_STRUCTURE_BYTES = 128 * 1024 * 1024;
+
+/**
+ * Cap on the number of parts pulled from a single multipart entity. A body of millions of
+ * `--boundary` lines would otherwise allocate millions of part Buffers and spawn a
+ * buildBodyStructure call each — a memory-exhaustion DoS on FETCH BODYSTRUCTURE. Far above any
+ * real message (a mailbox digest is dozens of parts, not thousands).
+ */
+const MAX_PARTS_PER_ENTITY = 10_000;
+
 /** The transfer-encodings RFC 2045 §6.4 permits on a composite (multipart/message) type. */
 const COMPOSITE_ENCODINGS = new Set(['7BIT', '8BIT', 'BINARY']);
 
+/** An opaque leaf, emitted when a part is past the depth or cumulative-byte budget. */
+function opaqueLeaf(size: number): BodyPart {
+  return { multipart: false, type: 'APPLICATION', subtype: 'OCTET-STREAM', params: [], id: null, description: null, encoding: '7BIT', size, lines: null, disposition: null, children: [], rfc822: null };
+}
+
+/** A mutable budget threaded through the recursion to bound total re-parsed bytes. */
+interface StructureBudget {
+  bytes: number;
+}
+
 /** Build the MIME part tree for a message or message part. */
-export function buildBodyStructure(raw: Buffer, depth = 0): BodyPart {
+export function buildBodyStructure(raw: Buffer, depth = 0, budget: StructureBudget = { bytes: 0 }): BodyPart {
+  // Bound cumulative re-parse work BEFORE parsing: a message/rfc822 chain re-parses its payload at
+  // every level, so without this the depth×payload product is an unbounded per-FETCH CPU DoS.
+  budget.bytes += raw.length;
+  if (budget.bytes > MAX_STRUCTURE_BYTES) return opaqueLeaf(raw.length);
   // Parse ONCE per node and read every header from that result — calling header(raw,…)
   // per field re-parsed the whole entity ~6× at every level, which on a deeply nested
   // message is a quadratic FETCH-BODYSTRUCTURE CPU DoS.
@@ -137,7 +169,7 @@ export function buildBodyStructure(raw: Buffer, depth = 0): BodyPart {
 
   if (type === 'multipart') {
     const boundary = params.find(([n]) => n === 'boundary')?.[1] ?? '';
-    const children = boundary === '' ? [] : parseMultipart(body, boundary).parts.map((p) => buildBodyStructure(p, depth + 1));
+    const children = boundary === '' ? [] : parseMultipart(body, boundary, {}, MAX_PARTS_PER_ENTITY).parts.map((p) => buildBodyStructure(p, depth + 1, budget));
     // RFC 2045 §6.4: a composite type may only carry a transparent transfer-encoding
     // (7bit/8bit/binary). A quoted-printable/base64 label on a multipart is forbidden and
     // bogus; do not copy it onto the emitted MULTIPART node (default such a node to 7BIT).
@@ -158,7 +190,7 @@ export function buildBodyStructure(raw: Buffer, depth = 0): BodyPart {
   // structure so the client can show the forwarded message without downloading it.
   const rfc822 =
     type === 'message' && subtype === 'rfc822'
-      ? { envelope: serializeEnvelope(buildEnvelope(parseMessage(body).headers)), nested: buildBodyStructure(body, depth + 1) }
+      ? { envelope: serializeEnvelope(buildEnvelope(parseMessage(body).headers)), nested: buildBodyStructure(body, depth + 1, budget) }
       : null;
   return { multipart: false, type: type.toUpperCase(), subtype: subtype.toUpperCase(), params, id, description, encoding, size: body.length, lines, disposition, children: [], rfc822 };
 }
@@ -221,7 +253,7 @@ export function resolvePart(raw: Buffer, path: readonly number[]): Buffer | null
     if (media.toLowerCase().startsWith('multipart/')) {
       const boundary = params.find(([n]) => n === 'boundary')?.[1] ?? '';
       if (boundary === '') return null;
-      const parts = parseMultipart(body, boundary).parts;
+      const parts = parseMultipart(body, boundary, {}, MAX_PARTS_PER_ENTITY).parts;
       if (idx < 1 || idx > parts.length) return null;
       current = parts[idx - 1]!;
     } else {

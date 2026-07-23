@@ -172,3 +172,28 @@ test('BODYSTRUCTURE and resolvePart never crash on fuzzed / malformed MIME', () 
     resolvePart(buf, [1, 2, 1]);
   }
 });
+
+test('FETCH BODYSTRUCTURE is bounded on a deeply nested message/rfc822 chain (depth×payload DoS)', () => {
+  // 100 nested message/rfc822 wrappers around a large payload would re-parse the payload at every
+  // level — an unbounded per-FETCH CPU DoS. The cumulative-byte budget bounds it.
+  const payload = 'X'.repeat(4 * 1024 * 1024);
+  let m = `Content-Type: text/plain\r\n\r\n${payload}`;
+  for (let i = 0; i < 100; i++) m = `Content-Type: message/rfc822\r\n\r\n${m}`;
+  const start = process.hrtime.bigint();
+  const out = bodyStructureResponse(Buffer.from(m, 'latin1'));
+  const ms = Number(process.hrtime.bigint() - start) / 1e6;
+  assert.ok(out.length > 0, 'a bounded structure is still produced');
+  assert.ok(ms < 3000, `a deep nested-message chain must be bounded (took ${ms.toFixed(0)}ms)`);
+});
+
+test('FETCH BODYSTRUCTURE is bounded on a multipart with millions of parts (part-count DoS)', () => {
+  // Millions of "--X" delimiters would materialise millions of part Buffers. MAX_PARTS_PER_ENTITY
+  // (via parseMultipart's maxParts) bounds the split, so both memory and CPU stay bounded.
+  const body = '--X\r\n'.repeat(3_000_000);
+  const raw = Buffer.from(`Content-Type: multipart/mixed; boundary="X"\r\n\r\n${body}`, 'latin1');
+  const start = process.hrtime.bigint();
+  const out = bodyStructureResponse(raw);
+  const ms = Number(process.hrtime.bigint() - start) / 1e6;
+  assert.match(out, /"MIXED"/, 'a bounded multipart structure is still produced');
+  assert.ok(ms < 3000, `a million-part multipart must be bounded (took ${ms.toFixed(0)}ms)`);
+});

@@ -56,7 +56,14 @@ function trimTrailingWsp(buf: Buffer, start: number, end: number): number {
   return e;
 }
 
-export function parseMultipart(body: Buffer, boundary: string, defects: MultipartDefects = {}): MultipartResult {
+/**
+ * Split a multipart body. `maxParts`, when given, bounds how many delimiter lines are collected:
+ * past it the scan stops and records a 'too-many-parts' anomaly. A body of millions of `--b`
+ * delimiter lines would otherwise materialise millions of part Buffers — a memory-exhaustion DoS
+ * paid on every FETCH BODYSTRUCTURE (the caller re-parses each part). The conformance corpus passes
+ * no cap (exact splits); the production BODYSTRUCTURE path passes MAX_PARTS_PER_ENTITY.
+ */
+export function parseMultipart(body: Buffer, boundary: string, defects: MultipartDefects = {}, maxParts?: number): MultipartResult {
   const anomalies: string[] = [];
   if (boundary.length > 70 && defects.acceptOverlongBoundary !== true) anomalies.push('overlong-boundary');
 
@@ -104,7 +111,15 @@ export function parseMultipart(body: Buffer, boundary: string, defects: Multipar
       else if (j < body.length && body[j] === LF) next = j + 1;
       else next = j;
       const kind = classify(i, j);
-      if (kind !== null) delims.push({ start: i, next, kind });
+      if (kind !== null) {
+        delims.push({ start: i, next, kind });
+        // Bound the number of parts: past the cap, stop scanning (the last part will absorb the
+        // remaining body). Keeps a hostile million-delimiter body from allocating a million parts.
+        if (maxParts !== undefined && delims.length > maxParts) {
+          anomalies.push('too-many-parts');
+          break;
+        }
+      }
       if (next === j) break; // reached end with no terminator
       i = next;
       if (i === body.length) break; // terminator was the last thing in the buffer

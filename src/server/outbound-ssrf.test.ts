@@ -99,3 +99,23 @@ test('a DNS failure or empty answer is TRANSIENT (retry), not a permanent bounce
   // A literal IP is short-circuited (its literal form is handled by isUnsafeMxTarget upstream).
   assert.equal(pinnedIp(await vetMxHost('127.0.0.1', async () => { throw new Error('must not be called'); })), '127.0.0.1');
 });
+
+test('non-canonical IPv4-mapped IPv6 spellings of a private address are refused (guard by value, not text)', () => {
+  // The guard previously matched the compressed "::ffff:" prefix by regex, so a semantically
+  // identical but differently-spelled address slipped through and the relay connected to it.
+  for (const h of [
+    '0::ffff:127.0.0.1',
+    '0:0:0:0:0:ffff:7f00:1', // fully expanded 127.0.0.1
+    '0000::ffff:7f00:1',
+    '0::ffff:a9fe:a9fe', // 169.254.169.254 cloud metadata
+    '0::ffff:10.0.0.1',
+  ]) {
+    assert.equal(isUnsafeMxTarget(h), true, `${h} must be refused`);
+  }
+});
+
+test('genuinely public addresses — including real IPv4-mapped public v4 — are still allowed', () => {
+  for (const h of ['8.8.8.8', '1.1.1.1', '2001:db8::1', '::ffff:8.8.8.8', '2606:4700:4700::1111']) {
+    assert.equal(isUnsafeMxTarget(h), false, `${h} must be allowed`);
+  }
+});

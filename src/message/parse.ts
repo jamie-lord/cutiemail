@@ -38,6 +38,19 @@ const MAX_LINE = 998; // R-5322-2.1.1-a, excluding CRLF
  * dozens of fields, not thousands).
  */
 export const MAX_HEADERS = 1000;
+/**
+ * Cap on the total BYTES of the header section. MAX_HEADERS bounds the field COUNT, but a single
+ * field folded across millions of continuation lines is ONE field — the count cap never trips —
+ * so its accumulated value could still be hundreds of megabytes: every continuation pushes onto
+ * one field's `valueParts` (line count) and `flush()` then `Buffer.concat`s it (byte count). One
+ * unauthenticated ~24 MiB message (under the SIZE default) whose sole header is folded across
+ * ~8M ` \r\n` lines measured ~2 GB of heap and ~2 s per parse — and inbound mail is parsed THREE
+ * times (DKIM + DMARC + ARC), so a few concurrent messages OOM the process. Past the cap the rest
+ * of the header section is ignored (pass 1 already located the body boundary). 256 KiB is far
+ * above any real header section — a long Received + ARC + Authentication-Results chain is single
+ * -digit KB, not hundreds.
+ */
+export const MAX_HEADER_SECTION_BYTES = 256 * 1024;
 
 /** Defects that make the parser violate a specific message-format requirement. */
 export interface ParserDefects {
@@ -64,6 +77,12 @@ export interface ParserDefects {
    * Reinstates the parse-time header-section OOM the MAX_HEADERS cap defends against.
    */
   readonly dontCapHeaderCount?: boolean;
+  /**
+   * Do not cap the header-section byte total: accumulate a single folded field with no ceiling.
+   * Reinstates the parse-time memory-amplification OOM the MAX_HEADER_SECTION_BYTES cap defends
+   * against (a field folded across millions of continuation lines).
+   */
+  readonly dontCapHeaderBytes?: boolean;
 }
 
 type Terminator = 'crlf' | 'lf' | 'none';
@@ -161,12 +180,30 @@ export function parseMessage(input: Buffer, defects: ParserDefects = {}): Messag
   };
   let inHeaders = true;
   let headerCapHit = false;
+  let headerBytes = 0;
+  let headerBytesCapHit = false;
   const capHeaders = defects.dontCapHeaderCount !== true;
+  const capHeaderBytes = defects.dontCapHeaderBytes !== true;
   forEachLine(input, (buf, start, end, terminator, lineNo) => {
     if (!inHeaders) return;
     const len = end - start;
     if (isBoundaryLine(len, terminator, defects)) {
       inHeaders = false; // the boundary line itself is the separator, not a header
+      return;
+    }
+    // Bound the header section by total bytes, not just field count: a single field folded across
+    // millions of continuation lines never trips MAX_HEADERS but can accumulate hundreds of MB.
+    // Count the CRLF each line contributes to the retained value (folding re-adds it), so the cap
+    // bounds the actual assembled bytes. Once over, flush what is assembled and ignore the rest
+    // (the body boundary was already found in pass 1, so `body` is unaffected).
+    headerBytes += len + 2;
+    if (capHeaderBytes && headerBytes > MAX_HEADER_SECTION_BYTES) {
+      if (!headerBytesCapHit) {
+        anomalies.push({ kind: 'header-section-over-cap', line: lineNo });
+        headerBytesCapHit = true;
+      }
+      flush();
+      inHeaders = false;
       return;
     }
     if (cur !== null && len > 0 && isWsp(buf[start])) {

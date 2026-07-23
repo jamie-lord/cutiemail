@@ -505,16 +505,48 @@ function canonicalFlag(f: string): string {
  * treated everything else as an exact name — so `INBOX/%`, `qbox*`, and every other
  * real pattern a client uses to walk the hierarchy matched nothing.
  */
+/**
+ * Match one mailbox name against an IMAP LIST pattern. `*` matches any run including the '/'
+ * hierarchy separator; `%` matches any run NOT crossing '/'; every other character is a literal.
+ *
+ * This is a LINEAR two-pointer glob (greedy with a single backtrack point per wildcard), NOT a
+ * regex. The previous version compiled the pattern to `[^/]*[^/]*…` and let V8's backtracking
+ * engine run it: k adjacent wildcards against a failing tail cost O(name^k) — and both the pattern
+ * (off the wire) and the name (via CREATE, which imposes no length limit) are attacker-controlled,
+ * so a single authenticated `LIST "" %%%%%%%%%%%%b` against a long mailbox froze the whole (single)
+ * event loop for minutes. A glob over these two wildcard classes needs no backtracking engine.
+ */
+function matchesListPattern(pat: string, name: string): boolean {
+  let i = 0; // index into name
+  let j = 0; // index into pattern
+  let iStar = -1; // where the most recent wildcard began absorbing in `name`
+  let jStar = -1; // that wildcard's position in `pattern`
+  let pctStar = false; // was that wildcard a '%' (must not cross '/')?
+  while (i < name.length) {
+    const pc = pat[j];
+    if (j < pat.length && (pc === '*' || pc === '%')) {
+      iStar = i;
+      jStar = j;
+      pctStar = pc === '%';
+      j++; // the wildcard matches the empty run for now; extend it on backtrack
+    } else if (j < pat.length && pc === name[i]) {
+      i++;
+      j++;
+    } else if (iStar >= 0 && (!pctStar || name[iStar] !== '/')) {
+      // Extend the last wildcard to absorb name[iStar]; a '%' may not absorb the '/' separator.
+      i = ++iStar;
+      j = jStar + 1;
+    } else {
+      return false;
+    }
+  }
+  while (j < pat.length && (pat[j] === '*' || pat[j] === '%')) j++; // trailing wildcards match empty
+  return j === pat.length;
+}
+
 function matchNames(reference: string, pattern: string, names: readonly string[]): readonly string[] {
   const pat = unquote(reference) + unquote(pattern);
-  let rx = '';
-  for (const ch of pat) {
-    if (ch === '*') rx += '.*';
-    else if (ch === '%') rx += '[^/]*';
-    else rx += ch.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  }
-  const re = new RegExp(`^${rx}$`);
-  return names.filter((n) => re.test(n));
+  return names.filter((n) => matchesListPattern(pat, n));
 }
 
 /**

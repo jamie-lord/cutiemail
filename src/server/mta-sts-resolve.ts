@@ -13,7 +13,9 @@
  * production deps do a real cert-validated, size- and time-bounded GET.
  */
 
+import { lookup } from 'node:dns/promises';
 import { parseStsPolicy, type StsPolicy } from '../transport/mta-sts.ts';
+import { isPrivateOrLoopback } from '../wire/ip.ts';
 
 export interface StsResolverDeps {
   /** TXT lookup (records joined). [] when absent; may throw on a DNS error. */
@@ -94,14 +96,38 @@ export class StsCache {
   }
 }
 
+/** Resolve a host to all of its A/AAAA addresses (production default for the SSRF vet below). */
+async function resolveAllAddresses(host: string): Promise<readonly string[]> {
+  const res = await lookup(host, { all: true });
+  return res.map((r) => r.address);
+}
+
 /**
  * Production policy fetch: a cert-validated HTTPS GET of the well-known policy, with a
  * timeout, a size cap, and no redirects (RFC 8461 §3.3 forbids them). Returns null on any
  * failure so a missing/broken policy degrades to opportunistic TLS rather than blocking mail.
+ *
+ * `mta-sts.<domain>` is attacker-influenced (the domain is a recipient domain), so — like the MX
+ * relay path — the target is resolved and REFUSED if any address is private/loopback, closing the
+ * SSRF where an attacker points `mta-sts.<domain>` at an internal host. The resolver is injectable
+ * for tests. (fetch re-resolves by name for cert validation; the vet closes the ordinary internal
+ * -reach, and the fetch stays cert-validated and blind, so the residual rebinding window is inert.)
  */
-export function httpsFetchPolicy(timeoutMs = 10_000, maxBytes = 65_536): (domain: string) => Promise<Buffer | null> {
+export function httpsFetchPolicy(
+  timeoutMs = 10_000,
+  maxBytes = 65_536,
+  resolveHost: (host: string) => Promise<readonly string[]> = resolveAllAddresses,
+): (domain: string) => Promise<Buffer | null> {
   return async (domain: string): Promise<Buffer | null> => {
-    const url = `https://mta-sts.${domain}/.well-known/mta-sts.txt`;
+    const host = `mta-sts.${domain}`;
+    let addrs: readonly string[];
+    try {
+      addrs = await resolveHost(host);
+    } catch {
+      return null; // cannot resolve → no policy (transient, opportunistic TLS)
+    }
+    if (addrs.length === 0 || addrs.some(isPrivateOrLoopback)) return null; // SSRF guard: refuse internal targets
+    const url = `https://${host}/.well-known/mta-sts.txt`;
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), timeoutMs);
     try {

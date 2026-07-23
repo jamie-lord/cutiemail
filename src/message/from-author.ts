@@ -59,7 +59,13 @@ export function domainOfAddrSpec(addr: string): string | null {
 export function mailboxCount(value: string): number {
   let v = stripComments(value);
   v = v.replace(/"(?:[^"\\]|\\.)*"/g, ' ');
-  return v.split(',').filter((seg) => seg.includes('@')).length;
+  // Count BOTH comma-separated addr-spec segments AND angle-addresses, taking the larger. A
+  // comma-only count misses `From: <bob@x> <alice@x>` — two mailboxes, no comma — which would let
+  // the send-as gate bless one address while a recipient MUA renders the other (a display-spoof).
+  // A legitimate single mailbox has at most one angle-addr (`Alice <a@x>`) or a bare addr-spec.
+  const commaMailboxes = v.split(',').filter((seg) => seg.includes('@')).length;
+  const angleAddrs = (v.match(/</g) ?? []).length;
+  return Math.max(commaMailboxes, angleAddrs);
 }
 
 /**
