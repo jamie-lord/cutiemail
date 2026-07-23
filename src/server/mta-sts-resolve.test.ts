@@ -6,7 +6,7 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { StsCache, readPolicyResponse, type StsResolverDeps } from './mta-sts-resolve.ts';
+import { StsCache, readPolicyResponse, httpsFetchPolicy, type StsResolverDeps } from './mta-sts-resolve.ts';
 import { parseStsPolicy } from '../transport/mta-sts.ts';
 
 const POLICY = 'version: STSv1\nmode: enforce\nmx: mail.example.com\nmax_age: 86400\n';
@@ -124,4 +124,20 @@ test('readPolicyResponse: a non-2xx status yields null; an oversize body is capp
   const capped = await readPolicyResponse({ ok: true, arrayBuffer: async () => ab }, 65_536);
   assert.equal(capped?.length, 65_536, 'the body is capped to maxBytes (RFC 8461 §3.2)');
   assert.equal(parseStsPolicy(capped!).mode, 'enforce', 'the capped prefix still parses to the real policy');
+});
+
+test('httpsFetchPolicy refuses an mta-sts host that resolves to a private/loopback address (SSRF guard)', async () => {
+  // The attacker controls the recipient domain's DNS and points mta-sts.<domain> at an internal IP.
+  // The fetch must be refused before any connection, exactly like the MX relay path.
+  const toPrivate = httpsFetchPolicy(10_000, 65_536, async () => ['10.0.0.5']);
+  assert.equal(await toPrivate('evil.example'), null, 'a private-resolving mta-sts host is refused');
+
+  const toMappedLoopback = httpsFetchPolicy(10_000, 65_536, async () => ['::ffff:127.0.0.1']);
+  assert.equal(await toMappedLoopback('evil.example'), null, 'an IPv4-mapped loopback target is refused');
+
+  const toMetadata = httpsFetchPolicy(10_000, 65_536, async () => ['169.254.169.254']);
+  assert.equal(await toMetadata('evil.example'), null, 'a link-local metadata target is refused');
+
+  const unresolvable = httpsFetchPolicy(10_000, 65_536, async () => []);
+  assert.equal(await unresolvable('evil.example'), null, 'an unresolvable host yields no policy');
 });

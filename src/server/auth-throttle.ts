@@ -13,7 +13,15 @@
  * address, the attacker only ever locks out themselves. In-memory by design — a restart
  * clearing the counters is acceptable, and the map is capped so a flood of distinct source
  * IPs cannot exhaust memory.
+ *
+ * The key is the /64 for IPv6 (see `throttleKey`): keying a full IPv6 address let an attacker
+ * with a single /64 (2^64 host addresses, a standard delegation) sidestep the window by sourcing
+ * each guess from a fresh address. The /64 aggregate keeps the per-source guarantee without
+ * handing out 2^64 free budgets, and a legitimate user — sharing neither a /64 nor a v4 with the
+ * attacker — is still never collaterally locked out.
  */
+
+import { throttleKey } from '../wire/ip.ts';
 
 export interface AuthThrottleOptions {
   /** Failures within the window before an IP is blocked (default 10). */
@@ -54,19 +62,20 @@ export class AuthThrottle {
 
   /** True when `ip` has reached the failure threshold and should be refused. */
   isBlocked(ip: string): boolean {
-    return this.#recent(ip).length >= this.#max;
+    return this.#recent(throttleKey(ip)).length >= this.#max;
   }
 
   /** Record a failed authentication attempt from `ip`. */
   recordFailure(ip: string): void {
-    const kept = this.#recent(ip);
-    if (!this.#fails.has(ip) && this.#fails.size >= this.#cap) {
-      // Evict the oldest-tracked IP (Map preserves insertion order) to stay bounded.
+    const key = throttleKey(ip);
+    const kept = this.#recent(key);
+    if (!this.#fails.has(key) && this.#fails.size >= this.#cap) {
+      // Evict the oldest-tracked key (Map preserves insertion order) to stay bounded.
       const oldest = this.#fails.keys().next().value;
       if (oldest !== undefined) this.#fails.delete(oldest);
     }
     kept.push(this.#now());
-    this.#fails.set(ip, kept);
+    this.#fails.set(key, kept);
   }
 
   /**
@@ -78,6 +87,6 @@ export class AuthThrottle {
    * refused before the password is checked), and their old failures age out on the window.
    */
   recordSuccess(ip: string): void {
-    this.#recent(ip); // prunes expired failures in place; keeps recent ones
+    this.#recent(throttleKey(ip)); // prunes expired failures in place; keeps recent ones
   }
 }

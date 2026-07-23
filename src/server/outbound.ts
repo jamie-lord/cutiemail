@@ -20,58 +20,7 @@ import { resolveMx, resolve4 } from 'node:dns/promises';
 import { deliver } from '../client/deliver.ts';
 import { resolveMxHosts, type DnsResolver, type MxRecord } from '../client/mx.ts';
 import { mxAllowed, type StsPolicy } from '../transport/mta-sts.ts';
-
-/**
- * The IPv4 embedded in an IPv4-mapped (`::ffff:a.b.c.d` / `::ffff:7f00:1`) or the deprecated
- * IPv4-compatible (`::a.b.c.d` / `::7f00:1`) IPv6 address, or null. These forms let an
- * attacker express a private/loopback/metadata IPv4 as an IPv6 literal — the last 32 bits
- * carry the v4, and a dual-stack socket routes `::ffff:169.254.169.254` to 169.254.169.254.
- * The leading `::` (all-zero high bits, optionally with the mapped `ffff`) is what confines
- * the match to these two ranges — a normal global IPv6 never starts `::`.
- */
-function embeddedIpv4(ip6Lower: string): string | null {
-  const dotted = /^::(?:ffff:)?(\d{1,3}(?:\.\d{1,3}){3})$/.exec(ip6Lower);
-  if (dotted !== null) return dotted[1]!;
-  const hex = /^::(?:ffff:)?([0-9a-f]{1,4}):([0-9a-f]{1,4})$/.exec(ip6Lower);
-  if (hex !== null) {
-    const hi = parseInt(hex[1]!, 16);
-    const lo = parseInt(hex[2]!, 16);
-    return `${(hi >> 8) & 0xff}.${hi & 0xff}.${(lo >> 8) & 0xff}.${lo & 0xff}`;
-  }
-  return null;
-}
-
-/** An IPv4/IPv6 literal in loopback, private, link-local, or unspecified space. */
-function isPrivateOrLoopback(ip: string): boolean {
-  const fam = net.isIP(ip);
-  if (fam === 4) {
-    const p = ip.split('.').map(Number);
-    const [a, b, c] = [p[0] ?? 0, p[1] ?? 0, p[2] ?? 0];
-    return (
-      a === 0 ||
-      a === 127 ||
-      a === 10 ||
-      (a === 172 && b >= 16 && b <= 31) ||
-      (a === 192 && b === 168) ||
-      (a === 169 && b === 254) ||
-      (a === 100 && b >= 64 && b <= 127) || // 100.64/10 CGNAT (RFC 6598) — reaches internal infra in cloud/carrier nets
-      (a === 198 && (b === 18 || b === 19)) || // 198.18/15 benchmarking (RFC 2544)
-      (a === 192 && b === 0 && (c === 0 || c === 2)) || // 192.0.0/24 IETF + 192.0.2/24 TEST-NET-1
-      (a === 198 && b === 51 && c === 100) || // 198.51.100/24 TEST-NET-2
-      (a === 203 && b === 0 && c === 113) || // 203.0.113/24 TEST-NET-3
-      a >= 224
-    );
-  }
-  if (fam === 6) {
-    const low = ip.toLowerCase().replace(/^\[|\]$/g, '');
-    // An IPv4-mapped/compatible IPv6 (::ffff:169.254.169.254) is only as safe as the IPv4
-    // it carries — decode and re-check it, so a private target can't hide in IPv6 form.
-    const v4 = embeddedIpv4(low);
-    if (v4 !== null && net.isIP(v4) === 4) return isPrivateOrLoopback(v4);
-    return low === '::1' || low === '::' || low.startsWith('fe80') || low.startsWith('fc') || low.startsWith('fd');
-  }
-  return false;
-}
+import { isPrivateOrLoopback } from '../wire/ip.ts';
 
 /**
  * A MX target we must refuse to relay to on its LITERAL form (SSRF guard). An attacker who
