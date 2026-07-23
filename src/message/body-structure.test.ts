@@ -197,3 +197,15 @@ test('FETCH BODYSTRUCTURE is bounded on a multipart with millions of parts (part
   assert.match(out, /"MIXED"/, 'a bounded multipart structure is still produced');
   assert.ok(ms < 3000, `a million-part multipart must be bounded (took ${ms.toFixed(0)}ms)`);
 });
+
+test('resolvePart is bounded on a deep nested-multipart path (FETCH BODY[1.1.1...] DoS)', () => {
+  // resolvePart re-parses a near-full payload at each nesting level; a deep path would otherwise be
+  // a depth×payload CPU DoS. The cumulative-byte budget bounds it (returns null past the budget).
+  const payload = 'Z'.repeat(4 * 1024 * 1024);
+  let m = `Content-Type: text/plain\r\n\r\n${payload}`;
+  for (let i = 0; i < 99; i++) m = `Content-Type: multipart/mixed; boundary="b${i}"\r\n\r\n--b${i}\r\n${m}\r\n--b${i}--\r\n`;
+  const start = process.hrtime.bigint();
+  resolvePart(Buffer.from(m, 'latin1'), new Array(99).fill(1));
+  const ms = Number(process.hrtime.bigint() - start) / 1e6;
+  assert.ok(ms < 3000, `a deep BODY[] path must be bounded (took ${ms.toFixed(0)}ms)`);
+});

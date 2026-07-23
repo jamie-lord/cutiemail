@@ -180,3 +180,22 @@ test('R-5322-2.1-b: the header/body split is the CRLF empty line, not a bare-LF 
   assert.ok(!hasHeader(defect, 'subject'), 'splitting on a bare-LF blank line is a header/body-confusion defect and must be detectable');
   assert.ok(defect.body.toString('latin1').includes('Subject: real'), 'the escaped header lands in the body');
 });
+
+test('the anomaly list is capped so a hostile body cannot OOM the parser (too-many-anomalies)', () => {
+  // Pass 1 records a per-line anomaly (nul-octet, eight-bit, bare-cr) across the WHOLE message; a
+  // body of millions of such lines (all CRLF, so it passes the smuggling filter) would otherwise
+  // push one object per line — ~13M objects / ~800 MB, x3 per inbound parse → OOM.
+  const body = b(`X: y${CRLF}${CRLF}` + '\x00\x80\r\n'.repeat(2_000_000));
+  const start = process.hrtime.bigint();
+  const msg = parseMessage(body);
+  const ms = Number(process.hrtime.bigint() - start) / 1e6;
+  assert.ok(msg.anomalies.length <= 10_001, `anomalies are capped (got ${msg.anomalies.length})`);
+  assert.ok(hasAnomaly(msg, 'too-many-anomalies'), 'the cap is recorded as an anomaly');
+  assert.ok(hasAnomaly(msg, 'nul-octet') && hasAnomaly(msg, 'eight-bit'), 'the kinds present before the cap are still recorded');
+  assert.ok(ms < 1500, `a hostile body must parse in bounded time (took ${ms.toFixed(0)}ms)`);
+});
+
+test('a normal message stays well under the anomaly cap (no false truncation)', () => {
+  const msg = parseMessage(b(`From: a@example.com${CRLF}Subject: hi${CRLF}${CRLF}body\r\nmore\r\n`));
+  assert.ok(!hasAnomaly(msg, 'too-many-anomalies'), 'a clean message is never truncated');
+});

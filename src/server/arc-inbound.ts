@@ -17,7 +17,7 @@
 
 import { parseMessage } from '../message/parse.ts';
 import { validateArcChainStructure, type ArcSet, type ChainValidation } from '../auth/arc.ts';
-import { computeBodyHash } from '../crypto/dkim-bodyhash.ts';
+import { computeBodyHash, canonicalizedBodyLength } from '../crypto/dkim-bodyhash.ts';
 import { buildAmsInput } from '../crypto/arc-ams.ts';
 import { buildSealInput, verifySeal, type ArcSetHeaders } from '../crypto/arc-seal.ts';
 import { verifySignature, selectSignedFields } from '../crypto/dkim-verify.ts';
@@ -125,6 +125,11 @@ async function verifyNewestAms(
   const bodyCanon = c.split('/')[1] === 'relaxed' ? 'relaxed' : 'simple';
   const lTag = tagValue(ams, 'l');
   const lengthLimit = lTag !== undefined && /^\d+$/.test(lTag) ? Number(lTag) : undefined;
+  // RFC 6376 §8.2 partial-body caveat, mirroring the DKIM path (dkim-inbound rejects any l= that is
+  // not the full canonicalised body length): an AMS `l=` covering only a prefix lets an attacker
+  // append arbitrary body content that the newest AMS — and thus a trusted-sealer cv=pass rescue —
+  // still accepts. Require full-body coverage; cutiemail never emits l= so this costs nothing.
+  if (lengthLimit !== undefined && lengthLimit !== canonicalizedBodyLength(body, bodyCanon)) return false;
 
   // Step 1: the body hash must match (the body was not altered past what the AMS covers).
   if (computeBodyHash(body, bodyCanon, 'sha256', lengthLimit) !== stripWsp(bh)) return false;

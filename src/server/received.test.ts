@@ -110,3 +110,16 @@ test('stripOwnAuthResults still keeps a genuinely different authserv-id (no over
     assert.match(out, /spf=pass|us\.example\.attacker\.test/, `must keep: ${legit}`);
   }
 });
+
+test('stripOwnAuthResults strips a forgery whose authserv-id is followed by a tspecial (token gap)', () => {
+  // RFC 8601 §2.2: authserv-id is a `token`, which excludes tspecials ( ) < > @ , ; : \ " / [ ] ? =.
+  // A consumer tokenising per grammar reads `us.example` from `us.example@x`; if the strip only
+  // stopped at whitespace/`;` it read `us.example@x` (≠ ours) and left the forgery in place.
+  for (const trailer of ['@x', ',x', '=x', '/x', ':x', '?x', '(x']) {
+    const out = strip(`Authentication-Results: us.example${trailer}; dkim=pass dmarc=pass\r\n\r\nbody`);
+    assert.doesNotMatch(out, /dkim=pass/, `a forged AR with id-trailer "${trailer}" must be stripped`);
+  }
+  // Control: a genuinely different authserv-id sharing a prefix is NOT stripped.
+  const kept = strip('Authentication-Results: us.example.net; dkim=pass\r\n\r\nbody');
+  assert.match(kept, /dkim=pass/, 'a different (longer) authserv-id is preserved');
+});

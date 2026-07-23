@@ -179,10 +179,24 @@ export function seedAccounts(
   log: (line: string) => void,
 ): void {
   let redundant = 0;
+  // Case-insensitive login uniqueness: two logins differing only in case map to the same
+  // mail-<login>.db on a case-insensitive filesystem (macOS/Windows), route inbound mail
+  // non-deterministically (#enabledLoginFor matches case-insensitively via lower(login)), and can
+  // bind a session to the wrong store. The `account add` CLI already rejects this (account.ts) —
+  // the env-seed path must too, or it silently reintroduces the exact hazard the CLI guards.
+  const claimedLower = new Map<string, string>(); // lower(login) -> the exact-case login that claimed it
+  for (const row of registry.list()) claimedLower.set(row.login.toLowerCase(), row.login);
   for (const a of accounts) {
+    const lc = a.user.toLowerCase();
+    const claimant = claimedLower.get(lc);
+    if (claimant !== undefined && claimant !== a.user) {
+      log(`account ${a.user}: SKIPPED — collides case-insensitively with "${claimant}"; two logins differing only in case would share one mailbox file. Rename one.`);
+      continue;
+    }
     const existing = registry.lookup(a.user);
     if (existing === undefined) {
       registry.upsert(a.user, a.pass, a.mailDbPath);
+      claimedLower.set(lc, a.user);
       // Advisory only (never a hard boot failure): the CLI/init paths reject a sub-floor
       // password, but an env seed shouldn't stop the daemon from starting — warn instead.
       if (a.pass.length < MIN_PASSWORD_LENGTH) {

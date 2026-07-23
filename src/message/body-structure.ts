@@ -246,10 +246,17 @@ function serialize(part: BodyPart, extended: boolean): string {
 export function resolvePart(raw: Buffer, path: readonly number[]): Buffer | null {
   if (path.length > MAX_MIME_DEPTH) return null; // no real message nests this deep
   let current = raw;
+  let parsedBytes = 0;
   for (let level = 0; level < path.length; level++) {
+    // Bound cumulative re-parsing exactly like buildBodyStructure: each level re-parses a near-full
+    // payload, so a deep nested-multipart path (FETCH BODY[1.1.1…]) is otherwise a depth×payload
+    // CPU DoS on the single event loop.
+    parsedBytes += current.length;
+    if (parsedBytes > MAX_STRUCTURE_BYTES) return null;
     const idx = path[level]!;
-    const { body } = parseMessage(current);
-    const { head: media, params } = parseParameterized(header(current, 'Content-Type') ?? 'text/plain');
+    // Parse ONCE per level and read Content-Type from that result (header() would re-parse).
+    const { headers, body } = parseMessage(current);
+    const { head: media, params } = parseParameterized(findHeader(headers, 'Content-Type') ?? 'text/plain');
     if (media.toLowerCase().startsWith('multipart/')) {
       const boundary = params.find(([n]) => n === 'boundary')?.[1] ?? '';
       if (boundary === '') return null;

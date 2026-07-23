@@ -110,7 +110,7 @@ export function runMail(
     const catalog = SqliteCatalog.open(db);
     const box = catalog.get(mailboxName);
     if (box === undefined) {
-      io.err(`mail ${verb}: no mailbox "${mailboxName}" for ${login} (have: ${catalog.listNames().join(', ')}).`);
+      io.err(sanitizeForTerminalLine(`mail ${verb}: no mailbox "${mailboxName}" for ${login} (have: ${catalog.listNames().join(', ')}).`));
       return 1;
     }
 
@@ -131,7 +131,7 @@ export function runMail(
         .filter((n) => n !== mailboxName)
         .map((n) => ({ n, count: catalog.get(n)?.index().length ?? 0 }))
         .filter((x) => x.count > 0);
-      if (others.length > 0) io.out(`other mailboxes with mail: ${others.map((x) => `${x.n} (${x.count})`).join(', ')}`);
+      if (others.length > 0) io.out(sanitizeForTerminalLine(`other mailboxes with mail: ${others.map((x) => `${x.n} (${x.count})`).join(', ')}`));
       return 0;
     }
 

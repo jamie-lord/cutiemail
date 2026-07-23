@@ -81,8 +81,15 @@ export function authservIdOf(unfoldedHeader: string): string | null {
     }
     id = out;
   } else {
-    // token: terminated by CFWS, the authres-version, or the first `;`.
-    id = v.split(/[;\s]/)[0] ?? '';
+    // token: terminated at CFWS, the authres-version, `;`, OR any RFC 2045 tspecial. RFC 8601 §2.2
+    // makes authserv-id a `token`, which excludes tspecials `( ) < > @ , ; : \ " / [ ] ? =`. A
+    // consumer that tokenises per grammar stops the id at any of those — so terminating only at
+    // whitespace/`;` UNDER-matched: `Authentication-Results: <our-id>@x; dkim=pass` computed id
+    // `<our-id>@x` (≠ ours) and was NOT stripped, while a compliant consumer reads `<our-id>` and
+    // trusts the forged result. The strip must OVER-match, never under-match, so we stop at any
+    // tspecial or control too.
+    const t = /^[^\x00-\x20()<>@,;:\\"/[\]?=]+/.exec(v);
+    id = t ? t[0] : '';
   }
   if (id === '') return null;
   return id.replace(/\.$/, '').toLowerCase();
