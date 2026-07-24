@@ -36,9 +36,28 @@ export interface SignedField {
 const CR = 0x0d;
 const LF = 0x0a;
 
-/** Empty the "b=" tag's value (up to the next ";" or end), keeping the tag itself. */
+/**
+ * Empty the "b=" tag's value (up to the next ";" or end), keeping the tag itself.
+ *
+ * Walks the RFC 6376 §3.2 tag-list rather than pattern-matching the text: §3.7 step 2 deletes the
+ * value of the b= TAG, and an unanchored /(b=)[^;]*​/ instead empties the first literal "b="
+ * SUBSTRING anywhere in the value. That is reachable in practice — §2.11 dkim-quoted-printable
+ * excludes "=" and SPACE, so a z= copied-header tag encodes them, and ordinary text like
+ * "Bob Smith" becomes "Bob=20Smith", which contains "b=". Such a signature had its z= mangled and
+ * its b= left intact, so a valid signature verified as fail (and on the ARC-AMS path collapsed the
+ * whole chain to cv=fail). Whitespace and the segment prefix are preserved, as §3.7 requires.
+ */
 export function emptyBTag(dkimSigValue: string): string {
-  return dkimSigValue.replace(/(b=)[^;]*/, '$1');
+  let done = false;
+  return dkimSigValue
+    .split(';')
+    .map((seg) => {
+      const eq = seg.indexOf('=');
+      if (done || eq === -1 || seg.slice(0, eq).trim() !== 'b') return seg;
+      done = true; // only the first b= tag; a duplicate is the signer's problem, not ours to rewrite
+      return seg.slice(0, eq + 1);
+    })
+    .join(';');
 }
 
 /** Canonicalize one header field per the chosen mode. `field` includes a trailing CRLF. */

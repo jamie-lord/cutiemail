@@ -92,7 +92,7 @@ export type DkimKeyResolver = (domain: string, selector: string) => Promise<Buff
  */
 export async function verifyDkim(raw: Buffer, resolveKey: DkimKeyResolver): Promise<DkimOutcome> {
   const { headers, body } = parseMessage(raw);
-  const sigHeaders = headers.filter((h) => h.name.toString('latin1').toLowerCase() === 'dkim-signature');
+  const sigHeaders = headers.filter((h) => h.name.toString('latin1').trim().toLowerCase() === 'dkim-signature');
   if (sigHeaders.length === 0) return { verdict: 'none', domain: null, passedDomains: [] };
 
   // Cap the number of signatures verified (DoS defense — see MAX_DKIM_SIGNATURES) and

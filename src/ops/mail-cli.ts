@@ -18,6 +18,7 @@ import { existsSync } from 'node:fs';
 import { openMailDb } from '../store/open-mail-db.ts';
 import { AccountRegistry } from '../store/account-registry.ts';
 import { SqliteCatalog } from '../store/sqlite-mailbox.ts';
+import { canonicalMailboxName } from '../store/mailbox-name.ts';
 import type { OpsIo } from './cli.ts';
 import { sanitizeForTerminal, sanitizeForTerminalLine } from './terminal.ts';
 
@@ -125,10 +126,14 @@ export function runMail(
         const flags = [...m.flags].join(',');
         io.out(sanitizeForTerminalLine(`${String(m.uid).padStart(5)}  ${iso(m.internalDate)}  ${String(m.size).padStart(8)}  ${(flags === '' ? '-' : flags).padEnd(12)}  ${clip(from, 30).padEnd(30)}  ${clip(subject, 60)}`));
       }
-      io.out(index.length === 0 ? `${mailboxName} of ${login}: empty` : `${mailboxName} of ${login}: ${index.length} message(s)${account.enabled ? '' : ' (account is DISABLED)'}`);
+      // catalog.get() canonicalises the name, so the report must too — comparing the raw argument
+      // listed the selected mailbox again under "other mailboxes" (`--mailbox inbox` reported
+      // "other mailboxes with mail: INBOX"), telling the operator mail sits somewhere it does not.
+      const selected = canonicalMailboxName(mailboxName);
+      io.out(index.length === 0 ? `${selected} of ${login}: empty` : `${selected} of ${login}: ${index.length} message(s)${account.enabled ? '' : ' (account is DISABLED)'}`);
       const others = catalog
         .listNames()
-        .filter((n) => n !== mailboxName)
+        .filter((n) => n !== selected)
         .map((n) => ({ n, count: catalog.get(n)?.index().length ?? 0 }))
         .filter((x) => x.count > 0);
       if (others.length > 0) io.out(sanitizeForTerminalLine(`other mailboxes with mail: ${others.map((x) => `${x.n} (${x.count})`).join(', ')}`));

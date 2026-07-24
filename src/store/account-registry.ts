@@ -111,6 +111,26 @@ export class AccountRegistry {
 
   static open(db: DatabaseSync): AccountRegistry {
     db.exec(SCHEMA);
+    // A login is case-insensitive identity, so make the DATABASE enforce it rather than trusting
+    // every write path to remember. Without this, a statement that keys on the raw spelling slips
+    // a second row past the case-sensitive PRIMARY KEY and the account silently forks in two —
+    // auth reading one row while a rotation wrote the other. Applied after SCHEMA so it also
+    // covers databases created before this constraint existed.
+    try {
+      db.exec('CREATE UNIQUE INDEX IF NOT EXISTS accounts_login_nocase ON accounts (lower(login))');
+    } catch {
+      // Already-forked registry (an env seed could create case-colliding logins before that path
+      // was guarded). Refusing to start beats running with two accounts sharing one mail-<login>.db,
+      // but the operator needs to know WHICH pair and how to resolve it, not a bare SQLite error.
+      const dupes = db
+        .prepare("SELECT group_concat(login, ', ') AS logins FROM accounts GROUP BY lower(login) HAVING count(*) > 1")
+        .all() as Array<{ logins: string }>;
+      throw new Error(
+        `account registry has logins that differ only in case: ${dupes.map((d) => d.logins).join('; ')}. ` +
+          'A login is case-insensitive identity — these share one mail-<login>.db on a case-insensitive ' +
+          'filesystem. Remove or rename the duplicate with `account remove`, then restart.',
+      );
+    }
     return new AccountRegistry(db);
   }
 
@@ -133,16 +153,37 @@ export class AccountRegistry {
       .prepare(
         'INSERT OR REPLACE INTO accounts (login, salt, iterations, hash, stored_key, server_key, mail_db_path, enabled) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
       )
-      .run(login, salt, iterations, hash, storedKey, serverKey, mailDbPath, opts.enabled === false ? 0 : 1);
+      // Canonical spelling, or INSERT OR REPLACE misses the case-sensitive PRIMARY KEY and adds a
+      // SECOND row for the same identity: `set-password ALICE` would report success while the row
+      // auth actually reads keeps the OLD credential — a password rotation that silently does
+      // nothing. The rest of the class is covered by the unique index below.
+      .run(this.#canonicalLogin(login), salt, iterations, hash, storedKey, serverKey, mailDbPath, opts.enabled === false ? 0 : 1);
   }
 
   /** Enable or disable an account (a disabled account fails auth and is not routable). */
   setEnabled(login: string, enabled: boolean): void {
-    this.#db.prepare('UPDATE accounts SET enabled = ? WHERE login = ?').run(enabled ? 1 : 0, login);
+    this.#db.prepare('UPDATE accounts SET enabled = ? WHERE lower(login) = ?').run(enabled ? 1 : 0, login.toLowerCase());
+  }
+
+  /**
+   * The stored spelling of a login, whichever case the caller used, or undefined if unknown.
+   *
+   * A login is case-insensitive IDENTITY: routing (#enabledLoginFor) and creation (nameTaken)
+   * both compare lower(login), and `mail-<login>.db` collides case-insensitively on a
+   * case-insensitive filesystem. Every other login-keyed statement must agree, or the account
+   * fragments across spellings — mail to ALICE@ routes to alice while AUTH as ALICE fails, and
+   * an app password added as ALICE is invisible to alice. Creation enforces case-insensitive
+   * uniqueness, so at most one row can match.
+   */
+  #canonicalLogin(login: string): string {
+    const r = this.#db.prepare('SELECT login FROM accounts WHERE lower(login) = ?').get(login.toLowerCase()) as
+      | { login: string }
+      | undefined;
+    return r?.login ?? login;
   }
 
   #row(login: string): RawRow | undefined {
-    return this.#db.prepare('SELECT * FROM accounts WHERE login = ?').get(login) as RawRow | undefined;
+    return this.#db.prepare('SELECT * FROM accounts WHERE lower(login) = ?').get(login.toLowerCase()) as RawRow | undefined;
   }
 
   /** The routing for a login, or undefined if unknown. Includes disabled accounts. */
@@ -209,7 +250,9 @@ export class AccountRegistry {
 
   /** Add an alias (stored lower-cased) pointing at an owning login. Callers check collisions first. */
   addAlias(alias: string, login: string): void {
-    this.#db.prepare('INSERT INTO aliases (alias, login) VALUES (?, ?)').run(alias.toLowerCase(), login);
+    // Store the owner in its canonical spelling so aliasesFor() finds it whatever case the
+    // operator typed on the command line.
+    this.#db.prepare('INSERT INTO aliases (alias, login) VALUES (?, ?)').run(alias.toLowerCase(), this.#canonicalLogin(login));
   }
 
   /** Remove an alias; true if a row was deleted. */
@@ -219,7 +262,7 @@ export class AccountRegistry {
 
   /** The aliases owned by a login, sorted. */
   aliasesFor(login: string): readonly string[] {
-    const rows = this.#db.prepare('SELECT alias FROM aliases WHERE login = ? ORDER BY alias').all(login) as Array<{ alias: string }>;
+    const rows = this.#db.prepare('SELECT alias FROM aliases WHERE lower(login) = ? ORDER BY alias').all(login.toLowerCase()) as Array<{ alias: string }>;
     return rows.map((r) => r.alias);
   }
 
@@ -232,7 +275,7 @@ export class AccountRegistry {
 
   /** Whether `name` already names an app password for `login` (case-sensitive, like the name). */
   appPasswordNameTaken(login: string, name: string): boolean {
-    return this.#db.prepare('SELECT 1 FROM app_passwords WHERE login = ? AND name = ?').get(login, name) !== undefined;
+    return this.#db.prepare('SELECT 1 FROM app_passwords WHERE lower(login) = ? AND name = ?').get(login.toLowerCase(), name) !== undefined;
   }
 
   /**
@@ -248,23 +291,24 @@ export class AccountRegistry {
     const { storedKey, serverKey } = deriveCredential(secret, salt, iterations, DEFAULT_HASH);
     this.#db
       .prepare('INSERT INTO app_passwords (login, name, salt, iterations, hash, stored_key, server_key, created) VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
-      .run(login, name, salt, iterations, DEFAULT_HASH, storedKey, serverKey, created);
+      // Canonical spelling: an app password added as ALICE must authenticate alice.
+      .run(this.#canonicalLogin(login), name, salt, iterations, DEFAULT_HASH, storedKey, serverKey, created);
     return secret;
   }
 
   /** Revoke a named app password; true if one was deleted. */
   removeAppPassword(login: string, name: string): boolean {
-    return this.#db.prepare('DELETE FROM app_passwords WHERE login = ? AND name = ?').run(login, name).changes > 0;
+    return this.#db.prepare('DELETE FROM app_passwords WHERE lower(login) = ? AND name = ?').run(login.toLowerCase(), name).changes > 0;
   }
 
   /** An account's app passwords (names + created), newest first. Never the secret. */
   listAppPasswords(login: string): readonly AppPasswordRow[] {
-    const rows = this.#db.prepare('SELECT name, created FROM app_passwords WHERE login = ? ORDER BY created DESC, name').all(login) as Array<{ name: string; created: number }>;
+    const rows = this.#db.prepare('SELECT name, created FROM app_passwords WHERE lower(login) = ? ORDER BY created DESC, name').all(login.toLowerCase()) as Array<{ name: string; created: number }>;
     return rows.map((r) => ({ name: r.name, created: Number(r.created) }));
   }
 
   #appCredentials(login: string): RawCredential[] {
-    return this.#db.prepare('SELECT salt, iterations, hash, stored_key FROM app_passwords WHERE login = ?').all(login) as unknown as RawCredential[];
+    return this.#db.prepare('SELECT salt, iterations, hash, stored_key FROM app_passwords WHERE lower(login) = ?').all(login.toLowerCase()) as unknown as RawCredential[];
   }
 
   /** Re-derive StoredKey from the password and compare it against a stored credential (constant-time). */

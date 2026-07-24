@@ -253,3 +253,36 @@ test('seedAccounts skips a login that collides case-insensitively (env-seed uniq
   ], () => {});
   assert.equal(reg2.list().length, 2, 'distinct logins are both seeded');
 });
+
+test('seedAccounts skips a login an alias already claims (env-seed namespace guard, like the CLI)', async () => {
+  const { seedAccounts } = await import('./main.ts');
+  const { AccountRegistry } = await import('./store/account-registry.ts');
+  const { DatabaseSync } = await import('node:sqlite');
+  const reg = AccountRegistry.open(new DatabaseSync(':memory:'));
+  reg.upsert('jamie', 'password1', ':memory:');
+  reg.addAlias('sales', 'jamie');
+  assert.equal(reg.resolveLocalPart('sales'), 'jamie', 'precondition: sales@ routes to jamie');
+
+  // `account add sales` is refused because an address resolves to exactly one account (ADR 0014);
+  // seeding it anyway silently rerouted sales@ into a new mailbox while `alias list` still showed
+  // the old mapping.
+  const logs: string[] = [];
+  seedAccounts(reg, [{ user: 'sales', pass: 'password2', mailDbPath: ':memory:' }], (l) => logs.push(l));
+
+  assert.deepEqual(reg.list().map((a) => a.login), ['jamie'], 'no account was created for the alias');
+  assert.equal(reg.resolveLocalPart('sales'), 'jamie', 'sales@ still routes to its owner');
+  assert.ok(logs.some((l) => /SKIPPED.*already an alias/.test(l)), 'the operator is told why');
+});
+
+test('a MAIL_ACCOUNTS entry without a colon fails loudly rather than being silently dropped', () => {
+  // Every other malformed value in configFromEnv fails closed; silently discarding an entry
+  // provisioned fewer accounts than asked for, and the missing user's mail then 550s at RCPT.
+  withEnv({ MAIL_ACCOUNTS: 'bob:pw-one,carol,dave:pw-two', MAIL_DOMAIN: 'x.test' }, () =>
+    assert.throws(() => configFromEnv(), /MAIL_ACCOUNTS entry "carol" is not login:password/),
+  );
+  // Control: a well-formed list still parses, and trailing separators/whitespace are tolerated.
+  withEnv({ MAIL_ACCOUNTS: 'bob:pw-one, dave:pw-two,', MAIL_DOMAIN: 'x.test' }, () => {
+    const cfg = configFromEnv();
+    assert.deepEqual(cfg.accounts?.map((a) => a.user), ['bob', 'dave']);
+  });
+});

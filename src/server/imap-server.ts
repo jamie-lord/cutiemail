@@ -247,6 +247,19 @@ const unquote = (s: string): string => s.replace(/^"|"$/g, '');
  * This is the deliberate rev2 position; a legacy client still speaking mUTF-7 gets its own bytes
  * back, which is self-consistent for that client.
  */
+/**
+ * Is an 8-bit mailbox name Net-Unicode (RFC 5198), i.e. valid UTF-8 already in NFC? RFC 9051 §5.1
+ * makes prohibiting anything else a MUST. `name` is latin1 octets off the wire, so decode first.
+ * A 7-bit name is trivially conformant. Invalid UTF-8 is rejected too: it decodes to U+FFFD, which
+ * would not survive a round trip through any normalising client.
+ */
+function isNetUnicode(name: string): boolean {
+  const octets = Buffer.from(name, 'latin1');
+  if (!octets.some((b) => b >= 0x80)) return true;
+  const decoded = octets.toString('utf8');
+  return decoded === decoded.normalize('NFC') && Buffer.from(decoded, 'utf8').equals(octets);
+}
+
 function imapMailboxAstring(name: string): string {
   // A control octet OR an 8-bit byte can appear in neither an atom nor a quoted-string (both are
   // 7-bit) → emit a literal. The declared length must be the octet count ACTUALLY written:
@@ -1393,7 +1406,11 @@ export class ImapServer {
                 const segs = n.split('/');
                 for (let k = 1; k < segs.length; k++) {
                   const anc = segs.slice(0, k).join('/');
-                  if (!realNames.includes(anc)) phantoms.add(anc);
+                  // Skip the empty ancestor a leading separator produces (`CREATE "/Sent"`), or
+                  // LIST would describe the name "" as \NonExistent \HasChildren while the
+                  // bare-root probe describes the same name as \Noselect — two contradictory
+                  // answers for one name, and a nameless folder in the client.
+                  if (anc !== '' && !realNames.includes(anc)) phantoms.add(anc);
                 }
               }
               const allNames = [...realNames, ...phantoms];
@@ -1430,6 +1447,15 @@ export class ImapServer {
             const name = qarg(1);
             if (canonicalMailboxName(name) === 'INBOX') {
               write(sock, `${tag} NO INBOX already exists`);
+            } else if (!isNetUnicode(name)) {
+              // RFC 9051 §5.1: a server MUST prohibit creating an 8-bit mailbox name that is not
+              // Net-Unicode (RFC 5198), which requires NFC. Names are stored as raw octets, so a
+              // denormalised spelling would be a SECOND mailbox that renders identically to the
+              // first in every client — mail filed into one is invisible in the other, and a
+              // client that normalises its own input (macOS yields NFD) cannot SELECT the folder
+              // it can see in LIST. We reject rather than silently rewriting, which keeps the
+              // byte-transparent stance: what a client stores is what it gets back.
+              write(sock, `${tag} NO [CANNOT] mailbox name must be Unicode NFC (RFC 9051 §5.1)`);
             } else if (connCatalog.create(name) === undefined) {
               write(sock, `${tag} NO mailbox already exists`);
             } else {
@@ -1487,7 +1513,8 @@ export class ImapServer {
               else if (w === 'HIGHESTMODSEQ') items.push(`HIGHESTMODSEQ ${box.highestModseq}`); // RFC 7162 §3.1.2.1
               else if (w === 'RECENT') items.push('RECENT 0');
             }
-            write(sock, `* STATUS ${imapMailboxAstring(name)} (${items.join(' ')})`);
+            // Canonical name, for the same reason as SELECT's untagged LIST above.
+            write(sock, `* STATUS ${imapMailboxAstring(canonicalMailboxName(name))} (${items.join(' ')})`);
             write(sock, `${tag} OK STATUS completed`);
             break;
           }
@@ -1637,7 +1664,11 @@ export class ImapServer {
             readOnly = cmd === 'EXAMINE';
             // RFC 9051 §6.3.2 REQUIRED: the SELECT/EXAMINE response set includes an untagged LIST
             // for the mailbox being opened (rev2 folded the old mailbox-identity responses into it).
-            write(sock, `* LIST ${listAttributes(selectedName, connCatalog.listNames())} "/" ${imapMailboxAstring(name)}`);
+            // Echo the CANONICAL name, not the client's spelling: `SELECT inbox` answering
+            // `* LIST ... "inbox"` while LIST reports `INBOX` gives a client keying its folder
+            // cache on the response two entries for one mailbox (RFC 9051 §6.3.2's examples echo
+            // INBOX). The attributes were already computed from the canonical name.
+            write(sock, `* LIST ${listAttributes(selectedName, connCatalog.listNames())} "/" ${imapMailboxAstring(selectedName)}`);
             write(sock, `* ${selIdx.length} EXISTS`);
             // FLAGS lists the system flags plus every keyword currently in use in this mailbox
             // (RFC 9051 §7.1) — a keyword is any flag without a leading backslash (Thunderbird

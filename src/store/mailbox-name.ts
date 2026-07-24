@@ -23,7 +23,11 @@ export interface MailboxNameDefects {
 export function canonicalMailboxName(name: string, defects: MailboxNameDefects = {}): string {
   let n = name;
   while (n.length > 1 && n.endsWith('/')) n = n.slice(0, -1);
-  if (defects.caseSensitiveInbox !== true && n.toUpperCase() === 'INBOX') return 'INBOX';
+  // ASCII-only fold. RFC 9051 §9 defines the rule on the literal sequence "I" "N" "B" "O" "X",
+  // whereas toUpperCase() is Unicode-aware and folds U+0131 (dotless i) into it — so 'ınbox'
+  // would have named INBOX. Not reachable over the wire (the parser reads latin1, so a UTF-8
+  // U+0131 arrives as two octets), but the exported resolver is used directly by the stores.
+  if (defects.caseSensitiveInbox !== true && /^inbox$/i.test(n)) return 'INBOX';
   return n;
 }
 

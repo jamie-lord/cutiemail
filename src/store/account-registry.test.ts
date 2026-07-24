@@ -30,6 +30,81 @@ test('a disabled account fails auth even with the right password, until re-enabl
   assert.equal(reg.verifyPassword('alice', 'pw'), true, 're-enabled → auth');
 });
 
+test('a login is case-insensitive identity across every login-keyed operation', () => {
+  // Routing (resolveLocalPart) and creation (nameTaken) have always compared lower(login), and
+  // mail-<login>.db collides case-insensitively on a case-insensitive filesystem — so a login IS
+  // case-insensitive identity. Any statement that disagreed fragmented the account across
+  // spellings: mail to ALICE@ routed to alice while AUTH as ALICE failed, and `disable ALICE`
+  // matched no row at all.
+  const reg = AccountRegistry.open(new DatabaseSync(':memory:'));
+  reg.upsert('alice', 'correct horse', 'mail-alice.db');
+
+  for (const spelling of ['alice', 'Alice', 'ALICE', 'aLiCe']) {
+    assert.equal(reg.verifyPassword(spelling, 'correct horse'), true, `auth as ${spelling}`);
+    assert.equal(reg.lookup(spelling)?.login, 'alice', `${spelling} resolves to the stored spelling`);
+    assert.equal(reg.resolveLocalPart(spelling), 'alice', `${spelling} routes`);
+  }
+
+  // Negative controls: case-insensitivity must not weaken the credential or the enabled gate.
+  assert.equal(reg.verifyPassword('ALICE', 'wrong'), false, 'wrong password still rejected');
+  assert.equal(reg.verifyPassword('nobody', 'correct horse'), false, 'unknown login still rejected');
+
+  reg.setEnabled('ALICE', false);
+  assert.equal(reg.lookup('alice')?.enabled, false, 'disable reaches the row whatever case is typed');
+  assert.equal(reg.verifyPassword('alice', 'correct horse'), false, 'disabled → no auth');
+  reg.setEnabled('alice', true);
+
+  // Aliases and app passwords key on the login too, so they must canonicalise on write.
+  const secret = reg.addAppPassword('ALICE', 'phone', 1);
+  assert.equal(reg.verifyPassword('alice', secret), true, 'app password added as ALICE authenticates alice');
+  assert.deepEqual(
+    reg.listAppPasswords('alice').map((r) => r.name),
+    ['phone'],
+    'and is listed under the canonical login',
+  );
+  assert.equal(reg.appPasswordNameTaken('Alice', 'phone'), true, 'name collision is seen whatever case');
+  assert.equal(reg.removeAppPassword('aLiCe', 'phone'), true, 'and it is revocable whatever case');
+
+  reg.addAlias('Sales', 'ALICE');
+  assert.deepEqual(reg.aliasesFor('alice'), ['sales'], 'alias owned by ALICE is listed for alice');
+  assert.equal(reg.resolveLocalPart('SALES'), 'alice', 'and still routes');
+});
+
+test('a password rotation typed in the wrong case replaces the credential, never forks the account', () => {
+  // INSERT OR REPLACE keys on the case-SENSITIVE primary key, so an upsert that wrote the raw
+  // spelling added a SECOND row for the same identity: `set-password ALICE` reported success while
+  // auth kept reading the original row — a rotation that silently left the old password working.
+  const reg = AccountRegistry.open(new DatabaseSync(':memory:'));
+  reg.upsert('alice', 'old password', 'mail-alice.db');
+  reg.upsert('ALICE', 'new password', 'mail-alice.db');
+
+  assert.deepEqual(
+    reg.list().map((a) => a.login),
+    ['alice'],
+    'still exactly one account, under its stored spelling',
+  );
+  assert.equal(reg.verifyPassword('alice', 'new password'), true, 'the rotation took effect');
+  assert.equal(reg.verifyPassword('alice', 'old password'), false, 'the old credential no longer authenticates');
+});
+
+test('the registry refuses to open a database whose logins differ only in case', () => {
+  // Defence in depth for the above: the database itself enforces case-insensitive identity, so a
+  // future write path that forgets to canonicalise fails loudly instead of forking an account.
+  const db = new DatabaseSync(':memory:');
+  AccountRegistry.open(db);
+  // Forge the state a pre-guard env seed could leave behind, bypassing the registry's own writers.
+  db.exec("DROP INDEX accounts_login_nocase");
+  const cols = "(login, salt, iterations, hash, stored_key, server_key, mail_db_path, enabled)";
+  db.exec(`INSERT INTO accounts ${cols} VALUES ('Alice', x'00', 1, 'sha256', x'00', x'00', 'mail-Alice.db', 1)`);
+  db.exec(`INSERT INTO accounts ${cols} VALUES ('alice', x'00', 1, 'sha256', x'00', x'00', 'mail-alice.db', 1)`);
+
+  assert.throws(
+    () => AccountRegistry.open(db),
+    (e: Error) => /differ only in case/.test(e.message) && /Alice/.test(e.message),
+    'the error names the colliding pair rather than surfacing a bare SQLite failure',
+  );
+});
+
 test('lookup returns routing; unknown login is undefined', () => {
   const reg = AccountRegistry.open(new DatabaseSync(':memory:'));
   reg.upsert('alice', 'pw', '/var/lib/mail/mail-alice.db');

@@ -9,7 +9,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { generateKeyPairSync, createSign } from 'node:crypto';
-import { buildSigningInput, verifySignature } from './dkim-verify.ts';
+import { buildSigningInput, verifySignature, emptyBTag } from './dkim-verify.ts';
 import type { SignedField } from './dkim-verify.ts';
 import { cryptoRequirement } from '../register/crypto/index.ts';
 import type { CryptoRequirementId } from '../register/crypto/index.ts';
@@ -62,4 +62,25 @@ test('the "b=" value is emptied before hashing, and only the DKIM-Signature fiel
   assert.ok(input.includes('dkim-signature:'), 'the DKIM-Signature field is included');
   assert.ok(!input.endsWith('\r\n'), 'the DKIM-Signature field has no trailing CRLF');
   assert.ok(/b=(;|$)/.test(input), 'the b= value is emptied in the hashed input');
+});
+
+test('RFC 6376 §3.7: emptyBTag empties the b= TAG, not the first "b=" substring it finds', () => {
+  // The b= value is located per the §3.2 tag-list grammar. A regex over the raw text instead
+  // empties the first literal "b=" anywhere — and that is reachable: §2.11 dkim-quoted-printable
+  // excludes "=" and SPACE, so a z= copied-header encodes them and ordinary text like
+  // "Bob Smith" becomes "Bob=20Smith", which contains "b=". Such a signature had its z= mangled
+  // and its b= left intact, so a genuinely valid signature verified as fail.
+  const withZ = 'v=1; a=rsa-sha256; d=example.com; s=sel; h=from; z=Subject:Bob=20Smith; bh=AAA=; b=SIGVALUE';
+  assert.equal(
+    emptyBTag(withZ),
+    'v=1; a=rsa-sha256; d=example.com; s=sel; h=from; z=Subject:Bob=20Smith; bh=AAA=; b=',
+    'z= is preserved verbatim and only the real b= tag is emptied',
+  );
+
+  // The bh= tag also ends in "h=" — a naive matcher must not treat it as b=.
+  assert.equal(emptyBTag('v=1; bh=BODYHASH; b=SIG'), 'v=1; bh=BODYHASH; b=', 'bh= is untouched');
+  // Whitespace around the tag name is legal (§3.2 tag-list allows FWS) and must survive.
+  assert.equal(emptyBTag('v=1;  b = SIG ; s=sel'), 'v=1;  b =; s=sel', 'a spaced b tag is emptied in place');
+  // A b= that is genuinely last, with no trailing semicolon.
+  assert.equal(emptyBTag('v=1; s=sel; b=SIG'), 'v=1; s=sel; b=');
 });

@@ -114,7 +114,9 @@ export function parseDmarcRecord(record: Buffer, defects: DmarcParseDefects = {}
  *  (junked under p=quarantine/reject). domainToASCII is idempotent on an already-ASCII input;
  *  fall back to the lower-cased input if it cannot be encoded (never throw). */
 function toAscii(domain: string): string {
-  const lower = domain.toLowerCase();
+  // Strip the root-anchoring trailing dot too: orgDomain (relaxed) does, so leaving it here made
+  // adkim=s fail where adkim=r passed for the same pair (RFC 7489 §3.1 compares case-insensitively).
+  const lower = domain.toLowerCase().replace(/\.+$/, '');
   const ascii = domainToASCII(lower);
   return ascii === '' ? lower : ascii;
 }

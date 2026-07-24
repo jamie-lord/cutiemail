@@ -320,24 +320,25 @@ export async function runAccount(
       case 'app-password':
         return runAppPassword(positional.slice(1), io, registry, dbPath);
       case 'add': {
-        if (registry.lookup(login!) !== undefined) {
-          io.err(`account add: ${login} already exists: use set-password to change its password.`);
+        // A login is case-insensitive identity (see AccountRegistry), so lookup resolves any
+        // spelling. Report the STORED spelling back: a login that case-folds to an existing one
+        // maps to the same mail-<login>.db on a case-insensitive filesystem (macOS default, some
+        // container volumes), which would silently share one mailbox between two accounts with
+        // distinct credentials — so the operator needs to be told it was a case collision rather
+        // than just "already exists".
+        const existing = registry.lookup(login!);
+        if (existing !== undefined) {
+          io.err(
+            existing.login === login
+              ? `account add: ${login} already exists: use set-password to change its password.`
+              : `account add: ${login} collides with existing account "${existing.login}" (case-insensitive): logins must be unique regardless of case. Use set-password to change its password.`,
+          );
           return 1;
         }
         // A login and an alias share one namespace — an address resolves to one account
         // (ADR 0014). Refuse a login that an alias already claims.
         if (registry.nameTaken(login!) === 'alias') {
           io.err(`account add: "${login}" is already an alias: remove it first (\`account alias remove ${login}\`) or pick another login.`);
-          return 1;
-        }
-        // Reject a login that case-folds to an existing one: it maps to the same
-        // mail-<login>.db file on a case-insensitive filesystem (macOS default, some container
-        // volumes), silently sharing one mailbox between two distinct-credential accounts.
-        // Logins must be unique regardless of case.
-        const lc = login!.toLowerCase();
-        const clash = registry.list().find((a) => a.login.toLowerCase() === lc);
-        if (clash !== undefined) {
-          io.err(`account add: ${login} collides with existing account "${clash.login}" (case-insensitive): logins must be unique regardless of case.`);
           return 1;
         }
         const password = await readNewPassword(source);

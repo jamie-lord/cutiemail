@@ -138,7 +138,12 @@ async function evalDomain(domain: string, state: EvalState, depth: number): Prom
   } catch {
     return 'temperror';
   }
-  const spfTxts = txts.filter((t) => t.toLowerCase().startsWith('v=spf1'));
+  // Select on the version TOKEN, not a prefix: RFC 7208 §4.5 discards a record whose version
+  // section is not exactly "v=spf1" (its example is "v=spf10"), and discarding means removing it
+  // from the set — not erroring. A prefix match admitted "v=spf10", which parseSpfRecord then
+  // rejected, turning a domain with one good record plus a stray TXT into a permerror and costing
+  // it the SPF leg of DMARC. §4.6.1: ABNF literals are case-insensitive, so "V=spf1" is valid.
+  const spfTxts = txts.filter((t) => (t.split(/[ \t]/, 1)[0] ?? '').toLowerCase() === 'v=spf1');
   if (spfTxts.length === 0) return 'none';
   if (spfTxts.length > 1) return 'permerror'; // §4.5: multiple records is an error
   const record = parseSpfRecord(Buffer.from(spfTxts[0]!, 'latin1'));

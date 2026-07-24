@@ -193,6 +193,14 @@ export function seedAccounts(
       log(`account ${a.user}: SKIPPED — collides case-insensitively with "${claimant}"; two logins differing only in case would share one mailbox file. Rename one.`);
       continue;
     }
+    // Same reasoning as the case guard above: `account add` refuses a login an alias already
+    // claims, because an address resolves to exactly one account (ADR 0014). Seeding it anyway
+    // would silently reroute every message for that alias away from its owner's mailbox, while
+    // `account alias list` still displays the old, now-shadowed mapping.
+    if (registry.nameTaken(a.user) === 'alias') {
+      log(`account ${a.user}: SKIPPED — "${a.user}" is already an alias; an address resolves to one account. Remove the alias or rename the account.`);
+      continue;
+    }
     const existing = registry.lookup(a.user);
     if (existing === undefined) {
       registry.upsert(a.user, a.pass, a.mailDbPath);
@@ -549,10 +557,18 @@ export async function startServer(cfg: MailServerConfig): Promise<RunningServer>
     if (loginForLocalAddress(fromAddr) !== authed) {
       throw new MessageRejected(`550 5.7.1 From <${fromAddr}> not authorized for this account`);
     }
+    // Strip any Authentication-Results bearing OUR authserv-id, exactly as the inbound path does
+    // (RFC 8601 §5). Submission is the WEAKER of the two ingress paths for this, not the stronger:
+    // inbound prepends our own genuine result above a forgery, so a topmost-wins consumer still
+    // reads ours, whereas here nothing is stamped on top — a forged
+    // `Authentication-Results: <us>; dkim=pass header.d=yourbank.test` would reach the recipient
+    // as the ONLY result under our own identity. One authenticated account (or one leaked app
+    // password) is enough to send it to any local user.
+    const cleaned = stripOwnAuthResults(fixed, cfg.domain);
     // Stamp our Received trace line (§4.4), then sign — DKIM does not cover
     // Received, so the order is fix-up → Received → DKIM-Signature on top.
     const msgId = randomUUID();
-    const traced = prependReceived(fixed, {
+    const traced = prependReceived(cleaned, {
       helo: m.helo,
       remoteAddress: m.remoteAddress,
       by: cfg.domain,
@@ -606,7 +622,13 @@ export async function startServer(cfg: MailServerConfig): Promise<RunningServer>
     authenticate: verify,
     throttle: authThrottle,
     resolveAccount: (login) => {
-      const s = stores.get(login);
+      // Key the store cache on the CANONICAL login, never the spelling the client happened to
+      // send. MailStores is a Map: `ALICE` would open a second catalog AND a second notifier over
+      // the same mail-alice.db, while delivery notifies the `alice` notifier — so that session
+      // would authenticate, SELECT, and read existing mail normally, then never receive an EXISTS
+      // push again. The symptom (new mail appears only when IDLE re-issues) is near-undiagnosable.
+      const row = registry.lookup(login);
+      const s = row === undefined ? undefined : stores.get(row.login);
       return s === undefined ? undefined : { catalog: s.catalog, notifier: s.notifier };
     },
     // Consulted on every command of a live session so `account disable` cuts an already-open
@@ -795,7 +817,17 @@ export function configFromEnv(): MailServerConfig & { usingDevCert: boolean; dev
     ...(process.env.MAIL_ACCOUNTS ?? '')
       .split(',')
       .map((s) => s.trim())
-      .filter((s) => s.includes(':'))
+      .filter((s) => s.length > 0)
+      // Fail loud on a malformed entry, matching every other config error here (an invalid login
+      // throws, an empty password on a public bind throws). Silently dropping a colon-less entry
+      // provisioned fewer accounts than the operator asked for, and the only tell was the startup
+      // banner — mail for the missing user then 550s at RCPT with no catch-all.
+      .map((s) => {
+        if (!s.includes(':')) {
+          throw new Error(`MAIL_ACCOUNTS entry "${s}" is not login:password (entries are comma-separated, each with a colon).`);
+        }
+        return s;
+      })
       .map((pair) => ({ user: requireValidLogin(pair.slice(0, pair.indexOf(':')), 'MAIL_ACCOUNTS'), pass: pair.slice(pair.indexOf(':') + 1) })),
   ];
   // An empty password is not a weak password — it is no authentication at all. On a public

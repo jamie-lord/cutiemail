@@ -149,3 +149,81 @@ test('ENABLE, CHECK and UNSELECT are supported (RFC 9051 §6.3.1/§6.4.1/§6.4.2
     await server.close();
   }
 });
+
+test('RFC 9051 §5.1: INBOX is case-insensitive over the wire, and responses echo the canonical name', async () => {
+  // The store-level rule is unit-tested; this pins it at the protocol level, where a client
+  // actually sees it. A response echoing the client's own spelling (`* LIST ... "inbox"`) while
+  // LIST reports `INBOX` gives a folder cache keyed on the response two entries for one mailbox.
+  const cat = SqliteCatalog.open(new DatabaseSync(':memory:'));
+  const server = await ImapServer.start(cat, { authenticate: () => true });
+  const c = client(server.port);
+  try {
+    await new Promise<void>((r) => c.sock.once('connect', () => r()));
+    await c.run('a1', 'LOGIN u p');
+
+    for (const spelling of ['INBOX', 'inbox', 'iNbOx']) {
+      const sel = await c.run(`s-${spelling}`, `SELECT ${spelling}`);
+      assert.match(sel, new RegExp(`^s-${spelling} OK`, 'm'), `SELECT ${spelling} opens the primary mailbox`);
+      assert.match(sel, /^\* LIST .* "\/" INBOX$/m, `SELECT ${spelling} echoes the canonical INBOX`);
+    }
+    assert.match(await c.run('a3', 'STATUS iNbOx (MESSAGES)'), /^\* STATUS INBOX /m, 'STATUS echoes canonical INBOX');
+
+    // Any casing still names the one primary mailbox, so creating it is refused.
+    assert.match(await c.run('a4', 'CREATE inbox'), /^a4 NO/m, 'CREATE inbox is refused — INBOX exists');
+  } finally {
+    c.sock.destroy();
+    await server.close();
+  }
+});
+
+test('RFC 9051 §5.1: a denormalised (non-NFC) 8-bit mailbox name is refused', async () => {
+  // Names are stored as raw octets, so accepting both spellings of "Café" would create two
+  // mailboxes that render identically in every client — mail filed into one invisible in the
+  // other, and a client that normalises its input (macOS yields NFD) unable to SELECT what it
+  // sees in LIST. RFC 9051 §5.1 makes prohibiting a non-Net-Unicode 8-bit name a MUST.
+  const cat = SqliteCatalog.open(new DatabaseSync(':memory:'));
+  const server = await ImapServer.start(cat, { authenticate: () => true });
+  const c = client(server.port);
+  try {
+    await new Promise<void>((r) => c.sock.once('connect', () => r()));
+    await c.run('a1', 'LOGIN u p');
+    const wire = (s: string): string => Buffer.from(s, 'utf8').toString('latin1'); // the octets a client sends
+
+    assert.match(await c.run('a2', `CREATE "${wire('Café')}"`), /^a2 OK/m, 'the NFC spelling is accepted');
+    assert.match(await c.run('a3', `CREATE "${wire('Café')}"`), /^a3 NO/m, 'the NFD spelling is refused');
+    // Names are stored as the raw octets, so the catalog's view is the latin1 spelling of them.
+    assert.deepEqual(cat.listNames().filter((n) => n !== 'INBOX'), [wire('Café')], 'exactly one Café mailbox exists');
+
+    // Control: a 7-bit name is unaffected, and a valid NFC 8-bit name round-trips byte-exact.
+    assert.match(await c.run('a4', 'CREATE Plain'), /^a4 OK/m, 'an ASCII name is unaffected');
+  } finally {
+    c.sock.destroy();
+    await server.close();
+  }
+});
+
+test('a leading separator does not mint an empty-named phantom mailbox in LIST', async () => {
+  // canonicalMailboxName strips only TRAILING separators, so "/Sent" kept its leading one and the
+  // phantom-ancestor walk added "" — which LIST then described as \NonExistent \HasChildren while
+  // the bare-root probe describes the same name as \Noselect.
+  const cat = SqliteCatalog.open(new DatabaseSync(':memory:'));
+  const server = await ImapServer.start(cat, { authenticate: () => true });
+  const c = client(server.port);
+  try {
+    await new Promise<void>((r) => c.sock.once('connect', () => r()));
+    await c.run('a1', 'LOGIN u p');
+    await c.run('a2', 'CREATE "/Sent"');
+
+    // Tags must be regex-safe: the client helper matches the tag as a pattern.
+    for (const [tag, pattern] of [['a3', '*'], ['a4', '%']] as const) {
+      const listed = await c.run(tag, `LIST "" "${pattern}"`);
+      assert.doesNotMatch(listed, /^\* LIST .* ""$/m, `LIST "" "${pattern}" emits no empty mailbox name`);
+    }
+    // Control: a genuine intermediate ancestor is still surfaced so the hierarchy stays walkable.
+    await c.run('a5', 'CREATE "Work/2026/Q1"');
+    assert.match(await c.run('a6', 'LIST "" "*"'), /^\* LIST \(\\NonExistent[^)]*\) "\/" Work$/m, 'a real phantom parent is still listed');
+  } finally {
+    c.sock.destroy();
+    await server.close();
+  }
+});

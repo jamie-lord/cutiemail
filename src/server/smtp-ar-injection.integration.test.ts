@@ -11,6 +11,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import net from 'node:net';
+import tls from 'node:tls';
 import { startServer } from '../main.ts';
 import type { MailServerConfig } from '../main.ts';
 import { TEST_CERT, TEST_KEY } from '../testing/tls-test-cert.ts';
@@ -91,6 +92,65 @@ test('a HELO name carrying AR delimiters cannot forge a method result (null retu
     assert.equal(readMessages(server.mailbox).length, 1);
     const ar = ourAr(readMessages(server.mailbox)[0]!.raw.toString('latin1'));
     assert.doesNotMatch(ar, /spf=pass/, 'no forged spf=pass is injected via HELO');
+  } finally {
+    await server.close();
+  }
+});
+
+test('a forged Authentication-Results in a SUBMITTED message is stripped, as on the inbound path', async () => {
+  // RFC 8601 §5 stripping was wired to the inbound handler only. Submission is the WEAKER of the
+  // two paths for this, not the stronger: inbound prepends our own genuine result above a forgery,
+  // so a topmost-wins consumer still reads ours, whereas nothing is stamped on top here — a forged
+  // result would reach the recipient as the ONLY Authentication-Results under our own identity.
+  // One authenticated account (or one leaked app password) is enough to send it to any local user.
+  const server = await startServer(CONFIG);
+  try {
+    const forged = 'Authentication-Results: mail.example.test; dkim=pass header.d=yourbank.test; dmarc=pass';
+    const upstream = 'Authentication-Results: relay.upstream.test; dkim=pass header.d=elsewhere.test';
+    // Submission is plaintext with a mandatory STARTTLS upgrade, not implicit TLS.
+    const raw = net.connect(server.submission.port, '127.0.0.1');
+    raw.on('error', () => {});
+    let acc = '';
+    const attach = (s: net.Socket | tls.TLSSocket): void => {
+      s.on('data', (d: Buffer) => (acc += d.toString('latin1')));
+    };
+    const until = async (needle: string): Promise<void> => {
+      for (let i = 0; i < 400; i++) {
+        if (acc.includes(needle)) { acc = ''; return; }
+        await delay(5);
+      }
+      throw new Error(`timed out on ${needle}: ${acc}`);
+    };
+    attach(raw);
+    await until('ESMTP');
+    raw.write('EHLO thunderbird\r\n');
+    await until('250 ');
+    raw.write('STARTTLS\r\n');
+    await until('220 ');
+    const sock = tls.connect({ socket: raw, rejectUnauthorized: false });
+    sock.on('error', () => {});
+    attach(sock);
+    await new Promise<void>((r) => sock.once('secureConnect', () => r()));
+    sock.write('EHLO thunderbird\r\n');
+    await until('250 ');
+    sock.write(`AUTH PLAIN ${Buffer.from('\0you\0pw', 'latin1').toString('base64')}\r\n`);
+    await until('235');
+    sock.write('MAIL FROM:<you@mail.example.test>\r\n');
+    await until('250 ');
+    sock.write('RCPT TO:<you@mail.example.test>\r\n');
+    await until('250 ');
+    sock.write('DATA\r\n');
+    await until('354');
+    sock.write(`From: you@mail.example.test\r\n${forged}\r\n${upstream}\r\nSubject: hi\r\n\r\nbody\r\n.\r\n`);
+    await until('250 ');
+    sock.end();
+
+    const stored = readMessages(server.mailbox)
+      .map((m) => m.raw.toString('latin1'))
+      .join('\r\n');
+    assert.doesNotMatch(stored, /dkim=pass header\.d=yourbank\.test/, 'the forgery under our authserv-id is stripped');
+    // Control: a genuinely different authserv-id is an upstream result and must be preserved.
+    assert.match(stored, /relay\.upstream\.test/, 'an upstream Authentication-Results survives');
   } finally {
     await server.close();
   }

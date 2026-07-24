@@ -35,11 +35,17 @@ export class MailStores {
    * Returns undefined for an unknown or disabled account (the opener decides).
    */
   get(login: string): UserMailStore | undefined {
-    const cached = this.#cache.get(login);
+    // Key on the case-folded login. A login is case-insensitive identity, so `alice` and `ALICE`
+    // MUST share one entry: two entries mean two catalogs and — the part that actually breaks —
+    // two notifiers over one account, so deliveries signal a notifier the second session is not
+    // subscribed to and its IDLE never fires. Folding here rather than trusting every caller to
+    // canonicalise first is the whole point; this cache IS the "one instance per user" invariant.
+    const key = login.toLowerCase();
+    const cached = this.#cache.get(key);
     if (cached !== undefined) return cached;
     const opened = this.#open(login);
     if (opened === undefined) return undefined;
-    this.#cache.set(login, opened);
+    this.#cache.set(key, opened);
     return opened;
   }
 

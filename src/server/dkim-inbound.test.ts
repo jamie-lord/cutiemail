@@ -362,3 +362,31 @@ test('RFC 6376 §3.6.1 t=y: a testing key is treated as unsigned (no DMARC-align
   assert.equal(out.verdict, 'none', 'testing mode yields no authenticated result');
   assert.deepEqual([...out.passedDomains], [], 'a testing key contributes no aligned domain');
 });
+
+test('RFC 6376 §3.5: an expired x= signature fails, so a captured signed message cannot be replayed forever', async () => {
+  const { createSign } = await import('node:crypto');
+  const { buildSigningInput } = await import('../crypto/dkim-verify.ts');
+  // Build a cryptographically VALID signature that differs only in the x= expiry, so the test
+  // proves expiry is what's rejected rather than a malformed signature. Without this check a
+  // signed message stays replayable indefinitely, and its pass feeds DMARC alignment — an old
+  // captured message becomes an inbox-delivered forgery under the signing domain's identity.
+  const build = (x: number | null): Buffer => {
+    const body = Buffer.from('Hello world\r\n', 'latin1');
+    const bh = computeBodyHash(body, 'relaxed', 'sha256');
+    const sigValue = `v=1; a=rsa-sha256; c=relaxed/relaxed; d=example.com; s=sel; h=from;${x === null ? '' : ` x=${x};`} bh=${bh}; b=`;
+    const input = buildSigningInput([{ name: 'From', value: 'a@example.com' }], sigValue, 'relaxed');
+    const s = createSign('RSA-SHA256');
+    s.update(input);
+    s.end();
+    const b = s.sign(signKeys.privateKey).toString('base64');
+    return Buffer.from(`DKIM-Signature: ${sigValue}${b}\r\nFrom: a@example.com\r\nSubject: t\r\n\r\nHello world\r\n`, 'latin1');
+  };
+  const der = signKeys.publicKey.export({ type: 'spki', format: 'der' }).toString('base64');
+  const now = Math.floor(Date.now() / 1000);
+
+  assert.equal((await verifyDkim(build(now - 3600), async () => keyRecord(der))).verdict, 'fail', 'an hour-expired signature is stale');
+  // Controls: the same construction still passes in the future and with no x= at all — so the
+  // test detects deleting the check AND inverting the comparison.
+  assert.equal((await verifyDkim(build(now + 3600), async () => keyRecord(der))).verdict, 'pass', 'an unexpired x= still verifies');
+  assert.equal((await verifyDkim(build(null), async () => keyRecord(der))).verdict, 'pass', 'no x= is unaffected');
+});

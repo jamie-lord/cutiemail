@@ -53,7 +53,9 @@ export function parseSpfRecord(record: Buffer, defects: SpfParseDefects = {}): S
   let valid = true;
 
   // R-7208-4.5-a: the version must be exactly "v=spf1".
-  if (version !== 'v=spf1' && defects.acceptAnyVersion !== true) {
+  // Case-insensitive per RFC 7208 §4.6.1 (ABNF literals are, RFC 5234 §2.3), matching the
+  // record-selection filter in spf-check so the two cannot disagree about what an SPF record is.
+  if (version?.toLowerCase() !== 'v=spf1' && defects.acceptAnyVersion !== true) {
     valid = false;
     anomalies.push('bad-version');
   }

@@ -63,7 +63,7 @@ function unfold(value: string): string {
 function headerValue(headers: readonly Header[], name: string): string | null {
   const lower = name.toLowerCase();
   for (const h of headers) {
-    if (h.name.toString('latin1').toLowerCase() === lower) return unfold(h.value.toString('latin1')).trim();
+    if (h.name.toString('latin1').trim().toLowerCase() === lower) return unfold(h.value.toString('latin1')).trim();
   }
   return null;
 }

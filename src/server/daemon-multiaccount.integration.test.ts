@@ -105,6 +105,31 @@ test('two accounts receive isolated inbound mail, each visible only to its owner
   }
 });
 
+test('a client that logs in with non-canonical case is served its own account, not a second empty store', async () => {
+  // A login is case-insensitive identity, so `LOGIN ALICE` authenticates. The store cache is a Map,
+  // though, so keying it on the client's spelling handed that session a SECOND catalog + notifier
+  // over the same account: it authenticated and SELECTed normally but was subscribed to a notifier
+  // no delivery ever signalled, so new mail never pushed. Here the per-account DB is in-memory, so
+  // a second store shows up as an empty INBOX — the same divergence, cheaply observable.
+  const server = await startServer(CONFIG);
+  try {
+    const sent = await deliver(
+      { host: '127.0.0.1', port: server.inbound.port, tls: 'none' },
+      { from: 'outsider@sender.test', recipients: ['alice@mail.example.test'], data: Buffer.from('Subject: for-alice\r\n\r\nbody\r\n', 'latin1'), clientName: 'sender.test' },
+    );
+    assert.ok(sent.ok, 'delivery to alice accepted');
+
+    for (const spelling of ['alice', 'Alice', 'ALICE']) {
+      const session = await imapInbox(server.imap.port, spelling, 'alice-pass');
+      assert.ok(session.ok, `${spelling} logs in`);
+      assert.equal(session.exists, 1, `${spelling} is bound to alice's real mailbox`);
+      assert.match(session.body, /for-alice/, `${spelling} sees the delivered message`);
+    }
+  } finally {
+    await server.close();
+  }
+});
+
 test('a wrong password is rejected, and an enabled account on the same daemon still works', async () => {
   const server = await startServer(CONFIG);
   try {

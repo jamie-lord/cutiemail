@@ -96,3 +96,26 @@ test('an IPv4-mapped IPv6 peer (::ffff:x) matches an ip4: mechanism', async () =
   assert.equal(await checkSpf('::ffff:192.0.2.5', 'ex.test', r), 'pass', 'the mapped address is treated as IPv4');
   assert.equal(await checkSpf('::ffff:198.51.100.1', 'ex.test', r), 'fail', 'and still fails when out of range');
 });
+
+test('RFC 7208 §4.5: record selection and version validation agree — a non-v=spf1 TXT is discarded, not an error', async () => {
+  // Selection prefix-matched ("v=spf10" looked like an SPF record) while the parser required an
+  // exact token, so the record was admitted and then rejected — turning "discard it" into a hard
+  // permerror. A domain with one good record plus any stray v=spf1-ish TXT lost its SPF result,
+  // and with it the SPF leg of DMARC.
+  const only10 = resolvers({ 'ex.test': ['v=spf10 -all'] });
+  assert.equal(await checkSpf('192.0.2.5', 'ex.test', only10), 'none', 'a v=spf10 record is discarded → no record → none');
+
+  const both = resolvers({ 'ex.test': ['v=spf1 ip4:192.0.2.0/24 -all', 'v=spf10 -all'] });
+  assert.equal(await checkSpf('192.0.2.5', 'ex.test', both), 'pass', 'the stray record is discarded, leaving exactly one');
+  assert.equal(await checkSpf('198.51.100.9', 'ex.test', both), 'fail', 'and that one is evaluated normally');
+
+  // §4.6.1: ABNF literals are case-insensitive (RFC 5234 §2.3), so a case-variant version is valid.
+  for (const version of ['V=spf1', 'v=SPF1', 'v=Spf1']) {
+    const r = resolvers({ 'ex.test': [`${version} ip4:192.0.2.0/24 -all`] });
+    assert.equal(await checkSpf('192.0.2.5', 'ex.test', r), 'pass', `${version} is a valid version section`);
+  }
+
+  // Control: genuinely duplicate SPF records are still a permerror (§4.5).
+  const dup = resolvers({ 'ex.test': ['v=spf1 -all', 'v=spf1 +all'] });
+  assert.equal(await checkSpf('192.0.2.5', 'ex.test', dup), 'permerror', 'two real records remain an error');
+});
