@@ -1481,6 +1481,13 @@ export class ImapServer {
           }
           case 'RENAME': {
             // RFC 9051 §6.3.5. qarg(1)=existing name, qarg(2)=new name (quote-aware).
+            // The §5.1 Net-Unicode rule is about what names may EXIST, so it gates both doors that
+            // create one — guarding CREATE alone would let RENAME put a denormalised name in the
+            // catalog by the back door.
+            if (!isNetUnicode(qarg(2))) {
+              write(sock, `${tag} NO [CANNOT] mailbox name must be Unicode NFC (RFC 9051 §5.1)`);
+              break;
+            }
             const outcome = connCatalog.rename === undefined ? 'notfound' : connCatalog.rename(qarg(1), qarg(2));
             if (outcome === 'ok') write(sock, `${tag} OK RENAME completed`);
             else if (outcome === 'exists') write(sock, `${tag} NO target mailbox already exists`);

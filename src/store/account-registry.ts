@@ -128,7 +128,10 @@ export class AccountRegistry {
       throw new Error(
         `account registry has logins that differ only in case: ${dupes.map((d) => d.logins).join('; ')}. ` +
           'A login is case-insensitive identity — these share one mail-<login>.db on a case-insensitive ' +
-          'filesystem. Remove or rename the duplicate with `account remove`, then restart.',
+          'filesystem, so auth can read one row while a password change writes the other. There is ' +
+          'deliberately no `account remove` (ADR 0012): decide which spelling keeps the mail, move the ' +
+          "other account's messages across over IMAP, then delete its row from the control database and " +
+          'drop it from MAIL_ACCOUNTS so it is not seeded again.',
       );
     }
     return new AccountRegistry(db);

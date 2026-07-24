@@ -196,6 +196,11 @@ test('RFC 9051 §5.1: a denormalised (non-NFC) 8-bit mailbox name is refused', a
 
     // Control: a 7-bit name is unaffected, and a valid NFC 8-bit name round-trips byte-exact.
     assert.match(await c.run('a4', 'CREATE Plain'), /^a4 OK/m, 'an ASCII name is unaffected');
+
+    // The rule is about which names may EXIST, so RENAME is gated too — otherwise a
+    // denormalised name enters the catalog by the back door.
+    assert.match(await c.run('a5', `RENAME Plain "${wire('Cafe\u0301')}"`), /^a5 NO/m, 'RENAME to an NFD name is refused');
+    assert.match(await c.run('a6', `RENAME Plain "${wire('Caf\u00e9 II')}"`), /^a6 OK/m, 'RENAME to an NFC name is allowed');
   } finally {
     c.sock.destroy();
     await server.close();
