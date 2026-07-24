@@ -130,7 +130,8 @@ deselect/switch plus the required untagged `LIST` in `SELECT` / `EXAMINE` (§6.3
 emits `* OK [COPYUID]` before the EXPUNGE / VANISHED (§6.4.8); after `ENABLE IMAP4REV2` a plain
 `SEARCH` returns `ESEARCH` and a `RETURN` search always returns `ESEARCH` even on zero hits
 (§6.4.4); `PERMANENTFLAGS` advertises `\*` and `FLAGS` lists the keywords in use (§7.1); mailbox
-names are byte-transparent Net-Unicode with no mUTF-7 interpretation (ADR 0021); and a
+names are byte-transparent Net-Unicode with no mUTF-7 interpretation, and CREATE/RENAME refuse a
+denormalised 8-bit name (RFC 9051 §5.1, ADR 0021); and a
 hierarchy-child `CREATE` surfaces the missing parent as `(\NonExistent \HasChildren)` in a
 `%`-walk rather than auto-creating it. The reject surface is pinned negatively: an unknown /
 unsupported FETCH att (including `BINARY`) => `BAD`, a `VANISHED` FETCH modifier without

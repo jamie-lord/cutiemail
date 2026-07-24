@@ -28,15 +28,15 @@ groupware stack or JMAP, use them. cutiemail's bet is different: **smallness you
 read**. One process, one language, zero runtime dependencies, plain SQLite files you can
 query with stock `sqlite3`, and a from-scratch implementation where every protocol byte is code in
 this repo. It is built correctness-first, with the test bed (reference-model storage proofs,
-mutant-server negative controls, security-reviewed hostile-input surfaces) as the star of the
+mutant-server negative controls, self-audited hostile-input surfaces) as the star of the
 show. Deliberately **not**
 here, each recorded as a decision with reasons ([how it's tested](docs/TESTING.md),
 [the backlog](docs/BACKLOG.md)): POP3, JMAP, Sieve, webmail, a spam filter beyond DMARC
 enforcement, multiple domains per instance, and clustering. One domain, a handful of humans, on a
 small box you own: that's what it serves best.
 
-**Maturity:** young (v0, one maintainer) but held to a high verification bar: 1,000+
-tests including negative controls, security-reviewed hostile-input surfaces, and a production
+**Maturity:** young (v0, one maintainer) but held to a high verification bar: 1,200+
+tests including negative controls, self-audited hostile-input surfaces, and a production
 instance exchanging authenticated mail with Gmail daily. Run it for mail you care about only after
 reading the honest limitations in [the deployment guide](docs/DEPLOYMENT.md).
 
@@ -107,8 +107,9 @@ client (Thunderbird, Apple Mail) at the local dev instance:
 - **IMAP**: `127.0.0.1`, port **5993**, security **SSL/TLS** (implicit).
 - **SMTP (submission)**: `127.0.0.1`, port **5587**, security **STARTTLS** (not implicit TLS;
   AUTH is only offered after STARTTLS).
-- **Username**: the account login exactly (`demo`), **not** `demo@mail.example.com`; it is
-  case-sensitive and is not the email address.
+- **Username**: the account login (`demo`), **not** `demo@mail.example.com`. A login is
+  case-insensitive identity, so `demo` and `DEMO` are the same account; what it is *not* is
+  the email address.
 - The bundled dev certificate is self-signed and its name won't match `127.0.0.1` (it's a
   throwaway dev cert, not issued for your machine), so accept the one-time security exception.
 
@@ -157,7 +158,7 @@ folder. Read the pair as one word, the way `systemctl <verb>` is one word:
 | `MAIL_HOST` | `127.0.0.1` | bind address (`0.0.0.0` in production) |
 | `MAIL_SMTP_PORT` / `MAIL_SUBMISSION_PORT` / `MAIL_IMAP_PORT` | `2525` / `5587` / `5993` | listener ports (use 25 / 587 / 993 in production) |
 | `MAIL_USER` (+ `MAIL_PASS`) | unset | set **both** to seed a primary account at boot (create-only, ADR 0012); `MAIL_PASS` is ignored unless `MAIL_USER` is set. Prefer `init`/`account` (above), which keep no password in the environment. With neither set and an empty registry, a `demo`/`demo` dev account is seeded so `npm start` just works, on a **loopback bind only**; a public bind refuses to boot instead. |
-| `MAIL_ACCOUNTS` | unset | additional accounts, `"user:pass,user2:pass2"` (each gets its own `mail-<user>.db`); create-only, like `MAIL_USER` |
+| `MAIL_ACCOUNTS` | unset | additional accounts, `"user:pass,user2:pass2"` (each gets its own `mail-<user>.db`); create-only, like `MAIL_USER`. **Every entry must contain a colon**: a malformed one fails the boot naming it, rather than being silently dropped. An entry colliding with an existing login only by case, or whose name an alias already claims, is skipped with a logged reason |
 | `MAIL_CONTROL_DB` | `control.db` | the control database: account registry + outbound queue (created in the **current directory** unless you give a path; point it somewhere real for a deployment) |
 | `MAIL_DB` | `mail.db` | the primary account's mailbox database, only read together with `MAIL_USER`, and also the file the seeded `demo` account uses (so a bare `npm start` creates `control.db` + `mail.db`). Accounts created by `init`/`account` get `mail-<login>.db` beside the control DB instead. For a fully ephemeral run set `MAIL_CONTROL_DB=:memory:` (every mail DB then defaults to `:memory:`). |
 | `MAIL_TLS_CERT` / `MAIL_TLS_KEY` | bundled dev cert | PEM cert/key paths. Unset falls back to a bundled dev cert, but **only on a loopback bind**: the daemon refuses to boot with the dev cert on a non-loopback `MAIL_HOST` (its private key is public), so production must set these (`MAIL_ALLOW_DEV_CERT=1` forces it for a throwaway test). A set path that can't be read fails the boot with a message naming the variable. |
@@ -253,7 +254,7 @@ one message from SMTP in to IMAP out. Start there to read the codebase.
 ## How it's tested, and why that's trustworthy
 
 Correctness is the point of the project, so the test bed is not an afterthought. Several
-independent disciplines back the 1,000+ tests:
+independent disciplines back the 1,200+ tests:
 
 - **The persistent store is proven against a reference model.** The SQLite mailbox and an
   in-memory reference mailbox are driven through one shared invariant harness and must agree
@@ -266,11 +267,15 @@ independent disciplines back the 1,000+ tests:
   [four-state outcome model](src/conformance/outcome.ts) grades each result by RFC 2119 level: a
   declined SHOULD is *permitted-latitude*, an inconclusive check is neither pass nor fail, and
   only a violated MUST is a finding.
-- **Hostile-input hardening, per subsystem.** Every hostile-input surface (inbound SMTP + auth,
-  outbound relay, the IMAP sync/extension surface, and the RFC 5322/MIME parsers) is defended and
-  regression-tested against the attacks that matter: auth-header spoofing, DMARC display-spoofing,
-  a TLS hang that could wedge the send queue, MX SSRF, and cross-connection desync, each covered
-  by a test that fails on the vulnerable code. Coverage and status are in
+- **Hostile-input hardening, per subsystem.** Each hostile-input surface (inbound SMTP + auth,
+  outbound relay, the IMAP sync/extension surface, and the RFC 5322/MIME parsers) is reviewed and
+  regression-tested against the attacks found there so far: auth-header spoofing, DMARC
+  display-spoofing, a TLS hang that could wedge the send queue, MX SSRF, cross-connection desync,
+  and algorithmic blow-ups a crafted message can trigger from a client's own routine `FETCH` — a
+  quadratic address parse in `ENVELOPE` froze the event loop for ~27 s on a 256 KiB `To:` header
+  before it was made linear, alongside a header-section byte cap, a BODYSTRUCTURE budget, and
+  linear `LIST`/`LSUB` matching. Each fix carries a test that fails on the vulnerable code. The
+  review is the maintainer's own, not a third party's; coverage and status are in
   [how it's tested](docs/TESTING.md).
 
 ```sh

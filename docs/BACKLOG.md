@@ -8,7 +8,7 @@ gap. For what the server already does and how it's proven, see [TESTING.md](TEST
 [the decision records](decisions/0000-about-these-decisions.md).
 
 A test-coverage audit (2026-07-21) worked through ~30 candidate gaps: ~25 became
-reproduce-first, negative-controlled tests (the suite is now 1162 cases) and the rest are
+reproduce-first, negative-controlled tests (the suite stood at 1162 cases after that audit) and the rest are
 recorded declines in the ledger below or new decision records (ADRs
 [0021](decisions/0021-imap-mailbox-name-encoding.md),
 [0022](decisions/0022-eai-smtputf8-scope.md),

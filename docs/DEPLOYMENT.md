@@ -354,7 +354,7 @@ SQLite databases are created on first run:
 | `MAIL_HOST` | `0.0.0.0`, bind all interfaces, not just loopback |
 | `MAIL_SMTP_PORT` / `MAIL_SUBMISSION_PORT` / `MAIL_IMAP_PORT` | `25` / `587` / `993` |
 | `MAIL_USER` / `MAIL_PASS` | the **primary** account, used to *create* it on first boot; after that the registry is the source of truth and a changed env password is ignored with a warning (ADR 0012) |
-| `MAIL_ACCOUNTS` | additional accounts as `"user:pass,user2:pass2"`, create-only, same rule; the clean way to manage accounts is `node src/main.ts account` (below) |
+| `MAIL_ACCOUNTS` | additional accounts as `"user:pass,user2:pass2"`, create-only, same rule. Every entry must contain a colon: one that doesn't (a stray trailing comma, or a password containing one) **fails the boot** naming the entry, rather than being silently dropped. An entry whose login an alias already claims, or which collides case-insensitively with an existing login, is skipped with a logged warning. The clean way to manage accounts is `node src/main.ts account` (below) |
 | `MAIL_CONTROL_DB` | `/var/lib/mailserver/control.db`, the control database (account registry + outbound queue) |
 | `MAIL_DB` | only used **with** `MAIL_USER` (legacy bootstrap). Under the recommended `init` flow, each account's mailbox is `mail-<login>.db` beside the control DB; leave `MAIL_DB` unset |
 | `MAIL_TLS_CERT` / `MAIL_TLS_KEY` | paths to a real certificate (Let's Encrypt) |
@@ -637,9 +637,11 @@ In Thunderbird (or any client), add an account for `you@mail.example.com`:
   password.
 - **Outgoing (SMTP):** `mail.example.com`, port `587`, STARTTLS, *same* username +
   password (auth required).
-- **Username:** the account **login** exactly as you created it (`you`), **not** the
-  full email address `you@mail.example.com`, and case-sensitive. Clients pre-fill the
-  address as the username; change it to the bare login or auth fails on both ports.
+- **Username:** the account **login** (`you`), **not** the full email address
+  `you@mail.example.com`. Clients pre-fill the address as the username; change it to the
+  bare login or auth fails on both ports. Case does not matter — `You` and `YOU`
+  authenticate the same account — but a login differing from an existing one *only* in
+  case is refused at creation, because both would map to the same `mail-<login>.db`.
 
 The daemon **refuses to boot** if you bind a non-loopback `MAIL_HOST` without a real
 certificate (`MAIL_TLS_CERT`/`MAIL_TLS_KEY`): the bundled dev cert's private key is
@@ -871,6 +873,44 @@ checkout <old-ref>`, stop the daemon, copy the snapshot back over the live datab
 [Restoring from a backup](#day-2-operations-accounts-backups-the-queue), start again). That is
 exactly why step 1 isn't optional. (An additive same-epoch upgrade would let the old binary open
 the store, but restoring the matching backup is still the clean rollback.)
+
+### One upgrade that can refuse to start: case-colliding logins
+
+A login is **case-insensitive identity**: `ALICE` and `alice` are one account. The control
+database now carries a unique index on `lower(login)` so that is a database constraint
+rather than a convention every write path has to remember.
+
+Almost every deployment is unaffected — `account add` and `init` have rejected
+case-colliding logins for a long time. The exception is a registry seeded through
+`MAIL_ACCOUNTS` before that guard existed, which could create both. On the first start
+after upgrading, the daemon **refuses to boot** and names the pair:
+
+```text
+account registry has logins that differ only in case: ALICE, alice. A login is
+case-insensitive identity — these share one mail-<login>.db on a case-insensitive
+filesystem, so auth can read one row while a password change writes the other.
+```
+
+That is deliberate. The two accounts were already sharing one mailbox file on a
+case-insensitive filesystem (macOS, some container volumes), and authentication could read
+one row while a password change wrote the other — so a rotated password silently did
+nothing. Refusing to start beats running like that.
+
+To resolve it, with the daemon stopped:
+
+1. `sudo -u mail node src/main.ts account list --db /var/lib/mailserver/control.db`, and
+   check which spelling actually holds the mail (`mail-<login>.db`, beside the control DB).
+2. Decide which one survives. There is deliberately no `account remove` (ADR 0012), so
+   retiring the other means moving its messages into the survivor over IMAP (`imapsync`, or
+   dragging the folders across in a mail client — see
+   [Migrating your existing mail in](#migrating-your-existing-mail-in)), then deleting its
+   row from `control.db` by hand.
+3. Remove the colliding entry from `MAIL_ACCOUNTS` in the unit file, or it is seeded again
+   on the next start.
+4. Start the daemon and confirm with `selftest`.
+
+If you would rather roll back and plan the migration properly, that is exactly what the
+pre-upgrade backup from step 1 above is for.
 
 ## Decommissioning
 

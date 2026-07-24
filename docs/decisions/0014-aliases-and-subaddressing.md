@@ -69,11 +69,13 @@ a login (already true) or an alias, so a literal `a+b` address can never exist t
 by the subaddress rule. The tag is delivered as-is to the one INBOX; per-tag filing into
 folders is a future concern (it wants a rules/Sieve layer, out of scope here).
 
-### Aliases normalise to lower-case; logins keep their case
+### Aliases normalise to lower-case; logins keep the case they were stored with
 
-A login is an identity and preserves the case it was created with (ADR 0012). An alias is a
+A login preserves the case it was created with (ADR 0012), but it is **matched**
+case-insensitively everywhere — routing, authentication, and every other registry operation
+(ADR 0024). Case is a display property of a login, never part of its identity. An alias is a
 delivery address, and RFC 5321 §2.4 leaves local-part case to the destination (which is us),
-so aliases are stored lower-cased and matched case-insensitively. This makes the alias the
+so aliases go one step further and are *stored* lower-cased. This makes the alias the
 PRIMARY KEY (uniqueness is the table constraint) and removes a class of "why didn't `Sales@`
 work" confusion.
 
@@ -81,8 +83,10 @@ work" confusion.
 
 An address resolves to at most one account, so the login and alias namespaces are checked
 together: `alias add` refuses an address equal (case-insensitively) to any login or existing
-alias, and (the easy-to-miss direction) `account add` / `init` refuse a login that collides
-with an existing alias. A name is a login or an alias, never both.
+alias, and (the easy-to-miss direction) `account add` / `init` / the `MAIL_ACCOUNTS` env seed
+refuse a login that collides with an existing alias. A name is a login or an alias, never
+both. The env-seed path skips such an entry with a logged warning rather than throwing, so
+one bad seed cannot stop the daemon.
 
 ### CLI
 

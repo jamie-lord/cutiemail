@@ -164,7 +164,10 @@ table that retains a message that exhausts its retries rather than dropping it).
 `imap-server.ts` are real `net`/`tls` servers; `client/deliver.ts` is the sending
 half and `client/mx.ts` resolves MX hosts. The send pipeline is a chain of small,
 separately-tested transforms: `submission-fixup.ts` (add a missing From from the
-envelope sender, plus Date/Message-ID), `received.ts` (stamp the trace hop),
+envelope sender, plus Date/Message-ID), a strip of any `Authentication-Results`
+bearing our own authserv-id (RFC 8601 §5 — the same defence as inbound, and more
+load-bearing here, because nothing stamps a genuine result on top of a submitted
+message), `received.ts` (stamp the trace hop),
 `dkim-signer.ts` (sign), then `sqlite-queue.ts` + `relay-loop.ts` (persist and
 retry) and `outbound.ts` (resolve MX, deliver with opportunistic STARTTLS and a
 plaintext fallback). When the relay finally gives up, `bounce.ts` assembles a
