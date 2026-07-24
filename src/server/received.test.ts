@@ -123,3 +123,24 @@ test('stripOwnAuthResults strips a forgery whose authserv-id is followed by a ts
   const kept = strip('Authentication-Results: us.example.net; dkim=pass\r\n\r\nbody');
   assert.match(kept, /dkim=pass/, 'a different (longer) authserv-id is preserved');
 });
+
+test('stripOwnAuthResults strips a forgery with WSP between the field name and the colon', () => {
+  // RFC 5322 §4.5.8 obs-optional allows WSP before the colon, and our own parser trims the
+  // field name — so `Authentication-Results :` IS an AR field downstream, and IMAP re-emits it
+  // as conformant `Authentication-Results:` via HEADER.FIELDS. Anchoring on the bare colon let
+  // the forgery through with the non-conformance laundered away.
+  for (const name of ['Authentication-Results ', 'Authentication-Results\t', 'Authentication-Results  ']) {
+    const out = strip(`${name}: us.example; dkim=pass dmarc=pass\r\nSubject: x\r\n\r\nbody`);
+    assert.doesNotMatch(out, /dkim=pass/, `a forged AR named "${name}" must be stripped`);
+  }
+  // Control: WSP before the colon on a DIFFERENT authserv-id is still preserved.
+  const kept = strip('Authentication-Results : upstream.net; dkim=pass\r\n\r\nbody');
+  assert.match(kept, /dkim=pass/, 'a different authserv-id is preserved regardless of WSP');
+});
+
+test('countReceived counts a hop whose field name has WSP before the colon', () => {
+  // Our parser trims field names, so `Received :` is a trace hop downstream; the loop counter
+  // must agree with the parser rather than under-count.
+  const n = countReceived(Buffer.from('Received : from a\r\nReceived:\tfrom b\r\n\r\nbody', 'latin1'));
+  assert.equal(n, 2, 'both hops count, with and without WSP before the colon');
+});

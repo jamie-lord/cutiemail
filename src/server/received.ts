@@ -60,7 +60,16 @@ export function prependReceived(data: Buffer, info: ReceivedInfo): Buffer {
  * quoted-string, drop a trailing FQDN dot, lowercase. Returns null if none is found.
  */
 export function authservIdOf(unfoldedHeader: string): string | null {
-  const m = /^Authentication-Results:(.*)$/is.exec(unfoldedHeader);
+  // Tolerate WSP between the field name and the colon. RFC 5322 §2.2 forbids it, but §4.5.8
+  // obs-optional permits it and OUR OWN parser accepts it: parseMessage/hasHeader compare
+  // `name.trim().toLowerCase()`, so `Authentication-Results :` IS an authentication-results
+  // field to everything downstream. Anchoring on `Authentication-Results:` therefore
+  // under-matched — a forged `Authentication-Results : <our-id>; dkim=pass` was judged foreign
+  // and survived the strip. Worse, IMAP re-emits it as `${name.trim()}: ${value.trim()}`
+  // (imap-server.ts headerFields), laundering the forgery into conformant syntax so the
+  // non-conformance a strict consumer would reject on is erased before the client sees it.
+  // The strip must OVER-match, never under-match.
+  const m = /^Authentication-Results[ \t]*:(.*)$/is.exec(unfoldedHeader);
   if (m === null) return null;
   // Remove RFC 5322 comments in one linear pass (nesting-aware; a fixed-point regex peel was
   // O(depth²) and froze the event loop on a crafted header).
@@ -136,7 +145,9 @@ export function countReceived(data: Buffer): number {
   const headerBlock = (sep === -1 ? data : data.subarray(0, sep)).toString('latin1');
   let count = 0;
   for (const line of headerBlock.split('\r\n')) {
-    if (/^received:/i.test(line)) count += 1;
+    // Same WSP-before-colon tolerance as authservIdOf: our own parser trims the field name,
+    // so `Received :` is a Received field downstream and must count as a hop here too.
+    if (/^received[ \t]*:/i.test(line)) count += 1;
   }
   return count;
 }

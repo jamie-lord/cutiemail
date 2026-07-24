@@ -87,6 +87,31 @@ test('a quoted display-name with a comma is one address, not split on the inner 
 const addrs = (headers: readonly import('../message/model.ts').Header[], field: string, defects = {}): EnvelopeAddress[] =>
   buildEnvelope(headers, defects).fields.find((f) => f.name === field)!.value as EnvelopeAddress[];
 
+test('the display/addr split binds to the last angle pair, not the first', () => {
+  // Pins the exact semantics of the linear scan in parseOneAddress against the regex it replaced.
+  // A scan anchored to the FIRST '<' passes every other test in this file while quietly changing
+  // which address a client shows for these values — so they are asserted explicitly.
+  const one = (v: string): EnvelopeAddress =>
+    addrs(parseMessage(Buffer.from(`To: ${v}\r\n\r\nb\r\n`, 'latin1')).headers, 'to')[0]!;
+  assert.deepEqual(one('x <a@evil.com> <b@bank.com>'), { name: 'x <a@evil.com>', mailbox: 'b', host: 'bank.com' });
+  assert.deepEqual(one('<a<b>'), { name: null, mailbox: 'a<b', host: '' });
+  assert.deepEqual(one('Foo <a@b>'), { name: 'Foo', mailbox: 'a', host: 'b' });
+  assert.deepEqual(one('bare@example.com'), { name: null, mailbox: 'bare', host: 'example.com' });
+});
+
+test('an address header of many "<" does not blow up the ENVELOPE parse (quadratic backtracking)', () => {
+  // A folded To: of ~256 KiB of '<' (an anonymous peer can deliver one; the fold keeps each
+  // physical line legal so the header-section cap retains the field) took ~27 s of synchronous
+  // event-loop time with the old lazy-prefix regex — a whole-server freeze on one FETCH ENVELOPE.
+  const run = '<'.repeat(120_000);
+  const folded = run.replace(/(.{900})/g, '$1\r\n ');
+  const headers = parseMessage(Buffer.from(`To: ${folded}a@b.com\r\n\r\nb\r\n`, 'latin1')).headers;
+  const t0 = process.hrtime.bigint();
+  buildEnvelope(headers);
+  const ms = Number(process.hrtime.bigint() - t0) / 1e6;
+  assert.ok(ms < 1000, `ENVELOPE build must stay linear, took ${ms.toFixed(0)} ms`);
+});
+
 test('RFC 9051 §7.5.2: an RFC 5322 group address emits start/end markers with clean hosts (noGroupMarkers caught)', () => {
   cites('R-9051-7.5.2-a');
   const headers = parseMessage(

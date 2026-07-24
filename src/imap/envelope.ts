@@ -140,9 +140,29 @@ export function parseAddressList(value: string | null, defects: EnvelopeDefects 
 }
 
 function parseOneAddress(raw: string): EnvelopeAddress | null {
-  const angle = /^(.*?)<([^>]*)>$/.exec(raw);
-  const display = angle ? angle[1]!.trim().replace(/^"|"$/g, '') : null;
-  const addr = angle ? angle[2]!.trim() : raw;
+  // Split "display <addr>" with a linear scan. The former /^(.*?)<([^>]*)>$/ was quadratic: the
+  // lazy `.*?` retried every `<` position while the `<([^>]*)>$` tail kept failing, so an
+  // address header of N '<' with no closing '>' cost O(N²). An anonymous peer can deliver such a
+  // To:/From: folded across short continuation lines — the fold matters, an unfolded one trips
+  // the header-section byte cap and is dropped — retaining ~256 KiB and freezing the single
+  // event loop ~27 s on one FETCH ENVELOPE, recurring on every fetch (nothing caches it) and
+  // stacking per message/rfc822 part via buildBodyStructure.
+  //
+  // The scan reproduces the regex EXACTLY rather than merely approximating it: the address is
+  // the last angle pair whose contents hold no '>', i.e. the FIRST '<' after the LAST interior
+  // '>'. Anchoring to the first '<' instead (a tempting one-character fix) silently changes what
+  // a client displays for `x <a@evil.com> <b@bank.com>` and other multi-angle values, and no
+  // existing test covers those — so the equivalence here is load-bearing.
+  let display: string | null = null;
+  let addr = raw;
+  const len = raw.length;
+  if (len > 0 && raw[len - 1] === '>') {
+    const open = raw.indexOf('<', raw.lastIndexOf('>', len - 2) + 1);
+    if (open !== -1) {
+      display = raw.slice(0, open).trim().replace(/^"|"$/g, '');
+      addr = raw.slice(open + 1, len - 1).trim();
+    }
+  }
   const at = addr.lastIndexOf('@');
   if (at === -1) return { name: display && display.length > 0 ? display : null, mailbox: addr, host: '' };
   return { name: display && display.length > 0 ? display : null, mailbox: addr.slice(0, at), host: addr.slice(at + 1) };
