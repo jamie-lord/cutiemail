@@ -112,10 +112,13 @@ test('two daemons: a submission to A is DKIM-signed, relayed, and lands in B, tr
     await sr.line('message stored\r\n');
     secure.end();
 
-    // Wait for B to receive the relayed message. Generous budget: the relay does
-    // RSA signing + a TLS handshake, and the whole suite runs test files in
-    // parallel, so a tight window flakes under load.
-    for (let i = 0; i < 1500 && readMessages(B.mailbox).length === 0; i++) await delay(10);
+    // Wait for B to receive the relayed message. Generous budget: the relay does RSA signing +
+    // a TLS handshake, and the whole suite runs test files in parallel, so a tight window flakes
+    // under load. Poll on a wall clock rather than an iteration count, and not too eagerly —
+    // `readMessages` reads the whole mailbox, so a 10ms poll spends CPU competing with the very
+    // relay it is waiting for.
+    const deadline = Date.now() + 30_000;
+    while (Date.now() < deadline && readMessages(B.mailbox).length === 0) await delay(25);
     assert.equal(readMessages(B.mailbox).length, 1, 'B received the message A relayed');
 
     const arrived = readMessages(B.mailbox)[0]!.raw.toString('latin1');

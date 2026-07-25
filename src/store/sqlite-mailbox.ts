@@ -14,6 +14,7 @@
 
 import { DatabaseSync } from 'node:sqlite';
 import { DELETED, type MessageMeta, type StoredMessage, type StoreMode } from './mailbox.ts';
+import { stampSchema, MAIL_SCHEMA } from './schema-version.ts';
 import { canonicalMailboxName } from './mailbox-name.ts';
 
 const SCHEMA = `
@@ -372,6 +373,7 @@ export class SqliteCatalog {
     // AFTER the INBOX seed, which inserts id 1 directly: the high-water mark must start past
     // every id already in use, or the first CREATE would hand out INBOX's.
     migrateMailboxIdHwm(db);
+    stampSchema(db, 'mail', MAIL_SCHEMA);
     return cat;
   }
 

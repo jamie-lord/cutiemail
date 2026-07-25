@@ -17,6 +17,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { randomBytes, timingSafeEqual, createHash } from 'node:crypto';
 import { deriveCredential } from './accounts.ts';
 import type { ScramHash } from '../auth/scram.ts';
+import { stampSchema, CONTROL_SCHEMA } from './schema-version.ts';
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS accounts (
@@ -140,6 +141,8 @@ export class AccountRegistry {
           'it from MAIL_ACCOUNTS so it is not seeded again.',
       );
     }
+    // After the schema and its migrations: the stamp must describe what is actually on disk.
+    stampSchema(db, 'control', CONTROL_SCHEMA);
     return new AccountRegistry(db);
   }
 

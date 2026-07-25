@@ -61,3 +61,4 @@ suite covers:
 - [0022](0022-eai-smtputf8-scope.md), EAI / SMTPUTF8: the envelope is ASCII-only, for now
 - [0023](0023-outbound-delivery-semantics.md), Outbound delivery semantics: at-least-once, indeterminate post-DATA, worst-authoritative multi-MX
 - [0024](0024-login-case-insensitive-identity.md), A login is case-insensitive identity, enforced by the database
+- [0025](0025-self-update.md), Self-update: a separate updater, and a cutover that must earn the switch

@@ -183,7 +183,20 @@ test('FETCH BODYSTRUCTURE is bounded on a deeply nested message/rfc822 chain (de
   const out = bodyStructureResponse(Buffer.from(m, 'latin1'));
   const ms = Number(process.hrtime.bigint() - start) / 1e6;
   assert.ok(out.length > 0, 'a bounded structure is still produced');
-  assert.ok(ms < 3000, `a deep nested-message chain must be bounded (took ${ms.toFixed(0)}ms)`);
+
+  // Assert the SHAPE the budget produces, not the clock. The cumulative-byte budget stops the
+  // descent partway and emits an opaque stub, so a bounded run reports far fewer message/rfc822
+  // levels than the 100 that were nested — 31 with the current budget and payload. That is
+  // deterministic; elapsed time is not, and this file runs in a parallel suite where a threshold
+  // sized to an idle machine flakes. (Measured: bounded ~1.7s producing 31 levels, budget removed
+  // ~5.3s producing all 100 — so this assertion catches the defect the timing one was aiming at,
+  // and catches it whatever the machine is doing.)
+  const levels = (out.match(/MESSAGE" "RFC822/g) ?? []).length;
+  assert.ok(levels > 0, 'the chain is walked at all');
+  assert.ok(levels < 60, `the descent must stop partway, not walk all 100 levels (saw ${levels})`);
+
+  // A generous backstop against a genuinely super-linear blow-up, not a performance target.
+  assert.ok(ms < 30_000, `a deep nested-message chain must be bounded (took ${ms.toFixed(0)}ms)`);
 });
 
 test('FETCH BODYSTRUCTURE is bounded on a multipart with millions of parts (part-count DoS)', () => {
