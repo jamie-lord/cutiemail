@@ -78,11 +78,29 @@ function dmarcQueryName(domain: string): string {
  * (SPF already rejects multiple records, spf-check.ts). `record` is the single record, or null
  * when none is published.
  */
-async function fetchDmarc(domain: string, resolveTxt: DmarcInput['resolveTxt']): Promise<{ record: string | null; multiple: boolean }> {
-  const txts = await resolveTxt(dmarcQueryName(domain));
-  const found = txts.filter((t) => t.toLowerCase().startsWith('v=dmarc1'));
+/**
+ * Pick the DMARC record out of a TXT answer, per RFC 7489 §6.6.3 steps 2/4-5 (RFC 9989 §4.10
+ * steps 2 and 6 in the replacement): discard everything that does not begin with a `v` tag
+ * naming this version, then require exactly one survivor.
+ *
+ * Exported so `doctor` reports what the daemon — and every conformant receiver — actually does.
+ * The two used to spell this differently: doctor trimmed leading whitespace and took the first
+ * match with no multiplicity rule, so it answered "ok, p=reject published" for zones where
+ * policy discovery yields nothing at all and Gmail and Outlook apply no policy either. A health
+ * check that disagrees with enforcement is worse than none, and it is the only DMARC surface an
+ * operator sees.
+ *
+ * The version match is case-sensitive and tolerates `*WSP` around `=`, matching §4.8's
+ * `dmarc-version = "v" equals %s"DMARC1"`. Leading whitespace before the `v` is not legal.
+ */
+export function selectDmarcRecord(txts: readonly string[]): { record: string | null; multiple: boolean } {
+  const found = txts.filter((t) => /^v[ \t]*=[ \t]*DMARC1(?:[ \t]*;|$)/.test(t));
   if (found.length > 1) return { record: null, multiple: true };
   return { record: found[0] ?? null, multiple: false };
+}
+
+async function fetchDmarc(domain: string, resolveTxt: DmarcInput['resolveTxt']): Promise<{ record: string | null; multiple: boolean }> {
+  return selectDmarcRecord(await resolveTxt(dmarcQueryName(domain)));
 }
 
 export async function checkDmarc(input: DmarcInput): Promise<DmarcOutcome> {

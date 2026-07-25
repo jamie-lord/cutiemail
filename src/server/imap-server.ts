@@ -132,6 +132,23 @@ const MAX_APPEND_LITERAL = 26_214_400; // 25 MiB default, matching the SMTP SIZE
  * personal-scale concurrent upload, tiny vs modern RAM.
  */
 const MAX_APPEND_INFLIGHT = 268_435_456; // 256 MiB
+/**
+ * How many accounts the in-flight APPEND budget is divided between.
+ *
+ * The budget exists to bound memory, but a single global counter is also a lock: reservations are
+ * charged on the size the client DECLARES, before any of the literal arrives, so one account can
+ * pin the lot and deny APPEND to everyone else while sending nothing. Slicing it costs a heavy
+ * single user some concurrency and removes the cross-account lever. The floor of one maximal
+ * literal (see #reserveAppend) keeps a normal upload working regardless of this number.
+ */
+const APPEND_ACCOUNT_SHARES = 8;
+/**
+ * Protocol-error limits, mirroring MAX_HARD_ERRORS in smtp-receiver.ts. Pre-auth is tighter
+ * because an unauthenticated peer has no legitimate reason to issue unknown commands, and it is
+ * the pre-auth case that lets an anonymous peer occupy connection slots.
+ */
+const MAX_BAD_COMMANDS_PREAUTH = 3;
+const MAX_BAD_COMMANDS = 20;
 
 /** Inactivity autologout (RFC 9051 §5.4 requires a timer of at least 30 minutes). */
 const AUTOLOGOUT_MS = 1_800_000;
@@ -200,13 +217,18 @@ export function shedToBudget(sockets: Iterable<Sheddable>, budget: number, exemp
 }
 
 /** Special-use attributes by conventional folder name (RFC 6154 / 9051 §7.3.1). */
-const SPECIAL_USE: Record<string, string> = {
+// Null-prototype: this table is indexed by a mailbox name the client chose, and CREATE only
+// forbids INBOX and non-NFC names. With Object.prototype in the chain, `CREATE constructor` made
+// the lookup return a function, whose stringification carries parentheses that terminate the LIST
+// attribute list early for a non-counting parser — and made the mailbox pass the (SPECIAL-USE)
+// filter, which is supposed to mean "has a special-use attribute".
+const SPECIAL_USE: Record<string, string> = Object.assign(Object.create(null) as Record<string, string>, {
   Trash: '\\Trash',
   Sent: '\\Sent',
   Drafts: '\\Drafts',
   Junk: '\\Junk',
   Archive: '\\Archive',
-};
+});
 
 /**
  * Redact credentials from an IMAP command line for debug logging. Covers BOTH auth forms:
@@ -776,7 +798,9 @@ export class ImapServer {
   readonly #maxAppendLiteral: number;
   readonly #log: ((line: string) => void) | undefined;
   /** Bytes reserved for in-flight APPEND literals, per connection, and the running total. */
-  readonly #appendReserved = new Map<net.Socket, number>();
+  readonly #appendReserved = new Map<net.Socket, { size: number; login: string }>();
+  /** Reserved bytes per login, so one account cannot take the whole budget. */
+  readonly #appendByLogin = new Map<string, number>();
   #appendInflight = 0;
   readonly #credentialTag: ((login: string) => string | null) | undefined;
   /**
@@ -824,23 +848,39 @@ export class ImapServer {
   }
 
   /**
-   * Reserve `size` octets against the server-wide in-flight-APPEND budget. Returns false (reserving
-   * nothing) when accepting the upload would exceed it — the caller then refuses the APPEND. A
-   * connection holds at most one reservation at a time (one pending APPEND).
+   * Reserve `size` octets against the in-flight-APPEND budget. Returns false (reserving nothing)
+   * when accepting the upload would exceed it — the caller then refuses the APPEND. A connection
+   * holds at most one reservation at a time (one pending APPEND).
+   *
+   * The budget bounds memory, but as a single server-wide counter it was also a lock any one
+   * account could take: the reservation is charged on the DECLARED size, before a byte of the
+   * literal arrives, so eleven connections declaring maximal literals and sending nothing pinned
+   * the whole 256 MiB. Every other account's APPEND then failed — Sent copies, drafts, imapsync
+   * imports — for as long as the attacker kept the sockets alive, which costs one byte per
+   * connection per autologout period. So the budget is also shared per principal: no login may
+   * hold more than its slice, and one maximal literal always fits so a legitimate upload is never
+   * refused on its own account's behalf.
    */
-  #reserveAppend(sock: net.Socket, size: number): boolean {
+  #reserveAppend(sock: net.Socket, login: string | null, size: number): boolean {
+    const perLogin = Math.max(this.#maxAppendLiteral, Math.floor(this.#maxAppendInflight / APPEND_ACCOUNT_SHARES));
+    const key = login ?? '';
+    if ((this.#appendByLogin.get(key) ?? 0) + size > perLogin) return false;
     if (this.#appendInflight + size > this.#maxAppendInflight) return false;
     this.#appendInflight += size;
-    this.#appendReserved.set(sock, size);
+    this.#appendReserved.set(sock, { size, login: key });
+    this.#appendByLogin.set(key, (this.#appendByLogin.get(key) ?? 0) + size);
     return true;
   }
 
   /** Release a connection's APPEND reservation (on completion, error, or disconnect). Idempotent. */
   #releaseAppend(sock: net.Socket): void {
-    const reserved = this.#appendReserved.get(sock);
-    if (reserved === undefined) return;
-    this.#appendInflight -= reserved;
+    const held = this.#appendReserved.get(sock);
+    if (held === undefined) return;
+    this.#appendInflight -= held.size;
     this.#appendReserved.delete(sock);
+    const remaining = (this.#appendByLogin.get(held.login) ?? 0) - held.size;
+    if (remaining > 0) this.#appendByLogin.set(held.login, remaining);
+    else this.#appendByLogin.delete(held.login);
   }
 
   /**
@@ -1253,6 +1293,21 @@ export class ImapServer {
     let authenticated = false;
     let authedLogin: string | null = null; // the login bound on success, for the mid-session disable recheck
     let pendingAuth: string | null = null;
+    /**
+     * Protocol errors on this connection. Mirrors smtp-receiver.ts's MAX_HARD_ERRORS, whose
+     * comment applies verbatim: a peer streaming junk commands holds its connection slot
+     * indefinitely and is otherwise bounded only by MAX_CONNECTIONS. Both refusal paths count —
+     * an unknown verb and a command issued before authenticating — because a peer occupying a
+     * slot can reach either, and the inactivity timer is reset by whatever it sends.
+     */
+    let badCommands = 0;
+    const tooManyBadCommands = (): boolean => {
+      badCommands += 1;
+      if (badCommands < (authenticated ? MAX_BAD_COMMANDS : MAX_BAD_COMMANDS_PREAUTH)) return false;
+      write(sock, '* BYE too many invalid commands');
+      sock.destroy();
+      return true;
+    };
     let readOnly = false; // set when the mailbox was opened with EXAMINE, not SELECT
     // The catalog + notifier THIS connection serves. Without a resolver they stay the
     // server's shared instances (single-account mode); with one (ADR 0009), a successful
@@ -1402,6 +1457,7 @@ export class ImapServer {
         // RFC 9051 §3: reject any command that needs Authenticated state before LOGIN
         // succeeds. This is the gate that stops unauthenticated mailbox access.
         if (!authenticated && !PREAUTH_COMMANDS.has(cmd)) {
+          if (tooManyBadCommands()) return;
           write(sock, `${tag} NO not authenticated, LOGIN or AUTHENTICATE first`);
           continue;
         }
@@ -1626,7 +1682,7 @@ export class ImapServer {
             // so many slow uploaders cannot pin memory without bound (docs/PERFORMANCE.md). A
             // synchronizing literal is refused with a transient NO (the client never sends the data
             // and may retry); a non-synchronizing literal is already streaming, so drop the link.
-            if (!this.#reserveAppend(sock, size)) {
+            if (!this.#reserveAppend(sock, authedLogin, size)) {
               write(sock, `${tag} NO [LIMIT] too much APPEND data in flight; retry shortly`);
               if (m[5] !== undefined) {
                 sock.end();
@@ -2281,6 +2337,13 @@ export class ImapServer {
             write(sock, `${tag} OK NOOP completed`);
             break;
           default:
+            // Mirrors smtp-receiver.ts's MAX_HARD_ERRORS, whose comment applies verbatim here: a
+            // peer streaming junk commands holds its connection slot indefinitely and is
+            // otherwise bounded only by MAX_CONNECTIONS. IMAP had no such limit, so 50,000
+            // malformed commands were answered on one connection while the inactivity timer was
+            // reset by every one of them. Pre-auth is stricter (Dovecot drops after 3): a client
+            // that cannot even log in has no reason to be issuing unknown verbs.
+            if (tooManyBadCommands()) return;
             write(sock, `${tag} BAD command unknown`);
         }
         } catch {

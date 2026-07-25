@@ -64,6 +64,12 @@ function statusOf(results: readonly { name: string; status: string }[], name: st
   return r.status;
 }
 
+function detailOf(results: readonly { name: string; detail: string }[], name: string): string {
+  const r = results.find((x) => x.name === name);
+  assert.ok(r !== undefined, `check ${name} missing`);
+  return r.detail;
+}
+
 test('a healthy deployment: every check ok (no false alarms)', async () => {
   const results = await doctorChecks(params, healthyDeps());
   for (const name of ['mx', 'address', 'fcrdns', 'spf', 'dkim', 'dmarc', 'tls', 'dial-25', 'age']) {
@@ -328,4 +334,42 @@ test('envSecretsCheck warns when plaintext credentials are in the environment, e
   assert.doesNotMatch(warn[0]!.detail, /hunter2/, 'the secret value is never echoed');
   // Both vars named when both present.
   assert.match(envSecretsCheck({ MAIL_PASS: 'x', MAIL_ACCOUNTS: 'a:b' })[0]!.detail, /MAIL_PASS and MAIL_ACCOUNTS/);
+});
+
+test('dmarc: doctor agrees with the daemon about which zones actually have a policy', async () => {
+  // doctor is the ONLY DMARC health surface an operator sees, and it used to answer with a
+  // laxer rule than enforcement: it trimmed leading whitespace and took the first matching
+  // record with no multiplicity check. Both divergences reported a healthy policy for zones
+  // where RFC 7489 §6.6.3 / RFC 9989 §4.10 discard the set — meaning no policy is applied here,
+  // by Gmail, or by anyone. A green light on a control that is switched off is worse than none.
+  const zone = (records: string[]): DoctorDeps =>
+    healthyDeps({
+      txt: async (name) => {
+        if (name === DOMAIN) return [`v=spf1 ip4:${IP} -all`];
+        if (name === `sel._domainkey.${DOMAIN}`) return [publishedDkim];
+        if (name === `_dmarc.${DOMAIN}`) return records;
+        return [];
+      },
+    });
+
+  const duplicated = await doctorChecks(params, zone(['v=DMARC1; p=reject', 'v=DMARC1; p=reject; sp=reject']));
+  assert.equal(statusOf(duplicated, 'dmarc'), 'fail', 'several records: discovery yields NO policy');
+  assert.match(detailOf(duplicated, 'dmarc'), /several DMARC records/);
+
+  const leadingSpace = await doctorChecks(params, zone([' v=DMARC1; p=reject']));
+  assert.equal(statusOf(leadingSpace, 'dmarc'), 'fail', 'leading whitespace is not a legal record');
+
+  const single = await doctorChecks(params, zone(['v=DMARC1; p=reject']));
+  assert.equal(statusOf(single, 'dmarc'), 'ok', 'control: one conformant record is still healthy');
+});
+
+test('dial-25: a peer that streams without a line ending is abandoned, not buffered forever', async () => {
+  // The real dial25 caps the greeting; this pins the CONTRACT the checks rely on — a probe that
+  // cannot complete must surface as a failure rather than growing a buffer until the CLI dies.
+  const results = await doctorChecks(
+    params,
+    healthyDeps({ dial25: async () => { throw new Error('greeting exceeded 65536 bytes without a line ending'); } }),
+  );
+  assert.equal(statusOf(results, 'dial-25'), 'fail');
+  assert.match(detailOf(results, 'dial-25'), /greeting exceeded/);
 });

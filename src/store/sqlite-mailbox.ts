@@ -43,7 +43,10 @@ CREATE TABLE IF NOT EXISTS expunged (
 );
 CREATE TABLE IF NOT EXISTS catalog_meta (
   id INTEGER PRIMARY KEY CHECK (id = 0),
-  uid_validity_hwm INTEGER NOT NULL
+  uid_validity_hwm INTEGER NOT NULL,
+  -- Monotonic: an id is never reused, so a stale handle held by another session can never be
+  -- redirected into a different mailbox. See migrateMailboxIdHwm.
+  mailbox_id_hwm INTEGER NOT NULL DEFAULT 0
 );
 `;
 
@@ -61,6 +64,29 @@ function migrateCatalogMeta(db: DatabaseSync, uidValidity: number): void {
   const maxRow = db.prepare('SELECT COALESCE(MAX(uid_validity), 0) AS m FROM mailbox').get() as { m: number };
   const seed = Math.max(uidValidity, Number(maxRow.m));
   db.prepare('INSERT INTO catalog_meta (id, uid_validity_hwm) VALUES (0, ?)').run(seed);
+}
+
+/**
+ * Add the monotonic mailbox-id high-water mark, seeded past every id in use.
+ *
+ * Ids used to be `MAX(id) + 1`, which RECYCLES the id of the most recently created mailbox as
+ * soon as it is deleted. Another session with that mailbox still selected holds a handle bound to
+ * the number, not the name, so its next FETCH/STORE/EXPUNGE silently operated on whichever
+ * mailbox inherited the id — reading one folder's mail into another's cache entry and then
+ * expunging it. UIDVALIDITY is bumped correctly on the catalog side, but the stale session is
+ * never told, so a conformant client cannot defend itself either.
+ */
+function migrateMailboxIdHwm(db: DatabaseSync): void {
+  const cols = db.prepare("SELECT name FROM pragma_table_info('catalog_meta')").all() as Array<{ name: string }>;
+  if (!cols.some((c) => c.name === 'mailbox_id_hwm')) {
+    db.exec('ALTER TABLE catalog_meta ADD COLUMN mailbox_id_hwm INTEGER NOT NULL DEFAULT 0');
+  }
+  // Reconcile unconditionally, not only when the column is new: a fresh database gets the column
+  // from SCHEMA with a default of 0 while INBOX is inserted at id 1, and an existing one may have
+  // been written by a build that allocated ids as MAX(id)+1. Never lower the mark.
+  db.prepare(
+    'UPDATE catalog_meta SET mailbox_id_hwm = MAX(mailbox_id_hwm, (SELECT COALESCE(MAX(id), 0) FROM mailbox)) WHERE id = 0',
+  ).run();
 }
 
 /** Add the name column to databases created before multi-mailbox existed. */
@@ -343,7 +369,16 @@ export class SqliteCatalog {
     if (cat.get('INBOX') === undefined) {
       db.prepare('INSERT INTO mailbox (id, uid_validity, uid_next, name) VALUES (1, ?, 1, ?)').run(uidValidity, 'INBOX');
     }
+    // AFTER the INBOX seed, which inserts id 1 directly: the high-water mark must start past
+    // every id already in use, or the first CREATE would hand out INBOX's.
+    migrateMailboxIdHwm(db);
     return cat;
+  }
+
+  /** The next mailbox id, never one handed out before. */
+  #nextMailboxId(): number {
+    this.#db.prepare('UPDATE catalog_meta SET mailbox_id_hwm = mailbox_id_hwm + 1 WHERE id = 0').run();
+    return Number((this.#db.prepare('SELECT mailbox_id_hwm FROM catalog_meta WHERE id = 0').get() as { mailbox_id_hwm: number }).mailbox_id_hwm);
   }
 
   /** Advance and return the next UIDVALIDITY — strictly greater than any previously assigned. */
@@ -372,10 +407,10 @@ export class SqliteCatalog {
     // A monotonic UIDVALIDITY (never a value handed out before), so a name recreated after a
     // DELETE cannot reuse the deleted incarnation's (UIDVALIDITY, UID) space — RFC 9051 §6.3.4.
     const uidValidity = this.#nextUidValidity();
-    const next = this.#db.prepare('SELECT COALESCE(MAX(id), 0) + 1 AS id FROM mailbox').get() as { id: number };
-    this.#db.prepare('INSERT INTO mailbox (id, uid_validity, uid_next, name) VALUES (?, ?, 1, ?)').run(Number(next.id), uidValidity, canon);
+    const nextId = this.#nextMailboxId();
+    this.#db.prepare('INSERT INTO mailbox (id, uid_validity, uid_next, name) VALUES (?, ?, 1, ?)').run(nextId, uidValidity, canon);
     // The row is inserted and the schema is present — attach without re-running DDL.
-    return SqliteMailbox.attach(this.#db, Number(next.id));
+    return SqliteMailbox.attach(this.#db, nextId);
   }
 
   /** Delete a mailbox and its messages/flags. False if absent or INBOX (RFC 9051 §6.3.4). */
@@ -427,7 +462,7 @@ export class SqliteCatalog {
         // target — so on a second consecutive INBOX rename the pre-existing tombstones migrated
         // away and INBOX was left telling a QRESYNC client "nothing vanished" while its cached
         // UIDs were gone. Both bugs die with the fresh-target rebuild.
-        const nextId = Number((this.#db.prepare('SELECT COALESCE(MAX(id), 0) + 1 AS id FROM mailbox').get() as { id: number }).id);
+        const nextId = this.#nextMailboxId();
         const inbox = this.#db.prepare('SELECT uid_validity, highest_modseq FROM mailbox WHERE id = ?').get(Number(src.id)) as { uid_validity: number; highest_modseq: number };
         const moving = this.#db.prepare('SELECT uid, internal_date, raw FROM message WHERE mailbox_id = ? ORDER BY uid').all(Number(src.id)) as Array<{ uid: number; internal_date: number; raw: Uint8Array }>;
         const n = moving.length;

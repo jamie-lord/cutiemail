@@ -32,6 +32,7 @@ import { resolve4, resolve6, resolveMx, resolveTxt, reverse } from 'node:dns/pro
 import { DatabaseSync } from 'node:sqlite';
 import { checkSpf, type SpfResolvers } from '../auth/spf-check.ts';
 import { parseDmarcRecord } from '../auth/dmarc.ts';
+import { selectDmarcRecord } from '../server/dmarc-inbound.ts';
 import { parseDkimKeyRecord } from '../crypto/dkim-keyrecord.ts';
 import { registeredDomain } from '../auth/public-suffix.ts';
 import { AccountRegistry } from '../store/account-registry.ts';
@@ -39,6 +40,9 @@ import { openMailDb } from '../store/open-mail-db.ts';
 import { dkimTxtFromPrivateKey } from './setup.ts';
 import type { OpsIo } from './cli.ts';
 import { sanitizeForTerminalLine } from './terminal.ts';
+
+/** Mirrors MAX_REPLY_BYTES in wire/reply.ts: a greeting is one line, not a stream. */
+const MAX_GREETING_BYTES = 64 * 1024;
 
 export type CheckStatus = 'ok' | 'warn' | 'fail' | 'skip';
 export interface CheckResult {
@@ -169,8 +173,13 @@ export async function doctorChecks(p: DoctorParams, deps: DoctorDeps): Promise<C
   // -- dmarc ----------------------------------------------------------------------
   try {
     const records = await deps.txt(`_dmarc.${p.domain}`);
-    const rec = records.find((r) => r.trim().toLowerCase().startsWith('v=dmarc1'));
-    if (rec === undefined) {
+    // The DAEMON's selector, not a second spelling of it: a check that answers "ok" for a zone
+    // where policy discovery yields nothing is worse than no check, and this is the only place an
+    // operator would ever find out.
+    const { record: rec, multiple } = selectDmarcRecord(records);
+    if (multiple) {
+      push('dmarc', 'fail', `several DMARC records at _dmarc.${p.domain}: RFC 7489 §6.6.3 discards the whole set, so NO policy is applied — by this server or by Gmail. Publish exactly one.`);
+    } else if (rec === null) {
       push('dmarc', 'fail', `no DMARC record at _dmarc.${p.domain}: big receivers now expect one; run setup`);
     } else {
       const parsed = parseDmarcRecord(Buffer.from(rec, 'latin1'));
@@ -310,15 +319,30 @@ export function realDoctorDeps(): DoctorDeps {
         const sock = connect({ host, port: 25 });
         let buf = Buffer.alloc(0);
         const fail = (why: string): void => {
+          clearTimeout(deadline);
           sock.destroy();
           rej(new Error(why));
         };
+        // sock.setTimeout below is an INACTIVITY timer: it is reset by every chunk, so a peer
+        // that streams bytes containing no LF never trips it and this greeting read never ends.
+        // Bound the wall clock as well as the bytes.
+        const deadline = setTimeout(() => fail('probe exceeded its 30s deadline'), 30_000);
+        deadline.unref();
         sock.setTimeout(10_000, () => fail('timeout after 10s'));
         sock.on('error', (e) => fail(e.message));
         sock.on('data', (d) => {
+          // A greeting is one line. Without a cap this grew unbounded — and the per-chunk
+          // concat made it quadratic, so a hostile MX drove multi-gigabyte RSS in seconds. The
+          // reply framer in wire/reply.ts caps at 64 KiB for the same reason; this hand-rolled
+          // reader never adopted it.
+          if (buf.length + d.length > MAX_GREETING_BYTES) {
+            fail(`greeting exceeded ${MAX_GREETING_BYTES} bytes without a line ending`);
+            return;
+          }
           buf = Buffer.concat([buf, d]);
           const nl = buf.indexOf(0x0a);
           if (nl !== -1) {
+            clearTimeout(deadline);
             const line = buf.subarray(0, nl).toString('latin1').replace(/\r$/, '');
             sock.end('QUIT\r\n');
             res(line);
