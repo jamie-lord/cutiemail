@@ -80,7 +80,12 @@ function parseParameterized(value: string): { head: string; params: Array<readon
 function findHeader(headers: ReturnType<typeof parseMessage>['headers'], name: string): string | null {
   const lower = name.toLowerCase();
   for (const h of headers) {
-    if (h.name.toString('latin1').toLowerCase() === lower) return h.value.toString('latin1').replace(/\r\n(?=[ \t])/g, '').trim();
+    // .trim() the FIELD NAME as well as the value: RFC 5322 §4.5.8 obs-optional permits WSP
+    // before the colon, and parseMessage keeps that whitespace in the name. Every other
+    // header lookup in the tree already folds it away; this one did not, so `Content-Type :`
+    // was a field the structured view could not see while the parser could — the two
+    // disagreeing about a part's media type.
+    if (h.name.toString('latin1').trim().toLowerCase() === lower) return h.value.toString('latin1').replace(/\r\n(?=[ \t])/g, '').trim();
   }
   return null;
 }

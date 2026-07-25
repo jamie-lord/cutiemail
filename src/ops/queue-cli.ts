@@ -22,7 +22,7 @@ import { existsSync } from 'node:fs';
 import { SqliteQueue, type DeadLetterEntry, type QueueEntry } from '../store/sqlite-queue.ts';
 import { openMailDb } from '../store/open-mail-db.ts';
 import type { OpsIo } from './cli.ts';
-import { sanitizeForTerminal } from './terminal.ts';
+import { sanitizeForTerminal, sanitizeForTerminalLine } from './terminal.ts';
 
 const iso = (ms: number): string => new Date(ms).toISOString().replace(/\.\d{3}Z$/, 'Z');
 
@@ -96,7 +96,14 @@ function openQueue(dbPath: string, io: OpsIo): SqliteQueue | undefined {
 }
 
 function queueLine(e: QueueEntry, now: number): string {
-  return `${e.id}  from=<${e.from}> to=${e.recipients.join(',')} attempts=${e.attempts} next=${iso(e.nextAttempt)} (${relative(e.nextAttempt, now)}) size=${e.data.length}`;
+  // Envelope addresses come from the wire. The receiver rejects control bytes below 0x20 and
+  // non-ASCII above 0x7f, but 0x7f (DEL) itself survives both checks and reaches here — and its
+  // sibling deadLetterLine sanitises for the same reason, so this one should not be the
+  // exception. Cheap, and it stops the next widening of the address grammar becoming a terminal
+  // bug.
+  return sanitizeForTerminalLine(
+    `${e.id}  from=<${e.from}> to=${e.recipients.join(',')} attempts=${e.attempts} next=${iso(e.nextAttempt)} (${relative(e.nextAttempt, now)}) size=${e.data.length}`,
+  );
 }
 
 function deadLetterLine(e: DeadLetterEntry, now: number): string {

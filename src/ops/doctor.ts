@@ -44,6 +44,25 @@ import { sanitizeForTerminalLine } from './terminal.ts';
 /** Mirrors MAX_REPLY_BYTES in wire/reply.ts: a greeting is one line, not a stream. */
 const MAX_GREETING_BYTES = 64 * 1024;
 
+/** Read a response body incrementally, abandoning it past `maxBytes`. Null if over. */
+async function readCapped(res: Response, maxBytes: number): Promise<string | null> {
+  const reader = res.body?.getReader();
+  if (reader === undefined || reader === null) return null;
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    total += value.length;
+    if (total > maxBytes) {
+      await reader.cancel().catch(() => {});
+      return null;
+    }
+    chunks.push(value);
+  }
+  return Buffer.concat(chunks).toString('utf8');
+}
+
 export type CheckStatus = 'ok' | 'warn' | 'fail' | 'skip';
 export interface CheckResult {
   readonly name: string;
@@ -354,7 +373,13 @@ export function realDoctorDeps(): DoctorDeps {
       // (/, ?, @, ..) must not be able to alter the request path or host.
       const res = await fetch(`https://rdap.org/domain/${encodeURIComponent(registrable)}`, { signal: AbortSignal.timeout(10_000), redirect: 'follow' });
       if (!res.ok) throw new Error(`RDAP ${res.status}`);
-      return res.json();
+      // Bound the body before parsing it. res.json() would buffer whatever the endpoint sends,
+      // and the AbortSignal is not a reliable stop for a read already in progress — the same
+      // shape that let a hostile MTA-STS policy host drive multi-gigabyte allocation. rdap.org is
+      // a trusted third party, so this is defence in depth, not a live exposure.
+      const text = await readCapped(res, 1024 * 1024);
+      if (text === null) throw new Error('RDAP response too large');
+      return JSON.parse(text);
     },
     now: () => Date.now(),
   };

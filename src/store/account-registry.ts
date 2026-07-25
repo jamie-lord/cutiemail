@@ -118,20 +118,26 @@ export class AccountRegistry {
     // covers databases created before this constraint existed.
     try {
       db.exec('CREATE UNIQUE INDEX IF NOT EXISTS accounts_login_nocase ON accounts (lower(login))');
-    } catch {
+    } catch (e) {
       // Already-forked registry (an env seed could create case-colliding logins before that path
-      // was guarded). Refusing to start beats running with two accounts sharing one mail-<login>.db,
-      // but the operator needs to know WHICH pair and how to resolve it, not a bare SQLite error.
+      // was guarded). Refusing to start beats running with two accounts sharing one identity, but
+      // the operator needs to know WHICH pair and how to resolve it, not a bare SQLite error.
       const dupes = db
         .prepare("SELECT group_concat(login, ', ') AS logins FROM accounts GROUP BY lower(login) HAVING count(*) > 1")
         .all() as Array<{ logins: string }>;
+      // Only claim a collision if one was actually found. The index can fail for unrelated
+      // reasons — a read-only database file, a lock, an older SQLite without indexes on
+      // expressions — and asserting a diagnosis we have not established sends the operator
+      // hunting a pair that does not exist. Re-throw the real error instead.
+      if (dupes.length === 0) throw e;
       throw new Error(
         `account registry has logins that differ only in case: ${dupes.map((d) => d.logins).join('; ')}. ` +
-          'A login is case-insensitive identity — these share one mail-<login>.db on a case-insensitive ' +
-          'filesystem, so auth can read one row while a password change writes the other. There is ' +
-          'deliberately no `account remove` (ADR 0012): decide which spelling keeps the mail, move the ' +
-          "other account's messages across over IMAP, then delete its row from the control database and " +
-          'drop it from MAIL_ACCOUNTS so it is not seeded again.',
+          'A login is case-insensitive identity, so auth can read one row while a password change ' +
+          'writes the other — and on a case-insensitive filesystem (macOS by default, some container ' +
+          'volumes) the two also share one mail-<login>.db. There is deliberately no `account remove` ' +
+          "(ADR 0012): decide which spelling keeps the mail, delete the losing row from the control " +
+          "database so the daemon starts, then move that account's messages across over IMAP and drop " +
+          'it from MAIL_ACCOUNTS so it is not seeded again.',
       );
     }
     return new AccountRegistry(db);

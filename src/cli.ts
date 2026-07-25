@@ -14,6 +14,7 @@
  */
 
 import { argv, stdout, stderr } from 'node:process';
+import { pathToFileURL } from 'node:url';
 import { loadTargetConfig, connectOptions, ConfigError } from './conformance/config.ts';
 import { runSuite } from './conformance/runner.ts';
 import { withPostmasterConvention } from './conformance/fixture.ts';
@@ -175,11 +176,15 @@ async function main(): Promise<number> {
 // the event loop empties — the run has already closed all its sockets. This was a real
 // output-loss bug: `cli run` against a server that produced a large report printed only
 // the first line before exit() cut it off.
-main()
-  .then((code) => {
-    process.exitCode = code;
-  })
-  .catch((err) => {
-    stderr.write(`fatal: ${(err as Error).stack ?? String(err)}\n`);
-    process.exitCode = 3;
-  });
+// Only run when invoked as the program. Importing this module (a future `import` for one of its
+// helpers, a tooling probe) would otherwise execute a whole conformance run as a side effect.
+if (import.meta.url === pathToFileURL(argv[1] ?? '').href) {
+  main()
+    .then((code) => {
+      process.exitCode = code;
+    })
+    .catch((err) => {
+      stderr.write(`fatal: ${(err as Error).stack ?? String(err)}\n`);
+      process.exitCode = 3;
+    });
+}

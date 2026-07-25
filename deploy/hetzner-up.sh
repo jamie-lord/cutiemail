@@ -132,6 +132,11 @@ Restart=on-failure
 WantedBy=multi-user.target
 UNIT
 
+# The unit carries MAIL_PASS (the throwaway-box trade-off documented in docs/DEPLOYMENT.md;
+# the manual path uses `init` instead and its unit holds no password). A root `cat >` creates it
+# 0644 under the default umask, so tighten it — though note `systemctl show mailserver` still
+# prints Environment= to any local user, and the passphrase is in the invoking shell's history.
+ssh "root@$IP" 'chmod 600 /etc/systemd/system/mailserver.service'
 ssh "root@$IP" 'systemctl daemon-reload && systemctl enable --now mailserver && sleep 1 && systemctl --no-pager status mailserver | head -6'
 
 cat <<DONE

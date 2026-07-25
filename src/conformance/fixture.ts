@@ -147,5 +147,15 @@ export function validateFixture(fixture: Fixture): string[] {
       problems.push(`${field} "${v}" is not an address (no @)`);
     }
   }
+  // Every fixture string is interpolated straight into a command line by the corpus (the `crlf`
+  // template passes CR and LF through untouched — deliberately, since the suite must be able to
+  // send malformed bytes on purpose). A CR or LF in a CONFIG value is different: it would splice
+  // extra SMTP commands into the session against a THIRD PARTY's server, which is not a test the
+  // operator asked for. Target configs get shared and committed, so screen them here.
+  for (const [field, v] of Object.entries(fixture)) {
+    if (typeof v === 'string' && /[\r\n\0]/.test(v)) {
+      problems.push(`${field} contains a CR, LF or NUL, which would inject commands into the target's session`);
+    }
+  }
   return problems;
 }
