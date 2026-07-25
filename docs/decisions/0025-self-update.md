@@ -98,40 +98,91 @@ modes); packfile size, object count, inflated size and delta depth all bounded. 
 "no update available", never a partial checkout.
 
 **3. Shape** — the checkout contains what a cutiemail version must contain (`src/main.ts`,
-`package.json` with a matching name, the test tree). Cheap, and catches a wrong-repo or truncated
-fetch before anything expensive runs.
+`package.json` with a matching name, enough files and enough tests that a truncated tree cannot pass
+by having nothing to run). Cheap, and catches a wrong-repo or truncated fetch before anything
+expensive runs. It also checks `engines.node` against the runtime that would execute it: "the new
+version needs a Node this host does not have" is a classic way for an auto-updater to brick a
+deployment, and the failure arrives *after* the switch, as a syntax error from a feature the old
+runtime cannot parse. A range we cannot evaluate is a refusal, not an assumption — a wrong guess
+here is exactly the case that takes the service down.
 
-**4. The candidate's own test suite** — run in the candidate tree, in a subprocess, with a timeout.
-This is the regression gate the project already maintains, and it costs about two minutes.
+**4. The candidate's own test suite** — run in the candidate tree, in a subprocess, with a timeout,
+and killed as a process group so the integration tests' own children cannot outlive it. This is the
+regression gate the project already maintains, and it costs about two minutes. It is a regression
+gate and *not* a security boundary: a hostile version would ship passing tests. Provenance is what
+stops a hostile version.
 
-**5. Boot in isolation** — the candidate starts with a synthetic config on ephemeral loopback ports
-and a scratch database, and answers on all three. Proves the entry point works before we let it near
-anything real.
+**5. Boot in isolation, and conformance measured as a regression** — the candidate starts with a
+synthetic config on ephemeral loopback ports and a scratch database, and answers on all three. That
+separates "the new version is broken" from "your data or configuration is the problem", which rung 6
+cannot do on its own.
+
+The SMTP conformance corpus then runs against that listener — and against the *currently running*
+version, booted the same way, and the two are compared. **The gate is regression, not perfection.**
+A conformance gap the running version already has is not a reason to refuse an update: refusing
+would pin the deployment forever on the very version that has the gap, and the operator would never
+receive the fix. A gap the candidate *introduces* is a different matter and fails the rung. Without a
+baseline the corpus can only report, and says so rather than guessing.
+
+A run in which every case came back inconclusive is treated as a failure. Readiness is measured by
+whether the ports accept connections, and a listener that accepts and then says nothing is that
+measurement's blind spot: it produces no findings, which the regression comparison would otherwise
+read as "no new findings".
 
 **6. Against a snapshot of *your* data — the rung that matters** — `VACUUM INTO` snapshots of
 `control.db` and every `mail-<login>.db` are taken, and the candidate is started against **those
-copies, with your real configuration**, on ephemeral loopback ports. This is the only rung that can
-answer the questions that actually break deployments:
+copies, with your real configuration**, on ephemeral loopback ports.
+
+This happens in **two separate boots**, and the split is load-bearing. The first migrates and is
+measured, and nothing else touches it, so the census taken afterwards can say *nothing changed* —
+a claim impossible to make about a boot that was also asked to deliver mail, where a migration that
+lost a message and a probe that added one are indistinguishable. The second boot does the work.
+
+The first boot answers the questions that actually break deployments:
 
 - does the candidate's schema migration succeed against your data, at your size?
 - **how long does the migration take?** — measured here, because it is downtime later, and a
   ten-minute migration is something to know before taking the service down rather than after
 - does your existing configuration still satisfy the new version, or has a new requirement appeared?
-- do the accounts, mailboxes and message counts survive the migration unchanged?
-- can a sample of real messages be read back over IMAP byte-identically?
-- does `selftest` — authenticated submission, local delivery, IMAP read-back — pass against the
-  candidate?
-- does the SMTP conformance suite still pass against the candidate's own listener?
+- do the accounts, aliases, mailboxes, message counts, UIDVALIDITY values and stored message bytes
+  all survive unchanged?
 
-Two safety rules are absolute here, because this rung runs the candidate with production
+The second boot proves the mail path end to end against real data: authenticated submission, local
+delivery and IMAP read-back, driven by `selftest` against a real account's real mailbox. Accounts
+store SCRAM material, so no existing password can be recovered — which is the right property, and
+means the updater mints an **app password inside the snapshot** to log in with. That is safe there
+and only there: it is a copy, destroyed minutes later, and the live registry is untouched.
+
+Three safety rules are absolute here, because this rung runs a downloaded program with production
 configuration:
 
+- **Every account's mail-database path in the snapshot is rewritten to point inside it.** The
+  control database stores an absolute path per account, so a verbatim copy still names the *live*
+  mailbox files — and a candidate booted against it would open, migrate and write real mail while
+  believing it was running against a copy. The rewrite is what makes a copy a copy, and the snapshot
+  is refused outright if any account still points outside it afterwards.
 - **`MAIL_OUTBOUND=hold` is forced.** The snapshot contains the outbound queue. A candidate booted
   against it in `deliver` mode would relay every queued message a second time. This is the single
   most dangerous thing about testing with real data, and it is why hold mode is a hard override
-  rather than a default.
+  rather than a default. The census is what turns that from an assertion into evidence: it digests
+  each queued message's remaining recipients, attempt count and next-attempt time, so a relay tick
+  that ran and *failed* — leaving the row in place, merely rescheduled — is caught just as surely as
+  one that succeeded. A depth comparison alone would miss it entirely.
 - **Loopback-only, ephemeral ports.** The candidate never binds 25, 587 or 993, and is never
-  reachable from off the machine.
+  reachable from off the machine. The bind address is overridden rather than inherited, because a
+  real deployment's is public.
+
+`MAIL_UPDATE_*` is stripped from the candidate's environment: a program still being judged has no
+business reaching out to the network and rewriting the version store that is deciding its fate.
+
+Stored message bytes are hashed in full below half a gigabyte and fingerprinted by length plus their
+first and last 8 KiB above it, and the report says which. A pre-flight that takes twenty minutes gets
+killed by a service timeout, and an update that never completes is the rot this exists to prevent.
+
+One honest limitation: in a correct deployment the updater is a different user from the daemon and
+the TLS key is `0600`, so the check usually cannot read the real certificate and falls back to the
+bundled loopback-only development one. That is a real reduction in fidelity and is reported as such
+rather than glossed over.
 
 The snapshots are destroyed afterwards whatever the outcome.
 
