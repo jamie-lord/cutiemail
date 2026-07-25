@@ -76,9 +76,8 @@ export function parseTree(data: Buffer): TreeEntry[] {
     if (space === -1) throw new GitObjectError('tree entry has no mode separator');
     const nul = data.indexOf(0x00, space);
     if (nul === -1) throw new GitObjectError('tree entry has no name terminator');
-    if (nul + 20 >= data.length + 1 && data.length - (nul + 1) < 20) {
-      throw new GitObjectError('tree entry is truncated before its object id');
-    }
+    // Twenty raw bytes of object id must follow the terminator.
+    if (data.length - (nul + 1) < 20) throw new GitObjectError('tree entry is truncated before its object id');
     const mode = data.subarray(off, space).toString('ascii');
     if (!/^[0-7]{5,6}$/.test(mode)) throw new GitObjectError(`tree entry has a malformed mode ${JSON.stringify(mode)}`);
     // latin1: a name is bytes. Decoding as UTF-8 would replace invalid sequences and silently
@@ -93,14 +92,45 @@ export function parseTree(data: Buffer): TreeEntry[] {
 }
 
 /**
- * Walk commit ancestry from `from`, looking for `target`, bounded by `maxCommits`.
+ * Every commit reachable from `from`, bounded by `maxCommits`.
+ *
+ * An id is included even when its object is absent from `commitOf` — a shallow fetch cuts history
+ * at a boundary, and the boundary commit still NAMES its parents even though they were not sent.
+ * Including them is what lets the caller distinguish the two ways a descendant check can fail:
+ * "this commit is genuinely not in our history" from "we did not fetch far enough back to see it".
+ * The first is a refusal; the second is a reason to fetch deeper.
+ *
+ * The bound matters because the commit graph comes from the remote. Without it, a fabricated graph
+ * — a cycle, or a fan-out of invented parents — walks forever.
+ */
+export function ancestryFrom(
+  from: string,
+  commitOf: (id: string) => Commit | undefined,
+  maxCommits = 10_000,
+): Set<string> {
+  const seen = new Set<string>();
+  const queue: string[] = [from];
+  while (queue.length > 0) {
+    const id = queue.shift()!;
+    // Skip duplicates BEFORE testing the bound. The queue legitimately holds the same id twice —
+    // any commit with two children reaches it by two paths — so counting queue entries rather than
+    // distinct commits would refuse a perfectly ordinary merge-shaped history.
+    if (seen.has(id)) continue;
+    if (seen.size >= maxCommits) throw new GitObjectError(`ancestry walk exceeded ${maxCommits} commits`);
+    seen.add(id);
+    const c = commitOf(id);
+    if (c === undefined) continue; // beyond the shallow boundary, or simply not sent
+    for (const p of c.parents) if (!seen.has(p)) queue.push(p);
+  }
+  return seen;
+}
+
+/**
+ * Is `target` an ancestor of `from` (or the same commit)?
  *
  * This is the descendant rule from ADR 0025: an update is only accepted when the commit we are
  * running is an ancestor of the candidate. That makes a rollback attack impossible and turns a
  * force-push over deployed history into a refusal rather than a silent downgrade.
- *
- * The bound matters because the commit graph comes from the remote: without it, a fabricated graph
- * could walk forever.
  */
 export function isAncestor(
   target: string,
@@ -109,18 +139,5 @@ export function isAncestor(
   maxCommits = 10_000,
 ): boolean {
   if (target === from) return true;
-  const seen = new Set<string>();
-  const queue: string[] = [from];
-  let visited = 0;
-  while (queue.length > 0) {
-    if (++visited > maxCommits) throw new GitObjectError(`ancestry walk exceeded ${maxCommits} commits`);
-    const id = queue.shift()!;
-    if (seen.has(id)) continue;
-    seen.add(id);
-    if (id === target) return true;
-    const c = commitOf(id);
-    if (c === undefined) continue; // outside the fetched set: not a path to the target
-    for (const p of c.parents) if (!seen.has(p)) queue.push(p);
-  }
-  return false;
+  return ancestryFrom(from, commitOf, maxCommits).has(target);
 }
