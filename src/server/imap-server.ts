@@ -135,6 +135,14 @@ const MAX_APPEND_INFLIGHT = 268_435_456; // 256 MiB
 
 /** Inactivity autologout (RFC 9051 §5.4 requires a timer of at least 30 minutes). */
 const AUTOLOGOUT_MS = 1_800_000;
+/**
+ * How often to re-examine live sessions for a disabled account or a rotated credential.
+ *
+ * Deliberately far shorter than the autologout: an operator responding to a compromise expects
+ * `account disable` to take effect in seconds, and the sessions that most need cutting are the
+ * ones that will never send another command to be checked against.
+ */
+const REVOCATION_SWEEP_MS = 15_000;
 const MAX_SEARCH_KEYS = 64; // top-level SEARCH keys; a real query uses a handful (DoS bound)
 const MAX_SEARCH_NODES = 256; // TOTAL keys across the tree incl. nested OR/NOT (recursion DoS bound)
 const MAX_CONNECTIONS = 512; // concurrent-connection ceiling per listener (pre-auth DoS bound)
@@ -770,6 +778,15 @@ export class ImapServer {
   /** Bytes reserved for in-flight APPEND literals, per connection, and the running total. */
   readonly #appendReserved = new Map<net.Socket, number>();
   #appendInflight = 0;
+  readonly #credentialTag: ((login: string) => string | null) | undefined;
+  /**
+   * Every authenticated session, with the login and the credential fingerprint it authenticated
+   * with. Revocation is swept over this rather than checked when a command arrives: a session
+   * that never completes another command line — an IDLE client, or one dribbling bytes with no
+   * CRLF — would otherwise never be re-examined at all.
+   */
+  readonly #authedSessions = new Map<net.Socket, { login: string; tag: string | null }>();
+  #revocationTimer: NodeJS.Timeout | undefined;
 
   private constructor(
     server: net.Server,
@@ -785,14 +802,19 @@ export class ImapServer {
     log?: (line: string) => void,
     maxAppendLiteral = MAX_APPEND_LITERAL,
     isEnabled?: (login: string) => boolean,
+    credentialTag?: (login: string) => string | null,
+    revocationSweepMs = REVOCATION_SWEEP_MS,
   ) {
     this.#server = server;
     this.port = port;
+    this.#revocationTimer = setInterval(() => this.#sweepRevoked(), revocationSweepMs);
+    this.#revocationTimer.unref(); // never hold the process open for this
     this.#catalog = catalog;
     this.#authenticate = authenticate;
     this.#notifier = notifier;
     this.#resolveAccount = resolveAccount;
     this.#isEnabled = isEnabled;
+    this.#credentialTag = credentialTag;
     this.#autologoutMs = autologoutMs;
     this.#throttle = throttle;
     this.#maxWriteBacklog = maxWriteBacklog;
@@ -860,6 +882,9 @@ export class ImapServer {
        * Cheap (an in-memory registry lookup). Absent = single-account/test mode, no recheck.
        */
       isEnabled?: (login: string) => boolean;
+      credentialTag?: (login: string) => string | null;
+      /** Sweep interval; tests shorten it. */
+      revocationSweepMs?: number;
       throttle?: AuthThrottle;
       /** Server-wide slow-consumer write-backlog budget in bytes (default 256 MiB). Tests set it small. */
       maxWriteBacklog?: number;
@@ -914,7 +939,7 @@ export class ImapServer {
         server.removeListener('error', reject);
         const addr = server.address();
         const port = typeof addr === 'object' && addr !== null ? addr.port : 0;
-        const imap = new ImapServer(server, port, catalog, options.authenticate, options.notifier, options.autologoutMs, options.resolveAccount, options.throttle, options.maxWriteBacklog, options.maxAppendInflight, options.log, options.maxAppendLiteral, options.isEnabled);
+        const imap = new ImapServer(server, port, catalog, options.authenticate, options.notifier, options.autologoutMs, options.resolveAccount, options.throttle, options.maxWriteBacklog, options.maxAppendInflight, options.log, options.maxAppendLiteral, options.isEnabled, options.credentialTag, options.revocationSweepMs);
         const event = options.tls !== undefined ? 'secureConnection' : 'connection';
         server.on(event, (sock: net.Socket) => {
           imap.#sockets.add(sock);
@@ -929,9 +954,42 @@ export class ImapServer {
     });
   }
 
+  /** Remember who a connection authenticated as, and with which credential. */
+  #trackSession(sock: net.Socket, login: string): void {
+    this.#authedSessions.set(sock, { login, tag: this.#credentialTag?.(login) ?? null });
+  }
+
+  /**
+   * Cut every session whose account has been disabled or whose credential has been replaced.
+   *
+   * `account disable` is the only containment verb the product ships — there is deliberately no
+   * `account remove` (ADR 0012) — and rotating the password is the other action an operator takes
+   * on a compromise. Both used to be checked only when a command arrived, so neither reached the
+   * state a hijacked session is most likely to be resting in: an IDLE client short-circuits
+   * before the check, and any session can defeat the inactivity timer with a single byte that
+   * never completes a line. The result was that disable, rotate, then re-enable left the original
+   * session working, authenticated with a credential that no longer existed.
+   */
+  #sweepRevoked(): void {
+    for (const [sock, session] of this.#authedSessions) {
+      const disabled = this.#isEnabled !== undefined && !this.#isEnabled(session.login);
+      const rotated = session.tag !== null && this.#credentialTag !== undefined && this.#credentialTag(session.login) !== session.tag;
+      if (!disabled && !rotated) continue;
+      try {
+        write(sock, disabled ? '* BYE account disabled' : '* BYE credentials revoked');
+      } catch {
+        // best-effort: the socket is going away regardless
+      }
+      this.#authedSessions.delete(sock);
+      sock.destroy(); // fires 'close', which unsubscribes any IDLE
+    }
+  }
+
   close(): Promise<void> {
+    if (this.#revocationTimer !== undefined) clearInterval(this.#revocationTimer);
     for (const s of this.#sockets) s.destroy();
     this.#sockets.clear();
+    this.#authedSessions.clear();
     return new Promise((resolve) => this.#server.close(() => resolve()));
   }
 
@@ -1205,6 +1263,7 @@ export class ImapServer {
     const bindAccount = (login: string): boolean => {
       if (this.#resolveAccount === undefined) {
         authedLogin = login; // single-account mode: nothing to rebind, but remember who for the disable recheck
+        this.#trackSession(sock, login);
         return true;
       }
       const acct = this.#resolveAccount(login);
@@ -1212,10 +1271,14 @@ export class ImapServer {
       connCatalog = acct.catalog;
       connNotifier = acct.notifier;
       authedLogin = login;
+      this.#trackSession(sock, login);
       return true;
     };
     sock.on('error', () => {});
-    sock.on('close', () => idle?.unsub());
+    sock.on('close', () => {
+      idle?.unsub();
+      this.#authedSessions.delete(sock);
+    });
     // RFC 9051 §5.4: autologout an inactive connection (timer ≥ 30 min). An IDLE
     // client re-issues within ~29 min, so this fires only on genuine inactivity and
     // stops idle/slowloris connections holding resources forever.

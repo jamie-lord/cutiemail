@@ -654,6 +654,10 @@ export async function startServer(cfg: MailServerConfig): Promise<RunningServer>
     // connection at its next command, not only the next LOGIN (the store cache would otherwise
     // keep a disabled, possibly compromised, credential serving mail until a daemon restart).
     isEnabled: (login) => registry.lookup(login)?.enabled === true,
+    // Lets a live session notice that the credential it authenticated with has been replaced.
+    // `account set-password` on its own otherwise cuts nothing, so half of the operator's
+    // compromise response (disable, rotate, re-enable) left the attacker's session intact.
+    credentialTag: (login) => registry.credentialTag(login),
     log,
     // One size limit for the whole server: a message importable over SMTP must be
     // importable over IMAP APPEND too (imapsync migrations move large legacy mail).

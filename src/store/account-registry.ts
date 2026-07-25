@@ -14,7 +14,7 @@
  */
 
 import { DatabaseSync } from 'node:sqlite';
-import { randomBytes, timingSafeEqual } from 'node:crypto';
+import { randomBytes, timingSafeEqual, createHash } from 'node:crypto';
 import { deriveCredential } from './accounts.ts';
 import type { ScramHash } from '../auth/scram.ts';
 
@@ -193,6 +193,32 @@ export class AccountRegistry {
   lookup(login: string): AccountRow | undefined {
     const r = this.#row(login);
     return r === undefined ? undefined : { login: r.login, mailDbPath: r.mail_db_path, enabled: r.enabled === 1 };
+  }
+
+  /**
+   * A short fingerprint of the account's current credentials, or null if the login is unknown.
+   *
+   * Lets a long-lived session detect that the credential it authenticated with has been replaced.
+   * `account disable` is not the only containment action an operator takes — rotating the password
+   * is the other, and on its own it never used to cut anything: an established IMAP session simply
+   * carried on, so an attacker holding one kept full mailbox access through the whole incident.
+   *
+   * Derived rather than stored, so no schema migration is needed: `stored_key` and `salt` are
+   * rewritten by every `set-password`, and app-password rows are folded in so revoking one also
+   * evicts the sessions using it. Hashed because this value is compared repeatedly in memory and
+   * there is no reason to hold key material to do it.
+   */
+  credentialTag(login: string): string | null {
+    const r = this.#row(login);
+    if (r === undefined) return null;
+    const h = createHash('sha256');
+    h.update(r.salt);
+    h.update(r.stored_key);
+    for (const cred of this.#appCredentials(r.login)) {
+      h.update(cred.salt);
+      h.update(cred.stored_key);
+    }
+    return h.digest('hex').slice(0, 32);
   }
 
   /** Every account, oldest-inserted first — used at startup to open each user's mail DB. */

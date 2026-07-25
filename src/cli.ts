@@ -22,6 +22,7 @@ import { computeCoverage, renderCoverage } from './report/coverage.ts';
 import { buildMatrix, renderMatrix } from './report/matrix.ts';
 import { explain, isFinding } from './conformance/outcome.ts';
 import { requirement } from './register/rfc5321.ts';
+import { sanitizeForTerminalLine } from './ops/terminal.ts';
 
 function usage(): string {
   return [
@@ -111,7 +112,9 @@ async function cmdRun(args: string[]): Promise<number> {
       const reason = r.judgement.kind === 'inconclusive' ? r.judgement.reason : '(unknown)';
       reasons.set(reason, (reasons.get(reason) ?? 0) + 1);
     }
-    for (const [reason, count] of reasons) stderr.write(`  ${count}x ${reason}\n`);
+    // Same untrusted source as explain()'s judgement text: a reason can quote bytes from the
+    // server under test.
+    for (const [reason, count] of reasons) stderr.write(`  ${count}x ${sanitizeForTerminalLine(reason)}\n`);
     return 2;
   }
 
@@ -121,7 +124,7 @@ async function cmdRun(args: string[]): Promise<number> {
       stdout.write(`\nINCONCLUSIVE (${inconclusive.length}), usually missing fixtures:\n`);
       for (const r of inconclusive) {
         const reason = r.judgement.kind === 'inconclusive' ? r.judgement.reason : '';
-        stdout.write(`  ${r.testId} (${r.requirementId}): ${reason}\n`);
+        stdout.write(`  ${r.testId} (${r.requirementId}): ${sanitizeForTerminalLine(reason)}\n`);
       }
     }
   }

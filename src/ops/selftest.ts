@@ -9,9 +9,15 @@
  * MAIL_IMAP_PORT, same env the daemon reads), submits a uniquely-tagged message from the account
  * TO ITSELF, then logs in over IMAP, finds the tag, and deletes it again so the self-test leaves
  * no trace. In the project's spirit the SMTP and IMAP clients are hand-rolled on the byte layer —
- * no mail libraries. TLS certificate trust is deliberately NOT verified here (a local run uses the
- * bundled self-signed dev cert, and connecting to 127.0.0.1 would fail a hostname check anyway):
- * cert validity is `doctor`'s job; this is a proof of the mail path.
+ * no mail libraries. TLS certificate trust is skipped ONLY for a loopback target (a local run uses
+ * the bundled self-signed dev cert, which would fail a hostname check against 127.0.0.1 anyway);
+ * against any other host the certificate is validated, because this command sends the account's
+ * password. Cert validity as a deliverability concern is still `doctor`'s job.
+ *
+ * Everything the peer says is sanitised before it reaches the terminal. This command talks to
+ * whatever is listening on the configured port and prints its replies, so a rogue listener could
+ * otherwise emit ANSI/OSC sequences — hijacking the clipboard, or erasing the genuine "FAILED"
+ * verdict and painting a forged "PASSED" over it.
  */
 
 import net from 'node:net';
@@ -19,6 +25,7 @@ import tls from 'node:tls';
 import { randomUUID } from 'node:crypto';
 import type { OpsIo } from './cli.ts';
 import { promptSecret, validLogin } from './account.ts';
+import { sanitizeForTerminalLine } from './terminal.ts';
 
 const USAGE = [
   'usage: node src/main.ts selftest <login>',
@@ -89,9 +96,17 @@ function dialPlain(host: string, port: number, what: string): Promise<net.Socket
   });
 }
 
-function upgradeTls(socket: net.Socket): Promise<tls.TLSSocket> {
+/**
+ * Certificate trust is skipped only on loopback, where the bundled development certificate
+ * cannot pass a hostname check anyway and the peer is by definition this machine. Anywhere else
+ * — an operator who set MAIL_HOST to a real name and ran selftest across a network — a peer must
+ * prove itself before we hand it an account password.
+ */
+const isLoopbackTarget = (host: string): boolean => host === '127.0.0.1' || host === '::1' || host === 'localhost';
+
+function upgradeTls(socket: net.Socket, host: string): Promise<tls.TLSSocket> {
   return new Promise((res, rej) => {
-    const t = tls.connect({ socket, rejectUnauthorized: false });
+    const t = tls.connect({ socket, servername: host, rejectUnauthorized: !isLoopbackTarget(host) });
     t.once('secureConnect', () => res(t));
     t.once('error', rej);
   });
@@ -99,14 +114,14 @@ function upgradeTls(socket: net.Socket): Promise<tls.TLSSocket> {
 
 function dialImaps(host: string, port: number): Promise<tls.TLSSocket> {
   return new Promise((res, rej) => {
-    const t = tls.connect({ host, port, rejectUnauthorized: false });
+    const t = tls.connect({ host, port, servername: host, rejectUnauthorized: !isLoopbackTarget(host) });
     t.once('secureConnect', () => res(t));
     t.once('error', (e: NodeJS.ErrnoException) => rej(e.code === 'ECONNREFUSED' ? new Error(`could not connect to IMAPS at ${host}:${port}, is the daemon running?`) : e));
   });
 }
 
 /** Submit a tagged message from <address> to itself over authenticated STARTTLS submission. */
-async function submitTagged(host: string, port: number, login: string, password: string, address: string, subject: string, expectedDomain: string, warn: (line: string) => void): Promise<void> {
+async function submitTagged(host: string, port: number, login: string, password: string, address: string, subject: string, expectedDomain: string): Promise<void> {
   const plain = await dialPlain(host, port, 'submission port');
   let sock: net.Socket = plain;
   try {
@@ -118,31 +133,38 @@ async function submitTagged(host: string, port: number, login: string, password:
     // names the server's domain; a mismatch is the cheap tell, so say it out loud.
     const greetHost = /^220 (\S+)/m.exec(greeting)?.[1];
     if (greetHost !== undefined && greetHost.toLowerCase() !== expectedDomain.toLowerCase()) {
-      warn(`  note: the server greets as "${greetHost}" but this selftest expects "${expectedDomain}": if that surprises you, you may be talking to a different instance; run selftest with the same MAIL_* environment as the daemon.`);
+      // Fatal, not advisory. We are about to send this peer an account password in the clear
+      // (AUTH PLAIN, over a TLS session we deliberately do not validate — see the note on
+      // upgradeTls). A warning that execution then walks straight past is no defence against a
+      // deliberate impostor; it only ever helped against an operator's own typo.
+      throw new Error(
+        `the server greets as "${sanitizeForTerminalLine(greetHost)}" but this selftest expects "${expectedDomain}": ` +
+          'refusing to authenticate. Run selftest with the same MAIL_* environment as the daemon.',
+      );
     }
     send(plain, 'EHLO selftest.local');
     await r.until(/^250[ -]/m);
     send(plain, 'STARTTLS');
     await r.until(/^220 /m);
-    sock = await upgradeTls(plain);
+    sock = await upgradeTls(plain, host);
     r = reader(sock);
     send(sock, 'EHLO selftest.local');
     await r.until(/^250 /m); // final 250 (space) ends the EHLO list
     const auth = Buffer.from(`\x00${login}\x00${password}`, 'utf8').toString('base64');
     send(sock, `AUTH PLAIN ${auth}`);
     const authReply = await r.until(/^\d{3} /m);
-    if (!authReply.startsWith('235')) throw new Error(`authentication failed: ${lastLine(authReply)} (check the password for ${login})`);
+    if (!authReply.startsWith('235')) throw new Error(`authentication failed: ${sanitizeForTerminalLine(lastLine(authReply))} (check the password for ${login})`);
     send(sock, `MAIL FROM:<${address}>`);
     if (!(await r.until(/^\d{3} /m)).startsWith('250')) throw new Error('server rejected MAIL FROM');
     send(sock, `RCPT TO:<${address}>`);
     const rcpt = await r.until(/^\d{3} /m);
-    if (!rcpt.startsWith('250')) throw new Error(`server rejected RCPT TO <${address}>: ${lastLine(rcpt)}`);
+    if (!rcpt.startsWith('250')) throw new Error(`server rejected RCPT TO <${address}>: ${sanitizeForTerminalLine(lastLine(rcpt))}`);
     send(sock, 'DATA');
     await r.until(/^354/m);
     const msg = [`From: ${address}`, `To: ${address}`, `Subject: ${subject}`, '', 'This is an automated cutiemail self-test message. It is safe to ignore; the', 'selftest command deletes it again once it has been read back.', '.'].join('\r\n');
     send(sock, msg);
     const stored = await r.until(/^\d{3} /m);
-    if (!stored.startsWith('250')) throw new Error(`server did not accept the message: ${lastLine(stored)}`);
+    if (!stored.startsWith('250')) throw new Error(`server did not accept the message: ${sanitizeForTerminalLine(lastLine(stored))}`);
     send(sock, 'QUIT');
   } finally {
     // Always tear the connection down — otherwise an open socket keeps the event loop alive and
@@ -217,7 +239,7 @@ export async function runSelftest(args: readonly string[], io: OpsIo, env: Recor
 
   try {
     io.out(`selftest: submitting a tagged message as <${address}> via ${connectHost}:${submissionPort} (STARTTLS + AUTH)...`);
-    await submitTagged(connectHost, submissionPort, login, pw, address, subject, domain, (l) => io.out(l));
+    await submitTagged(connectHost, submissionPort, login, pw, address, subject, domain);
     io.out('  ok   authenticated submission accepted');
     io.out(`selftest: reading it back over IMAPS at ${connectHost}:${imapPort}...`);
     await findAndCleanup(connectHost, imapPort, login, pw, subject);
@@ -226,7 +248,7 @@ export async function runSelftest(args: readonly string[], io: OpsIo, env: Recor
     io.out('selftest PASSED: authenticated submission, local delivery, and IMAP read-back all work.');
     return 0;
   } catch (e) {
-    io.err(`selftest FAILED: ${e instanceof Error ? e.message : String(e)}`);
+    io.err(sanitizeForTerminalLine(`selftest FAILED: ${e instanceof Error ? e.message : String(e)}`));
     return 1;
   }
 }

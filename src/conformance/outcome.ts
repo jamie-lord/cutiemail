@@ -30,6 +30,7 @@ import type { Level } from '../register/types.ts';
 import type { WireEvent } from '../wire/transport.ts';
 import type { Reply } from '../wire/reply.ts';
 import { dump } from '../wire/bytes.ts';
+import { sanitizeForTerminal } from '../ops/terminal.ts';
 
 /**
  * What the expectation concluded about the server's behaviour, before the spec
@@ -136,29 +137,41 @@ export interface Result {
   readonly elapsedMs: number;
 }
 
-/** Render a result for a human triaging it. */
+/**
+ * Render a result for a human triaging it.
+ *
+ * Judgement text carries bytes from the server under test, which for this tool is an untrusted
+ * party by definition — the README's whole pitch is aiming it at somebody else's mail server. A
+ * reply's text is retained verbatim by the framer (ESC is recorded as an anomaly, not stripped),
+ * and several corpus cases quote a short prefix of it into `detail`. Three bytes are enough: ESC
+ * followed by `]` opens an OSC sequence, and with no terminator a terminal swallows everything
+ * after it — in a captured run, a hostile target hid 13 of the 14 MUST violations the suite had
+ * just found about it. Neutralise here rather than at each corpus call site, where the next case
+ * added would forget. (`dump` already renders bytes below 0x20 as glyphs, so evidence is safe.)
+ */
 export function explain(result: Result): string {
+  const s = sanitizeForTerminal;
   const lines: string[] = [
     `${result.outcome.toUpperCase()}  ${result.requirementId}  (${result.level})`,
     `  test:     ${result.testId}`,
-    `  expected: ${result.expected}`,
+    `  expected: ${s(result.expected)}`,
   ];
   switch (result.judgement.kind) {
     case 'violated':
-      lines.push(`  observed: ${result.judgement.detail}`);
+      lines.push(`  observed: ${s(result.judgement.detail)}`);
       break;
     case 'observed':
-      lines.push(`  branch:   ${result.judgement.branch}`);
+      lines.push(`  branch:   ${s(result.judgement.branch)}`);
       break;
     case 'inconclusive':
-      lines.push(`  reason:   ${result.judgement.reason}`);
+      lines.push(`  reason:   ${s(result.judgement.reason)}`);
       break;
     case 'satisfied':
-      if (result.judgement.detail !== undefined) lines.push(`  observed: ${result.judgement.detail}`);
+      if (result.judgement.detail !== undefined) lines.push(`  observed: ${s(result.judgement.detail)}`);
       break;
   }
   if (result.evidence.anomalies.length > 0) {
-    lines.push(`  anomalies: ${result.evidence.anomalies.join('; ')}`);
+    lines.push(`  anomalies: ${s(result.evidence.anomalies.join('; '))}`);
   }
   if (result.evidence.reply !== null) {
     lines.push(dump(result.evidence.reply.raw, '  reply bytes:').replace(/^/gm, '  '));
