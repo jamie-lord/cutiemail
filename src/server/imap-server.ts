@@ -252,6 +252,13 @@ function debugLog(line: string, isSaslContinuation = false): void {
   process.stderr.write(`[imap<] ${redactImapDebugLine(line, isSaslContinuation)}\n`);
 }
 
+/**
+ * How long a client gets to consume the shutdown BYE and close before its socket is reclaimed.
+ * Long enough for a loopback or LAN round trip, short enough that one unresponsive session cannot
+ * stall a restart.
+ */
+const BYE_GRACE_MS = 500;
+
 const write = (sock: net.Socket, line: string): void => {
   sock.write(Buffer.from(`${line}\r\n`, 'latin1'));
 };
@@ -1025,12 +1032,41 @@ export class ImapServer {
     }
   }
 
+  /**
+   * Stop serving, telling connected clients why.
+   *
+   * RFC 9051 §7.1.5: a server closing a connection for its own reasons SHOULD send an untagged BYE
+   * first. Without it a client sees a socket vanish mid-session, which is indistinguishable from a
+   * network fault and is generally reported to the user as one — during a planned restart, and now
+   * during an automatic version cutover (ADR 0025), that turns a clean handover into an error
+   * message on somebody's phone.
+   *
+   * `end()` rather than `destroy()`, because destroy discards whatever is still queued and the BYE
+   * is the last thing written. A client that then declines to close gets a bounded grace period and
+   * is reclaimed, so one stalled session cannot hold the shutdown open.
+   */
   close(): Promise<void> {
     if (this.#revocationTimer !== undefined) clearInterval(this.#revocationTimer);
-    for (const s of this.#sockets) s.destroy();
+    const open = [...this.#sockets];
+    for (const s of open) {
+      try {
+        write(s, '* BYE Server shutting down');
+        s.end();
+      } catch {
+        s.destroy(); // already broken: nothing to say goodbye to
+      }
+    }
     this.#sockets.clear();
     this.#authedSessions.clear();
-    return new Promise((resolve) => this.#server.close(() => resolve()));
+    const forceClose = setTimeout(() => {
+      for (const s of open) s.destroy();
+    }, BYE_GRACE_MS);
+    return new Promise((resolve) =>
+      this.#server.close(() => {
+        clearTimeout(forceClose);
+        resolve();
+      }),
+    );
   }
 
   /**

@@ -189,10 +189,13 @@ The snapshots are destroyed afterwards whatever the outcome.
 **7. Cutover preconditions** — a fresh snapshot exists and passes `verify`; there is disk space to
 roll back; the drain (below) completed within its deadline.
 
-**8. Post-cutover probe** — after the switch, the new instance must prove itself *live*: answer on
-all three ports, and pass a full mail-path probe (submission → delivery → IMAP read-back) using a
-dedicated app password held by the updater. Message counts are compared against the pre-cutover
-census. Anything failing inside the probe window triggers an automatic revert.
+**8. Post-cutover probe** — after the switch, the new instance must prove itself *live*: a real
+message through authenticated submission on the real port, delivered, read back over IMAP, and
+deleted. Anything short of that would miss a version that binds its ports and then fails on every
+message. The probe credential is an app password minted immediately before and revoked immediately
+after, so there is no standing password anywhere — not a new privilege for the updater, which
+already holds database access in order to take snapshots at all, but a credential that exists for
+ninety seconds is a smaller thing to lose than one that exists forever.
 
 **9. Confirmation** — only after the probe window passes without incident is the new version marked
 good and older versions become eligible for pruning. "It started" is not confirmation.
@@ -211,10 +214,22 @@ DRAINING → SWITCHING → PROBING → CONFIRMED`, with `REVERTING` reachable fr
 transition is a write-temp-and-rename, so a power cut mid-cutover leaves a state the next run can
 recover from deterministically rather than an ambiguous half-switched tree.
 
-**Automatic revert.** If the probe fails, or the new version exits twice inside the watchdog window,
-the updater flips the symlink back and restarts. If the candidate's migration moved the schema
-forward, the pre-cutover snapshot is restored, because an older binary cannot safely read a
-newer database.
+**Automatic revert.** If the probe fails, or the new version stops running inside the watchdog
+window, the updater flips the symlink back and restarts. If the candidate's migration moved the
+schema forward, the pre-cutover snapshot is restored, because an older binary cannot safely read a
+newer database — flipping the symlink alone would leave a version that cannot start at all.
+
+**A revert never deletes.** Restoring costs whatever arrived between the snapshot and the failure —
+usually nothing, because the service is down for most of that window — but it is a real cost, so the
+failed version's databases are MOVED ASIDE rather than removed and the operator is told where. The
+stale write-ahead log is the trap: copying a snapshot over a live database while a `-wal` sidecar
+remains makes SQLite replay those frames on the next open, resurrecting state the snapshot never
+held. `verify` already warns about exactly this; the restore removes the sidecars first.
+
+**Recovery always leaves the mail server running.** Which phase was interrupted decides which
+*version* runs. It must never decide whether anything runs at all, and a recovery path that quietly
+leaves the service down is the worst possible outcome of a mechanism whose entire purpose is
+availability. That is one rule applied after the phase-specific handling, not a branch in each case.
 
 **Schema versions make that decidable.** Both database kinds carry `PRAGMA user_version`. Every build
 declares the version it writes and the minimum it can read, and refuses to open a database from the

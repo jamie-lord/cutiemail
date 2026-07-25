@@ -141,7 +141,9 @@ export function takeSnapshot(controlDbPath: string, destDir: string): Snapshot {
   ];
   const needed = sources.reduce((sum, s) => sum + dbBytes(s.path), 0);
 
-  // Free space is checked against the SNAPSHOT's filesystem, which may differ from the data's.
+  // Free space is checked against the SNAPSHOT's filesystem, which may differ from the data's — so
+  // the parent has to exist before it can be measured.
+  mkdirSync(dirname(destDir), { recursive: true, mode: 0o700 });
   const fs = statfsSync(dirname(destDir));
   const free = Number(fs.bavail) * Number(fs.bsize);
   if (free < needed * DISK_HEADROOM) {
