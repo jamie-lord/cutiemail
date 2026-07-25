@@ -585,7 +585,13 @@ sudo -u mail env MAIL_DOMAIN=mail.example.com MAIL_SUBMISSION_PORT=587 MAIL_IMAP
 
 A green run means the mail path is sound; a failure names the step that broke (auth, delivery, or
 IMAP). If the daemon can't start at all, it prints a specific reason (a port already in use,
-or a privileged port without the capability) rather than a stack trace. If a test message you
+or a privileged port without the capability) rather than a stack trace.
+
+`selftest` sends the account's password, so it refuses to authenticate against a server whose
+greeting names a different domain than `MAIL_DOMAIN` — pass the same `MAIL_*` environment as the
+daemon, as above, or it will dial the development defaults and stop. For the same reason it
+validates the TLS certificate unless the target is loopback, where the bundled development
+certificate cannot pass a hostname check anyway. If a test message you
 sent from elsewhere seems to vanish, check the **Junk** folder and read its `Authentication-Results`
 header: DMARC enforcement files a failing message there rather than the inbox (a common surprise
 while DNS is still settling).
@@ -676,6 +682,14 @@ The running daemon sees changes immediately (auth reads the registry per attempt
 restart. There is deliberately no `remove`: `disable` refuses auth and delivery without
 touching the user's mailbox database; deleting mail is an explicit `rm` of that file,
 never a management-verb side effect (ADR 0012).
+
+**What containment actually cuts.** `disable` and `set-password` both take effect on
+*already-established* IMAP sessions, not only on the next login: the daemon re-checks every
+live session on a short timer and drops any whose account has been disabled or whose
+credential has been replaced (`* BYE`). That matters because an attacker's session is most
+likely to be parked in IDLE, which sends no commands to be refused, and because a session can
+hold a socket open indefinitely without ever completing one. Mail the account has *already*
+submitted stays in the outbound queue — use `queue cancel` if that matters.
 
 **App-specific passwords** (ADR 0017) are a revocable per-device credential, so a lost phone
 doesn't mean rotating your one password everywhere. Each is server-generated and shown once:
@@ -1014,9 +1028,10 @@ These are deliberate and recorded:
   IPv6 forward-confirmed rDNS.
 - **Hardened at the protocol and OS layers, but not fully operationally.** The wire surface
   is hardened: SMTP-smuggling defence, DoS caps (recipient count, DATA
-  scan, reply framing, a per-connection command-error limit that drops a peer streaming
-  junk), auth-header spoofing and DMARC display-spoof defences, an MX SSRF guard, a bounded
-  TLS handshake. The auth paths carry a **per-IP brute-force throttle** (submission +
+  scan, reply framing, a per-connection command-error limit on both SMTP and IMAP that drops
+  a peer streaming junk), auth-header spoofing and DMARC display-spoof defences, an MX SSRF
+  guard, bounded TLS handshakes, and bounded outbound reads and writes so one unresponsive or
+  flooding MX cannot stall or exhaust the daemon. The auth paths carry a **per-IP brute-force throttle** (submission +
   IMAP; over the threshold, auth is refused without checking the password). The systemd unit
   is **sandboxed** (`systemd-analyze security` ≈ 1.6/OK: no-new-privileges, read-only
   filesystem bar the data dir, restricted syscalls/address-families/namespaces, private

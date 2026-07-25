@@ -270,6 +270,15 @@ private targets, a cross-connection EXPUNGE desync, a quadratic `BODYSTRUCTURE` 
 and an unbounded-RCPT memory exhaustion. These are defects a passing conformance suite and a
 fuzzer would both miss.
 
+A later review added a second theme: a *bound* can be as dangerous as a missing one when it
+degrades silently. A header-section cap made the parser stop reading, so authentication decided
+a padded message had no `From` while the client was served the real one — a DMARC bypass built
+out of a DoS fix. Defended now, along with an unbounded outbound write and receive buffer, an
+MTA-STS policy read that applied its size cap only after buffering the whole body, a cached
+transport-security policy that a single forged DNS answer could evict, revocation that never
+reached a session sitting in IDLE, a shared upload budget one account could take whole, and
+remote text reaching an operator's terminal unsanitised in the conformance tool.
+
 ### End to end
 
 Two daemon instances exchange a signed, dual-`Received`-traced message over real sockets;
