@@ -235,11 +235,17 @@ availability. That is one rule applied after the phase-specific handling, not a 
 declares the version it writes and the minimum it can read, and refuses to open a database from the
 future rather than misbehaving against it. Without this, rollback is a guess.
 
-### Off by default at first, then on
+### Reporting by default at first, then switching
 
-Automatic switching ships **disabled**, with `check` and `apply` available by hand, so the mechanism
-earns trust on real deployments before it is given the keys. The intent is to default it on once it
-has; that flip is its own decision, not this one.
+`MAIL_UPDATE_MODE` defaults to `check`: the updater fetches, climbs the whole ladder, and reports —
+but never switches. `apply` is available by hand from the first day, and setting the mode to `apply`
+hands the timer the keys. `off` pins a deployment entirely, including a hand-run `apply`.
+
+The default is `check` rather than `off` because the *reporting* is worth having immediately and
+carries no risk: it is what makes the staleness alarm meaningful, and a deployment that is silently
+not checking is the failure this whole mechanism exists to prevent. What waits for trust is the
+switching, and the intent is to default that on once it has earned it — that flip is its own
+decision, not this one.
 
 ## Consequences
 
