@@ -62,7 +62,7 @@ test('a signed message verifies against its published key record (round trip)', 
     ),
     'mailtest.example',
     'test@mailtest.example',
-  );
+  )!;
 
   const signed = dkimSign(raw, signer);
   assert.ok(signed.length > raw.length, 'a DKIM-Signature was prepended');

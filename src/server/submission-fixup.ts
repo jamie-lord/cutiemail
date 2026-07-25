@@ -43,9 +43,18 @@ export function formatDate(d: Date): string {
  * From and receivers reject messages lacking Date/Message-ID; a From is also what our
  * DKIM signature must cover (§5.4), so a From-less submission would otherwise be signed
  * meaninglessly. Untouched (same Buffer) when all three already exist.
+ *
+ * Returns `null` when the header section is too large to parse completely — the caller must
+ * refuse the message. Every decision here is a NEGATIVE claim ("this message has no From"),
+ * and a truncated parse cannot support one: the client's real From may simply sit past the
+ * cap. Synthesizing an owned From over a hidden one would hand the send-as gate a single owned
+ * address to approve and ship the message DKIM-signed with two From headers, ours above the
+ * sender's. The guard lives here rather than at the call site so it cannot be forgotten by a
+ * second caller, and because the parse it needs has already been done.
  */
-export function ensureSubmissionHeaders(data: Buffer, domain: string, sender: string, clock: FixupClock = {}): Buffer {
+export function ensureSubmissionHeaders(data: Buffer, domain: string, sender: string, clock: FixupClock = {}): Buffer | null {
   const msg = parseMessage(data);
+  if (msg.headersTruncated) return null;
   const needFrom = !hasHeader(msg, 'From') && sender !== '';
   const needDate = !hasHeader(msg, 'Date');
   const needId = !hasHeader(msg, 'Message-ID');

@@ -266,7 +266,7 @@ export function parseMessage(input: Buffer, defects: ParserDefects = {}): Messag
   });
   flush();
 
-  return { headers, body, anomalies };
+  return { headers, body, anomalies, headersTruncated: headerCapHit || headerBytesCapHit };
 }
 
 /** Convenience for corpus assertions: does a header with this (case-insensitive) name exist? */

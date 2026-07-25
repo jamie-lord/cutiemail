@@ -57,19 +57,19 @@ export class StsCache {
     const servedCache = (): StsPolicy | null =>
       cached !== undefined && cached.expiresAt > now ? cached.policy : null;
 
-    // RFC 8461 §5.1: a cached policy must survive a TXT-lookup failure. The TXT lookup is
-    // unauthenticated - an active attacker can suppress it (or pollute it with a second record)
-    // to strip TLS. So a THROWN lookup (transient DNS error) or an AMBIGUOUS answer (§3.1: the
-    // number of v=STSv1 records is not exactly one → "assume no available policy") must NOT drop
-    // an unexpired cached policy: it serves the cache and only forgoes enforcement when there is
-    // no live cache. ONLY a clean, definitively-absent record (a successful lookup returning zero
-    // v=STSv1 records) forgets the policy, exactly like the HTTPS-fetch-failure path below.
+    // RFC 8461 §3.3: "if no 'live' policy can be discovered via DNS or fetched via HTTPS, but a
+    // valid (non-expired) policy exists in the sender's cache, the sender MUST apply that cached
+    // policy." The TXT lookup is unauthenticated (node:dns does no DNSSEC validation), and §10.2
+    // names the attacker who suppresses it precisely so the cache can resist him.
+    //
+    // §3.1 puts zero records and several records in ONE case — "if the number of resulting
+    // records is not one ... senders MUST assume the recipient domain does not have an available
+    // MTA-STS Policy" — and attaches the do-not-evict note to that whole case. So an absent
+    // record is not a signal to forget: a policy is retired only by a fetched, valid policy
+    // carrying `mode: none` (§8.3). Treating a clean empty answer as definitive let one forged
+    // NXDOMAIN evict an enforce policy and deliver the message in the clear.
     if (txtLookupFailed) return servedCache();
-    if (stsRecords.length === 0) {
-      this.#entries.delete(d); // no policy published — forget any stale one
-      return null;
-    }
-    if (stsRecords.length > 1) return servedCache(); // §3.1: multiple records → ambiguous, keep cache
+    if (stsRecords.length !== 1) return servedCache();
 
     const m = /(?:^|;)\s*id\s*=\s*([^;]+)/i.exec(stsRecords[0]!);
     const id = m ? m[1]!.trim() : null;
@@ -143,16 +143,65 @@ export function httpsFetchPolicy(
 
 /**
  * The response half of the policy fetch, split out so it is unit-testable without a live TLS
- * endpoint: a non-2xx status yields null (no policy served), and an over-large body is capped to
- * `maxBytes` (RFC 8461 §3.2 bounds the policy size) and the prefix returned for the parser to
- * pin-or-reject. The transport concerns the wrapper keeps - TLS validation, the abort timeout,
- * and `redirect: 'error'` (§3.3 forbids redirects) - are fetch-level and exercised in production.
+ * endpoint: a non-2xx status yields null (no policy served), and a body over `maxBytes` is
+ * refused. The transport concerns the wrapper keeps - TLS validation, the abort timeout, and
+ * `redirect: 'error'` (§3.3 forbids redirects) - are fetch-level and exercised in production.
+ *
+ * The body is read INCREMENTALLY and abandoned the moment it exceeds the cap. `arrayBuffer()`
+ * would buffer the whole response first and only then apply the limit, so the "cap" bounded the
+ * return value and nothing else: a chunked endless body reached multiple gigabytes of resident
+ * memory in seconds, per recipient and again on every queue retry (an invalid policy is not
+ * cached). Neither of the two apparent bounds held — a declared `content-length` was never
+ * consulted, and the AbortSignal on the fetch does not reliably terminate a body read already in
+ * progress, so the reader is cancelled here rather than trusted to unwind from outside.
+ *
+ * Over-cap is a refusal (null), not a truncation. RFC 8461 §3.3 only permits a size limit ("a
+ * suggested maximum policy size is 64 kilobytes"); it does not license honouring the prefix of a
+ * body whose remainder we never saw, and a policy is a security control — a partial one should
+ * fail closed to opportunistic TLS, not be pinned.
  */
 export async function readPolicyResponse(
-  res: { readonly ok: boolean; arrayBuffer: () => Promise<ArrayBuffer> },
+  res: {
+    readonly ok: boolean;
+    readonly headers?: { get: (name: string) => string | null };
+    readonly body?: ReadableStream<Uint8Array> | null;
+    arrayBuffer: () => Promise<ArrayBuffer>;
+  },
   maxBytes: number,
+  deadlineMs = 30_000,
 ): Promise<Buffer | null> {
   if (!res.ok) return null;
-  const buf = Buffer.from(await res.arrayBuffer());
-  return buf.length > maxBytes ? buf.subarray(0, maxBytes) : buf;
+
+  // Cheapest rejection first: an honest server that declares an over-cap body saves us the read.
+  const declared = Number(res.headers?.get('content-length') ?? '');
+  if (Number.isFinite(declared) && declared > maxBytes) return null;
+
+  const reader = res.body?.getReader?.();
+  if (reader === undefined || reader === null) {
+    // No stream (an injected test double, or a body-less response): fall back to the buffered
+    // read, still refusing anything over the cap.
+    const buf = Buffer.from(await res.arrayBuffer());
+    return buf.length > maxBytes ? null : buf;
+  }
+
+  const timer = setTimeout(() => void reader.cancel().catch(() => {}), deadlineMs);
+  try {
+    const chunks: Uint8Array[] = [];
+    let total = 0;
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      total += value.length;
+      if (total > maxBytes) {
+        await reader.cancel().catch(() => {});
+        return null;
+      }
+      chunks.push(value);
+    }
+    return Buffer.concat(chunks);
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(timer);
+  }
 }

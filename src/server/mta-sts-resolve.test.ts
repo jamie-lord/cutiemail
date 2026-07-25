@@ -107,23 +107,88 @@ test('multiple v=STSv1 records are ambiguous: no fresh policy, and the cached on
   assert.equal(state.fetches, 1, 'and must not trigger a refetch');
 });
 
-test('a definitively-absent record (a clean empty lookup) DOES forget a cached policy', async () => {
-  const { deps } = harness({ id: 'v1' });
+test('an ABSENT record does NOT forget a cached policy either (§3.3 MUST, §10.2) - only expiry retires it', async () => {
+  // This inverts an earlier assertion that a clean empty lookup was "definitively absent" and so
+  // could evict. RFC 8461 §3.1 puts zero records and several records in the SAME "not one" case
+  // and attaches its do-not-evict note to both; §3.3 is a normative MUST to apply an unexpired
+  // cached policy when no live one can be discovered; §8.3 makes a fetched `mode: none` the
+  // retirement path. Evicting here let ONE forged NXDOMAIN — the TXT lookup is unauthenticated —
+  // turn enforce into cleartext delivery, which is exactly the attack §10.2 says the cache exists
+  // to resist.
+  const { state, deps } = harness({ id: 'v1' });
   const cache = new StsCache();
   assert.equal((await cache.resolve('example.com', deps))?.mode, 'enforce');
   const gone: StsResolverDeps = { ...deps, resolveTxt: async () => [] };
-  assert.equal(await cache.resolve('example.com', gone), null, 'a clean "no record" drops enforcement (the domain retired MTA-STS)');
+  assert.equal((await cache.resolve('example.com', gone))?.mode, 'enforce', 'a forged/absent record must not strip enforcement');
+  assert.equal(state.fetches, 1, 'and must not trigger a refetch');
+  // The cache is not kept forever: once max_age lapses there is nothing left to serve.
+  state.t += 86400_000 * 2;
+  assert.equal(await cache.resolve('example.com', gone), null, 'an expired cache is not served indefinitely');
 });
 
-test('readPolicyResponse: a non-2xx status yields null; an oversize body is capped to the parseable prefix', async () => {
+test('max_age is clamped to the RFC 8461 §3.2 ceiling, so a policy always ages out', async () => {
+  // Without the clamp, `max_age: 1e308` gives expiresAt = Infinity and the entry can never
+  // expire. That is only survivable while something else evicts it — and now that an absent
+  // record correctly does NOT evict (above), the ceiling is what guarantees a policy captured
+  // during a transient takeover eventually lapses. The two fixes are load-bearing together.
+  const { state, deps } = harness({ id: 'v1', body: 'version: STSv1\nmode: enforce\nmx: mail.example.com\nmax_age: 1e308\n' });
+  const cache = new StsCache();
+  assert.equal(await cache.resolve('example.com', deps), null, '1e308 is not 1*10(DIGIT): not a valid max_age');
+
+  const { state: s2, deps: d2 } = harness({ id: 'v1', body: 'version: STSv1\nmode: enforce\nmx: mail.example.com\nmax_age: 9999999999\n' });
+  const c2 = new StsCache();
+  assert.equal((await c2.resolve('example.com', d2))?.mode, 'enforce', '10 digits is grammatical, so it parses');
+  const gone: StsResolverDeps = { ...d2, resolveTxt: async () => [] };
+  s2.t += 31_557_600 * 1000 + 1000; // just past the one-year ceiling
+  assert.equal(await c2.resolve('example.com', gone), null, 'and expires at the ceiling, not 317 years out');
+  assert.ok(state.fetches >= 0 && s2.fetches >= 1);
+});
+
+test('readPolicyResponse: a non-2xx status yields null; an oversize body is REFUSED, never buffered whole', async () => {
   assert.equal(await readPolicyResponse({ ok: false, arrayBuffer: async () => new ArrayBuffer(0) }, 64), null, 'a non-2xx status serves no policy');
+
+  // A declared over-cap content-length is refused without reading a byte.
+  assert.equal(
+    await readPolicyResponse(
+      { ok: true, headers: { get: () => '68719476736' }, arrayBuffer: async () => new ArrayBuffer(0) },
+      65_536,
+    ),
+    null,
+    'a declared 64 GiB body is refused up front',
+  );
+
+  // A streamed body over the cap is abandoned mid-read, and the reader is cancelled — the whole
+  // point of the fix. `arrayBuffer()` is deliberately made to throw: if the implementation ever
+  // falls back to buffering the entire response, this test fails loudly rather than passing on a
+  // truncated prefix.
+  let delivered = 0;
+  let cancelled = false;
+  const chunk = new Uint8Array(64 * 1024).fill(0x41);
+  const endless = {
+    ok: true,
+    headers: { get: (): string | null => null },
+    body: {
+      getReader: () => ({
+        read: async (): Promise<{ done: boolean; value: Uint8Array }> => {
+          delivered += chunk.length;
+          return { done: false, value: chunk };
+        },
+        cancel: async (): Promise<void> => { cancelled = true; },
+      }),
+    },
+    arrayBuffer: async (): Promise<ArrayBuffer> => { throw new Error('must not buffer the whole body'); },
+  } as unknown as Parameters<typeof readPolicyResponse>[0];
+  assert.equal(await readPolicyResponse(endless, 65_536), null, 'an endless body yields no policy');
+  assert.ok(cancelled, 'and the reader is cancelled rather than left draining');
+  assert.ok(delivered <= 65_536 + chunk.length, `at most one chunk past the cap is read (read ${delivered})`);
+
+  // A well-formed under-cap body still parses.
   const policy = 'version: STSv1\nmode: enforce\nmx: mail.example.com\nmax_age: 86400\n';
-  const oversize = Buffer.concat([Buffer.from(policy, 'latin1'), Buffer.alloc(200_000, 0x41)]);
-  const ab = new ArrayBuffer(oversize.length);
-  new Uint8Array(ab).set(oversize);
-  const capped = await readPolicyResponse({ ok: true, arrayBuffer: async () => ab }, 65_536);
-  assert.equal(capped?.length, 65_536, 'the body is capped to maxBytes (RFC 8461 §3.2)');
-  assert.equal(parseStsPolicy(capped!).mode, 'enforce', 'the capped prefix still parses to the real policy');
+  const ab = new ArrayBuffer(policy.length);
+  new Uint8Array(ab).set(Buffer.from(policy, 'latin1'));
+  const ok = await readPolicyResponse({ ok: true, arrayBuffer: async () => ab }, 65_536);
+  assert.equal(ok?.toString('latin1'), policy, 'an under-cap body is returned intact');
+  assert.equal(parseStsPolicy(ok!).mode, 'enforce', 'and parses to the real policy');
 });
 
 test('httpsFetchPolicy refuses an mta-sts host that resolves to a private/loopback address (SSRF guard)', async () => {

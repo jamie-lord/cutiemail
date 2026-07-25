@@ -28,6 +28,7 @@ import { MemoryCatalog } from './store/memory-catalog.ts';
 import { SmtpReceiver, MessageRejected } from './server/smtp-receiver.ts';
 import type { DeliveredMessage } from './server/smtp-receiver.ts';
 import { fromAuthor } from './message/from-author.ts';
+import { parseMessage } from './message/parse.ts';
 import { ImapServer } from './server/imap-server.ts';
 import type { ServableMailbox } from './server/imap-server.ts';
 import { relayOutbound, routeRecipients, type OutboundOptions } from './server/outbound.ts';
@@ -331,6 +332,18 @@ export async function startServer(cfg: MailServerConfig): Promise<RunningServer>
   const authThrottle = cfg.authThrottle ?? new AuthThrottle();
   const inbound = await SmtpReceiver.start(async (m) => {
     const receivedAt = new Date();
+    // We cannot authenticate what we did not parse. The parser bounds the header section
+    // (MAX_HEADERS / MAX_HEADER_SECTION_BYTES) to stop a folded-header memory blowup, and past
+    // either cap it stops materialising fields. Every check below — DKIM, SPF's alignment input,
+    // DMARC, ARC — then reasons over an INCOMPLETE header list, while the bytes we store and
+    // later hand a client via BODY[]/RFC822.HEADER are uncapped. An attacker who pads the header
+    // section past the cap therefore hides the real From: from authentication but not from the
+    // MUA: DMARC reports `none`, a p=reject spoof is filed to INBOX, and the client renders the
+    // spoofed sender. Refuse instead. No legitimate sender emits such a message — a long
+    // Received + ARC + Authentication-Results chain is single-digit KB and dozens of fields.
+    if (parseMessage(m.data).headersTruncated) {
+      throw new MessageRejected('550 5.6.0 header section too large to authenticate');
+    }
     // Verify DKIM and SPF (informational — never a rejection; §6.1 leniency preserved).
     // Both go into the Authentication-Results header for the client / downstream.
     let dkim: { verdict: string; domain: string | null; passedDomains: readonly string[] } = { verdict: 'none', domain: null, passedDomains: [] };
@@ -545,7 +558,13 @@ export async function startServer(cfg: MailServerConfig): Promise<RunningServer>
     }
     // RFC 6409 fix-up (submission only, never on the inbound port): add Date /
     // Message-ID when the client omitted them — Gmail rejects messages without.
+    // `null` means the header section exceeded the parser's caps, so the fix-up could not tell
+    // whether a From is present. Refuse rather than synthesize one over a From we cannot see —
+    // see the inbound path's matching refusal.
     const fixed = ensureSubmissionHeaders(m.data, cfg.domain, m.from);
+    if (fixed === null) {
+      throw new MessageRejected('550 5.6.0 header section too large to authenticate');
+    }
     // The From: header author must ALSO be owned. Checked after the fix-up so a client that
     // omitted From gets the (owned) envelope synthesized in — still exactly one, still owned.
     // Spoof-hardened parse (last angle-addr; comments/quoted-strings stripped) and exactly one

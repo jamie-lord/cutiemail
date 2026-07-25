@@ -13,6 +13,13 @@
 export type StsMode = 'enforce' | 'testing' | 'none';
 
 const MODES: readonly string[] = ['enforce', 'testing', 'none'];
+/**
+ * RFC 8461 §3.2's stated maximum for `max_age`, one year in seconds. (Erratum 7282 notes that the
+ * section's own `1*10(DIGIT)` grammar admits far more than this prose ceiling; the prose is the
+ * requirement.) An unbounded max_age is what turns a policy captured during a transient subdomain
+ * takeover into one the victim cannot age out.
+ */
+const MAX_AGE_CEILING = 31_557_600;
 
 export interface StsPolicy {
   readonly valid: boolean;
@@ -55,8 +62,19 @@ export function parseStsPolicy(policy: Buffer, defects: StsParseDefects = {}): S
         if (value.length > 0) mx.push(value.toLowerCase());
         break;
       case 'max_age': {
-        const n = Number(value);
-        if (Number.isInteger(n) && n >= 0) maxAge = n;
+        // RFC 8461 §3.2: "plaintext non-negative integer seconds, maximum value of 31557600",
+        // grammar sts-policy-max-age-value = 1*10(DIGIT). Test the literal digits before
+        // coercing: Number() also accepts 1e308 (→ expiresAt of Infinity, a policy that can
+        // never expire), 0x/0b/0o forms, a leading sign and the empty string (→ 0).
+        //
+        // CLAMP rather than reject. Rejecting leaves maxAge null, which resolve() treats as an
+        // invalid policy — so an over-large max_age would silently DISABLE MTA-STS for the
+        // domain, a downgrade rather than a hardening.
+        //
+        // This bound is what makes the cache safe to keep across an absent TXT record (§3.3):
+        // without it, a policy captured during a transient takeover would be pinned for the
+        // process lifetime with no way for the victim to evict it.
+        if (/^[0-9]{1,10}$/.test(value)) maxAge = Math.min(Number(value), MAX_AGE_CEILING);
         break;
       }
       default:

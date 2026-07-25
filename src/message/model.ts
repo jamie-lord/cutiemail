@@ -54,4 +54,16 @@ export interface Message {
   readonly body: Buffer;
   /** Non-fatal structural observations, in order. */
   readonly anomalies: readonly Anomaly[];
+  /**
+   * The header section hit MAX_HEADERS or MAX_HEADER_SECTION_BYTES, so `headers` is NOT the
+   * complete set of fields the message carries.
+   *
+   * This is a first-class result rather than an anomaly because it changes what a caller is
+   * entitled to conclude. A truncated parse cannot support a NEGATIVE claim: "this message has
+   * no From:" is unsound when the parser stopped reading before the end of the header section.
+   * Every authentication path (DKIM, DMARC, ARC, the submission send-as gate) rests on exactly
+   * such a claim, while the raw bytes we store and later serve to a client are uncapped — so a
+   * caller that ignores this reads a different message than the client does.
+   */
+  readonly headersTruncated: boolean;
 }
