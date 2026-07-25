@@ -2,7 +2,7 @@
 
 ## Status
 
-Proposed.
+Accepted. Implemented; automatic switching ships disabled (see below).
 
 ## Context
 

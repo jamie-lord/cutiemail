@@ -20,6 +20,7 @@
 import { randomUUID, X509Certificate } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { dirname, join, resolve as resolvePath } from 'node:path';
+import { invokedDirectly } from './entry-point.ts';
 import { SqliteCatalog } from './store/sqlite-mailbox.ts';
 import { openMailDb, secureMailDbFile } from './store/open-mail-db.ts';
 import { AccountRegistry } from './store/account-registry.ts';
@@ -1010,7 +1011,7 @@ async function main(): Promise<void> {
 // Run as a daemon when invoked directly with no arguments; with arguments, run the
 // operator CLI (setup, ... — see src/ops/cli.ts) against the same env configuration.
 // One entry point on purpose: the daemon IS the toolbox, there is no second artifact.
-if (import.meta.url === `file://${process.argv[1]}`) {
+if (invokedDirectly(import.meta.url, process.argv[1])) {
   // Every file this process creates — the control DB and per-user mail DBs (with SCRAM
   // credential material + raw message bytes), their WAL sidecars, and backup artifacts —
   // is private to the mail user. A 0o077 umask makes new files 0600 and new dirs 0700 by

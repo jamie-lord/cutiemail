@@ -14,7 +14,7 @@
  */
 
 import { argv, stdout, stderr } from 'node:process';
-import { pathToFileURL } from 'node:url';
+import { invokedDirectly } from './entry-point.ts';
 import { loadTargetConfig, connectOptions, ConfigError } from './conformance/config.ts';
 import { runSuite } from './conformance/runner.ts';
 import { withPostmasterConvention } from './conformance/fixture.ts';
@@ -178,7 +178,7 @@ async function main(): Promise<number> {
 // the first line before exit() cut it off.
 // Only run when invoked as the program. Importing this module (a future `import` for one of its
 // helpers, a tooling probe) would otherwise execute a whole conformance run as a side effect.
-if (import.meta.url === pathToFileURL(argv[1] ?? '').href) {
+if (invokedDirectly(import.meta.url, argv[1])) {
   main()
     .then((code) => {
       process.exitCode = code;

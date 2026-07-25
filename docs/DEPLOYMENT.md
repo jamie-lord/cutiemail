@@ -74,7 +74,8 @@ the ones before it:
 
 Prefer containers? [Running it in a container](#running-it-in-a-container) replaces
 steps 2, 3, and 6. In a hurry? The throwaway box below automates all of it. Once it's
-live, [Upgrading](#upgrading) covers pulling a new version safely, and
+live, [Keeping itself up to date](#keeping-itself-up-to-date) sets up automatic updates and
+[Upgrading by hand](#upgrading-by-hand) covers pulling a new version yourself, and
 [Decommissioning](#decommissioning) is the teardown when you're done.
 
 ## Quick start: a throwaway Hetzner box (receiving)
@@ -848,7 +849,157 @@ inbound delivery fail *transiently*, so senders retry rather than lose mail; see
 IP against the major blocklists periodically** (Spamhaus, Barracuda, and mxtoolbox's combined
 lookup): `doctor` can't see a blocklisting, and a fresh cloud IP can land on one without warning.
 
-## Upgrading
+## Keeping itself up to date
+
+Self-hosted software rots. It gets deployed, it works, and then it sits — unpatched, drifting away
+from the internet around it — because upgrading is a chore nobody schedules. cutiemail can keep
+itself current instead. The design and its reasoning are in
+[ADR 0025](decisions/0025-self-update.md); this is how to run it.
+
+It ships **reporting-only**. It will tell you a new version is available and that it verified
+cleanly; it will not switch until you say so. Turn switching on once you have watched it be right a
+few times.
+
+### The layout it needs
+
+The updater cannot manage a deployment installed as a flat directory, because there is nothing to
+switch. The code lives under a version store instead:
+
+```text
+/opt/mailserver/
+  current -> versions/<commit>     the ONE thing that says what runs
+  versions/<commit>/               a verified checkout, never modified after it lands
+```
+
+and the unit runs `/opt/mailserver/current/src/main.ts`. A cutover is then a `rename(2)` over the
+symlink plus a restart, and a rollback is the same rename in reverse.
+
+**The daemon must not own that directory.** It is the internet-facing part; if a remote compromise
+of it could rewrite what runs next, the compromise becomes permanent. So the code belongs to a
+separate `mailupd` user and the mail user only ever reads it:
+
+```sh
+sudo useradd --system --home-dir /opt/mailserver --shell /usr/sbin/nologin mailupd
+sudo chown -R mailupd:mailupd /opt/mailserver
+sudo chmod -R u=rwX,go=rX /opt/mailserver
+# the updater snapshots the databases, so it needs to read them — group access, not ownership
+sudo usermod -a -G mail mailupd
+sudo chmod 750 /var/lib/mailserver
+```
+
+The updater also needs to restart the daemon. Grant it that for **one unit and three verbs**, so
+it never has to run as root:
+
+```sh
+# /etc/polkit-1/rules.d/50-mailserver-update.rules
+polkit.addRule(function (action, subject) {
+  if (action.id === 'org.freedesktop.systemd1.manage-units'
+      && subject.user === 'mailupd'
+      && action.lookup('unit') === 'mailserver.service'
+      && ['start', 'stop', 'restart'].indexOf(action.lookup('verb')) !== -1) {
+    return polkit.Result.YES;
+  }
+});
+```
+
+### Telling it what you are running
+
+Once, before anything else:
+
+```sh
+sudo -u mailupd env MAIL_UPDATE_ROOT=/opt/mailserver \
+  node /opt/mailserver/current/src/update/main.ts adopt "$(git -C /opt/mailserver/current rev-parse HEAD)"
+```
+
+This records the baseline every later update is measured against. It **fetches** that commit from
+the repository rather than trusting the files on disk, so a wrong or abbreviated id fails here
+instead of quietly poisoning every later comparison.
+
+### What a check actually does
+
+`node src/update/main.ts check` fetches the branch tip and puts it through a ladder. Any failure at
+any rung abandons the update and leaves the running version untouched.
+
+- **Provenance.** The candidate must have the commit you are running in its ancestry, so nobody can
+  move a deployment backwards and a force-push over deployed history refuses rather than applying.
+  It must also be at least `MAIL_UPDATE_BAKE_DAYS` old (default 3), so a mistake merged to the
+  branch has a window to be noticed before it reaches you.
+- **Integrity.** Every object hashes to the id it was fetched as; every file name in the tree passes
+  an allow-list. A malformed download is "no update available", never a partial checkout.
+- **Shape.** Including whether the new version needs a newer Node than this machine has — which is
+  otherwise discovered *after* the switch, as a daemon that will not start.
+- **Its own test suite**, in the candidate tree, under a timeout.
+- **An isolated boot**, plus the SMTP conformance corpus run against both the candidate and the
+  version you are running. Only findings the candidate *introduces* fail it; refusing an update over
+  a gap your current version already has would pin you on the version that has it.
+- **Your data.** `VACUUM INTO` snapshots of every database, and the candidate booted against
+  *those copies with your real configuration* on loopback ports. This answers the questions that
+  actually break deployments: does the migration work at your size, **how long does it take** (that
+  is your cutover downtime, measured before you commit to it), does your configuration still
+  satisfy the new version, and are all your accounts, mailboxes and messages still there afterwards,
+  byte for byte. Then a real message through submission, delivery and IMAP read-back against a real
+  mailbox.
+
+The candidate is forced into `MAIL_OUTBOUND=hold` for all of that, because the snapshot contains
+your outbound queue and a candidate booted in delivery mode would relay every queued message a
+second time. It never binds 25, 587 or 993. The snapshots are destroyed whatever the outcome.
+
+### Letting it switch
+
+```sh
+# by hand, once you want to
+sudo -u mailupd env MAIL_UPDATE_ROOT=/opt/mailserver ... node .../src/update/main.ts apply
+
+# or unattended: change the timer unit's mode and reload
+Environment=MAIL_UPDATE_MODE=apply
+```
+
+A cutover drains before it switches: `systemctl stop` lets an in-flight `DATA` handler finish and
+reply, and the relay tick complete. If that does not finish inside `MAIL_UPDATE_DRAIN_SECONDS` the
+cutover is **abandoned rather than forced** — an update can wait, an interrupted delivery cannot be
+undone. After the switch the new version has to pass a live mail-path probe and stay healthy for
+`MAIL_UPDATE_PROBE_SECONDS`, or it is reverted automatically. If its migration moved the schema
+forward, the pre-cutover snapshot is restored too, because the older version cannot read a migrated
+database. Nothing is deleted in a revert: the failed version's databases are kept aside with a
+`.failed-<timestamp>` suffix.
+
+### Watching it
+
+```sh
+sudo -u mailupd env MAIL_UPDATE_ROOT=/opt/mailserver node .../src/update/main.ts status
+```
+
+The line to care about is **staleness**. If checks stop reaching the repository — a firewall change,
+a DNS problem, an expired credential — nothing else would tell you: the deployment simply stops
+being updated and looks fine. `status` exits non-zero once it has been longer than
+`MAIL_UPDATE_STALE_DAYS` (default 30), which is the same rot the whole mechanism exists to prevent,
+arriving through the mechanism itself.
+
+`reset` clears a stuck cutover phase without touching what is running, for the rare case where an
+operator has to be the one deciding.
+
+### What this does not fix
+
+Updating is not the same as staying healthy. Node going end-of-life, OS packages, certificate
+renewal and provider policy changes are all outside what this can reach. `doctor` remains the answer
+there, and it still needs running.
+
+### Settings
+
+| variable | default | what it does |
+| --- | --- | --- |
+| `MAIL_UPDATE_MODE` | `check` | `off` pins the deployment; `check` reports; `apply` switches. A typo raises rather than guessing. |
+| `MAIL_UPDATE_ROOT` | `update-store` | the version store |
+| `MAIL_UPDATE_REPO` | this project | HTTPS only: TLS to the remote is the entire trust root |
+| `MAIL_UPDATE_BRANCH` | `main` | whose tip is a release |
+| `MAIL_UPDATE_UNIT` | `cutiemail.service` | the unit to stop and start |
+| `MAIL_UPDATE_BAKE_DAYS` | `3` | how long a commit must sit before it is eligible |
+| `MAIL_UPDATE_STALE_DAYS` | `30` | when `status` starts calling it a problem |
+| `MAIL_UPDATE_KEEP` | `3` | superseded versions kept for rollback |
+| `MAIL_UPDATE_DRAIN_SECONDS` | `120` | how long to wait for the daemon to finish before abandoning |
+| `MAIL_UPDATE_PROBE_SECONDS` | `300` | how long the new version must stay healthy before it is confirmed |
+
+## Upgrading by hand
 
 Because the code *is* the runtime (no build, no compiled artefact), an upgrade is a `git pull`.
 Schema migrations run **automatically and forward-only** the first time each database is opened.

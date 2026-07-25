@@ -51,11 +51,34 @@ until ssh -o StrictHostKeyChecking=accept-new -o ConnectTimeout=5 "root@$IP" 'cl
   sleep 5
 done
 
-echo "copying the mail server source..."
+# The version-store layout (ADR 0025): the code lives at versions/<commit>, and `current` is a
+# symlink naming which one runs. That is what makes an update a rename and a rollback the same
+# rename in reverse. A deployment installed as a flat directory can never be updated automatically,
+# so it is laid out this way from the first minute.
+#
+# Only a CLEAN checkout gets wired up for updates. Recording a commit while shipping a modified
+# working tree would make the store's ancestry a lie: every later update would be compared against a
+# commit whose content was never what is running.
+COMMIT="$(cd "$REPO" && git rev-parse HEAD 2>/dev/null || true)"
+if [ -n "$(cd "$REPO" && git status --porcelain 2>/dev/null || echo dirty)" ]; then
+  echo "note: this working tree has uncommitted changes, so automatic updates will NOT be configured."
+  COMMIT=""
+fi
+VERSION_DIR="/opt/mailserver/versions/${COMMIT:-working-tree}"
+
+echo "copying the mail server source to $VERSION_DIR..."
+ssh "root@$IP" "mkdir -p $VERSION_DIR"
 rsync -az --delete \
   --exclude node_modules --exclude .git --exclude '*.db' \
-  "$REPO/" "root@$IP:/opt/mailserver/"
-ssh "root@$IP" 'chown -R mail:mail /opt/mailserver'
+  "$REPO/" "root@$IP:$VERSION_DIR/"
+
+# The daemon must NEVER be able to write its own code. It is the internet-facing part, and if a
+# remote compromise of it could rewrite what runs next, that compromise becomes permanent. So the
+# code is owned by a separate updater user and the mail user only ever reads it. (This corrects an
+# earlier `chown -R mail:mail /opt/mailserver`, which handed the daemon exactly that ability.)
+ssh "root@$IP" "id -u mailupd >/dev/null 2>&1 || useradd --system --home-dir /opt/mailserver --shell /usr/sbin/nologin mailupd"
+ssh "root@$IP" "ln -sfn versions/${COMMIT:-working-tree} /opt/mailserver/current.tmp && mv -T /opt/mailserver/current.tmp /opt/mailserver/current"
+ssh "root@$IP" "chown -R mailupd:mailupd /opt/mailserver && chmod -R u=rwX,go=rX /opt/mailserver"
 
 # Provision a per-box TLS certificate. The daemon REFUSES to serve the bundled dev cert on
 # a public interface (its private key is committed), so we generate a fresh key/cert here.
@@ -78,8 +101,9 @@ After=network.target
 [Service]
 Type=simple
 User=mail
-WorkingDirectory=/opt/mailserver
-ExecStart=/usr/bin/node --disable-warning=ExperimentalWarning src/main.ts
+# Through `current`, so a version cutover is a symlink rename plus a restart (ADR 0025).
+WorkingDirectory=/opt/mailserver/current
+ExecStart=/usr/bin/node --disable-warning=ExperimentalWarning /opt/mailserver/current/src/main.ts
 Environment=MAIL_DOMAIN=$MAIL_DOMAIN
 Environment=MAIL_HOST=0.0.0.0
 Environment=MAIL_CONTROL_DB=/var/lib/mailserver/control.db
@@ -138,6 +162,82 @@ UNIT
 # prints Environment= to any local user, and the passphrase is in the invoking shell's history.
 ssh "root@$IP" 'chmod 600 /etc/systemd/system/mailserver.service'
 ssh "root@$IP" 'systemctl daemon-reload && systemctl enable --now mailserver && sleep 1 && systemctl --no-pager status mailserver | head -6'
+
+# ---- automatic updates (ADR 0025) -----------------------------------------------------------
+# Skipped for a dirty working tree: see the note where COMMIT is computed.
+if [ -n "$COMMIT" ]; then
+  echo "wiring up automatic updates (reporting only; set MAIL_UPDATE_MODE=apply to let it switch)..."
+
+  # The updater needs to read and snapshot the databases, and to restart the one unit it manages.
+  # It gets group access to the data directory rather than ownership: the mail user still owns its
+  # own mail.
+  ssh "root@$IP" 'usermod -a -G mail mailupd && chmod 750 /var/lib/mailserver && chmod g+rX /var/lib/mailserver'
+
+  # Exactly one unit, exactly one verb each way. Without this the updater would have to run as root,
+  # and a compromise of the thing that downloads code would be a compromise of everything.
+  ssh "root@$IP" "cat > /etc/polkit-1/rules.d/50-mailserver-update.rules" <<'POLKIT'
+polkit.addRule(function (action, subject) {
+  if (action.id === 'org.freedesktop.systemd1.manage-units'
+      && subject.user === 'mailupd'
+      && action.lookup('unit') === 'mailserver.service'
+      && ['start', 'stop', 'restart'].indexOf(action.lookup('verb')) !== -1) {
+    return polkit.Result.YES;
+  }
+});
+POLKIT
+
+  ssh "root@$IP" "cat > /etc/systemd/system/mailserver-update.service" <<UPDATE
+[Unit]
+Description=cutiemail update check
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=mailupd
+WorkingDirectory=/opt/mailserver/current
+ExecStart=/usr/bin/node --disable-warning=ExperimentalWarning /opt/mailserver/current/src/update/main.ts auto
+Environment=MAIL_UPDATE_ROOT=/opt/mailserver
+Environment=MAIL_UPDATE_UNIT=mailserver.service
+# Reporting only until the mechanism has earned trust on this deployment; then set 'apply'.
+Environment=MAIL_UPDATE_MODE=check
+# The daemon's own configuration, because the pre-flight boots a candidate against a SNAPSHOT of
+# your data with your real settings. MAIL_OUTBOUND is forced to hold there regardless of this.
+Environment=MAIL_DOMAIN=$MAIL_DOMAIN
+Environment=MAIL_CONTROL_DB=/var/lib/mailserver/control.db
+Environment=MAIL_SMTP_PORT=25
+Environment=MAIL_SUBMISSION_PORT=587
+Environment=MAIL_IMAP_PORT=993
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/mailserver /var/lib/mailserver
+PrivateTmp=true
+UMask=0077
+# The pre-flight runs a candidate's whole test suite and boots it four times; give it room.
+TimeoutStartSec=45min
+UPDATE
+
+  ssh "root@$IP" "cat > /etc/systemd/system/mailserver-update.timer" <<'TIMER'
+[Unit]
+Description=cutiemail update check
+
+[Timer]
+# Six-hourly, with a wide random delay so every deployment does not hit the remote at once.
+OnCalendar=*-*-* 0/6:00:00
+RandomizedDelaySec=2h
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+TIMER
+
+  ssh "root@$IP" "systemctl daemon-reload && systemctl restart polkit && systemctl enable --now mailserver-update.timer"
+  # Adoption FETCHES the tree from the remote rather than trusting what was just rsynced, so the
+  # store holds only content-verified checkouts and a wrong commit fails here rather than silently
+  # poisoning every later comparison.
+  ssh "root@$IP" "sudo -u mailupd MAIL_UPDATE_ROOT=/opt/mailserver /usr/bin/node --disable-warning=ExperimentalWarning /opt/mailserver/current/src/update/main.ts adopt $COMMIT"
+fi
 
 cat <<DONE
 
