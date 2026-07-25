@@ -109,11 +109,50 @@ export interface WireOptions {
    * IPv4 (where our PTR does match) does not.
    */
   readonly family?: 4 | 6;
+  /**
+   * Deadline for a single `send()`. A peer that stops reading fills our send buffer and the
+   * write callback never fires — see DEFAULT_WRITE_TIMEOUT_MS.
+   */
+  readonly writeTimeoutMs?: number;
+  /**
+   * Cap on bytes buffered from the peer but not yet framed, and on the recorded transcript.
+   * See DEFAULT_MAX_BUFFERED_BYTES.
+   */
+  readonly maxBufferedBytes?: number;
 }
 
 const DEFAULT_CONNECT_TIMEOUT_MS = 30_000;
 /** TLS handshake deadline — a peer that 220s STARTTLS then stalls must not hang us. */
 const DEFAULT_TLS_HANDSHAKE_TIMEOUT_MS = 30_000;
+/**
+ * Deadline for a single write.
+ *
+ * Every other phase here is bounded — connect, each read, the TLS handshake, close — and the
+ * write was not. A remote MX that speaks correct SMTP through its 354 and then simply stops
+ * reading fills the kernel send buffer, so `socket.write`'s completion callback never fires and
+ * the promise never settles. Because the relay loop processes the outbound queue under a
+ * single-flight guard, one such peer stops delivery for every account on the server until the
+ * process is restarted, and `stop()` never returns so shutdown hangs too. This is the same
+ * hazard the STARTTLS handshake deadline below was added for, on the path next to it.
+ *
+ * Generous, because a legitimate slow link transferring a 25 MiB message must not trip it: this
+ * bounds a stall, not throughput.
+ */
+const DEFAULT_WRITE_TIMEOUT_MS = 300_000;
+/**
+ * Cap on bytes held from the peer.
+ *
+ * `MAX_REPLY_BYTES` in reply.ts bounds an over-long reply line, but it is enforced inside the
+ * framer, so it only applies while a read is pending. Whenever one is not — throughout
+ * `transmitData`'s write of the message body, and during `expectQuiet` — a peer could stream
+ * without limit into both `#buffer` and the `#events` transcript, and the per-chunk
+ * `Buffer.concat` made it quadratic: 82 MiB on the wire produced over 4 GiB of resident memory
+ * in 17 seconds, unreclaimable, ending in an OOM kill of the whole daemon.
+ *
+ * Set well above any legitimate reply (the framer's own limit is 64 KiB) so that only a peer
+ * behaving abusively meets it.
+ */
+const DEFAULT_MAX_BUFFERED_BYTES = 1024 * 1024;
 
 export class Wire {
   #socket: net.Socket | tls.TLSSocket;
@@ -125,10 +164,18 @@ export class Wire {
   #reset = false;
   /** Woken on any state change: bytes, close, reset. */
   #wake: (() => void)[] = [];
+  #writeTimeoutMs: number;
+  #maxBufferedBytes: number;
+  /** Running total of transcript bytes, so the cap costs no walk of #events. */
+  #recordedBytes = 0;
+  /** Set once the peer exceeded #maxBufferedBytes; surfaces as a read/send failure. */
+  #flooded = false;
 
-  private constructor(socket: net.Socket, origin: bigint) {
+  private constructor(socket: net.Socket, origin: bigint, writeTimeoutMs: number, maxBufferedBytes: number) {
     this.#socket = socket;
     this.#origin = origin;
+    this.#writeTimeoutMs = writeTimeoutMs;
+    this.#maxBufferedBytes = maxBufferedBytes;
     this.#attach(socket);
   }
 
@@ -137,6 +184,16 @@ export class Wire {
   }
 
   #record(e: WireEvent): void {
+    // The transcript is for showing an operator what was exchanged, so it does not need to be
+    // complete — and it must not be a second unbounded buffer alongside #buffer. Past the cap,
+    // keep recording the event shape (timings, kinds) but elide the payload.
+    if ('bytes' in e && e.bytes.length > 0) {
+      if (this.#recordedBytes >= this.#maxBufferedBytes) {
+        this.#events.push({ ...e, bytes: e.bytes.subarray(0, 0) });
+        return;
+      }
+      this.#recordedBytes += e.bytes.length;
+    }
     this.#events.push(e);
   }
 
@@ -152,6 +209,17 @@ export class Wire {
       // transcript must hold the bytes we actually saw, not whatever occupied
       // that memory afterwards. This bug is invisible until it isn't.
       const bytes = Buffer.from(chunk);
+      // Bound what an unread peer can make us hold. reply.ts's MAX_REPLY_BYTES is enforced
+      // inside the framer, so it lapses whenever no read is pending — throughout transmitData's
+      // write and during expectQuiet — and the concat below is quadratic, so the memory cost far
+      // outruns the bytes on the wire. Drop the connection rather than keep growing.
+      if (this.#buffer.length + bytes.length > this.#maxBufferedBytes) {
+        this.#flooded = true;
+        this.#record({ kind: 'received', at: this.#now(), bytes: bytes.subarray(0, 0) });
+        socket.destroy();
+        this.#notify();
+        return;
+      }
       this.#record({ kind: 'received', at: this.#now(), bytes });
       this.#buffer = Buffer.concat([this.#buffer, bytes]);
       this.#notify();
@@ -203,7 +271,12 @@ export class Wire {
       const onReady = (): void => {
         clearTimeout(timer);
         socket.removeListener('error', onError);
-        const wire = new Wire(socket, origin);
+        const wire = new Wire(
+          socket,
+          origin,
+          opts.writeTimeoutMs ?? DEFAULT_WRITE_TIMEOUT_MS,
+          opts.maxBufferedBytes ?? DEFAULT_MAX_BUFFERED_BYTES,
+        );
         wire.#record({ kind: 'connected', at: wire.#now(), tls: useTls });
         resolve(wire);
       };
@@ -227,7 +300,21 @@ export class Wire {
   send(bytes: Buffer): Promise<void> {
     if (this.#closed) return Promise.reject(new Error('send on closed wire'));
     return new Promise<void>((resolve, reject) => {
+      // A peer that stops reading never lets this callback fire. Destroy the socket rather than
+      // only rejecting: the write stays queued in the kernel otherwise, and the caller's `finally`
+      // would close a wire that is still holding it.
+      let settled = false;
+      const timer = setTimeout(() => {
+        if (settled) return;
+        settled = true;
+        this.#socket.destroy();
+        reject(new Error(`write timeout after ${this.#writeTimeoutMs}ms: peer stopped reading`));
+      }, this.#writeTimeoutMs);
+      timer.unref();
       this.#socket.write(bytes, (err) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
         if (err) reject(err);
         else {
           this.#record({ kind: 'sent', at: this.#now(), bytes: Buffer.from(bytes) });
