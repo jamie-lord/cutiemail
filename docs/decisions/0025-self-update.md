@@ -106,6 +106,12 @@ deployment, and the failure arrives *after* the switch, as a syntax error from a
 runtime cannot parse. A range we cannot evaluate is a refusal, not an assumption — a wrong guess
 here is exactly the case that takes the service down.
 
+A defect in the updater that blocks updates is **self-perpetuating**: the deployment cannot pull the
+fix, because the broken check refuses every candidate. That is the argument for the staleness alarm
+being load-bearing rather than decorative — "updates are configured but not arriving" is the only
+signal that will ever reach an operator in that state — and for `check` mode existing at all, since
+a deployment that reports without switching still surfaces the problem.
+
 **4. It runs on this machine** — every module the candidate ships is imported, one at a time, in a
 subprocess using the Node that is actually installed. The failing module is named.
 
@@ -177,6 +183,16 @@ delivery and IMAP read-back, driven by `selftest` against a real account's real 
 store SCRAM material, so no existing password can be recovered — which is the right property, and
 means the updater mints an **app password inside the snapshot** to log in with. That is safe there
 and only there: it is a copy, destroyed minutes later, and the live registry is untouched.
+
+**What access the updater needs, and why it is not more than it looks.** The updater runs as its own
+user precisely so that a compromise of the internet-facing daemon cannot rewrite the code that runs
+next. That separation is one-directional: the updater still needs the *data*. It reads every
+database to snapshot them, and it **writes** the control database, because the cutover probe mints
+an app password immediately before the check and revokes it immediately after — the update is
+confirmed by a real message through authenticated submission, not by the process being up. On a
+deployment where the daemon creates its files 0600, group membership alone does not deliver that;
+a POSIX ACL with a default entry does, and survives the daemon's umask without widening it. Getting
+this wrong does not fail loudly at install time — it fails at the probe, months later, and reverts.
 
 **6c. Can we get back?** — the version that is *currently running* is booted against the snapshot the
 candidate has just migrated. If it cannot open it, the update is one-way and is refused, unless

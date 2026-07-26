@@ -210,12 +210,23 @@ if [ -n "$COMMIT" ]; then
   #
   # A POSIX ACL grants exactly the access needed to exactly one user, and the DEFAULT entry is
   # inherited by files created later, which is what makes it survive the daemon's umask: with a
-  # default ACL present the umask is not applied to the inherited entries. Note the directory needs
-  # SEARCH (rx) and not merely read — without x, mailupd cannot traverse in whatever the files say.
-  # The daemon's own posture is untouched: it still creates 0600 files and still owns its own mail.
+  # default ACL present the umask is not applied to the inherited entries. The daemon's own posture
+  # is untouched — it still creates 0600 files and still owns its own mail.
+  #
+  # WRITE, not just read, and the reason is the cutover probe: it mints an app password immediately
+  # before the check and revokes it immediately after, so the update is confirmed by a real message
+  # through authenticated submission rather than by the process merely being up. ADR 0025 states
+  # that this is not a new privilege — the updater already holds database access in order to
+  # snapshot at all — but the access was never actually granted, so the probe failed with "attempt
+  # to write a readonly database", the cutover reverted, and no update could ever complete.
+  #
+  # Capital X in the recursive grant, deliberately: it means "execute on directories only". A plain
+  # `-R -m u:mailupd:rw` applies rw to the directory too, stripping its search bit, and then nothing
+  # inside can be reached whatever the files themselves permit. Both halves of that trap were hit
+  # here in turn, and each failed silently in the same way.
   ssh "root@$IP" 'apt-get install -y acl >/dev/null 2>&1 || true'
   ssh "root@$IP" 'usermod -a -G mail mailupd && chmod 750 /var/lib/mailserver'
-  ssh "root@$IP" 'setfacl -m u:mailupd:rx /var/lib/mailserver && setfacl -d -m u:mailupd:r /var/lib/mailserver && setfacl -R -m u:mailupd:r /var/lib/mailserver/ 2>/dev/null || true'
+  ssh "root@$IP" 'setfacl -R -m u:mailupd:rwX /var/lib/mailserver && setfacl -d -m u:mailupd:rw /var/lib/mailserver'
 
   # Exactly one unit, exactly one verb each way. Without this the updater would have to run as root,
   # and a compromise of the thing that downloads code would be a compromise of everything.
