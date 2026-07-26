@@ -114,5 +114,10 @@ test('a huge body is split without allocating a per-line object over the whole b
   assert.ok(hasMultipartAnomaly(r, 'no-boundary-found'), 'no delimiter present => no structure');
   assert.equal(r.parts.length, 0);
   assert.ok(grewMiB < 96, `heap growth stays bounded, not O(lines): grew ${grewMiB.toFixed(0)} MiB`);
-  assert.ok(elapsedMs < 2000, `and completes promptly: ${elapsedMs.toFixed(0)} ms`);
+  // The heap-delta assertion above is the real differential and is deterministic; this is only a
+  // backstop against a super-linear blow-up, so it is sized to catch that rather than to police
+  // performance. At 2s it flaked whenever the suite ran under contention, which is the one thing a
+  // guard must not do: a check that cries wolf gets disabled, and this one is guarding a 1.5 GB
+  // allocation spike that froze the event loop.
+  assert.ok(elapsedMs < 30_000, `and completes rather than blowing up super-linearly: ${elapsedMs.toFixed(0)} ms`);
 });

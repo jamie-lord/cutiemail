@@ -208,7 +208,18 @@ test('FETCH BODYSTRUCTURE is bounded on a multipart with millions of parts (part
   const out = bodyStructureResponse(raw);
   const ms = Number(process.hrtime.bigint() - start) / 1e6;
   assert.match(out, /"MIXED"/, 'a bounded multipart structure is still produced');
-  assert.ok(ms < 3000, `a million-part multipart must be bounded (took ${ms.toFixed(0)}ms)`);
+  // The SHAPE the cap produces, not the clock: three million delimiters were fed in and at most
+  // MAX_PARTS_PER_ENTITY (10,000) parts may come out. That is deterministic on any machine, where a
+  // millisecond threshold sized to an idle one flakes in a parallel suite — as the neighbouring
+  // case above already records.
+  const parts = (out.match(/\("TEXT"/g) ?? []).length;
+  assert.ok(parts > 0, 'the multipart is walked at all');
+  // Three million delimiters in, at most 10,001 parts out: MAX_PARTS_PER_ENTITY is 10,000 and the
+  // scan collects the one that trips the cap before stopping, whose part then absorbs the rest of
+  // the body. Bounded by a constant, not proportional to the input — which is the whole property.
+  assert.ok(parts <= 10_001, `the part count is capped, not proportional to the 3,000,000 delimiters fed in (saw ${parts})`);
+  // A generous backstop against a genuinely super-linear blow-up, not a performance target.
+  assert.ok(ms < 30_000, `a million-part multipart must be bounded (took ${ms.toFixed(0)}ms)`);
 });
 
 test('resolvePart is bounded on a deep nested-multipart path (FETCH BODY[1.1.1...] DoS)', () => {
@@ -218,7 +229,15 @@ test('resolvePart is bounded on a deep nested-multipart path (FETCH BODY[1.1.1..
   let m = `Content-Type: text/plain\r\n\r\n${payload}`;
   for (let i = 0; i < 99; i++) m = `Content-Type: multipart/mixed; boundary="b${i}"\r\n\r\n--b${i}\r\n${m}\r\n--b${i}--\r\n`;
   const start = process.hrtime.bigint();
-  resolvePart(Buffer.from(m, 'latin1'), new Array(99).fill(1));
+  const resolved = resolvePart(Buffer.from(m, 'latin1'), new Array(99).fill(1));
   const ms = Number(process.hrtime.bigint() - start) / 1e6;
-  assert.ok(ms < 3000, `a deep BODY[] path must be bounded (took ${ms.toFixed(0)}ms)`);
+  // What the budget DOES, which the timing-only form never asserted: past it, resolvePart gives up
+  // and returns null rather than descending. A machine under load changes how long that takes and
+  // not whether it happens.
+  assert.equal(resolved, null, 'the descent stops at the budget instead of walking 99 levels');
+  // And the shallow path still resolves, so the assertion above is the budget biting rather than
+  // resolvePart failing at everything.
+  assert.notEqual(resolvePart(Buffer.from(m, 'latin1'), [1]), null, 'a shallow path still resolves');
+  // A generous backstop against a genuinely super-linear blow-up, not a performance target.
+  assert.ok(ms < 30_000, `a deep BODY[] path must be bounded (took ${ms.toFixed(0)}ms)`);
 });
