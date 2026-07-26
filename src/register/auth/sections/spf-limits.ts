@@ -182,4 +182,22 @@ export const SPF_LIMITS = [
       + 'evaluating the rest of the outer record. The budget is then advisory rather than enforced, '
       + 'and the sender who published the expensive record escapes being judged by it.',
   },
+  {
+    id: 'R-7208-6.1-a',
+    rfc: 'rfc7208',
+    section: '6.1',
+    page: 26,
+    level: 'MUST',
+    party: 'server',
+    normativeSource: 'prose',
+    text: 'The result of this new evaluation of check_host() is then considered the result of the current evaluation with the exception that if no SPF record is found, or if the <target-name> is malformed, the result is a "permerror" rather than "none".',
+    testability: { kind: 'parse' },
+    note:
+      'The redirect counterpart of R-7208-5.2-a, registered because the two are the same rule for '
+      + 'the two ways one record can defer to another, and an implementation that gets one right '
+      + 'and the other wrong is the unmirrored-sibling shape this project keeps finding. The stated '
+      + 'exception is the whole content: a redirect to a domain publishing NO SPF record is a broken '
+      + 'record, not an absent policy, so it is permerror and not none — and the difference is '
+      + 'visible downstream, where DMARC reads "none" as "there was no SPF to align against".',
+  },
 ] as const satisfies readonly RequirementDef[];

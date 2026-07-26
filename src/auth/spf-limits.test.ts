@@ -23,9 +23,6 @@ import { authRequirement, type AuthRequirementId } from '../register/auth/index.
 
 const cites = (id: AuthRequirementId): void => assert.ok(authRequirement(id).id === id);
 
-/** See the note in imap-conformance-mailbox.integration.test.ts. */
-const GAP = (why: string): { todo: string } => ({ todo: why });
-
 const SENDER_IP = '198.51.100.7';
 
 interface CountingResolvers extends SpfResolvers {
@@ -76,16 +73,7 @@ test('a record needing more than ten DNS-querying terms is a permerror', async (
   assert.ok(resolvers.counts.txt <= 12, `and we stop looking things up rather than finishing: ${resolvers.counts.txt}`);
 });
 
-test('the ten-term limit is cumulative across includes, not per record', GAP(
-  'RFC 7208 §5.2 MUST (result table): an "include" whose recursive evaluation returns permerror '
-  + 'must itself return permerror; this implementation treats any non-pass as "not match", so the '
-  + 'permerror is swallowed and the outer record carries on to its "-all" and answers fail.\n\n'
-  + 'That is not only a wrong verdict. It is how the ten-lookup limit (§4.6.4) gets escaped: the '
-  + 'shared budget is blown inside an included record, the error is discarded, and evaluation '
-  + 'continues — so the limit is advisory rather than enforced, and a sender who publishes an '
-  + 'expensive fan-out escapes being judged by their own record. temperror already propagates '
-  + 'correctly; permerror and none do not. An unmirrored sibling guard.',
-), async () => {
+test('the ten-term limit is cumulative across includes, not per record', async () => {
   cites('R-7208-5.2-a');
   cites('R-7208-4.6.4-a');
   // The mistake this catches: a per-record counter lets a chain of includes each spend nine
@@ -128,20 +116,56 @@ test('more than two void lookups is refused', async () => {
   assert.equal(await checkSpf(SENDER_IP, 'sender.test', withinBudget), 'fail', 'two voids is allowed, and evaluation continues');
 });
 
-test('an mx mechanism naming more than ten hosts is a permerror', GAP(
-  'RFC 7208 §4.6.4 MUST: an "mx" mechanism whose MX record names more than ten hosts is evaluated '
-  + 'in full rather than producing a permerror. One "mx" term costs one against the ten-term budget '
-  + 'but can fan out to an unbounded number of address lookups, which is the nested limit this '
-  + 'requirement exists to impose — and the sender publishes the MX record.',
-), async () => {
+test('an mx mechanism naming more than ten hosts is a permerror', async () => {
   cites('R-7208-4.6.4-c');
-  const hosts = Array.from({ length: 15 }, (_, i) => `mx${i}.sender.test`);
-  const a: Record<string, string[]> = {};
-  for (const h of hosts) a[h] = ['203.0.113.1'];
-  const resolvers = zone({ txt: { 'sender.test': ['v=spf1 mx -all'] }, mx: { 'sender.test': hosts }, a });
+  const mxZone = (n: number): CountingResolvers => {
+    const hosts = Array.from({ length: n }, (_, i) => `mx${i}.sender.test`);
+    const a: Record<string, string[]> = {};
+    for (const h of hosts) a[h] = ['203.0.113.1']; // none of them is the sender, so every host is tried
+    return zone({ txt: { 'sender.test': ['v=spf1 mx -all'] }, mx: { 'sender.test': hosts }, a });
+  };
 
-  const result = await checkSpf(SENDER_IP, 'sender.test', resolvers);
-  assert.equal(result, 'permerror', `an over-wide MX must be a permerror, got ${result} after ${resolvers.counts.a} address lookups`);
+  const over = mxZone(15);
+  const result = await checkSpf(SENDER_IP, 'sender.test', over);
+  assert.equal(result, 'permerror', `an over-wide MX must be a permerror, got ${result}`);
+  // The refusal must come from the CAP, not from the DNS work: §4.6.4 exists to stop the queries,
+  // so discovering the limit after ten of them have gone out spends what it exists to prevent.
+  assert.equal(over.counts.a, 0, `and before any address lookup, got ${over.counts.a}`);
+
+  // Exactly ten is within the cap, so the evaluation completes and reaches the final `-all`. This
+  // is the half that was previously wrong in the OTHER direction: the ten address lookups were
+  // charged to the ten-TERM budget, so a legitimate domain with ten MX hosts and the record
+  // `v=spf1 mx -all` was handed a permerror it had not earned. §4.6.4 puts the per-mechanism cap
+  // "in addition to" the term limit, not inside it.
+  const atCap = mxZone(10);
+  assert.equal(await checkSpf(SENDER_IP, 'sender.test', atCap), 'fail', 'ten MX hosts is a conformant record');
+  assert.equal(atCap.counts.a, 10, `and all ten are resolved, got ${atCap.counts.a}`);
+  assert.equal(atCap.counts.txt, 1, 'costing one term, not eleven');
+});
+
+test('a redirect to a domain publishing no SPF record is a permerror, not none', async () => {
+  cites('R-7208-6.1-a');
+  // §6.1's stated exception, and the structural sibling of the include table below: a redirect
+  // whose target publishes nothing is a BROKEN record, not an absent policy. The difference is
+  // visible downstream — DMARC reads "none" as "there was no SPF to align against" and "permerror"
+  // as "SPF could not be evaluated", and only one of those describes what happened here.
+  const dangling = zone({ txt: { 'sender.test': ['v=spf1 redirect=gone.test'] } });
+  assert.equal(await checkSpf(SENDER_IP, 'sender.test', dangling), 'permerror');
+
+  // The negative control: the same record pointing at a target that DOES publish one resolves to
+  // whatever that target says, so the case above is refused for the missing record and not for
+  // being a redirect.
+  const live = zone({ txt: { 'sender.test': ['v=spf1 redirect=live.test'], 'live.test': ['v=spf1 -all'] } });
+  assert.equal(await checkSpf(SENDER_IP, 'sender.test', live), 'fail');
+});
+
+test('an include of a domain publishing no SPF record is a permerror', async () => {
+  cites('R-7208-5.2-a');
+  // The other half of the same table (§5.2: "none | return permerror"). Reading it as "did not
+  // match" would let the outer record's `-all` answer fail — a definite verdict derived from a
+  // record that could not be evaluated.
+  const resolvers = zone({ txt: { 'sender.test': ['v=spf1 include:gone.test -all'] } });
+  assert.equal(await checkSpf(SENDER_IP, 'sender.test', resolvers), 'permerror');
 });
 
 test('mechanisms after "all" are ignored, and cost nothing', async () => {

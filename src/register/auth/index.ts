@@ -22,7 +22,7 @@ import { SPF_LIMITS } from './sections/spf-limits.ts';
  * (RFC 5802 §3/§5.1) and ARC (RFC 8617 §5.2). Each id carries its RFC, so there is
  * no collision between the numbering spaces.
  */
-export const EXTRACTED_SECTIONS: readonly string[] = ['1', '3', '3.1.1', '4', '4.5', '4.6.2', '4.6.4', '5.1', '5.2', '6.3'];
+export const EXTRACTED_SECTIONS: readonly string[] = ['1', '3', '3.1.1', '4', '4.5', '4.6.2', '4.6.4', '5.1', '5.2', '6.1', '6.3'];
 
 export const AUTH_REQUIREMENTS = [
   ...SPF_RECORD,

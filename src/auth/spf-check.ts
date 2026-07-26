@@ -35,6 +35,27 @@ const MAX_DNS_MECHANISMS = 10; // RFC 7208 §4.6.4
 // no records; unbounded, they let a hostile record fan the resolver out (the §11.1 third-party
 // DoS) while sidestepping the ten-mechanism cap, since each empty lookup still costs a query.
 const MAX_VOID_LOOKUPS = 2;
+/**
+ * RFC 7208 §4.6.4: "the evaluation of each 'MX' record MUST NOT result in querying more than 10
+ * address records ... If this limit is exceeded, the 'mx' mechanism MUST produce a 'permerror'
+ * result." A nested cap, and a separate one — the same paragraph ends "These limits are per
+ * mechanism or macro in the record, and are IN ADDITION TO the lookup limits specified above",
+ * so the address lookups an "mx" fans out to are NOT charged to MAX_DNS_MECHANISMS.
+ *
+ * Charging them there (what this code did) is wrong in both directions at once. A domain
+ * publishing ten MX hosts and the record `v=spf1 mx -all` spent eleven of its ten terms and got a
+ * permerror it had not earned — a legitimate sender failing SPF, and from there DMARC. And a
+ * domain publishing FIFTEEN got the right answer for the wrong reason: the global budget ran out
+ * at the tenth host, so the mechanism's own cap was never what refused it, and the refusal would
+ * have disappeared the moment the budget was corrected.
+ *
+ * Contrast the "ptr" rule three lines further down the same section, which caps the same way and
+ * then resolves the OPPOSITE way — ignore everything past the first ten rather than erroring. The
+ * RFC states the reason: an MX set is published by the domain being judged, while PTR records
+ * belong to whoever owns the connecting address. "ptr" is not implemented here (§5.5 deprecates
+ * it), so only the MX half has anything to enforce.
+ */
+const MAX_MX_ADDRESS_LOOKUPS = 10;
 
 /** An IP address as a big integer plus its bit-width (32 for v4, 128 for v6), or null. */
 function ipToBig(ip: string): { value: bigint; bits: 32 | 128 } | null {
@@ -163,7 +184,13 @@ async function evalDomain(domain: string, state: EvalState, depth: number): Prom
   // No mechanism matched: a redirect= takes over (§6.1); else the default is neutral.
   if (redirect !== null) {
     if (++state.lookups > MAX_DNS_MECHANISMS) return 'permerror';
-    return evalDomain(redirect, state, depth + 1);
+    // §6.1: the redirected evaluation's result IS this evaluation's result, "with the exception
+    // that if no SPF record is found ... the result is a 'permerror' rather than 'none'". The
+    // structural sibling of the include table above, and wrong in the same way for the same
+    // reason: a redirect to a domain publishing nothing is a broken record, not an absent policy,
+    // and reporting "none" tells DMARC there was no SPF to align rather than that SPF is broken.
+    const target = await evalDomain(redirect, state, depth + 1);
+    return target === 'none' ? 'permerror' : target;
   }
   return 'neutral';
 }
@@ -197,8 +224,12 @@ async function matchMechanism(term: SpfTerm, state: EvalState, depth: number, cu
           const { domain, v4, v6 } = splitDualCidr(value);
           const hosts = await state.resolvers.mx(domain || currentDomain);
           if (hosts.length === 0 && ++state.voids > MAX_VOID_LOOKUPS) return 'error'; // §4.6.4
-          for (const host of hosts.slice(0, MAX_DNS_MECHANISMS)) {
-            if (++state.lookups > MAX_DNS_MECHANISMS) return 'error';
+          // The nested per-mechanism cap (§4.6.4). Refuse BEFORE querying anything: the point of
+          // the limit is the DNS work, so discovering it after ten lookups have already gone out
+          // spends exactly what it exists to prevent. Over-limit is an error, not a truncation —
+          // see MAX_MX_ADDRESS_LOOKUPS for why the RFC decides this the other way for "ptr".
+          if (hosts.length > MAX_MX_ADDRESS_LOOKUPS) return 'error';
+          for (const host of hosts) {
             if (anyAddressMatches(state.ip, await state.resolvers.a(host), v4, v6)) return true;
           }
           return false;
@@ -208,9 +239,21 @@ async function matchMechanism(term: SpfTerm, state: EvalState, depth: number, cu
           if (addrs.length === 0 && ++state.voids > MAX_VOID_LOOKUPS) return 'error'; // §4.6.4
           return addrs.length > 0;
         }
-        // include: matches only when the referenced policy yields "pass".
+        // include: the §5.2 result table, in full. Only "pass" matches; fail, softfail and
+        // neutral do not; temperror, permerror and none are RETURNED rather than reduced to a
+        // non-match — and "none" (the included domain publishes no SPF record at all) is a
+        // permerror, not a shrug.
+        //
+        // Collapsing the last two into "not match" is not merely a wrong verdict. It is how the
+        // ten-term budget escapes: exhausting the shared budget inside an included record yields
+        // permerror, and an implementation that reads any non-pass as "did not match" discards it
+        // and carries on through the rest of the outer record. The limit is then advisory, and
+        // the sender who published the expensive fan-out is not judged by their own record.
+        // temperror propagated correctly and its two siblings did not — the same unmirrored-guard
+        // shape the audits keep turning up.
         const sub = await evalDomain(value, state, depth + 1);
         if (sub === 'temperror') return 'temperror';
+        if (sub === 'permerror' || sub === 'none') return 'error';
         return sub === 'pass';
       } catch {
         return 'temperror';
