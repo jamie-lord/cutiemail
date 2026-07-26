@@ -50,8 +50,24 @@ export interface DomainCoverage {
   readonly parseTestable: number;
   /** parse-testable requirements that have a citing test. */
   readonly covered: number;
-  /** parse-testable requirements with neither a test nor a deliberately-uncovered decision. */
+  /**
+   * Requirements that bind the ASSEMBLED SERVER and can only be observed over a socket.
+   *
+   * Counted separately from the parse-testable ones because they are a different kind of evidence,
+   * and reported at all because they were previously invisible: this report used to consider only
+   * `parse`, so a `wire` requirement with no test read as 100% coverage rather than as a gap. That
+   * is the same blind spot that let a MUST-level SMTP requirement go unimplemented while every
+   * report was green (ADR 0026).
+   */
+  readonly wireTestable: number;
+  readonly wireCovered: number;
+  /** Requirements of either kind with neither a test nor a deliberately-uncovered decision. */
   readonly gaps: readonly string[];
+}
+
+/** Testability kinds that a citing test is expected to exist for. */
+function needsTest(r: RequirementDef): boolean {
+  return r.testability.kind === 'parse' || r.testability.kind === 'wire' || r.testability.kind === 'wire-with-fixture';
 }
 
 const DOMAINS: ReadonlyArray<{ name: string; reqs: readonly RequirementDef[] }> = [
@@ -65,16 +81,40 @@ const DOMAINS: ReadonlyArray<{ name: string; reqs: readonly RequirementDef[] }> 
 export function libraryCoverage(cited: Set<string> = scanCitedIds()): DomainCoverage[] {
   return DOMAINS.map(({ name, reqs }) => {
     const parse = reqs.filter((r) => r.testability.kind === 'parse');
-    const gaps = parse.filter((r) => !cited.has(r.id) && r.deliberatelyUncovered === undefined).map((r) => r.id);
-    return { name, total: reqs.length, parseTestable: parse.length, covered: parse.length - gaps.length, gaps };
+    const wire = reqs.filter((r) => r.testability.kind === 'wire' || r.testability.kind === 'wire-with-fixture');
+    const uncovered = (rs: readonly RequirementDef[]): string[] =>
+      rs.filter((r) => !cited.has(r.id) && r.deliberatelyUncovered === undefined).map((r) => r.id);
+    const parseGaps = uncovered(parse);
+    const wireGaps = uncovered(wire);
+    return {
+      name,
+      total: reqs.length,
+      parseTestable: parse.length,
+      covered: parse.length - parseGaps.length,
+      wireTestable: wire.length,
+      wireCovered: wire.length - wireGaps.length,
+      gaps: [...parseGaps, ...wireGaps],
+    };
   });
+}
+
+/** Every requirement that ought to have a citing test and does not. Used by the coverage test. */
+export function coverageGaps(cited: Set<string> = scanCitedIds()): string[] {
+  return DOMAINS.flatMap(({ reqs }) =>
+    reqs.filter(needsTest).filter((r) => !cited.has(r.id) && r.deliberatelyUncovered === undefined).map((r) => r.id),
+  );
 }
 
 /** A plain-text rendering. */
 export function renderLibraryCoverage(rows: readonly DomainCoverage[]): string {
-  const lines = ['LIBRARY-ADAPTER COVERAGE (parse-testable requirements with a citing test)', '='.repeat(60), ''];
+  const lines = ['REGISTER COVERAGE (requirements with a citing test)', '='.repeat(60), '', '  domain      parse    wire'];
   for (const r of rows) {
-    lines.push(`  ${r.name.padEnd(10)} ${r.covered}/${r.parseTestable} parse-testable covered` + (r.gaps.length > 0 ? `  GAPS: ${r.gaps.join(', ')}` : ''));
+    const parse = r.parseTestable === 0 ? '    -' : `${r.covered}/${r.parseTestable}`.padStart(5);
+    const wire = r.wireTestable === 0 ? '    -' : `${r.wireCovered}/${r.wireTestable}`.padStart(5);
+    lines.push(`  ${r.name.padEnd(10)} ${parse}   ${wire}` + (r.gaps.length > 0 ? `   GAPS: ${r.gaps.join(', ')}` : ''));
   }
+  lines.push('');
+  lines.push('parse: assertable against an in-process parser. wire: binds the assembled server and');
+  lines.push('is only observable over a socket. A `-` means the domain registers none of that kind.');
   return lines.join('\n');
 }
