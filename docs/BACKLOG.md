@@ -15,6 +15,40 @@ recorded declines in the ledger below or new decision records (ADRs
 [0023](decisions/0023-outbound-delivery-semantics.md)). The correctness / usability / security
 queue is empty again but for the one follow-up below.
 
+## Open: conformance gaps found by the register expansion
+
+A register-and-test pass (2026-07-26) took the IMAP register from 21 requirements to 66, the
+crypto register from 23 to 40, auth from 15 to 25 and transport from 6 to 17, and pointed the
+SMTP conformance corpus at this project's own inbound listener for the first time. Ten
+MUST/SHOULD-level gaps came out of it. **Each has a running test**, marked as a known gap so it
+executes and reports without failing the suite — the obligation stays visible rather than being
+deleted or weakened to match the implementation. Grep for `GAP(` to find them.
+
+The tests were written first, deliberately, so the fixes can be made against a failing check
+rather than written and then justified.
+
+| # | Requirement | Gap |
+| --- | --- | --- |
+| 1 | RFC 9051 §6.3.6 | `RENAME` does not move inferior hierarchical names. Renaming `foo` to `baz` leaves `foo/bar` unreachable under either name, orphaning the mailbox and the mail in it. Shaped like data loss, and the most serious of the ten. |
+| 2 | RFC 9051 §6.2.2 | An invalid base64 response to `AUTHENTICATE` draws `NO [AUTHENTICATIONFAILED]` where the RFC requires a tagged `BAD`. `NO` sends a client back to the user for a new password; `BAD` tells it its own encoding is broken. A client with a SASL bug is put in a re-prompt loop against a user whose password is fine. |
+| 3 | RFC 9051 §6.3.9 | `LIST` accepts an unrecognised `RETURN` option instead of answering `BAD`. Note the neighbouring rule pulls the other way: an unmatched PATTERN must be silently ignored and still return `OK`. |
+| 4 | RFC 6376 §6.1.1 | A DKIM signature with `v=2` verifies instead of returning PERMFAIL (incompatible version). |
+| 5 | RFC 6376 §6.1.1 | `a=rsa-sha999` verifies: the verifier does not recognise the algorithm and falls back to SHA-256 rather than refusing, so signer and verifier disagree about what was computed. |
+| 6 | RFC 6376 §6.1.2 | A public-key record whose `v=` names an unimplemented version is accepted rather than ignored — the signature-side rule applied to the key side, where it is missing. |
+| 7 | RFC 7208 §5.2 | An `include` whose recursive evaluation returns permerror is treated as "not match". This is also how the ten-lookup limit is escaped: blow the shared budget inside an included record, the error is discarded, and evaluation continues. `temperror` already propagates; `permerror` and `none` do not. |
+| 8 | RFC 7208 §4.6.4 | An `mx` mechanism whose MX record names more than ten hosts is evaluated in full instead of producing a permerror. One term costs one against the budget but fans out to unbounded address lookups, and the sender publishes the MX record. |
+| 9 | RFC 8461 §3.2 | An MTA-STS policy omitting `max_age` parses as valid, so it has no defined lifetime. |
+| 10 | RFC 8461 §3.1 | Not a defect: the resolver already refuses a TXT record whose version field is not first. The case exists because nothing pinned it and the natural "tolerant parser" change would remove the check silently. |
+
+Three of the ten (4, 5, 7) are the same shape the security audits kept finding: **a guard applied
+to one path and not its structural sibling.** The signature version is checked and the key
+version is not; `temperror` propagates out of `include` and `permerror` does not.
+
+Two were only found because a test harness was rebuilt. The DKIM cases originally edited an
+already-signed message, which invalidates the signature — so "must not pass" passed for the wrong
+reason and proved nothing. Signing *around* the tag under test turned one vacuous green into a
+real defect.
+
 ## Open: correctness follow-up
 
 ### rename-INBOX UIDVALIDITY monotonicity
