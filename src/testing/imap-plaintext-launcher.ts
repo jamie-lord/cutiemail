@@ -11,6 +11,7 @@
  * special-use folders, a MailboxNotifier, and a fixed-credential authenticate.
  */
 
+import { invokedDirectly } from '../entry-point.ts';
 import { SqliteCatalog } from '../store/sqlite-mailbox.ts';
 import { openMailDb } from '../store/open-mail-db.ts';
 import { ImapServer } from '../server/imap-server.ts';
@@ -36,4 +37,8 @@ async function main(): Promise<void> {
   process.stdout.write(`imap-plaintext-launcher listening on 127.0.0.1:${server.port} (user=${user})\n`);
 }
 
-void main();
+// Guarded, like every entry point here (entry-point.ts). Unguarded, importing this file BOUND A
+// LISTENER: the update pre-flight's rung 4 imports every module to prove the installed runtime can
+// execute them, and this one quietly opened port 14300 and then held the sweep open forever. A
+// program that runs because something imported it is the defect; the guard is the fix.
+if (invokedDirectly(import.meta.url, process.argv[1])) void main();

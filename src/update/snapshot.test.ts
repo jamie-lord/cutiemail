@@ -193,9 +193,57 @@ test('the comparison catches every way a migration can lose or alter data', () =
         /uid_next went backwards/,
       );
       assert.match(compareCensus(before, { ...before, controlSchemaVersion: before.controlSchemaVersion - 1 }).join('\n'), /control schema BACKWARDS/);
+      // The quietest catastrophe available: nothing is deleted, no message moves, the server comes
+      // up healthy and every client is locked out permanently — and the passwords cannot be
+      // recovered from what is stored. Note this is NOT covered by the mail-path rung, which
+      // authenticates with a credential the pre-flight minted for itself moments earlier.
+      assert.match(
+        compareCensus(before, { ...before, credentialDigest: 'rewritten by a migration' }).join('\n'),
+        /authentication material changed .* cannot be recovered/s,
+      );
     } finally {
       base.destroy();
     }
+  });
+});
+
+test('the credential digest tracks real authentication material, not just a field name', () => {
+  inTmp((dir) => {
+    const { controlDb } = makeLiveData(dir);
+    const base = censusOfLive(dir, controlDb);
+    const first = base.census.credentialDigest;
+    base.destroy();
+    assert.match(first, /^[0-9a-f]{64}$/, 'a hash over something, not a placeholder');
+
+    // Re-censusing unchanged data must give the same digest, or every migration would look like
+    // credential loss and the check would be ignored within a week.
+    const again = censusOfLive(dir, controlDb);
+    assert.equal(again.census.credentialDigest, first, 'stable across repeated censuses');
+    again.destroy();
+
+    // Changing a stored verifier changes it. This is the migration-rewrites-credentials case,
+    // produced the only honest way: by actually rewriting one.
+    const db = openMailDb(controlDb);
+    try {
+      db.prepare('UPDATE accounts SET stored_key = ? WHERE login = ?').run(Buffer.from('a different stored key'), 'alice');
+    } finally {
+      db.close();
+    }
+    const after = censusOfLive(dir, controlDb);
+    assert.notEqual(after.census.credentialDigest, first, 'a rewritten verifier is visible');
+    after.destroy();
+
+    // And adding an app password changes it too: app passwords are credentials, and a migration
+    // that dropped them would lock out every device that holds one while the primary still worked.
+    const db2 = openMailDb(controlDb);
+    try {
+      AccountRegistry.open(db2).addAppPassword('alice', 'a-device', 1_700_000_000_000);
+    } finally {
+      db2.close();
+    }
+    const withApp = censusOfLive(dir, controlDb);
+    assert.notEqual(withApp.census.credentialDigest, after.census.credentialDigest, 'app passwords are covered');
+    withApp.destroy();
   });
 });
 

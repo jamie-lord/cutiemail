@@ -49,7 +49,8 @@ import { withPostmasterConvention, type Fixture } from '../conformance/fixture.t
 import { ALL_CASES } from '../corpus/index.ts';
 import { isFinding, explain } from '../conformance/outcome.ts';
 import { checkShape } from './shape.ts';
-import { runCommand, startCandidate, type RunningCandidate } from './candidate-process.ts';
+import { startCandidate, type RunningCandidate } from './candidate-process.ts';
+import { checkExecutable } from './executable.ts';
 import { censusOf, compareCensus, schemaMovedForward, takeSnapshot, type Census, type Snapshot } from './snapshot.ts';
 
 export interface RungResult {
@@ -92,14 +93,26 @@ export interface PreflightOptions {
   readonly env: Record<string, string | undefined>;
   /** Scratch space for snapshots and the isolated boot. Removed afterwards. */
   readonly workDir: string;
-  readonly testTimeoutMs?: number;
   readonly bootTimeoutMs?: number;
   readonly log?: (line: string) => void;
-  /** Skip rung 4. For the harness's own tests, which cannot afford to run a full suite inside one. */
-  readonly skipOwnTests?: boolean;
+  /**
+   * The service unit's own start budget, in milliseconds, when it can be discovered.
+   *
+   * Rung 6a measures how long the candidate takes to migrate and serve your data. That number is
+   * only meaningful next to the budget systemd will actually allow: a migration that takes longer
+   * than TimeoutStartSec is killed half-way through, on the live databases, during the cutover.
+   */
+  readonly startTimeoutMs?: number;
+  /**
+   * Accept an update whose migration the running version cannot read afterwards.
+   *
+   * Off by default. Reverting is a symlink rename back, and that only restores the CODE — if the
+   * data has moved to a schema the old version cannot open, the rename produces a dead server and
+   * the only way back is restoring the pre-cutover snapshot.
+   */
+  readonly allowIrreversible?: boolean;
 }
 
-const DEFAULT_TEST_TIMEOUT_MS = 15 * 60_000;
 const DEFAULT_BOOT_TIMEOUT_MS = 5 * 60_000;
 /** The domain the scratch boots announce. Reserved (RFC 2606), so nothing can resolve or leak. */
 const SCRATCH_DOMAIN = 'preflight.one.example';
@@ -277,22 +290,14 @@ export async function runPreflight(opts: PreflightOptions): Promise<PreflightRep
       }))
     ) return report();
 
-    // ---- Rung 4: the candidate's own test suite ----------------------------------------------
-    if (opts.skipOwnTests === true) {
-      rungs.push({ name: 'own tests', ok: true, detail: 'skipped by the caller', ms: 0 });
-      warnings.push("the candidate's own test suite was skipped");
-    } else if (
-      !(await rung('own tests', async () => {
-        const result = await runCommand(
-          process.execPath,
-          ['--disable-warning=ExperimentalWarning', '--test', 'src/**/*.test.ts'],
-          { cwd: opts.candidateDir, env: baseEnv(opts.env), timeoutMs: opts.testTimeoutMs ?? DEFAULT_TEST_TIMEOUT_MS },
-        );
-        if (result.timedOut) return { ok: false, detail: `the candidate's test suite did not finish within ${opts.testTimeoutMs ?? DEFAULT_TEST_TIMEOUT_MS}ms` };
-        const summary = /# pass (\d+)[\s\S]*?# fail (\d+)/.exec(result.output);
-        return result.code === 0
-          ? { ok: true, detail: summary === null ? `exited 0 in ${result.ms}ms` : `${summary[1]} passed, ${summary[2]} failed, in ${result.ms}ms` }
-          : { ok: false, detail: `exit ${String(result.code)}${summary === null ? '' : ` (${summary[2]} failing)`}\n${result.output.slice(-4000)}` };
+    // ---- Rung 4: does this tree run on THIS machine? -----------------------------------------
+    //
+    // This used to run the candidate's entire test suite. See executable.ts for why that was the
+    // wrong question asked at great expense, and why exactly one thing survives from it.
+    if (
+      !(await rung('runs on this machine', async () => {
+        const result = await checkExecutable(opts.candidateDir, baseEnv(opts.env));
+        return { ok: result.ok, detail: result.detail };
       }))
     ) return report();
 
@@ -395,7 +400,8 @@ export async function runPreflight(opts: PreflightOptions): Promise<PreflightRep
               detail:
                 `migrated and served in ${migrationMs}ms over ${scale}; everything intact ` +
                 `(${before.digestIsFull ? 'full' : 'sampled'} message digest), queue depth ${before.queueDepth} unchanged` +
-                (movedForward ? '; the schema moved FORWARD, so a rollback would need the snapshot restored' : ''),
+                (movedForward ? '; the schema moved FORWARD, so a rollback would need the snapshot restored' : '') +
+                budgetNote(migrationMs, opts.startTimeoutMs, warnings),
             };
       }))
     ) return report();
@@ -431,6 +437,63 @@ export async function runPreflight(opts: PreflightOptions): Promise<PreflightRep
       }))
     ) return report();
 
+    // ---- Rung 6c: can we get BACK? -----------------------------------------------------------
+    //
+    // The rung the ladder was missing, and the one everything else leans on.
+    //
+    // The pre-flight cannot test the systemd sandbox: it spawns the candidate itself, so
+    // ProtectSystem, SystemCallFilter, the capability bounding set and ReadWritePaths are all
+    // absent. The cutover CAN and does — it restarts the real unit and then pushes a real message
+    // through the real ports — and its answer to a failure is to rename the symlink back. So the
+    // sandbox, and every other environmental difference nobody has thought of, is covered by
+    // revert working. That makes revert the load-bearing guarantee of the whole design.
+    //
+    // And revert only restores the CODE. If the migration has moved the data to a schema the
+    // running version cannot open, renaming the symlink back produces a dead server, and the only
+    // way home is restoring the pre-cutover snapshot — during an incident, by hand.
+    //
+    // So: boot the version that is running now against the snapshot the candidate has just
+    // migrated. Not inferred from a version number — schemaMovedForward already reports that, and
+    // a number going up says nothing about whether the old code can still read what is there. The
+    // old binary either opens it or it does not.
+    if (
+      !(await rung('the running version can still read the migrated data', async () => {
+        const { snapshot } = state;
+        if (snapshot === null) return { ok: true, detail: 'no snapshot to check' };
+        if (opts.baselineDir === undefined) {
+          warnings.push('reversibility was not checked: no checkout of the running version was given');
+          return { ok: true, detail: 'skipped; no baseline checkout' };
+        }
+        let baseline: RunningCandidate | null = null;
+        try {
+          baseline = await startCandidate({
+            dir: opts.baselineDir,
+            env: candidateEnv(opts, snapshot, warnings),
+            readyTimeoutMs: opts.bootTimeoutMs ?? DEFAULT_BOOT_TIMEOUT_MS,
+            log,
+          });
+          return { ok: true, detail: `the running version served the migrated data in ${baseline.readyMs}ms, so a revert is a symlink rename and nothing more` };
+        } catch (e) {
+          const why = e instanceof Error ? e.message : String(e);
+          if (opts.allowIrreversible === true) {
+            warnings.push(`this update is ONE-WAY: the running version could not open the migrated data (${why}). Proceeding because it was explicitly allowed; a rollback will need the pre-cutover snapshot restored.`);
+            return { ok: true, detail: 'one-way migration, allowed by configuration' };
+          }
+          return {
+            ok: false,
+            detail:
+              `the running version could not open the data after the candidate migrated it: ${why}\n` +
+              'That makes this update ONE-WAY. Reverting renames the symlink back to code that can no ' +
+              'longer read its own database, so the only way home would be restoring the pre-cutover ' +
+              'snapshot by hand, during whatever incident prompted the revert. Set ' +
+              'MAIL_UPDATE_ALLOW_IRREVERSIBLE=yes to accept that trade deliberately.',
+          };
+        } finally {
+          await baseline?.stop();
+        }
+      }))
+    ) return report();
+
     return report();
   } finally {
     // The snapshot holds every secret the live system holds. It goes whatever happened.
@@ -462,4 +525,27 @@ export function renderPreflight(report: PreflightReport): string {
   }
   for (const warning of report.warnings) lines.push(`  note: ${warning}`);
   return lines.join('\n');
+}
+
+/**
+ * What the measured migration time means next to the budget systemd will actually allow.
+ *
+ * A number on its own ("migrated in 204ms") reads as reassurance and carries no judgement. The
+ * judgement that matters is whether the real cutover will fit inside `TimeoutStartSec`, because a
+ * migration killed half-way through happens on the LIVE databases, not a copy.
+ *
+ * The margin is deliberately wide. The pre-flight migrates a snapshot on an idle machine; the real
+ * one runs during a restart, on a box that may be doing other work, against data that has grown
+ * since. Being close to the limit here is already too close.
+ */
+function budgetNote(migrationMs: number, startTimeoutMs: number | undefined, warnings: string[]): string {
+  if (startTimeoutMs === undefined || startTimeoutMs <= 0) return '';
+  const share = migrationMs / startTimeoutMs;
+  if (share >= 0.5) {
+    warnings.push(
+      `the migration took ${migrationMs}ms against a ${startTimeoutMs}ms start timeout (${Math.round(share * 100)}% of the budget). ` +
+        'The real cutover runs on live databases that will only be bigger; raise TimeoutStartSec on the unit before that margin closes.',
+    );
+  }
+  return `; ${Math.round(share * 100)}% of the unit's ${startTimeoutMs}ms start budget`;
 }

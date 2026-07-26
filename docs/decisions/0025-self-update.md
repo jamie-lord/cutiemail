@@ -15,7 +15,7 @@ cutiemail is unusually well placed to fix this for itself. There is no build ste
 `.ts` directly), no dependency tree to resolve, no artefact to publish: a version *is* a commit. It
 already ships the two things a careful update needs and most projects lack — `selftest`, which proves
 the whole mail path end to end against a running daemon, and `backup`, which takes a consistent
-snapshot with `VACUUM INTO`. And its own test suite is large and fast enough to run as a gate.
+snapshot with `VACUUM INTO`.
 
 It is also unusually *dangerous* to get wrong. A mail server that fails to come back up does not
 merely stop serving pages: inbound mail bounces or defers, submission fails silently in clients, and
@@ -106,11 +106,25 @@ deployment, and the failure arrives *after* the switch, as a syntax error from a
 runtime cannot parse. A range we cannot evaluate is a refusal, not an assumption — a wrong guess
 here is exactly the case that takes the service down.
 
-**4. The candidate's own test suite** — run in the candidate tree, in a subprocess, with a timeout,
-and killed as a process group so the integration tests' own children cannot outlive it. This is the
-regression gate the project already maintains, and it costs about two minutes. It is a regression
-gate and *not* a security boundary: a hostile version would ship passing tests. Provenance is what
-stops a hostile version.
+**4. It runs on this machine** — every module the candidate ships is imported, one at a time, in a
+subprocess using the Node that is actually installed. The failing module is named.
+
+This rung used to run the candidate's entire test suite, and that was wrong on the merits and fatal
+in practice. On the merits: rungs 1 and 2 have already proved the checkout is byte-identical to a
+commit CI tested, so re-running deterministic tests re-answers a settled question — a sequence-set
+parser cannot behave differently on a Hetzner box than on a laptop. In practice: on the two shared
+cores `deploy/hetzner-up.sh` provisions by default, the suite does not finish inside fifteen minutes,
+so **every update was refused, with a message blaming the candidate.** Worse, the suite contains
+wall-clock-sensitive cases that flake under contention, so the rung's most likely failure mode was
+refusing a sound update — which teaches an operator that the safe setting is `off`.
+
+What survives is the one thing that rung uniquely bought: whether this runtime can parse and
+evaluate this code. `engines.node` in rung 3 checks a *declaration*, and a declaration is a claim
+about a range, not evidence. A version adopting a language feature the installed Node predates
+satisfies every declared constraint and then dies at the first import after the switch.
+
+It is a regression gate and *not* a security boundary: a hostile version would ship a tree that
+imports cleanly. Provenance is what stops a hostile version.
 
 **5. Boot in isolation, and conformance measured as a regression** — the candidate starts with a
 synthetic config on ephemeral loopback ports and a scratch database, and answers on all three. That
@@ -146,12 +160,42 @@ The first boot answers the questions that actually break deployments:
 - does your existing configuration still satisfy the new version, or has a new requirement appeared?
 - do the accounts, aliases, mailboxes, message counts, UIDVALIDITY values and stored message bytes
   all survive unchanged?
+- **does the stored authentication material survive byte for byte?** This is the quietest
+  catastrophe available: nothing is deleted, no message moves, the server comes up reporting itself
+  healthy, and every client is locked out permanently — and because SCRAM stores a salted, iterated
+  verifier, the passwords cannot be recovered from what is left. Note the mail-path boot below does
+  *not* cover it: that logs in with a credential the pre-flight minted moments earlier, which proves
+  the auth algorithm works on a new verifier and says nothing about the ones your clients hold.
+
+The measured migration time is also compared against the service unit's own `TimeoutStartSec`, read
+from the unit rather than configured twice. A number on its own reads as reassurance; the judgement
+that matters is whether the real cutover fits in the budget systemd will actually allow, because a
+migration killed half-way through happens on the live databases rather than a copy.
 
 The second boot proves the mail path end to end against real data: authenticated submission, local
 delivery and IMAP read-back, driven by `selftest` against a real account's real mailbox. Accounts
 store SCRAM material, so no existing password can be recovered — which is the right property, and
 means the updater mints an **app password inside the snapshot** to log in with. That is safe there
 and only there: it is a copy, destroyed minutes later, and the live registry is untouched.
+
+**6c. Can we get back?** — the version that is *currently running* is booted against the snapshot the
+candidate has just migrated. If it cannot open it, the update is one-way and is refused, unless
+`MAIL_UPDATE_ALLOW_IRREVERSIBLE=yes` says otherwise.
+
+This is the rung the ladder was missing, and everything else leans on it. The pre-flight cannot test
+the systemd sandbox: it spawns the candidate itself, so `ProtectSystem`, `SystemCallFilter`, the
+capability bounding set and `ReadWritePaths` are all absent. The **cutover** can and does — it
+restarts the real unit and then pushes a real message through the real ports — and its answer to a
+failure is to rename the symlink back. So the sandbox, and every environmental difference nobody has
+thought of, is covered by revert working. That makes revert the load-bearing guarantee of the whole
+design, and it is what makes dropping the test suite in rung 4 a sound trade rather than a
+concession: correctness-confidence and recoverability are substitutes, and this buys the cheaper one.
+
+And revert only restores the *code*. If the migration has moved the data to a schema the running
+version cannot read, renaming the symlink back produces a dead server, and the only way home is
+restoring the pre-cutover snapshot by hand, during whatever incident prompted the revert. Inferring
+this from a schema version number is not enough — a number going up says nothing about whether the
+old code can still read what is there. The old binary either opens it or it does not.
 
 Three safety rules are absolute here, because this rung runs a downloaded program with production
 configuration:

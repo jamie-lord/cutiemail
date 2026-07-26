@@ -226,6 +226,23 @@ export interface Census {
   readonly digestIsFull: boolean;
   readonly controlSchemaVersion: number;
   readonly mailSchemaVersions: Readonly<Record<string, number>>;
+  /**
+   * A hash over every account's stored authentication material — the SCRAM salt, iteration count,
+   * stored key and server key, and the same for each app password.
+   *
+   * The failure this exists to catch is total and invisible: a migration that rewrites, re-encodes
+   * or drops credential rows logs every client out permanently, while the server reports itself
+   * perfectly healthy and every other check passes. Message counts are intact, the schema moved
+   * forward as expected, the mail path works — because the mail path is exercised with a credential
+   * the pre-flight minted for itself, which proves the auth ALGORITHM works and says nothing about
+   * whether your existing verifiers survived.
+   *
+   * The secret is not here and cannot be derived from what is: SCRAM stores a salted, iterated
+   * verifier precisely so that possessing it is not possessing the password. That is also why this
+   * has to be a continuity check rather than a login attempt — the updater has no password to
+   * authenticate with, and should not be able to obtain one.
+   */
+  readonly credentialDigest: string;
 }
 
 const count = (db: DatabaseSync, sql: string): number => Number((db.prepare(sql).get() as { c: number | bigint }).c);
@@ -237,6 +254,7 @@ export function censusOf(snapshot: Snapshot): Census {
   let queueDepth: number;
   let deadLetters: number;
   let queueDigest: string;
+  let credentialDigest: string;
   let controlSchemaVersion: number;
   try {
     const rows = control.prepare('SELECT login, enabled FROM accounts ORDER BY login').all() as Array<{ login: string; enabled: number }>;
@@ -254,6 +272,30 @@ export function censusOf(snapshot: Snapshot): Census {
     const q = createHash('sha256');
     for (const r of queueRows) q.update(`${r.id}\0${r.recipients}\0${r.attempts}\0${r.next_attempt}\0`);
     queueDigest = q.digest('hex');
+    // Every account's authentication material, and every app password's, hashed in a stable order.
+    // The columns are named explicitly rather than taken with SELECT *: a migration that ADDS a
+    // column would otherwise change this digest and be reported as credential loss, which is the
+    // one thing a check like this must never cry wolf about.
+    const c = createHash('sha256');
+    const cred = control
+      .prepare('SELECT login, salt, iterations, hash, stored_key, server_key FROM accounts ORDER BY login')
+      .all() as Array<{ login: string; salt: Uint8Array; iterations: number; hash: string; stored_key: Uint8Array; server_key: Uint8Array }>;
+    for (const r of cred) {
+      c.update(`${r.login}\0${r.iterations}\0${r.hash}\0`);
+      c.update(r.salt);
+      c.update(r.stored_key);
+      c.update(r.server_key);
+    }
+    const app = control
+      .prepare('SELECT login, name, salt, iterations, hash, stored_key, server_key FROM app_passwords ORDER BY login, name')
+      .all() as Array<{ login: string; name: string; salt: Uint8Array; iterations: number; hash: string; stored_key: Uint8Array; server_key: Uint8Array }>;
+    for (const r of app) {
+      c.update(`${r.login}\0${r.name}\0${r.iterations}\0${r.hash}\0`);
+      c.update(r.salt);
+      c.update(r.stored_key);
+      c.update(r.server_key);
+    }
+    credentialDigest = c.digest('hex');
     controlSchemaVersion = Number((control.prepare('PRAGMA user_version').get() as { user_version: number | bigint }).user_version);
   } finally {
     control.close();
@@ -323,6 +365,7 @@ export function censusOf(snapshot: Snapshot): Census {
     digestIsFull,
     controlSchemaVersion,
     mailSchemaVersions,
+    credentialDigest,
   };
 }
 
@@ -378,6 +421,21 @@ export function compareCensus(before: Census, after: Census): string[] {
   }
   if (after.deadLetters !== before.deadLetters) {
     findings.push(`dead letters changed from ${before.deadLetters} to ${after.deadLetters} while the candidate ran`);
+  }
+
+  // Authentication material must survive a migration byte for byte. Losing it is the quietest
+  // catastrophe available: nothing is deleted, no message moves, the server comes up and reports
+  // itself healthy, and every client is locked out permanently. It is also unrecoverable without
+  // the snapshot — the passwords cannot be re-derived from what is stored, by design.
+  //
+  // Note what this catches that the mail-path rung cannot: that rung authenticates with a
+  // credential the pre-flight minted for itself moments earlier, so it proves the auth algorithm
+  // works on a NEW verifier while saying nothing about the ones your clients already hold.
+  if (after.credentialDigest !== before.credentialDigest) {
+    findings.push(
+      'stored authentication material changed across the migration. Every existing client credential ' +
+        'would stop working, and the passwords cannot be recovered from what is stored.',
+    );
   }
 
   if (after.controlSchemaVersion < before.controlSchemaVersion) {

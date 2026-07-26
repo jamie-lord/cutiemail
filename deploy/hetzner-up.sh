@@ -242,7 +242,10 @@ ProtectHome=true
 ReadWritePaths=/opt/mailserver /var/lib/mailserver
 PrivateTmp=true
 UMask=0077
-# The pre-flight runs a candidate's whole test suite and boots it four times; give it room.
+# The pre-flight imports the candidate's module graph and boots it several times, twice against a
+# snapshot of the real data. The migration is the part that scales with your mailbox, so give it
+# room — and note the pre-flight now reads THIS value and reports the migration it measured as a
+# share of it, so a budget that is getting tight says so before it bites.
 TimeoutStartSec=45min
 UPDATE
 

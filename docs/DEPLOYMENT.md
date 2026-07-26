@@ -949,7 +949,8 @@ any rung abandons the update and leaves the running version untouched.
   an allow-list. A malformed download is "no update available", never a partial checkout.
 - **Shape.** Including whether the new version needs a newer Node than this machine has — which is
   otherwise discovered *after* the switch, as a daemon that will not start.
-- **Its own test suite**, in the candidate tree, under a timeout.
+- **That it runs on this machine**: every module imported under the Node actually installed. Not
+  the test suite — that re-answers what CI settled, and on a small box it cannot finish.
 - **An isolated boot**, plus the SMTP conformance corpus run against both the candidate and the
   version you are running. Only findings the candidate *introduces* fail it; refusing an update over
   a gap your current version already has would pin you on the version that has it.

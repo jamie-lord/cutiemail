@@ -20,6 +20,7 @@
  * configuration error.
  */
 
+import { execFileSync } from 'node:child_process';
 import { argv, stdout, stderr, env as processEnv } from 'node:process';
 import { invokedDirectly } from '../entry-point.ts';
 import { existsSync } from 'node:fs';
@@ -64,6 +65,33 @@ const USAGE = [
  * `is-active` is the truth afterwards, because a unit can fail to come up in ways that `start`
  * reports as success.
  */
+/**
+ * The service unit's own `TimeoutStartSec`, in milliseconds, as systemd will actually enforce it.
+ *
+ * Read from the unit rather than configured separately, because a second copy of a number that
+ * already exists is a number that will disagree with it. The pre-flight uses this to say whether
+ * the migration it just measured fits in the budget the real cutover will get — a migration killed
+ * half-way through happens on the live databases.
+ *
+ * Anything unreadable (no systemd, a unit that does not exist, a value systemd reports as
+ * "infinity") yields undefined, and the comparison is simply not made. Guessing a budget would be
+ * worse than declining to judge.
+ */
+function unitStartTimeoutMs(unit: string): number | undefined {
+  try {
+    const out = execFileSync('systemctl', ['show', unit, '-p', 'TimeoutStartUSec', '--value'], {
+      encoding: 'utf8',
+      timeout: 5000,
+      stdio: ['ignore', 'pipe', 'ignore'],
+    }).trim();
+    const usec = Number(out);
+    if (!Number.isFinite(usec) || usec <= 0) return undefined;
+    return Math.round(usec / 1000);
+  } catch {
+    return undefined;
+  }
+}
+
 export function systemdService(unit: string): ServiceControl {
   if (!/^[A-Za-z0-9@._-]+$/.test(unit)) {
     throw new UpdateConfigError(`MAIL_UPDATE_UNIT is not a plausible systemd unit name: ${JSON.stringify(unit)}`);
@@ -237,6 +265,7 @@ async function cmdCheckOrApply(cfg: UpdateConfig, io: UpdateIo, env: Record<stri
   state.update((s) => enterPhase(recordCheck(s, now, `verifying ${candidate.sha}`, { reachedRemote: true, sha: candidate.sha }), 'fetched', now, { candidate: candidate.sha, previous: current }));
   io.out(`candidate ${candidate.sha} (${candidate.files} files), a descendant of ${current}. Verifying...`);
 
+  const startBudget = unitStartTimeoutMs(env.MAIL_UPDATE_UNIT ?? 'cutiemail.service');
   const report = await runPreflight({
     candidateDir: candidate.path,
     baselineDir: store.pathFor(current),
@@ -244,6 +273,8 @@ async function cmdCheckOrApply(cfg: UpdateConfig, io: UpdateIo, env: Record<stri
     controlDbPath: cutoverDeps.controlDbPath,
     env,
     workDir: join(store.root, 'preflight'),
+    ...(startBudget === undefined ? {} : { startTimeoutMs: startBudget }),
+    allowIrreversible: env.MAIL_UPDATE_ALLOW_IRREVERSIBLE === 'yes',
     log: (line) => io.out(`  ${sanitizeForTerminalLine(line)}`),
   });
   io.out(renderPreflight(report));

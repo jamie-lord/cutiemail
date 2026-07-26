@@ -88,7 +88,6 @@ function baseOptions(live: Live, work: string, candidateDir = REPO): Parameters<
     controlDbPath: live.controlDb,
     env: { ...process.env, MAIL_DOMAIN: DOMAIN, MAIL_CONTROL_DB: live.controlDb },
     workDir: work,
-    skipOwnTests: true,
     bootTimeoutMs: 120_000,
   };
 }
@@ -107,7 +106,14 @@ test('the ladder runs against real data and leaves every live file byte-identica
     assert.equal(report.ok, true, `the ladder should pass against this tree:\n${renderPreflight(report)}`);
     assert.deepEqual(
       report.rungs.map((r) => r.name),
-      ['shape', 'own tests', 'isolated boot and conformance', 'migration against your data', 'mail path against your data'],
+      [
+        'shape',
+        'runs on this machine',
+        'isolated boot and conformance',
+        'migration against your data',
+        'mail path against your data',
+        'the running version can still read the migrated data',
+      ],
     );
     assert.ok(report.migrationMs !== null && report.migrationMs > 0, 'the migration was timed, because that is the cutover downtime');
 
@@ -142,11 +148,12 @@ test('a candidate that cannot start fails the ladder, and still leaves the live 
     const report = await runPreflight(baseOptions(live, join(dir, 'work'), broken));
     assert.equal(report.ok, false);
     const failed = report.rungs.find((r) => !r.ok);
-    assert.equal(failed?.name, 'isolated boot and conformance', 'caught on a synthetic config, before any real data was involved');
-    // Both halves matter: that the early exit was NOTICED rather than waited out until the ready
-    // deadline, and that the candidate's own output came back so the cause is visible.
-    assert.match(failed!.detail, /exited before it was serving/);
-    assert.match(failed!.detail, /this version is broken/, "the candidate's own output is reported, so the cause is visible");
+    // Caught at rung 4, on nothing but an import, before a daemon was spawned and long before any
+    // real data was involved. A tree that cannot be loaded cannot be run, and finding that out
+    // costs an import rather than a boot and a ready-deadline.
+    assert.equal(failed?.name, 'runs on this machine', 'caught by loading the tree, before anything was started');
+    assert.match(failed!.detail, /src\/main\.ts/, 'the module that would not load is named');
+    assert.match(failed!.detail, /this version is broken/, "the candidate's own error is reported, so the cause is visible");
 
     assert.deepEqual(digestOf(live.files), before, 'a failed candidate cannot touch live data either');
   } finally {

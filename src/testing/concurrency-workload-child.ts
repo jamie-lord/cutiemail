@@ -28,6 +28,7 @@
 
 import { setTimeout as sleep } from 'node:timers/promises';
 import { SqliteCatalog } from '../store/sqlite-mailbox.ts';
+import { invokedDirectly } from '../entry-point.ts';
 import { openMailDb } from '../store/open-mail-db.ts';
 
 /** The deterministic content a writer appends for its Nth message. */
@@ -70,7 +71,14 @@ async function main(): Promise<void> {
   db.close();
 }
 
-void main().catch((e) => {
-  process.stderr.write(String((e as Error)?.stack ?? e) + '\n');
-  process.exit(1);
-});
+// Guarded like every other entry point in this tree (entry-point.ts): this file is a PROGRAM, and
+// a program that starts working merely because something imported it is the same defect the daemon
+// had. Rung 4 of the update pre-flight imports every module to prove the installed runtime can
+// execute them, and an unguarded `main()` here made that sweep open a database with argv[3] as its
+// path — which is how this was found.
+if (invokedDirectly(import.meta.url, process.argv[1])) {
+  void main().catch((e) => {
+    process.stderr.write(String((e as Error)?.stack ?? e) + '\n');
+    process.exit(1);
+  });
+}
