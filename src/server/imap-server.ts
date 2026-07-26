@@ -112,7 +112,10 @@ function inboxOnly(mailbox: ServableMailbox): ServableCatalog {
 // CAPABILITY (e.g. Python's imaplib refuses a server that lacks it outright). The rev1
 // features rev2 removed — \Recent/RECENT, SEARCH RECENT/NEW/OLD — stay intentionally
 // unimplemented (ADR 0007); no real client depends on them. See ADR 0007 for the record.
-const CAPABILITIES = 'IMAP4rev1 IMAP4rev2 IDLE UIDPLUS SPECIAL-USE CONDSTORE QRESYNC AUTH=PLAIN';
+// LIST-STATUS (RFC 5819) is folded into IMAP4rev2's base LIST, but a client speaking rev1 only
+// uses `LIST ... RETURN (STATUS ...)` if it sees the capability named — so it is advertised
+// separately. Advertising it is the claim that it works; see the §6.3.9.5 handling in LIST.
+const CAPABILITIES = 'IMAP4rev1 IMAP4rev2 IDLE UIDPLUS SPECIAL-USE LIST-STATUS CONDSTORE QRESYNC AUTH=PLAIN';
 
 /** Commands allowed before authentication (RFC 9051 §3, Not Authenticated state). */
 const PREAUTH_COMMANDS = new Set(['CAPABILITY', 'NOOP', 'LOGOUT', 'LOGIN', 'AUTHENTICATE', 'ID', 'STARTTLS']);
@@ -149,6 +152,27 @@ const APPEND_ACCOUNT_SHARES = 8;
  */
 const MAX_BAD_COMMANDS_PREAUTH = 3;
 const MAX_BAD_COMMANDS = 20;
+
+/**
+ * Is `s` a well-formed base64 SASL response (RFC 9051 §6.2.2, RFC 4648 §4)?
+ *
+ * §6.2.2 names two ways it can be malformed — "characters outside the base64 alphabet or
+ * non-terminal '='" — and requires a tagged BAD for either. This has to be checked explicitly
+ * because `Buffer.from(s, 'base64')` does not: Node's decoder SKIPS anything outside the alphabet
+ * and stops at the first '=', so `!!!not base64!!!` decodes cheerfully to a short buffer that then
+ * fails the credential check and draws NO. The client is told its password was rejected when what
+ * is actually broken is its own encoder, and it goes back to the user for a password that was
+ * never wrong.
+ *
+ * The length rule is the same insistence in a different form: base64 encodes three octets into
+ * four characters, so a string whose length is not a multiple of four is truncated, and a
+ * truncated credential is not a wrong credential.
+ */
+function isValidBase64(s: string): boolean {
+  if (s.length % 4 !== 0) return false;
+  const body = s.replace(/={1,2}$/, ''); // at most two '=' and only at the very end
+  return !body.includes('=') && /^[A-Za-z0-9+/]*$/.test(body);
+}
 
 /** Inactivity autologout (RFC 9051 §5.4 requires a timer of at least 30 minutes). */
 const AUTOLOGOUT_MS = 1_800_000;
@@ -318,31 +342,178 @@ function imapMailboxAstring(name: string): string {
 function imapTokens(s: string): string[] {
   const tokens: string[] = [];
   let i = 0;
-  while (i < s.length) {
-    while (i < s.length && s[i] === ' ') i += 1;
-    if (i >= s.length) break;
-    if (s[i] === '"') {
-      let value = '';
-      i += 1;
-      while (i < s.length && s[i] !== '"') {
-        if (s[i] === '\\' && i + 1 < s.length) {
-          value += s[i + 1];
-          i += 2;
-        } else {
-          value += s[i];
-          i += 1;
-        }
-      }
-      i += 1; // skip closing quote
-      tokens.push(value);
+  for (;;) {
+    const t = scanToken(s, i);
+    if (t === null) return tokens;
+    tokens.push(t.value);
+    i = t.end;
+  }
+}
+
+/**
+ * Read one space-separated token from `s` at or after `i`, honouring double-quoted strings with
+ * backslash escapes, and report where it ended.
+ *
+ * The incremental form of imapTokens, which is built on it. Commands whose arguments are POSITIONAL
+ * can work from the token array; LIST cannot, because its optional leading selection group and
+ * trailing RETURN group both shift the positions, and both may contain spaces. Parsing those needs
+ * to know where in the ORIGINAL string each token ended, so the parenthesised group can be scanned
+ * with its own balanced-paren rules rather than being split on spaces like everything else.
+ */
+function scanToken(s: string, from: number): { value: string; end: number } | null {
+  let i = from;
+  while (i < s.length && s[i] === ' ') i += 1;
+  if (i >= s.length) return null;
+  if (s[i] !== '"') {
+    let j = i;
+    while (j < s.length && s[j] !== ' ') j += 1;
+    return { value: s.slice(i, j), end: j };
+  }
+  let value = '';
+  i += 1;
+  while (i < s.length && s[i] !== '"') {
+    if (s[i] === '\\' && i + 1 < s.length) {
+      value += s[i + 1];
+      i += 2;
     } else {
-      let j = i;
-      while (j < s.length && s[j] !== ' ') j += 1;
-      tokens.push(s.slice(i, j));
-      i = j;
+      value += s[i];
+      i += 1;
     }
   }
-  return tokens;
+  return { value, end: i + 1 }; // past the closing quote
+}
+
+/** The "(...)" group starting at `start`, with its contents and end offset. Nesting is tracked. */
+function balancedGroup(s: string, start: number): { inner: string; end: number } | null {
+  if (s[start] !== '(') return null;
+  let depth = 0;
+  for (let i = start; i < s.length; i += 1) {
+    if (s[i] === '(') depth += 1;
+    else if (s[i] === ')') {
+      depth -= 1;
+      if (depth === 0) return { inner: s.slice(start + 1, i), end: i + 1 };
+    }
+  }
+  return null; // unbalanced
+}
+
+/** One RETURN option: a name, plus the "(...)" arguments only STATUS carries. */
+interface ListReturnOption {
+  readonly name: string;
+  readonly args: readonly string[];
+}
+
+interface ParsedList {
+  readonly selection: readonly string[];
+  readonly ret: readonly ListReturnOption[];
+  readonly reference: string;
+  readonly pattern: string;
+}
+
+/**
+ * Parse the extended LIST argument list (RFC 9051 §6.3.9):
+ *   [ (selection-options) ] reference mailbox-pattern [ RETURN (return-options) ]
+ *
+ * Returns null when the line does not fit that shape, which is a tagged BAD.
+ *
+ * Both option groups have to be scanned as balanced groups rather than picked out of a
+ * space-split token array. The previous positional parse read the selection group as ONE token,
+ * so it worked for `LIST (SUBSCRIBED) "" *` and quietly fell apart on `LIST (SUBSCRIBED
+ * RECURSIVEMATCH) "" *`, where "RECURSIVEMATCH)" became the mailbox pattern and the command
+ * matched nothing. Recognising an option we do not implement — the point of this change — is
+ * impossible without first knowing reliably which tokens ARE the options.
+ *
+ * The RETURN keyword is only taken as such AFTER the reference and pattern have been read, so a
+ * mailbox literally named "RETURN" still lists.
+ */
+function parseListCommand(rest: string): ParsedList | null {
+  let i = 0;
+  let selection: readonly string[] = [];
+  if (rest.startsWith('(')) {
+    const group = balancedGroup(rest, 0);
+    if (group === null) return null;
+    selection = group.inner.split(/\s+/).filter((o) => o.length > 0).map((o) => o.toUpperCase());
+    i = group.end;
+  }
+  const referenceToken = scanToken(rest, i);
+  if (referenceToken === null) return null;
+  const patternToken = scanToken(rest, referenceToken.end);
+  const reference = referenceToken.value;
+  const pattern = patternToken?.value ?? '';
+
+  const ret: ListReturnOption[] = [];
+  const after = patternToken === null ? null : scanToken(rest, patternToken.end);
+  if (after !== null) {
+    if (after.value.toUpperCase() !== 'RETURN') return null; // trailing junk is a syntax error
+    let j = after.end;
+    while (j < rest.length && rest[j] === ' ') j += 1;
+    const group = balancedGroup(rest, j);
+    if (group === null) return null;
+    if (rest.slice(group.end).trim() !== '') return null;
+    // Each option is a name optionally followed by its own "(...)" arguments — only STATUS has
+    // any. Scanned the same way, so `RETURN (STATUS (MESSAGES UNSEEN) CHILDREN)` reads as two
+    // options rather than as four unrecognised words.
+    let k = 0;
+    for (;;) {
+      const nameToken = scanToken(group.inner, k);
+      if (nameToken === null) break;
+      const name = nameToken.value.toUpperCase();
+      let args: readonly string[] = [];
+      k = nameToken.end;
+      while (k < group.inner.length && group.inner[k] === ' ') k += 1;
+      if (group.inner[k] === '(') {
+        const argGroup = balancedGroup(group.inner, k);
+        if (argGroup === null) return null;
+        args = argGroup.inner.split(/\s+/).filter((a) => a.length > 0).map((a) => a.toUpperCase());
+        k = argGroup.end;
+      }
+      ret.push({ name, args });
+    }
+  }
+  return { selection, ret, reference, pattern };
+}
+
+/**
+ * The LIST options this server recognises (RFC 9051 §6.3.9.1/§6.3.9.5, plus RFC 6154 SPECIAL-USE).
+ *
+ * §6.3.9 requires a BAD for anything else — "a client MUST NOT send an option for which the server
+ * has not advertised support. A server MUST respond to options it does not recognize with a BAD
+ * response" — and the same paragraph requires the options defined in the document to be supported,
+ * which is why the set is not simply "the ones we act on".
+ *
+ * REMOTE and RECURSIVEMATCH are recognised and are no-ops HERE, which is their correct behaviour
+ * rather than a shortcut. REMOTE asks for remote mailboxes and there are none: one server, one
+ * personal namespace (see the NAMESPACE response). RECURSIVEMATCH asks for CHILDINFO on mailboxes
+ * that do not match the selection criteria but whose children do — and since subscription is not
+ * tracked, every mailbox is subscribed, so no parent can fail a criterion its child meets. The day
+ * subscription state becomes real, this stops being a no-op; the comment is the marker.
+ */
+const LIST_SELECTION_OPTIONS = new Set(['SUBSCRIBED', 'REMOTE', 'RECURSIVEMATCH', 'SPECIAL-USE']);
+const LIST_RETURN_OPTIONS = new Set(['SUBSCRIBED', 'CHILDREN', 'STATUS', 'SPECIAL-USE']);
+
+/**
+ * The `(MESSAGES n UIDNEXT n ...)` item list for a STATUS response (RFC 9051 §6.3.11, §7.3.2).
+ *
+ * Shared by the STATUS command and by LIST's RETURN (STATUS ...) option, which §6.3.9.5 defines as
+ * returning "the same untagged STATUS response" — so the two must be the same bytes for the same
+ * mailbox, and the way to guarantee that is for them to be the same code.
+ */
+function statusItems(box: ServableMailbox, wanted: readonly string[]): string[] {
+  const items: string[] = [];
+  // One metadata snapshot (no BLOBs) answers every counted item, including SIZE (from meta.size,
+  // not the body). Read only if a count is actually requested.
+  const idx = wanted.some((w) => w === 'MESSAGES' || w === 'UNSEEN' || w === 'SIZE' || w === 'DELETED') ? box.index() : [];
+  for (const w of wanted) {
+    if (w === 'MESSAGES') items.push(`MESSAGES ${idx.length}`);
+    else if (w === 'UIDNEXT') items.push(`UIDNEXT ${box.uidNext}`);
+    else if (w === 'UIDVALIDITY') items.push(`UIDVALIDITY ${box.uidValidity}`);
+    else if (w === 'UNSEEN') items.push(`UNSEEN ${idx.filter((m) => !m.flags.has('\\Seen')).length}`);
+    else if (w === 'SIZE') items.push(`SIZE ${idx.reduce((n, m) => n + m.size, 0)}`);
+    else if (w === 'DELETED') items.push(`DELETED ${idx.filter((m) => m.flags.has('\\Deleted')).length}`);
+    else if (w === 'HIGHESTMODSEQ') items.push(`HIGHESTMODSEQ ${box.highestModseq}`); // RFC 7162 §3.1.2.1
+    else if (w === 'RECENT') items.push('RECENT 0');
+  }
+  return items;
 }
 
 /** A date-only IMAP search date ("1-Jan-2025") to the UTC-day epoch-millis, or null. */
@@ -1450,6 +1621,20 @@ export class ImapServer {
           pendingAuth = null;
           if (line.trim() === '*') {
             write(sock, `${authTag} BAD authentication cancelled`);
+          } else if (!isValidBase64(line.trim())) {
+            // RFC 9051 §6.2.2 MUST: an invalid base64 response is a tagged BAD, not a NO. The
+            // difference is what a client does next — NO sends it back to the user for another
+            // password, BAD tells it that its own encoding is broken and retrying will not help,
+            // so answering NO puts a client with a SASL bug into a re-prompt loop against a user
+            // whose password is fine.
+            //
+            // Checked before authBlocked(), and it costs the throttle nothing: this path never
+            // examines a credential, so there is no guess here to give away for free. It counts
+            // as a protocol error instead, which is the bound that actually applies — otherwise a
+            // peer could hold a connection slot open indefinitely on malformed continuations,
+            // none of which the credential throttle would ever see.
+            if (tooManyBadCommands()) return;
+            write(sock, `${authTag} BAD invalid base64 in AUTHENTICATE response`);
           } else if (authBlocked()) {
             // Re-check the throttle on the continuation too (consistent with the LOGIN and
             // AUTHENTICATE-initiation gates): refuse a blocked IP WITHOUT checking the
@@ -1528,21 +1713,46 @@ export class ImapServer {
             break;
           case 'LIST': {
             // Extended LIST (RFC 9051 §6.3.9): [ (selection-options) ] reference pattern
-            // [ RETURN (options) ]. A leading "(...)" selection group shifts the
-            // reference/pattern positions — parsing them positionally (qarg(2)) turned
-            // "LIST (SUBSCRIBED) \"\" *" into an empty pattern and returned no folders.
-            // We don't track subscriptions, so SUBSCRIBED lists everything (auto-
-            // subscribed) and each match carries \Subscribed. RETURN options are ignored
-            // (we always send the attributes anyway).
-            let li = 0;
-            const selectionOpts = (qargs[li] ?? '').startsWith('(') ? (qargs[li++] ?? '') : '';
-            const wantSubscribed = selectionOpts.toUpperCase().includes('SUBSCRIBED');
+            // [ RETURN (options) ].
+            const parsedList = parseListCommand(afterUid.slice(cmd.length).trimStart());
+            if (parsedList === null) {
+              write(sock, `${tag} BAD LIST syntax`);
+              break;
+            }
+            const { selection, ret, reference, pattern } = parsedList;
+            // §6.3.9 MUST: an option we do not recognise is a BAD. Note the neighbouring rule
+            // pulls the OTHER way and the two are easy to confuse — an unmatched PATTERN must be
+            // silently ignored and still answer OK (see the pattern handling below), because a
+            // client walking a hierarchy asks about names that may not exist. An unrecognised
+            // OPTION is different in kind: the client sent it because it intends to rely on the
+            // answer, so a server that ignores it returns a well-formed reply the client will
+            // misread.
+            const unrecognised = [
+              ...selection.filter((o) => !LIST_SELECTION_OPTIONS.has(o)),
+              ...ret.filter((o) => !LIST_RETURN_OPTIONS.has(o.name)).map((o) => o.name),
+            ];
+            if (unrecognised.length > 0) {
+              write(sock, `${tag} BAD unrecognised LIST option: ${unrecognised.join(' ')}`);
+              break;
+            }
+            // §6.3.9.2: RECURSIVEMATCH "MUST NOT occur as the only selection option" — on its own
+            // it has no criterion to recurse against, so the command is meaningless rather than
+            // merely unsupported.
+            if (selection.includes('RECURSIVEMATCH') && selection.length === 1) {
+              write(sock, `${tag} BAD RECURSIVEMATCH requires another selection option`);
+              break;
+            }
+            // Subscription state is not tracked (single-user server), so every mailbox is
+            // subscribed: the SUBSCRIBED selection option therefore selects everything, and either
+            // spelling of the option adds \Subscribed to what is reported.
+            const wantSubscribed = selection.includes('SUBSCRIBED') || ret.some((o) => o.name === 'SUBSCRIBED');
             // (SPECIAL-USE) selection (RFC 6154 §2): return only mailboxes that carry a
             // special-use attribute (\Sent, \Drafts, \Trash, \Junk, \Archive).
-            const onlySpecialUse = selectionOpts.toUpperCase().includes('SPECIAL-USE');
-            const reference = qargs[li] ?? '';
-            li += 1;
-            const pattern = qargs[li] ?? '';
+            const onlySpecialUse = selection.includes('SPECIAL-USE');
+            // RETURN (STATUS (...)) (§6.3.9.5): each matched mailbox also draws the untagged
+            // STATUS it would have answered to a STATUS command. CHILDREN and SPECIAL-USE need no
+            // handling here — the attributes they ask for are on every LIST line already.
+            const statusReturn = ret.find((o) => o.name === 'STATUS')?.args;
             if (pattern === '') {
               // A bare-root probe: the reference IS a valid mailbox reference.
               write(sock, '* LIST (\\Noselect) "/" ""');
@@ -1579,6 +1789,14 @@ export class ImapServer {
                 }
                 const attrs = wantSubscribed ? listAttributes(name, allNames).replace(/\)$/, ' \\Subscribed)') : listAttributes(name, allNames);
                 write(sock, `* LIST ${attrs} "/" ${imapMailboxAstring(name)}`);
+                // §6.3.9.5: the STATUS return option draws the same untagged STATUS a STATUS
+                // command would. Phantoms are skipped above, so every name reaching here is a real
+                // selectable mailbox — which is the rule: STATUS is not returned for a name that
+                // does not exist.
+                if (statusReturn !== undefined) {
+                  const box = connCatalog.get(name);
+                  if (box !== undefined) write(sock, `* STATUS ${imapMailboxAstring(name)} (${statusItems(box, statusReturn).join(' ')})`);
+                }
               }
             }
             write(sock, `${tag} OK LIST completed`);
@@ -1661,22 +1879,8 @@ export class ImapServer {
               .split(/\s+/)
               .map((w) => w.toUpperCase())
               .filter((w) => w.length > 0);
-            const items: string[] = [];
-            // One metadata snapshot (no BLOBs) answers every counted item, including SIZE
-            // (from meta.size, not the body). Read only if a count is actually requested.
-            const idx = wanted.some((w) => w === 'MESSAGES' || w === 'UNSEEN' || w === 'SIZE' || w === 'DELETED') ? box.index() : [];
-            for (const w of wanted) {
-              if (w === 'MESSAGES') items.push(`MESSAGES ${idx.length}`);
-              else if (w === 'UIDNEXT') items.push(`UIDNEXT ${box.uidNext}`);
-              else if (w === 'UIDVALIDITY') items.push(`UIDVALIDITY ${box.uidValidity}`);
-              else if (w === 'UNSEEN') items.push(`UNSEEN ${idx.filter((m) => !m.flags.has('\\Seen')).length}`);
-              else if (w === 'SIZE') items.push(`SIZE ${idx.reduce((n, m) => n + m.size, 0)}`);
-              else if (w === 'DELETED') items.push(`DELETED ${idx.filter((m) => m.flags.has('\\Deleted')).length}`);
-              else if (w === 'HIGHESTMODSEQ') items.push(`HIGHESTMODSEQ ${box.highestModseq}`); // RFC 7162 §3.1.2.1
-              else if (w === 'RECENT') items.push('RECENT 0');
-            }
             // Canonical name, for the same reason as SELECT's untagged LIST above.
-            write(sock, `* STATUS ${imapMailboxAstring(canonicalMailboxName(name))} (${items.join(' ')})`);
+            write(sock, `* STATUS ${imapMailboxAstring(canonicalMailboxName(name))} (${statusItems(box, wanted).join(' ')})`);
             write(sock, `${tag} OK STATUS completed`);
             break;
           }
@@ -1770,6 +1974,13 @@ export class ImapServer {
             if (ir === '') {
               pendingAuth = tag;
               write(sock, '+ ');
+            } else if (!isValidBase64(ir)) {
+              // The same §6.2.2 rule on the RFC 4959 initial-response form. Mirrored deliberately:
+              // a gate on one path and not its structural sibling is this project's most-repeated
+              // defect, and an inline `AUTHENTICATE PLAIN <garbage>` is the same protocol error as
+              // a garbage continuation line.
+              if (tooManyBadCommands()) return;
+              write(sock, `${tag} BAD invalid base64 in AUTHENTICATE initial response`);
             } else {
               const authedUser = this.#saslPlainUser(ir);
               if (authedUser !== null && bindAccount(authedUser)) {

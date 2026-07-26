@@ -18,9 +18,6 @@ import { ImapClient, untaggedOf } from '../testing/imap-client.ts';
 
 const cites = (id: ImapRequirementId): void => assert.ok(imapRequirement(id).id === id);
 
-/** See the note in imap-conformance-mailbox.integration.test.ts. */
-const GAP = (why: string): { todo: string } => ({ todo: why });
-
 test('CAPABILITY answers with exactly one untagged response naming IMAP4rev2, before the OK', async () => {
   cites('R-9051-6.1.1-a');
   await withImapServer(async (fx) => {
@@ -106,12 +103,7 @@ test('LOGOUT sends BYE, then the tagged OK, then closes the connection', async (
   });
 });
 
-test('AUTHENTICATE with an unsupported mechanism is NO; with malformed base64 it is BAD', GAP(
-  'RFC 9051 §6.2.2 MUST: an invalid base64 client response draws NO [AUTHENTICATIONFAILED] rather '
-  + 'than the required tagged BAD. The distinction is what tells a client whether to re-prompt the '
-  + 'user (NO, the password was wrong) or to stop (BAD, its own encoding is broken) — so a client '
-  + 'with a SASL bug is sent into a re-prompt loop against a user whose password is fine.',
-), async () => {
+test('AUTHENTICATE with an unsupported mechanism is NO; with malformed base64 it is BAD', async () => {
   cites('R-9051-6.2.2-a');
   cites('R-9051-6.2.2-b');
   await withImapServer(async (fx) => {
@@ -122,7 +114,10 @@ test('AUTHENTICATE with an unsupported mechanism is NO; with malformed base64 it
       assert.equal(unsupported.status, 'NO', `an unsupported mechanism draws NO: ${unsupported.line}`);
 
       // Malformed data is a protocol answer: BAD. The distinction matters — NO sends a client back
-      // to the user for a new password, BAD tells it that retrying will not help.
+      // to the user for a new password, BAD tells it that retrying will not help. Node's base64
+      // decoder is why this needs its own gate: it SKIPS characters outside the alphabet and stops
+      // at the first '=', so garbage decodes to a short buffer that then fails the credential
+      // check and drew NO. The user was told their password was wrong; their client's encoder was.
       const tag = c.nextTag();
       c.writeRaw(`${tag} AUTHENTICATE PLAIN\r\n`);
       // Wait for the continuation, then answer with something outside the base64 alphabet.
@@ -132,6 +127,34 @@ test('AUTHENTICATE with an unsupported mechanism is NO; with malformed base64 it
       assert.equal(malformed.status, 'BAD', `malformed base64 draws BAD, not NO: ${malformed.line}`);
     } finally {
       c.close();
+    }
+  });
+});
+
+test('the same base64 rule binds the RFC 4959 initial response', async () => {
+  cites('R-9051-6.2.2-a');
+  // The structural sibling: `AUTHENTICATE PLAIN <base64>` inline is the same protocol error as a
+  // garbage continuation line, and a gate on one path and not the other is this project's
+  // most-repeated defect. One connection per probe — three malformed commands on one connection
+  // would trip the pre-auth bad-command limit before the third was answered.
+  const cases: ReadonlyArray<readonly [string, string]> = [
+    ['!!!not base64!!!', 'characters outside the alphabet'],
+    ['QUJD', 'valid base64, so this one is a credential answer'],
+    ['QUJDR', 'a length that is not a multiple of four — a truncated credential, not a wrong one'],
+    ['QU=J', 'a non-terminal "=", which §6.2.2 names explicitly'],
+  ];
+  await withImapServer(async (fx) => {
+    for (const [payload, why] of cases) {
+      const c = await ImapClient.connect(fx.server.imap.port);
+      try {
+        const reply = await c.command(`AUTHENTICATE PLAIN ${payload}`);
+        // The well-formed one is the negative control: it must NOT be a BAD, or this test would
+        // pass against a server that refuses every initial response.
+        const expected = payload === 'QUJD' ? 'NO' : 'BAD';
+        assert.equal(reply.status, expected, `${payload} (${why}): ${reply.line}`);
+      } finally {
+        c.close();
+      }
     }
   });
 });

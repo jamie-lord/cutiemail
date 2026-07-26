@@ -19,9 +19,6 @@ import { untaggedOf, type ImapClient } from '../testing/imap-client.ts';
 
 const cites = (id: ImapRequirementId): void => assert.ok(imapRequirement(id).id === id);
 
-/** See the note in imap-conformance-mailbox.integration.test.ts. */
-const GAP = (why: string): { todo: string } => ({ todo: why });
-
 /** The mailbox names in a LIST reply, unquoted. */
 function listedNames(untagged: readonly string[]): string[] {
   return untagged
@@ -80,18 +77,60 @@ test('a pattern that matches nothing is an empty OK, not an error', async () => 
   });
 });
 
-test('an unrecognised return option draws BAD', GAP(
-  'RFC 9051 §6.3.9 MUST: LIST accepts an unknown RETURN option instead of answering BAD. A client '
-  + 'sends an option because it intends to rely on the answer, so a server that ignores one it does '
-  + 'not implement returns a well-formed reply the client will misread — the opposite of the '
-  + 'silent-ignore rule that applies to unmatched patterns, and the two are easy to confuse.',
-), async () => {
+test('an unrecognised option draws BAD, in either option group', async () => {
   cites('R-9051-6.3.9-d');
   await withImapServer(async (fx) => {
     const c = await fx.session();
     await buildHierarchy(c);
-    const reply = await c.command('LIST "" * RETURN (NOSUCHOPTION)');
-    assert.equal(reply.status, 'BAD', `an unrecognised return option must draw BAD: ${reply.line}`);
+    for (const command of [
+      'LIST "" * RETURN (NOSUCHOPTION)',
+      'LIST "" * RETURN (CHILDREN NOSUCHOPTION)', // one bad option among good ones
+      'LIST (NOSUCHOPTION) "" *', // the selection group binds the same rule
+      'LIST (RECURSIVEMATCH) "" *', // §6.3.9.2: not permitted as the ONLY selection option
+    ]) {
+      const reply = await c.command(command);
+      assert.equal(reply.status, 'BAD', `${command} must draw BAD: ${reply.line}`);
+    }
+    // The negative controls. Every option RFC 9051 §6.3.9.1/§6.3.9.5 and RFC 6154 define is one
+    // this server MUST support, so none of them may be swept up by the check above — otherwise
+    // this test would pass against a server that BADs every option it is given.
+    for (const command of [
+      'LIST (SUBSCRIBED) "" *',
+      'LIST (REMOTE) "" *',
+      'LIST (SUBSCRIBED RECURSIVEMATCH) "" *', // a multi-option group, which a space-split parse mangles
+      'LIST (SPECIAL-USE) "" *',
+      'LIST "" * RETURN (SUBSCRIBED CHILDREN SPECIAL-USE)',
+      'LIST "" * RETURN (STATUS (MESSAGES UNSEEN))',
+    ]) {
+      const reply = await c.command(command);
+      assert.equal(reply.status, 'OK', `${command} is an option we must support: ${reply.line}`);
+    }
+  });
+});
+
+test('RETURN (STATUS ...) answers the same untagged STATUS the STATUS command would', async () => {
+  cites('R-9051-6.3.9-d');
+  await withImapServer(async (fx) => {
+    const c = await fx.session();
+    fx.seed('INBOX', 3);
+    // §6.3.9.5 defines the option as returning "the same untagged STATUS response", so the two
+    // routes must produce identical bytes for the same mailbox — which is why they are the same
+    // code. Recognising the option and then ignoring it would leave a client that asked for
+    // message counts reading a reply that silently contains none.
+    const viaList = (await c.command('LIST "" INBOX RETURN (STATUS (MESSAGES UIDNEXT))')).untagged.filter((l) => l.startsWith('* STATUS'));
+    const viaStatus = (await c.command('STATUS INBOX (MESSAGES UIDNEXT)')).untagged.filter((l) => l.startsWith('* STATUS'));
+    assert.deepEqual(viaList, viaStatus, 'one mailbox, one answer, whichever command asked');
+    assert.match(viaList[0]!, /MESSAGES 3/, `and it is the real count: ${viaList[0]}`);
+
+    // The option must not widen the result set either (R-9051-6.3.9-c): a name that does not
+    // exist draws no STATUS, and a non-selectable intermediate draws none either.
+    await c.command('CREATE deep/child');
+    const walked = await c.command('LIST "" % RETURN (STATUS (MESSAGES))');
+    assert.equal(walked.status, 'OK', walked.line);
+    assert.ok(
+      !walked.untagged.some((l) => /^\* STATUS "?deep"? /.test(l)),
+      `a \\NonExistent intermediate has no status to report: ${walked.untagged.join(' | ')}`,
+    );
   });
 });
 
