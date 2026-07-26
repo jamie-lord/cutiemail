@@ -23,7 +23,7 @@ import { dirname, join, resolve as resolvePath } from 'node:path';
 import { invokedDirectly } from './entry-point.ts';
 import { SqliteCatalog } from './store/sqlite-mailbox.ts';
 import { openMailDb, secureMailDbFile } from './store/open-mail-db.ts';
-import { AccountRegistry } from './store/account-registry.ts';
+import { AccountRegistry, POSTMASTER } from './store/account-registry.ts';
 import { MailStores } from './store/mail-stores.ts';
 import { MemoryCatalog } from './store/memory-catalog.ts';
 import { SmtpReceiver, MessageRejected } from './server/smtp-receiver.ts';
@@ -236,6 +236,14 @@ export interface RunningServer {
   readonly mailbox: ServableMailbox;
   /** Enabled account logins from the registry (source of truth) — for the startup banner. */
   readonly logins: readonly string[];
+  /**
+   * Where mail to the reserved `postmaster` mailbox lands (RFC 5321 §4.5.1).
+   *
+   * Surfaced rather than left implicit: unless an operator has made an account or alias for it,
+   * this is their primary account, and "the abuse reports go to your inbox" is not something to
+   * discover from the abuse reports.
+   */
+  readonly postmaster: string | undefined;
   readonly stores: MailStores;
   readonly queue: SqliteQueue;
   readonly relayLoop: RelayLoop;
@@ -305,10 +313,25 @@ export async function startServer(cfg: MailServerConfig): Promise<RunningServer>
   // subaddress (ADR 0014). undefined → the caller rejects it at RCPT (550): no catch-all
   // (ADR 0009), which is what stops us being backscatter for mail we cannot deliver, and a
   // disabled owner is rejected rather than accepted-then-silently-dropped.
+  /**
+   * Qualify the one forward-path RFC 5321 lets a client send without a domain.
+   *
+   * §2.3.5: "The reserved mailbox name 'postmaster' may be used in a RCPT command without domain
+   * qualification ... and MUST be accepted if so used", and §4.5.1 spells out that this bare form is
+   * required alongside `postmaster@` each served domain. Every other domain-less forward-path stays
+   * exactly as unroutable as it was.
+   *
+   * Done once, here, so everything downstream — recipient acceptance, local/remote routing,
+   * delivery, the Received `for` clause — sees an ordinary address and needs no special case.
+   */
+  const qualifyPostmaster = (address: string): string =>
+    address.toLowerCase() === POSTMASTER ? `${POSTMASTER}@${cfg.domain}` : address;
+
   const loginForLocalAddress = (address: string): string | undefined => {
-    const at = address.lastIndexOf('@');
-    if (at === -1 || address.slice(at + 1).toLowerCase() !== cfg.domain.toLowerCase()) return undefined;
-    return registry.resolveLocalPart(address.slice(0, at));
+    const qualified = qualifyPostmaster(address);
+    const at = qualified.lastIndexOf('@');
+    if (at === -1 || qualified.slice(at + 1).toLowerCase() !== cfg.domain.toLowerCase()) return undefined;
+    return registry.resolveLocalPart(qualified.slice(0, at));
   };
   // Append a message to a local user's mailbox (INBOX unless a DMARC failure quarantines it
   // to Junk) and wake the connections idling on that mailbox.
@@ -333,6 +356,10 @@ export async function startServer(cfg: MailServerConfig): Promise<RunningServer>
   const authThrottle = cfg.authThrottle ?? new AuthThrottle();
   const inbound = await SmtpReceiver.start(async (m) => {
     const receivedAt = new Date();
+    // The one forward-path a client may send without a domain (RFC 5321 §2.3.5). Qualified up
+    // front so the Received `for` clause records the address we actually delivered to, rather
+    // than the bare token the peer typed.
+    const recipients = m.recipients.map(qualifyPostmaster);
     // We cannot authenticate what we did not parse. The parser bounds the header section
     // (MAX_HEADERS / MAX_HEADER_SECTION_BYTES) to stop a folded-header memory blowup, and past
     // either cap it stops materialising fields. Every check below — DKIM, SPF's alignment input,
@@ -410,7 +437,7 @@ export async function startServer(cfg: MailServerConfig): Promise<RunningServer>
       by: cfg.domain,
       protocol: protocolFor(m.overTls, false),
       id: msgId,
-      ...(m.recipients.length === 1 ? { forRecipient: m.recipients[0]! } : {}),
+      ...(recipients.length === 1 ? { forRecipient: recipients[0]! } : {}),
       date: receivedAt,
     });
     const stamped = Buffer.concat([Buffer.from(`${authResults}\r\n`, 'latin1'), traced]);
@@ -435,7 +462,7 @@ export async function startServer(cfg: MailServerConfig): Promise<RunningServer>
     // transient 451 on a miss: the sender retries, and the refreshed RCPT gate then
     // rejects that recipient permanently (550 5.1.1). No partial delivery either way.
     const resolved: string[] = [];
-    for (const rcpt of m.recipients) {
+    for (const rcpt of recipients) {
       const login = loginForLocalAddress(rcpt);
       if (login === undefined) throw new MessageRejected('451 4.2.1 a recipient mailbox became unavailable; try again later');
       resolved.push(login);
@@ -446,7 +473,7 @@ export async function startServer(cfg: MailServerConfig): Promise<RunningServer>
     for (const login of resolved) deliverTo(login, stamped, receivedAt.getTime(), targetMailbox);
     // One line per accepted inbound message — the operator's answer to "did it arrive,
     // and where was it filed". Envelope values are remote-controlled: sanitised, one line.
-    log(sanitizeForTerminalLine(`inbound ${msgId}: from=<${m.from}> to=${m.recipients.map((r) => `<${r}>`).join(',')} size=${m.data.length} dkim=${dkim.verdict} spf=${spf} dmarc=${dmarc.verdict} filed=${targetMailbox}`));
+    log(sanitizeForTerminalLine(`inbound ${msgId}: from=<${m.from}> to=${recipients.map((r) => `<${r}>`).join(',')} size=${m.data.length} dkim=${dkim.verdict} spf=${spf} dmarc=${dmarc.verdict} filed=${targetMailbox}`));
   }, {
     domain: cfg.domain,
     tls: cfg.tls,
@@ -534,7 +561,10 @@ export async function startServer(cfg: MailServerConfig): Promise<RunningServer>
     if ((m.from === '' ? undefined : loginForLocalAddress(m.from)) !== authed) {
       throw new MessageRejected(`550 5.7.1 sender <${m.from}> not authorized for this account`);
     }
-    const { local, remote } = routeRecipients(m.recipients, cfg.domain);
+    // Qualify before routing: a bare <postmaster> has no domain to compare against ours, so
+    // without this it would be classified as REMOTE and queued for relay to nowhere.
+    const recipients = m.recipients.map(qualifyPostmaster);
+    const { local, remote } = routeRecipients(recipients, cfg.domain);
     // Re-resolve every LOCAL recipient before touching any state. RCPT already gated
     // them (acceptRecipient below), so a miss here is the narrow race with a live
     // config change (account disabled / alias removed mid-transaction) — but before
@@ -594,7 +624,7 @@ export async function startServer(cfg: MailServerConfig): Promise<RunningServer>
       by: cfg.domain,
       protocol: protocolFor(m.overTls, m.authenticated),
       id: msgId,
-      ...(m.recipients.length === 1 ? { forRecipient: m.recipients[0]! } : {}),
+      ...(recipients.length === 1 ? { forRecipient: recipients[0]! } : {}),
       date: new Date(),
     });
     for (const login of localLogins) deliverTo(login, traced);
@@ -624,9 +654,14 @@ export async function startServer(cfg: MailServerConfig): Promise<RunningServer>
     // silently skipped at delivery (the submission black hole). The submitter is
     // authenticated, so naming "no such user" leaks nothing to an attacker.
     acceptRecipient: (address) => {
-      const at = address.lastIndexOf('@');
-      if (at === -1 || address.slice(at + 1).toLowerCase() !== cfg.domain.toLowerCase()) return true;
-      return loginForLocalAddress(address) !== undefined;
+      const qualified = qualifyPostmaster(address);
+      const at = qualified.lastIndexOf('@');
+      // A forward-path with no domain that is not the reserved mailbox cannot be delivered OR
+      // relayed (RFC 5321 §4.1.2 requires a domain otherwise). Accepting it queued a message that
+      // could only ever fail after its full retry schedule; refuse it at RCPT instead.
+      if (at === -1) return false;
+      if (qualified.slice(at + 1).toLowerCase() !== cfg.domain.toLowerCase()) return true;
+      return loginForLocalAddress(qualified) !== undefined;
     },
     log,
     ...(cfg.maxMessageSize !== undefined ? { maxMessageSize: cfg.maxMessageSize } : {}),
@@ -707,6 +742,7 @@ export async function startServer(cfg: MailServerConfig): Promise<RunningServer>
     imap,
     mailbox,
     logins: enabledLogins,
+    postmaster: registry.resolveLocalPart(POSTMASTER),
     stores,
     queue,
     relayLoop,
@@ -981,6 +1017,9 @@ async function main(): Promise<void> {
   log(`  submission (AUTH) ${cfg.host}:${server.submission.port}`);
   log(`  IMAPS            ${cfg.host}:${server.imap.port}`);
   log(`  accounts: ${server.logins.join(', ')}`);
+  if (server.postmaster !== undefined) {
+    log(`  postmaster: <postmaster@${cfg.domain}> and the bare <postmaster> deliver to ${server.postmaster} (RFC 5321 §4.5.1). Point it elsewhere with \`account alias add postmaster <login>\`.`);
+  }
   if (cfg.outboundMode === 'hold') {
     log('  outbound: HOLD (MAIL_OUTBOUND=hold): remote mail is queued locally and NEVER relayed. Inspect with `node src/main.ts queue list`; restart without hold to release.');
   } else {

@@ -68,3 +68,64 @@ test('nameTaken spans both namespaces; removeAlias stops resolution', () => {
   assert.equal(reg.removeAlias('sales'), false, 'removing a gone alias reports false');
   assert.equal(reg.resolveLocalPart('sales'), undefined, 'a removed alias no longer resolves');
 });
+
+/**
+ * The reserved `postmaster` mailbox (RFC 5321 §4.5.1): "Any system that includes an SMTP server
+ * supporting mail relaying or delivery MUST support the reserved mailbox 'postmaster' as a
+ * case-insensitive local name."
+ *
+ * A MUST that only holds when the operator remembered an extra step is not a MUST, so this is a
+ * floor under the resolution chain rather than a default at the top of it — it applies to every
+ * deployment, including ones provisioned before it existed. Being LAST is what keeps the operator
+ * in control: an account or an alias named postmaster both win.
+ */
+test('postmaster always resolves somewhere, even with nothing configured for it', () => {
+  const reg = registry();
+  // `alice` was created first, so she is the primary.
+  assert.equal(reg.resolveLocalPart('postmaster'), 'alice');
+  assert.equal(reg.resolveLocalPart('Postmaster'), 'alice', 'the RFC says case-insensitive local name');
+  assert.equal(reg.resolveLocalPart('POSTMASTER'), 'alice');
+  // A tagged postmaster address is still the reserved mailbox.
+  assert.equal(reg.resolveLocalPart('postmaster+abuse'), 'alice');
+  // The floor is only under postmaster: everything else unknown is still not ours (no catch-all).
+  assert.equal(reg.resolveLocalPart('postmasterly'), undefined);
+  assert.equal(reg.resolveLocalPart('post-master'), undefined);
+  assert.equal(reg.resolveLocalPart('abuse'), undefined);
+});
+
+test('an alias or a real account named postmaster takes precedence over the floor', () => {
+  const viaAlias = registry();
+  viaAlias.addAlias('postmaster', 'Bob');
+  assert.equal(viaAlias.resolveLocalPart('postmaster'), 'Bob', 'an operator alias wins');
+  assert.equal(viaAlias.resolveLocalPart('postmaster+dmarc'), 'Bob');
+  viaAlias.removeAlias('postmaster');
+  assert.equal(viaAlias.resolveLocalPart('postmaster'), 'alice', 'and removing it falls back again');
+
+  // Not implemented as an auto-created alias precisely so this stays possible: the name is never
+  // claimed in the shared login/alias namespace.
+  const viaAccount = registry();
+  assert.equal(viaAccount.nameTaken('postmaster'), undefined, 'the floor claims no name');
+  viaAccount.upsert('postmaster', 'pw', ':memory:', { iterations: 1 });
+  assert.equal(viaAccount.resolveLocalPart('postmaster'), 'postmaster', 'a dedicated account wins');
+});
+
+test('postmaster follows the enabled accounts, and disappears only when there are none', () => {
+  const reg = registry();
+  reg.setEnabled('alice', false);
+  assert.equal(reg.resolveLocalPart('postmaster'), 'Bob', 'a disabled primary hands over to the next enabled account');
+  reg.setEnabled('Bob', false);
+  // Nothing enabled means nothing can be delivered to, so refusing is the honest answer — and the
+  // daemon refuses to boot in that state anyway.
+  assert.equal(reg.resolveLocalPart('postmaster'), undefined);
+  reg.setEnabled('alice', true);
+  assert.equal(reg.resolveLocalPart('postmaster'), 'alice');
+});
+
+test('a disabled dedicated postmaster account falls through to the floor rather than bouncing', () => {
+  const reg = registry();
+  reg.upsert('postmaster', 'pw', ':memory:', { iterations: 1 });
+  reg.setEnabled('postmaster', false);
+  // Disabling an ordinary account stops delivery to it. postmaster is not ordinary: the address
+  // still has to work, so it lands on the primary. The boot banner names where it goes.
+  assert.equal(reg.resolveLocalPart('postmaster'), 'alice');
+});

@@ -94,6 +94,12 @@ const DEFAULT_ITERATIONS = 600_000;
 const DEFAULT_HASH: ScramHash = 'sha256';
 
 /**
+ * The one local-part RFC 5321 §4.5.1 reserves and requires every mail server to accept, as a
+ * case-insensitive local name. Lower-cased here because every comparison against it is.
+ */
+export const POSTMASTER = 'postmaster';
+
+/**
  * Generate a strong app-specific password: 144 bits from the CSPRNG, base64url (24 chars, no
  * padding, copy-pasteable). App passwords are never memorised — a client stores them — so an
  * unambiguous typed format is not needed; entropy and a clean charset are. Far above the
@@ -258,10 +264,34 @@ export class AccountRegistry {
   }
 
   /**
+   * The account that receives `postmaster` mail when nothing else claims it: the first enabled
+   * account in creation order — the one `init` made.
+   *
+   * RFC 5321 §4.5.1 makes `postmaster` a MUST, not a convention: "Any system that includes an SMTP
+   * server supporting mail relaying or delivery MUST support the reserved mailbox 'postmaster' as a
+   * case-insensitive local name." A server that only satisfies a MUST when the operator remembered
+   * an extra step does not satisfy it, so this is a floor rather than a default — it applies to
+   * every deployment, including ones provisioned before this existed.
+   *
+   * It is the LAST thing tried, so an operator keeps full control: an account actually named
+   * `postmaster`, or an alias pointing wherever they like, both take precedence. Deliberately not
+   * implemented by auto-creating an alias, which would have claimed the name in the shared
+   * login/alias namespace and made `account add postmaster` impossible afterwards.
+   *
+   * Creation order rather than any cleverness: it is stable, it does not change when accounts are
+   * added, and it is the account a single-user deployment has. `startServer` logs where postmaster
+   * mail lands at boot, so this is never a silent surprise.
+   */
+  #postmasterAccount(): string | undefined {
+    return this.list().find((a) => a.enabled)?.login;
+  }
+
+  /**
    * Resolve a recipient LOCAL-part to the owning ENABLED login, or undefined (ADR 0014).
    * The single routing chokepoint: an exact login, then an exact alias, then a `base+tag`
-   * subaddress whose base is a login or alias. Case-insensitive throughout. undefined means
-   * "not one of ours" → the caller rejects it (no catch-all, no backscatter).
+   * subaddress whose base is a login or alias, and finally the reserved `postmaster` mailbox.
+   * Case-insensitive throughout. undefined means "not one of ours" → the caller rejects it
+   * (no catch-all, no backscatter).
    */
   resolveLocalPart(local: string): string | undefined {
     const lc = local.toLowerCase();
@@ -271,10 +301,15 @@ export class AccountRegistry {
     if (viaAlias !== undefined) return viaAlias;
     // Subaddressing: `base+tag` (one '+', non-empty base) delivers to `base`'s mailbox.
     const plus = lc.indexOf('+');
+    const base = plus > 0 ? lc.slice(0, plus) : lc;
     if (plus > 0) {
-      const base = lc.slice(0, plus);
-      return this.#enabledLoginFor(base) ?? this.#enabledOwnerOfAlias(base);
+      const viaBase = this.#enabledLoginFor(base) ?? this.#enabledOwnerOfAlias(base);
+      if (viaBase !== undefined) return viaBase;
     }
+    // The RFC 5321 §4.5.1 floor, applied to `postmaster` and to `postmaster+tag` alike — a tagged
+    // postmaster address is still the reserved mailbox, and refusing it would be a surprise the
+    // spec does not license.
+    if (base === POSTMASTER) return this.#postmasterAccount();
     return undefined;
   }
 

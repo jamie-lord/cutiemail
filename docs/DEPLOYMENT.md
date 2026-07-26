@@ -722,6 +722,27 @@ Give the local-part only (`sales`, not `sales@your.domain`). An address is a log
 alias, never both; unknown addresses are still refused at RCPT (no catch-all). New aliases
 receive immediately, no restart.
 
+**`postmaster` always works, and lands in your first account.** RFC 5321 §4.5.1 makes this a
+MUST rather than a convention: every mail server has to accept `postmaster@your.domain`, and
+also the bare `RCPT TO:<postmaster>` with no domain at all, as a case-insensitive name. So it
+does — unless something else claims the name, it resolves to your first enabled account, and the
+startup banner says which one:
+
+```text
+  postmaster: <postmaster@your.domain> and the bare <postmaster> deliver to you (RFC 5321 §4.5.1).
+```
+
+To send it somewhere else, make an alias and it wins outright — the built-in behaviour is only a
+floor under everything else, so an alias (or a real account named `postmaster`) takes precedence:
+
+```sh
+sudo -u mail node src/main.ts account alias add admin postmaster --db /var/lib/mailserver/control.db
+```
+
+What you cannot do is turn it off. That is deliberate: it is where other postmasters write when
+your server misbehaves, where DMARC and abuse reports go, and where a remote operator looks before
+blocking you. See [ADR 0026](decisions/0026-reserved-postmaster-mailbox.md).
+
 **Sending as an alias.** You can also *send* as any address you own (your login, an alias, or
 a `+tag` subaddress). Submission enforces this: your client's `From` (and the envelope sender)
 must resolve to your account, on your domain, or the message is refused `550` (ADR 0015). Set

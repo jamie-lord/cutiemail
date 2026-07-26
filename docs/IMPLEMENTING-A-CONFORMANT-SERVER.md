@@ -106,7 +106,12 @@ the server:
 - **You MAY decline to relay** (§3.6.1-b): refusing to be an open relay is a permission the RFC
   grants, not a MUST it imposes (though operationally you should refuse). If you
   decline for policy, a `550` is the SHOULD (§3.6.2-c).
-- **Support `postmaster`** at your own domain (§4.5.1), the one address every server must have.
+- **Support `postmaster`** at your own domain (§4.5.1), the one address every server must have —
+  and remember the form that is easy to miss: `RCPT TO:<postmaster>` with **no domain at all**
+  (§2.3.5) MUST be accepted too, case-insensitively. If your recipient resolution splits on `@`
+  before it looks anything up, the bare form never reaches the lookup and you will refuse it
+  without noticing. That is exactly how this server got it wrong, for a long time, while shipping
+  the corpus case that catches it.
 
 ## 9. Delivery transparency: deliver exactly what you received
 
