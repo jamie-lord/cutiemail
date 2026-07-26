@@ -53,3 +53,29 @@ test('R-6376-3.5-c: a missing required tag invalidates the signature (acceptMiss
   // Negative control.
   assert.ok(parseDkimSignature(H(noB), { acceptMissingRequiredTag: true }).valid, 'acceptMissingRequiredTag must be detectable');
 });
+
+test('R-6376-6.1.1-b: only v=1 exists (acceptAnyVersion caught)', () => {
+  cites('R-6376-6.1.1-b');
+  const v2 = GOOD.replace('v=1;', 'v=2;');
+  assert.ok(!parseDkimSignature(H(v2)).valid, 'a version we do not implement invalidates the signature');
+  assert.ok(hasSignatureAnomaly(parseDkimSignature(H(v2)), 'bad-version'));
+  // Negative control.
+  assert.ok(parseDkimSignature(H(v2), { acceptAnyVersion: true }).valid, 'acceptAnyVersion must be detectable');
+});
+
+test('R-6376-6.1.1-a: an "a=" outside the known set invalidates the signature (acceptUnknownAlgorithm caught)', () => {
+  cites('R-6376-6.1.1-a');
+  const bogus = GOOD.replace('a=rsa-sha256;', 'a=rsa-sha999;');
+  assert.ok(!parseDkimSignature(H(bogus)).valid, 'an algorithm that does not exist invalidates the signature');
+  assert.ok(hasSignatureAnomaly(parseDkimSignature(H(bogus)), 'unknown-algorithm'));
+  // The defect is the SILENT FALLBACK the closed set replaces: with it, `a=rsa-sha999` parses and
+  // hashAlgoOf reads it by suffix as SHA-256 — a signature verified under an algorithm the signer
+  // never named. That is what makes this gate load-bearing rather than tidy.
+  assert.ok(parseDkimSignature(H(bogus), { acceptUnknownAlgorithm: true }).valid, 'acceptUnknownAlgorithm must be detectable');
+
+  // The whole known set is accepted, rsa-sha1 included: RFC 8301 refuses it downstream as a
+  // cryptographic FAILURE, which is a different answer from a syntax error and must stay reachable.
+  for (const algorithm of ['rsa-sha256', 'rsa-sha1', 'ed25519-sha256', 'RSA-SHA256']) {
+    assert.ok(parseDkimSignature(H(GOOD.replace('a=rsa-sha256;', `a=${algorithm};`))).valid, `${algorithm} is a real algorithm`);
+  }
+});

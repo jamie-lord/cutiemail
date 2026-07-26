@@ -24,7 +24,15 @@ export function bodyCanonOf(sig: DkimSignature): BodyCanon {
   return body === 'relaxed' ? 'relaxed' : 'simple';
 }
 
-/** The hash algorithm from an "a=" value ("rsa-sha256" -> sha256). */
+/**
+ * The hash algorithm from an "a=" value ("rsa-sha256" -> sha256).
+ *
+ * Deliberately a suffix test over a CLOSED set: parseDkimSignature refuses any "a=" outside
+ * KNOWN_ALGORITHMS (R-6376-6.1.1-a), so only rsa-sha1, rsa-sha256 and ed25519-sha256 reach here.
+ * On its own the suffix test is the defect — it resolves `a=rsa-sha999` to sha256 and verifies a
+ * signature the signer computed some other way — which is why the gate is upstream, and why the
+ * `acceptUnknownAlgorithm` defect exists to demonstrate that this is what the gate prevents.
+ */
 export function hashAlgoOf(sig: DkimSignature): HashAlgo {
   const a = sig.algorithm ?? '';
   return a.endsWith('sha1') ? 'sha1' : 'sha256';

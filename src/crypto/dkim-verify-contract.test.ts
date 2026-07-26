@@ -26,9 +26,6 @@ import { cryptoRequirement, type CryptoRequirementId } from '../register/crypto/
 
 const cites = (id: CryptoRequirementId): void => assert.ok(cryptoRequirement(id).id === id);
 
-/** See the note in imap-conformance-mailbox.integration.test.ts. */
-const GAP = (why: string): { todo: string } => ({ todo: why });
-
 const { privateKey, publicKey } = generateKeyPairSync('rsa', { modulusLength: 2048 });
 const PUBLIC_DER = publicKey.export({ type: 'spki', format: 'der' }).toString('base64');
 const MESSAGE = Buffer.from(
@@ -97,16 +94,19 @@ test('a signature that does not cover From is refused', async () => {
   assert.deepEqual(outcome.passedDomains, [], 'and must contribute no domain for DMARC to align against');
 });
 
-test('an unknown signature version is refused', GAP(
-  'RFC 6376 §6.1.1 MUST: a DKIM-Signature with "v=2" verifies instead of returning PERMFAIL '
-  + '(incompatible version). Only v=1 is defined, so a different version means the field follows '
-  + 'rules this implementation does not know — and it verified the signature anyway. Found only '
-  + 'after the harness was changed to SIGN around the tag under test: mutating a signed message '
-  + 'invalidates its signature, so the earlier form of this case passed for the wrong reason.',
-), async () => {
+test('an unknown signature version is refused', async () => {
   cites('R-6376-6.1.1-b');
-  const outcome = await verifyDkim(signWith({ v: '2' }), keyRecord(GOOD_KEY));
-  assert.notEqual(outcome.verdict, 'pass', 'only v=1 is defined; anything else follows rules we do not know');
+  // Found only after the harness was changed to SIGN around the tag under test. Editing v= on an
+  // already-signed message invalidates its signature, so the earlier form of this case was green
+  // for the wrong reason and hid the fact that v=2 verified.
+  for (const version of ['2', '0', '1.0', '01', '']) {
+    const outcome = await verifyDkim(signWith({ v: version }), keyRecord(GOOD_KEY));
+    assert.equal(outcome.verdict, 'permerror', `v=${version} is not a version we implement`);
+    assert.deepEqual(outcome.passedDomains, [], `and attributes no domain: v=${version}`);
+  }
+  // The negative control: v=1, signed identically, still passes — so the five above are refused
+  // for their version and not because the harness broke them.
+  assert.equal((await verifyDkim(signWith({ v: '1' }), keyRecord(GOOD_KEY))).verdict, 'pass');
 });
 
 test('a signature missing any required tag is refused, one tag at a time', async () => {
@@ -157,15 +157,23 @@ test('a structurally malformed signature is refused rather than salvaged', async
   }
 });
 
-test('a signature naming an algorithm that does not exist is refused', GAP(
-  'RFC 6376 §6.1.1 MUST: a DKIM-Signature with "a=rsa-sha999" verifies rather than being ignored as '
-  + 'a syntax error. The verifier does not recognise the algorithm and falls back to SHA-256 instead '
-  + 'of refusing, so the signer and the verifier disagree about what was computed — the precise '
-  + 'disagreement the "meticulously validate" requirement exists to prevent.',
-), async () => {
+test('a signature naming an algorithm that does not exist is refused', async () => {
   cites('R-6376-6.1.1-a');
-  const outcome = await verifyDkim(signWith({ a: 'rsa-sha999' }), keyRecord(GOOD_KEY));
-  assert.notEqual(outcome.verdict, 'pass', 'an unknown algorithm must not fall back to a known one');
+  // The failure this replaces was a SILENT FALLBACK: "a=" was read by suffix, so anything not
+  // ending "sha1" was treated as SHA-256 and verified. `a=rsa-sha999` therefore passed — the
+  // signer stated one algorithm and the verifier used another, which is the signer/verifier
+  // disagreement the "meticulously validate" requirement exists to prevent, resolved in the one
+  // direction that hands out a pass.
+  for (const algorithm of ['rsa-sha999', 'rsa-sha512', 'sha256', 'rsa', 'ed25519-sha512', '']) {
+    const outcome = await verifyDkim(signWith({ a: algorithm }), keyRecord(GOOD_KEY));
+    assert.equal(outcome.verdict, 'permerror', `a=${algorithm} names no algorithm we implement`);
+  }
+  // rsa-sha1 is the case that must NOT be swept up here. It is a real algorithm that RFC 8301
+  // makes a verification failure, and the two answers differ: `fail` says the signature is well
+  // formed and cryptographically refused, `permerror` says it is malformed. A closed algorithm set
+  // that dropped rsa-sha1 would collapse the distinction and bypass the dedicated SHA-1 gate.
+  const sha1 = await verifyDkim(signWith({ a: 'rsa-sha1' }), keyRecord(GOOD_KEY));
+  assert.equal(sha1.verdict, 'fail', 'rsa-sha1 is refused as SHA-1, not as a syntax error');
 });
 
 test('an absent i= is treated as "@d", which is what makes the domain check well defined', async () => {
@@ -216,15 +224,20 @@ test('a malformed or unusable key record is refused', async () => {
   }
 });
 
-test('a key record with an unimplemented version is ignored', GAP(
-  'RFC 6376 §6.1.2 MUST: a public-key record whose "v=" names a version this implementation does '
-  + 'not know is accepted rather than ignored. Such a record carries semantics we would be guessing '
-  + 'at — the same reasoning that makes an unknown signature version a refusal (R-6376-6.1.1-b), '
-  + 'applied to the key side, where it is currently missing.',
-), async () => {
+test('a key record with an unimplemented version is ignored', async () => {
   cites('R-6376-6.1.2-d');
-  const outcome = await verifyDkim(signed(), keyRecord(`v=DKIM99; k=rsa; p=${PUBLIC_DER}`));
-  assert.notEqual(outcome.verdict, 'pass', 'a key record we do not understand must not authenticate anything');
+  // Not a defect, contrary to how this case was first recorded: parseDkimKeyRecord already refuses
+  // a v= that is not DKIM1, so the key side of the version rule was in place while the signature
+  // side (R-6376-6.1.1-b, above) was missing. Kept as the pin, and widened — the record must be
+  // ignored whether the version is unknown, or known but not first, which the §3.6.1 grammar also
+  // requires and which a tag-order-insensitive parser would drop.
+  for (const record of [`v=DKIM99; k=rsa; p=${PUBLIC_DER}`, `v=; k=rsa; p=${PUBLIC_DER}`, `k=rsa; v=DKIM1; p=${PUBLIC_DER}`]) {
+    const outcome = await verifyDkim(signed(), keyRecord(record));
+    assert.equal(outcome.verdict, 'permerror', `a key record we do not understand authenticates nothing: ${record.slice(0, 24)}`);
+  }
+  // The negative control: the same key, declared correctly, does verify — so the three above are
+  // refused for their version field and not because the key material is unusable.
+  assert.equal((await verifyDkim(signed(), keyRecord(GOOD_KEY))).verdict, 'pass');
 });
 
 test('a tampered body fails the body hash, and a tampered signed header fails the signature', async () => {
