@@ -46,10 +46,38 @@ echo "server IP: $IP"
 echo "setting reverse DNS ($IP -> $MAIL_DOMAIN)..."
 hcloud server set-rdns "$SERVER_NAME" --ip "$IP" --hostname "$MAIL_DOMAIN"
 
+# Wait for cloud-init, on its OUTPUT rather than its exit status, and with a deadline.
+#
+# `cloud-init status --wait` exits 2 when it finishes with recoverable errors — "degraded done",
+# which is a completed boot, not a failed one. The previous form piped it to `grep -q done` under
+# `set -o pipefail`, so the pipeline took ssh's exit code and the grep's success was discarded:
+# the loop could never terminate. Its stderr went to /dev/null, so it span silently and forever,
+# leaving a running, paid-for, empty server behind. Both halves mattered — a schema slip in
+# cloud-init.yaml was enough to trigger it, and nothing said so.
+#
+# The text is what actually answers the question being asked, so the text is what is tested. The
+# deadline is here because "wait for a remote machine" with no bound is how a script hangs rather
+# than fails, and a failure an operator can see beats a hang they have to diagnose.
 echo "waiting for cloud-init to finish (Node install, firewall)..."
-until ssh -o StrictHostKeyChecking=accept-new -o ConnectTimeout=5 "root@$IP" 'cloud-init status --wait' 2>/dev/null | grep -q done; do
+CLOUD_INIT_DEADLINE=$(( SECONDS + 900 ))
+while :; do
+  CI_OUT="$(ssh -o StrictHostKeyChecking=accept-new -o ConnectTimeout=5 "root@$IP" 'cloud-init status --wait' 2>&1 || true)"
+  case "$CI_OUT" in
+    *done*) break ;;
+  esac
+  if [ "$SECONDS" -ge "$CLOUD_INIT_DEADLINE" ]; then
+    echo "cloud-init did not report done within 15 minutes. Last output:" >&2
+    echo "$CI_OUT" >&2
+    exit 1
+  fi
   sleep 5
 done
+case "$CI_OUT" in
+  *degraded*)
+    echo "note: cloud-init finished DEGRADED — it completed, but something in the cloud-config was"
+    echo "      rejected. Check with: ssh root@$IP cloud-init schema --system"
+    ;;
+esac
 
 # The version-store layout (ADR 0025): the code lives at versions/<commit>, and `current` is a
 # symlink naming which one runs. That is what makes an update a rename and a rollback the same

@@ -16,7 +16,11 @@ users:
   - default          # keep the platform-injected SSH key on root
   - name: mail
     system: true
-    home: /opt/mailserver
+    # `homedir`, not `home`: cloud-init's users schema has no `home` property, so this whole
+    # cloud-config failed schema validation and cloud-init finished "degraded". It still created
+    # the user and ran everything, which is why the fault was invisible — until `cloud-init status`
+    # started returning exit 2 and hung the provisioning script that reads it.
+    homedir: /opt/mailserver
     shell: /usr/sbin/nologin
 
 runcmd:
