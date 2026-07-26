@@ -199,7 +199,23 @@ if [ -n "$COMMIT" ]; then
   # The updater needs to read and snapshot the databases, and to restart the one unit it manages.
   # It gets group access to the data directory rather than ownership: the mail user still owns its
   # own mail.
-  ssh "root@$IP" 'usermod -a -G mail mailupd && chmod 750 /var/lib/mailserver && chmod g+rX /var/lib/mailserver'
+  # The updater must READ the databases to snapshot them, and it is a different user from the daemon
+  # by design — a compromise of the thing that downloads code must not be a compromise of the mail.
+  #
+  # Group membership alone does not achieve that, which is a trap worth naming: the daemon's unit
+  # sets UMask=0077, so every database it creates is 0600 mail:mail. Adding mailupd to the `mail`
+  # group and making the DIRECTORY group-readable lets it list the directory and read nothing in it,
+  # so rung 6 — the one that migrates a snapshot of your real data, the whole reason the ladder
+  # exists — failed with "unable to open database file" on every deployment this script produced.
+  #
+  # A POSIX ACL grants exactly the access needed to exactly one user, and the DEFAULT entry is
+  # inherited by files created later, which is what makes it survive the daemon's umask: with a
+  # default ACL present the umask is not applied to the inherited entries. Note the directory needs
+  # SEARCH (rx) and not merely read — without x, mailupd cannot traverse in whatever the files say.
+  # The daemon's own posture is untouched: it still creates 0600 files and still owns its own mail.
+  ssh "root@$IP" 'apt-get install -y acl >/dev/null 2>&1 || true'
+  ssh "root@$IP" 'usermod -a -G mail mailupd && chmod 750 /var/lib/mailserver'
+  ssh "root@$IP" 'setfacl -m u:mailupd:rx /var/lib/mailserver && setfacl -d -m u:mailupd:r /var/lib/mailserver && setfacl -R -m u:mailupd:r /var/lib/mailserver/ 2>/dev/null || true'
 
   # Exactly one unit, exactly one verb each way. Without this the updater would have to run as root,
   # and a compromise of the thing that downloads code would be a compromise of everything.
