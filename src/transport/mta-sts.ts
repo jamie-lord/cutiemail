@@ -92,6 +92,21 @@ export function parseStsPolicy(policy: Buffer, defects: StsParseDefects = {}): S
     // 'unknown-mode' already pushed above if a value was present.
     if (!anomalies.includes('unknown-mode')) anomalies.push('missing-mode');
   }
+  // RFC 8461 §3.2 policy ABNF: `sts-policy-max-age / ; required once`. The section describes the
+  // field in prose without an RFC 2119 keyword, so the grammar is where the obligation lives.
+  //
+  // A policy with no max_age has no defined lifetime, and neither reading a cache could take is
+  // one the spec offers: keep it forever, and the domain is pinned to a policy it has since
+  // replaced — exactly what the §5 re-check rule exists to avoid — or keep it not at all, and
+  // every message re-fetches. StsCache already declines to cache such a policy (`maxAge === null`
+  // is one of its two rejection conditions), so nothing downstream regresses; what changes is that
+  // the policy is now refused where it is PARSED, so a caller reading `.valid` cannot act on a
+  // policy whose lifetime is undefined. `mxAllowed` against a never-expiring enforce policy is
+  // precisely the thing to keep out of reach.
+  if (maxAge === null) {
+    valid = false;
+    anomalies.push('missing-max-age');
+  }
 
   return { valid, version, mode, mx, maxAge, anomalies };
 }

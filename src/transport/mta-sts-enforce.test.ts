@@ -18,9 +18,6 @@ import { transportRequirement, type TransportRequirementId } from '../register/t
 
 const cites = (id: TransportRequirementId): void => assert.ok(transportRequirement(id).id === id);
 
-/** See the note in imap-conformance-mailbox.integration.test.ts. */
-const GAP = (why: string): { todo: string } => ({ todo: why });
-
 const P = (s: string): Buffer => Buffer.from(s, 'latin1');
 const ENFORCING = P('version: STSv1\r\nmode: enforce\r\nmx: mail.example.com\r\nmx: *.example.net\r\nmax_age: 604800\r\n');
 
@@ -92,23 +89,35 @@ test('a policy that does not parse cannot enforce anything', () => {
   assert.equal(parseStsPolicy(ENFORCING).valid, true);
 });
 
-test('a policy with no max_age is not a valid policy', GAP(
-  'RFC 8461 §3.2 (policy ABNF, "sts-policy-max-age ... required once"): a policy omitting max_age '
-  + 'parses as valid. Such a policy has no defined lifetime, so a sender either caches it forever — '
-  + 'pinning the domain to a policy it has since replaced, which is precisely what the §5 re-check '
-  + 'rule exists to avoid — or not at all. Neither is a reading the spec offers.',
-), () => {
+test('a policy with no max_age is not a valid policy', async () => {
   cites('R-8461-3.2-c');
-  assert.equal(parseStsPolicy(P('version: STSv1\r\nmode: enforce\r\nmx: mail.example.com\r\n')).valid, false);
+  // No defined lifetime means no reading the spec offers: cache it forever and the domain is
+  // pinned to a policy it has since replaced, cache it not at all and every message re-fetches.
+  const noMaxAge = P('version: STSv1\r\nmode: enforce\r\nmx: mail.example.com\r\n');
+  assert.equal(parseStsPolicy(noMaxAge).valid, false);
+  // A malformed max_age is the same case by a different route — §3.2's grammar is 1*10(DIGIT), so
+  // `forever` and `1e308` are no more a lifetime than an absent field. The second is the one that
+  // matters: unclamped it yields an expiry of Infinity.
+  for (const bad of ['forever', '1e308', '-1', '']) {
+    assert.equal(parseStsPolicy(P(`version: STSv1\r\nmode: enforce\r\nmx: m.example.com\r\nmax_age: ${bad}\r\n`)).valid, false, `max_age: ${bad}`);
+  }
+  // The negative control: the same policy with a lifetime is valid, so the cases above are refused
+  // for the missing field rather than for something else in the body.
+  assert.equal(parseStsPolicy(ENFORCING).valid, true);
+
+  // And it is refused end to end, not only at the parse: an unusable policy leaves the domain on
+  // opportunistic TLS rather than being cached with an undefined expiry.
+  const cache = new StsCache();
+  const d = deps({ txt: ['v=STSv1; id=1'], policy: noMaxAge });
+  assert.equal(await cache.resolve('no-lifetime.example', d), null);
 });
 
-test('a TXT record not beginning with the version field is not an MTA-STS record', GAP(
-  'RFC 8461 §3.1 MUST: the TXT record "MUST begin with the sts-version field". The resolver matches '
-  + 'with startsWith("v=stsv1") and so already refuses a record whose version comes second — but '
-  + 'nothing pins that, and the natural "tolerant parser" fix (scan for v= anywhere) would silently '
-  + 'remove it. Registered and left running as the guard against that change, since enabling '
-  + 'enforcement on the strength of a malformed record is the wrong direction to be generous in.',
-), async () => {
+test('a TXT record not beginning with the version field is not an MTA-STS record', async () => {
+  // Not a defect: the resolver matches with startsWith('v=stsv1') and so already refuses a record
+  // whose version comes second. The case exists because nothing pinned that, and the natural
+  // "tolerant parser" change — scan for v= anywhere in the record — would remove it silently.
+  // Enabling enforcement on the strength of a malformed record is the wrong direction to be
+  // generous in, so the positional rule is worth a test even where it is already met.
   cites('R-8461-3.1-a');
   const cache = new StsCache();
   const d = deps({ txt: ['id=20260101; v=STSv1'], policy: ENFORCING });
