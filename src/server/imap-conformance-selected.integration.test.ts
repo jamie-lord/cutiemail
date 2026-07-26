@@ -16,9 +16,6 @@ import { untaggedOf, hasResponseCodePrefix, type ImapClient } from '../testing/i
 
 const cites = (id: ImapRequirementId): void => assert.ok(imapRequirement(id).id === id);
 
-/** See the note in imap-conformance-mailbox.integration.test.ts. */
-const GAP = (why: string): { todo: string } => ({ todo: why });
-
 /** How many messages a mailbox holds, asked over the wire rather than read from the store. */
 async function messageCount(c: ImapClient, mailbox: string): Promise<number> {
   const status = await c.command(`STATUS ${mailbox} (MESSAGES)`);
