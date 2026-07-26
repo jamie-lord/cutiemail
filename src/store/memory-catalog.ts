@@ -6,7 +6,7 @@
  */
 
 import { Mailbox } from './mailbox.ts';
-import { canonicalMailboxName } from './mailbox-name.ts';
+import { canonicalMailboxName, subtreeRenames } from './mailbox-name.ts';
 
 export class MemoryCatalog {
   readonly #boxes = new Map<string, Mailbox>();
@@ -61,7 +61,7 @@ export class MemoryCatalog {
   }
 
   /**
-   * Rename a mailbox (RFC 9051 §6.3.5). Renaming INBOX moves its messages into a new
+   * Rename a mailbox (RFC 9051 §6.3.6). Renaming INBOX moves its messages into a new
    * target and leaves INBOX in place (emptied); INBOX is never deleted.
    */
   rename(from: string, to: string): 'ok' | 'notfound' | 'exists' {
@@ -71,14 +71,28 @@ export class MemoryCatalog {
     if (src === undefined) return 'notfound';
     if (this.#boxes.has(ct)) return 'exists';
     if (cf === 'INBOX') {
+      // "If the server implementation supports inferior hierarchical names of INBOX, these are
+      // unaffected by a rename of INBOX" (§6.3.6). So the subtree walk below must NOT run here:
+      // INBOX/sub stays exactly where it is while INBOX's messages move out.
       const dest = new Mailbox(this.#uidValidity);
       const moving = [...src.messages];
       for (const m of moving) dest.append(m.raw, [...m.flags], m.internalDate);
       for (const m of moving) src.expunge(m.uid); // empty INBOX, which keeps existing
       this.#boxes.set(ct, dest);
-    } else {
-      this.#boxes.delete(cf);
-      this.#boxes.set(ct, src);
+      return 'ok';
+    }
+    const moves = subtreeRenames(cf, ct, this.listNames());
+    // Every destination must be free, the inferior ones included. Checking only the named target
+    // would let `RENAME foo baz` succeed while foo/bar had nowhere to land — and the RFC's own
+    // wording covers this: it is an error to rename to a name that already exists, and baz/bar
+    // does exist at the moment of the command. Refusing up front also makes the loop below
+    // collision-free in any order, since no destination is any current name.
+    if (moves.some(([, dest]) => this.#boxes.has(dest))) return 'exists';
+    for (const [oldName, newName] of moves) {
+      const box = this.#boxes.get(oldName);
+      if (box === undefined) continue;
+      this.#boxes.delete(oldName);
+      this.#boxes.set(newName, box);
     }
     return 'ok';
   }

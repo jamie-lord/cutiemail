@@ -19,16 +19,6 @@ import { untaggedOf, hasResponseCodePrefix } from '../testing/imap-client.ts';
 
 const cites = (id: ImapRequirementId): void => assert.ok(imapRequirement(id).id === id);
 
-/**
- * A registered requirement this server does not satisfy yet.
- *
- * The case is written to assert what the RFC requires and is left RUNNING, marked as a known gap:
- * it fails without failing the suite, so the obligation stays executable and visible instead of
- * being deleted or quietly weakened to match the implementation. Weakening the assertion would be
- * the worst of the three options — it converts a known defect into a permanent green.
- */
-const GAP = (why: string): { todo: string } => ({ todo: why });
-
 test('SELECT sends every required untagged item before the tagged OK', async () => {
   cites('R-9051-6.3.2-a');
   await withImapServer(async (fx) => {
@@ -145,26 +135,81 @@ test('DELETE removes the named mailbox and leaves its children alone', async () 
   });
 });
 
-test('RENAME moves the whole subtree, not just the named mailbox', GAP(
-  'RFC 9051 §6.3.6: RENAME leaves inferior hierarchical names behind, orphaning every child mailbox '
-  + 'and the mail in it. Renaming "foo" to "baz" leaves "foo/bar" unreachable under either name.',
-), async () => {
+test('RENAME moves the whole subtree, not just the named mailbox', async () => {
   cites('R-9051-6.3.6-a');
   await withImapServer(async (fx) => {
     const c = await fx.session();
     await c.command('CREATE foo');
     await c.command('CREATE foo/bar');
+    await c.command('CREATE foo/bar/deep');
+    await c.command('CREATE foobar'); // the sibling a prefix match would drag along
     fx.seed('foo/bar', 1, 'inferior');
+    fx.seed('foo/bar/deep', 1, 'deeper');
 
     const renamed = await c.command('RENAME foo baz');
     assert.equal(renamed.status, 'OK', renamed.line);
 
-    const selected = await c.command('SELECT baz/bar');
-    assert.equal(selected.status, 'OK', `the inferior name moved with its parent: ${selected.line}`);
-    assert.match(untaggedOf(selected, 'EXISTS')[0]!, /^\* 1 EXISTS/, 'carrying its messages');
+    // The whole subtree, at every depth, with its mail.
+    for (const [name, body] of [['baz/bar', 'inferior'], ['baz/bar/deep', 'deeper']] as const) {
+      const selected = await c.command(`SELECT ${name}`);
+      assert.equal(selected.status, 'OK', `${name} moved with its parent: ${selected.line}`);
+      assert.match(untaggedOf(selected, 'EXISTS')[0]!, /^\* 1 EXISTS/, `${name} carries its messages (${body})`);
+    }
+    for (const gone of ['foo/bar', 'foo/bar/deep']) {
+      assert.equal((await c.command(`SELECT ${gone}`)).status, 'NO', `the old inferior name is gone: ${gone}`);
+    }
+    // "foobar" is not in "foo"'s subtree, whatever a bare startsWith would say. Renaming an
+    // unrelated mailbox whose name merely begins with the same letters is the other way to lose a
+    // folder, and it would look identical to the client.
+    assert.equal((await c.command('SELECT foobar')).status, 'OK', 'a same-prefix sibling is untouched');
+  });
+});
 
-    const gone = await c.command('SELECT foo/bar');
-    assert.equal(gone.status, 'NO', `the old inferior name is gone: ${gone.line}`);
+test('RENAME refuses when an inferior name has nowhere to land, and moves nothing', async () => {
+  cites('R-9051-6.3.6-a');
+  await withImapServer(async (fx) => {
+    const c = await fx.session();
+    for (const name of ['foo', 'foo/bar', 'baz/bar']) await c.command(`CREATE ${name}`);
+    fx.seed('foo/bar', 1, 'original');
+    fx.seed('baz/bar', 2, 'occupant');
+
+    // "baz" itself is free, so a server checking only the named target would say OK — and then
+    // either clobber baz/bar or half-apply the move. The RFC's own wording settles it: renaming to
+    // a name that already exists is an error, and baz/bar exists.
+    const refused = await c.command('RENAME foo baz');
+    assert.equal(refused.status, 'NO', `a colliding inferior name refuses the whole rename: ${refused.line}`);
+
+    // Nothing moved: the refusal must be atomic, or it is worse than the bug it replaces.
+    const source = await c.command('SELECT foo/bar');
+    assert.equal(source.status, 'OK', source.line);
+    assert.match(untaggedOf(source, 'EXISTS')[0]!, /^\* 1 EXISTS/, 'the source subtree is intact');
+    const occupant = await c.command('SELECT baz/bar');
+    assert.equal(occupant.status, 'OK', occupant.line);
+    assert.match(untaggedOf(occupant, 'EXISTS')[0]!, /^\* 2 EXISTS/, 'and the occupant was not overwritten');
+  });
+});
+
+test("renaming INBOX leaves INBOX's own inferior names where they are", async () => {
+  cites('R-9051-6.3.6-a');
+  await withImapServer(async (fx) => {
+    const c = await fx.session();
+    await c.command('CREATE INBOX/keep');
+    fx.seed('INBOX', 1, 'in the inbox');
+    fx.seed('INBOX/keep', 1, 'in the child');
+
+    // §6.3.6 states the exception explicitly: "If the server implementation supports inferior
+    // hierarchical names of INBOX, these are unaffected by a rename of INBOX." So the subtree walk
+    // that fixes the general case must not run here — INBOX's messages move out and its children
+    // stay put. A fix applied uniformly would silently move INBOX/keep to Kept/keep.
+    assert.equal((await c.command('RENAME INBOX Kept')).status, 'OK');
+
+    const kept = await c.command('SELECT INBOX/keep');
+    assert.equal(kept.status, 'OK', `INBOX/keep is unaffected: ${kept.line}`);
+    assert.match(untaggedOf(kept, 'EXISTS')[0]!, /^\* 1 EXISTS/, 'with its message');
+    assert.equal((await c.command('SELECT Kept/keep')).status, 'NO', 'and did not follow INBOX');
+
+    const moved = await c.command('SELECT Kept');
+    assert.match(untaggedOf(moved, 'EXISTS')[0]!, /^\* 1 EXISTS/, "INBOX's own messages did move");
   });
 });
 

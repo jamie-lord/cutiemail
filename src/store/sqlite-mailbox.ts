@@ -15,7 +15,7 @@
 import { DatabaseSync } from 'node:sqlite';
 import { DELETED, type MessageMeta, type StoredMessage, type StoreMode } from './mailbox.ts';
 import { stampSchema, MAIL_SCHEMA } from './schema-version.ts';
-import { canonicalMailboxName } from './mailbox-name.ts';
+import { canonicalMailboxName, subtreeRenames } from './mailbox-name.ts';
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS mailbox (
@@ -442,9 +442,10 @@ export class SqliteCatalog {
   }
 
   /**
-   * Rename a mailbox (RFC 9051 §6.3.5). Renaming INBOX is special: its messages move
+   * Rename a mailbox (RFC 9051 §6.3.6). Renaming INBOX is special: its messages move
    * into a newly created target and INBOX itself stays (now empty) — INBOX is never
-   * deleted. A plain mailbox is renamed in place.
+   * deleted, and its inferior names are left where they are. Any other mailbox moves
+   * with its whole subtree.
    */
   rename(from: string, to: string): 'ok' | 'notfound' | 'exists' {
     const cf = canonicalMailboxName(from);
@@ -452,6 +453,14 @@ export class SqliteCatalog {
     const src = this.#db.prepare('SELECT id FROM mailbox WHERE name = ?').get(cf) as { id: number } | undefined;
     if (src === undefined) return 'notfound';
     if (this.#db.prepare('SELECT 1 FROM mailbox WHERE name = ?').get(ct) !== undefined) return 'exists';
+    // §6.3.6: the inferior hierarchical names move too. Resolved through the same shared helper
+    // the MemoryCatalog reference uses, so the two stores cannot disagree about what a subtree is
+    // — a rule written out twice is one the differential oracle cannot see is wrong in both.
+    const moves = cf === 'INBOX' ? [] : subtreeRenames(cf, ct, this.listNames());
+    // Every destination must be free before anything moves. This is also what makes the UPDATEs
+    // below safe in any order: no destination is a name currently in the table, so none of them
+    // can trip the unique index against a row that has not been moved yet.
+    if (moves.some(([, dest]) => this.#db.prepare('SELECT 1 FROM mailbox WHERE name = ?').get(dest) !== undefined)) return 'exists';
     this.#db.exec('BEGIN IMMEDIATE');
     try {
       if (cf === 'INBOX') {
@@ -491,7 +500,10 @@ export class SqliteCatalog {
         for (const m of moving) logVanished.run(Number(src.id), Number(m.uid), ++modseq);
         if (n > 0) this.#db.prepare('UPDATE mailbox SET highest_modseq = ? WHERE id = ?').run(modseq, Number(src.id));
       } else {
-        this.#db.prepare('UPDATE mailbox SET name = ? WHERE id = ?').run(ct, Number(src.id));
+        // The named mailbox and its inferiors, in one transaction: a partial subtree rename is
+        // the orphaning this fixes, applied halfway.
+        const move = this.#db.prepare('UPDATE mailbox SET name = ? WHERE name = ?');
+        for (const [oldName, newName] of moves) move.run(newName, oldName);
       }
       this.#db.exec('COMMIT');
     } catch (e) {
