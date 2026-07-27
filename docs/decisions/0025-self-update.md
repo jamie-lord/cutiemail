@@ -184,6 +184,18 @@ store SCRAM material, so no existing password can be recovered — which is the 
 means the updater mints an **app password inside the snapshot** to log in with. That is safe there
 and only there: it is a copy, destroyed minutes later, and the live registry is untouched.
 
+**Readiness is the ports accepting, in the cutover as well as the pre-flight.** `systemctl start`
+returns when systemd considers a `Type=simple` unit started — the moment its process is forked, not
+the moment it serves. On a real box the gap is around 460 ms for an idle deployment, and it is
+exactly the work rung 6a measures: opening the databases, applying any migration, binding three
+ports. A probe issued inside that window reports "could not connect to the submission port" about a
+daemon that is running perfectly well, and the cutover reverts a good update. The probe therefore
+waits for the ports, generously, because the migration it is waiting through is the one that scales
+with your mailbox — a bound that is merely usually-enough turns a slow migration into a spurious
+revert, and spurious reverts are what teach an operator to switch updates off. Not-listening is
+reported as its own outcome, because "the process is up and has not begun serving" and "the mail
+path is broken" call for opposite responses.
+
 **What access the updater needs, and why it is not more than it looks.** The updater runs as its own
 user precisely so that a compromise of the internet-facing daemon cannot rewrite the code that runs
 next. That separation is one-directional: the updater still needs the *data*. It reads every
