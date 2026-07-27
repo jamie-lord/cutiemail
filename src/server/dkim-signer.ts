@@ -43,7 +43,14 @@ export function dkimSign(raw: Buffer, signer: DkimSigner): Buffer {
   if (sep === -1) return raw; // no header/body boundary — cannot sign safely
   const body = raw.subarray(sep + 4);
 
-  const headers = parseMessage(raw).headers;
+  const parsed = parseMessage(raw);
+  // Refuse rather than sign a header list the parser could not finish reading. Signing over a
+  // truncated list produces a signature that binds fields a verifier will not see and omits fields
+  // it will — the sibling of the submission fix-up's check, on the same failure, and it was missing
+  // here. Returning the message unsigned is the safe direction: unsigned mail is judged by SPF,
+  // where a wrongly-scoped signature is worse than none.
+  if (parsed.headersTruncated) return raw;
+  const headers = parsed.headers;
   // The h= NAME list: the present standard headers in conventional order, with From OVERSIGNED
   // — listed once more than it appears — so a downstream that PREPENDS a second From breaks our
   // signature (RFC 6376 §5.4.2: the excess h=from selects the null input here, but binds a

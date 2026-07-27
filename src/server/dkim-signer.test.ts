@@ -17,6 +17,7 @@ import { parseDkimSignature } from '../crypto/dkim-signature.ts';
 import { buildSigningInput, selectSignedFields, verifySignature } from '../crypto/dkim-verify.ts';
 import { signMessage } from '../crypto/dkim-sign.ts';
 import { verifyBodyHash } from '../crypto/dkim-bodyhash.ts';
+import { MAX_HEADER_SECTION_BYTES } from '../message/parse.ts';
 import { parseDkimKeyRecord } from '../crypto/dkim-keyrecord.ts';
 import { parseMessage } from '../message/parse.ts';
 import { ensureSubmissionHeaders } from './submission-fixup.ts';
@@ -148,4 +149,18 @@ test('a message with no header/body boundary is returned unchanged (fail-open)',
   const signer = makeSigner('mailtest.example', 'sel', privateKey.export({ type: 'pkcs8', format: 'pem' }) as string);
   const noBoundary = Buffer.from('From: a@b\r\nSubject: no body', 'latin1');
   assert.equal(dkimSign(noBoundary, signer), noBoundary);
+});
+
+test('a message whose header section could not be fully read is returned unsigned', () => {
+  // The sibling of the submission fix-up's truncation refusal, on the same failure, and it was
+  // missing here. Signing over a header list the parser stopped short of binds fields a verifier
+  // will not see and omits fields it will — a signature scoped to a different message than the one
+  // on the wire. Unsigned is the safe direction: such mail is then judged by SPF, and the
+  // From-less case two tests above already establishes fail-open as this function's convention.
+  const { privateKey } = generateKeyPairSync('rsa', { modulusLength: 2048 });
+  const signer = makeSigner('mailtest.example', 'test2026', privateKey.export({ type: 'pkcs8', format: 'pem' }) as string);
+  const pad = `X-Pad: ${'a'.repeat(MAX_HEADER_SECTION_BYTES)}\r\n`;
+  const raw = Buffer.from(`From: test@mailtest.example\r\n${pad}Subject: hi\r\n\r\nbody\r\n`, 'latin1');
+  assert.equal(parseMessage(raw).headersTruncated, true, 'the fixture is actually truncated');
+  assert.equal(dkimSign(raw, signer), raw, 'returned unsigned rather than signed over a list it could not read');
 });

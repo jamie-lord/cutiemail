@@ -468,6 +468,9 @@ export class SqliteCatalog {
     // the MemoryCatalog reference uses, so the two stores cannot disagree about what a subtree is
     // — a rule written out twice is one the differential oracle cannot see is wrong in both.
     const moves = cf === 'INBOX' ? [] : subtreeRenames(cf, ct, this.listNames());
+    // null when canonicalising would land two mailboxes on one name; the destination is taken by
+    // one of them either way, which is what 'exists' means.
+    if (moves === null) return 'exists';
     // Every destination must be free before anything moves. This is also what makes the UPDATEs
     // below safe in any order: no destination is a name currently in the table, so none of them
     // can trip the unique index against a row that has not been moved yet.

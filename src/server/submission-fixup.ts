@@ -66,5 +66,13 @@ export function ensureSubmissionHeaders(data: Buffer, domain: string, sender: st
   if (needId) added.push(`Message-ID: <${now.getTime()}.${unique}@${domain}>\r\n`);
   if (needDate) added.push(`Date: ${formatDate(now)}\r\n`);
   if (needFrom) added.push(`From: <${sender}>\r\n`);
-  return Buffer.concat([Buffer.from(added.join(''), 'latin1'), data]);
+  const out = Buffer.concat([Buffer.from(added.join(''), 'latin1'), data]);
+  // CHECKED AGAIN, ON WHAT WE RETURN. The check above was on the input, and what leaves here is
+  // LARGER — so a message whose header section sat just under the cap can be pushed over it by the
+  // very headers this function adds. The caller re-parses this buffer to decide which From it is
+  // authorising, and that parse then drops the fields past the cap: the send-as gate approved a
+  // message with one From while the bytes it approved carried two. Re-parsing costs one pass on the
+  // fix-up path only, and it belongs here rather than at the call site for the reason above — a
+  // second caller cannot forget what this function does not let it see.
+  return parseMessage(out).headersTruncated ? null : out;
 }

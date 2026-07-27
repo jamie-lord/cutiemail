@@ -52,11 +52,31 @@ export function sameMailbox(a: string, b: string, defects: MailboxNameDefects = 
  *
  * Shared by MemoryCatalog and SqliteCatalog so the reference and the real store cannot drift; the
  * differential oracle compares them, and a rule duplicated in both is a rule the oracle cannot see
- * is wrong.
+ * is wrong. That sharing is also why THIS is where the destination is canonicalised: the two stores
+ * agreeing with each other is exactly what the oracle checks, so a defect here is invisible to it
+ * by construction, and the only defence is that the rule be right in the one place it lives.
+ *
+ * CANONICALISED, because concatenation can produce a name CREATE could never have made. Renaming
+ * "" to "z" maps a mailbox literally named "/" to "z/", which canonicalises back to "z" — so the
+ * catalog held two rows resolving to one mailbox, STATUS on one answered about the other, and
+ * DELETE on one removed the other, stranding a row that LIST still advertised but SELECT could not
+ * reach. Returns null when two sources would land on one destination, which canonicalising can
+ * cause ("" and "/" both become "z"): the callers already answer 'exists' for a taken destination,
+ * and that is the answer RFC 9051 §6.3.5 wants, where throwing would surface as BAD.
  */
-export function subtreeRenames(from: string, to: string, names: readonly string[]): ReadonlyArray<readonly [string, string]> {
+export function subtreeRenames(
+  from: string,
+  to: string,
+  names: readonly string[],
+): ReadonlyArray<readonly [string, string]> | null {
   const prefix = `${from}/`;
-  return names
+  const moves = names
     .filter((n) => n === from || n.startsWith(prefix))
-    .map((n) => [n, `${to}${n.slice(from.length)}`] as const);
+    .map((n) => [n, canonicalMailboxName(`${to}${n.slice(from.length)}`)] as const);
+  const seen = new Set<string>();
+  for (const [, dest] of moves) {
+    if (seen.has(dest)) return null;
+    seen.add(dest);
+  }
+  return moves;
 }

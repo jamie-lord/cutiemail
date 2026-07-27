@@ -82,6 +82,9 @@ export class MemoryCatalog {
       return 'ok';
     }
     const moves = subtreeRenames(cf, ct, this.listNames());
+    // null when canonicalising would land two mailboxes on one name; the destination is taken by
+    // one of them either way, which is what 'exists' means.
+    if (moves === null) return 'exists';
     // Every destination must be free, the inferior ones included. Checking only the named target
     // would let `RENAME foo baz` succeed while foo/bar had nowhere to land — and the RFC's own
     // wording covers this: it is an error to rename to a name that already exists, and baz/bar
