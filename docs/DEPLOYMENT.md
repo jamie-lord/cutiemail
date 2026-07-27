@@ -905,8 +905,31 @@ sudo chown -R mailupd:mailupd /opt/mailserver
 sudo chmod -R u=rwX,go=rX /opt/mailserver
 # the updater snapshots the databases, so it needs to read them — group access, not ownership
 sudo usermod -a -G mail mailupd
-sudo chmod 750 /var/lib/mailserver
+sudo chown -R mail:mail /var/lib/mailserver
+sudo chmod 770 /var/lib/mailserver
+sudo chmod 660 /var/lib/mailserver/*.db*
 ```
+
+**The group is the access-control decision, and it is the only one.** The daemon sets its databases
+to `0660` — owner and group, never world — and re-applies that on every open. So whoever is in the
+data group can read the mail and the credential material, and nobody else can. Check it with
+`getent group mail`: it should contain the updater and nothing else. On a deployment with no
+updater the group has one member, and `0660` is `0600` in effect.
+
+Do not try to grant this with an ACL. The daemon's `chmod` resets an ACL's mask to nothing on every
+open, so the grant survives exactly until the next restart — which a cutover always performs, making
+the failure both silent and delayed. The pre-flight passes once and then fails forever with
+`unable to open database file`, blaming your data.
+
+The directory is group-**writable** because a failed cutover restores the databases from its
+pre-cutover snapshot, which means creating files there. That path runs when something has already
+gone wrong, which is the worst moment to meet a permission error.
+
+The updater needs write access as well as read: the cutover probe mints an app password immediately
+before checking and revokes it immediately after, so an update is confirmed by a real message
+through authenticated submission rather than by the process merely being up. That is not the
+privilege it appears to be — whoever chooses the code the mail server runs can already read all the
+mail. The separation that does the work is the one above: **the daemon cannot write its own code.**
 
 The updater also needs to restart the daemon. Grant it that for **one unit and three verbs**, so
 it never has to run as root:
