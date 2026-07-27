@@ -47,6 +47,33 @@ afterwards. Two of the thirteen exist only because a passing test can pass for t
 one lifts the `mx` cap and one puts the address lookups back on the term budget, and the original
 case would have survived the second.
 
+## Closed: what a live self-update test found (2026-07-27)
+
+The self-update system (ADR 0025) was exercised against a real Hetzner box for the first time.
+Every rung of the ladder had passed in local rehearsal; the box found **six defects**, none of
+which local testing could have found, because each was a property of the machine rather than of
+the code.
+
+| # | Defect | Why only a real deployment finds it |
+| --- | --- | --- |
+| 1 | The smart-HTTP client refused every real git server: it expected the v2 advertisement to begin `version 2`, and GitHub, GitLab and Codeberg all prefix it with the `# service=` banner. | The in-repo fake server had been written from the same reading of the spec as the client, so the two agreed with each other and not with reality. |
+| 2 | The daemon exited 0 silently when started through the `current` symlink — `import.meta.url` resolves symlinks, `process.argv[1]` does not. | ADR 0025's whole layout runs the daemon through that symlink. A flat checkout never hits it. |
+| 3 | `hetzner-up.sh` hung forever waiting for cloud-init: `cloud-init status` exits 2 when it finishes *degraded*, and under `set -o pipefail` that exit code replaced the `grep`'s success. | Needs a real cloud-init, and a cloud-config with a schema slip to make it degrade. |
+| 4 | Rung 4 ran the candidate's whole test suite, which does not finish inside its fifteen-minute cap on two shared cores — so every update was refused, blaming the candidate. | The suite takes ~110s on a developer machine. Only the target hardware shows it. |
+| 5 | The updater could not read the databases it exists to snapshot. | Requires the real two-user deployment; a developer runs both halves as themselves. |
+| 6 | A WAL database is three files, and only the one with the name was being secured. The sidecars are recreated at every checkpoint, so they reverted to owner-only and refused every reader the main file admitted. | Needs a live database being checkpointed by a running daemon. |
+
+Two properties worth carrying forward:
+
+- **An updater defect that blocks updates is self-perpetuating.** The deployment cannot pull its own
+  fix, because the broken check refuses every candidate. It bit three times during this exercise and
+  each time needed a manual re-lay. That is what makes the staleness alarm load-bearing rather than
+  decorative, and it is the argument for `check` mode existing at all.
+- **Verifying the thing you changed is not verifying the thing that failed.** Defects 5 and 6 were
+  each "fixed" and confirmed on the box before being found still broken — because the confirmation
+  looked at the file that had been edited rather than at the operation that was failing. `test -r`
+  on a database whose sidecars are unreadable says readable.
+
 ## Open: MTA-STS policy without an `mx` list
 
 RFC 8461 §3.2's policy ABNF marks `sts-policy-mx` "required at least once, except when mode is
