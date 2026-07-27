@@ -83,6 +83,26 @@ export const SPF_LIMITS = [
       + 'chose the opposite answer.',
   },
   {
+    id: 'R-7208-4.6.4-c2',
+    rfc: 'rfc7208',
+    section: '4.6.4',
+    page: 18,
+    level: 'MUST NOT',
+    party: 'server',
+    normativeSource: 'prose',
+    text: 'querying more than 10 address records -- either "A" or "AAAA" resource records.',
+    testability: { kind: 'parse' },
+    note:
+      'What the "mx" cap counts, and the half that was missing here. The sentence begins on the '
+      + 'previous page ("In addition to that limit, the evaluation of each \'MX\' record MUST NOT '
+      + 'result in..."), so only its tail is quoted. The register carried this rule for PTR '
+      + '(R-7208-4.6.4-d) and not for MX, which is the mechanism actually implemented. The unit is '
+      + 'ADDRESS RECORDS, not hosts: asking each of ten permitted hosts for both A and AAAA is '
+      + 'twenty, over a limit of ten. Only the family the client connected over can match, so the '
+      + 'server asks for one — which satisfies the cap at ten hosts and refuses no sender that '
+      + 'asking for both would have accepted.',
+  },
+  {
     id: 'R-7208-4.6.4-d',
     rfc: 'rfc7208',
     section: '4.6.4',
@@ -161,6 +181,22 @@ export const SPF_LIMITS = [
       + 'from R-7208-5.1-a: a redirect written BEFORE the "all" must still be ignored, even though the '
       + 'left-to-right rule would otherwise reach it first. An implementation that only skips terms '
       + 'after "all" gets this exactly wrong, and follows a redirect the record\'s author disabled.',
+  },
+  {
+    id: 'R-7208-5.7-a',
+    rfc: 'rfc7208',
+    section: '5.7',
+    page: 25,
+    level: 'MUST',
+    party: 'server',
+    normativeSource: 'prose',
+    text: 'The resulting domain name is used for a DNS A RR lookup (even when the connection type is IPv6).',
+    testability: { kind: 'parse' },
+    note:
+      'Stated in those words, and the parenthesis is the whole point: "exists" is the one mechanism '
+      + 'whose record type does NOT follow the connection. A name published with only AAAA records '
+      + 'must not satisfy it. Querying both types made an IPv6 client match on an AAAA-only name, '
+      + 'which is the opposite of what this says.',
   },
   {
     id: 'R-7208-5.2-a',

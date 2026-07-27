@@ -136,10 +136,14 @@ const dnsSpfResolvers: SpfResolvers = {
       throw e;
     }
   },
-  a: async (name) => {
-    const out: string[] = [];
-    await Promise.all([resolve4(name).then((r) => out.push(...r)).catch(() => {}), resolve6(name).then((r) => out.push(...r)).catch(() => {})]);
-    return out;
+  a: async (name, rr) => {
+    // One record type, chosen by the caller. Querying the family the client did not connect over
+    // cannot change any answer, and §4.6.4 counts those queries against the "mx" cap.
+    try {
+      return await (rr === 'AAAA' ? resolve6(name) : resolve4(name));
+    } catch {
+      return [];
+    }
   },
   mx: async (name) => {
     try {

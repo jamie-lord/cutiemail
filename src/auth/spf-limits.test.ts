@@ -240,3 +240,60 @@ test('the PTR address-lookup cap is not reachable: ptr is not implemented', asyn
   assert.notEqual(result, 'pass', 'an unimplemented mechanism must never authorise a sender');
   assert.equal(resolvers.counts.a, 0, 'and costs no address lookups, so there is nothing to cap');
 });
+
+test('an mx term queries ten address records, not twenty', async () => {
+  // RFC 7208 §4.6.4: "the evaluation of each 'MX' record MUST NOT result in querying more than 10
+  // address records -- either 'A' or 'AAAA' resource records."  Asking for BOTH types per host
+  // makes ten permitted hosts twenty address records, and ten such terms turned one unauthenticated
+  // MAIL FROM into ~200 queries aimed at whatever zone the MX targets name — the third-party
+  // reflection §11.1 calls the easiest SPF vector to exploit. Only the family the client connected
+  // over can match, so the other query cannot change the verdict.
+  cites('R-7208-4.6.4-c2');
+  const asked: Array<{ name: string; rr: string }> = [];
+  const hosts = Array.from({ length: 10 }, (_, i) => `mx${i}.dead.example`);
+  const resolvers: SpfResolvers = {
+    txt: async (n) => (n === 'one.example' ? ['v=spf1 mx -all'] : []),
+    mx: async () => hosts,
+    a: async (name, rr) => {
+      asked.push({ name, rr });
+      return [];
+    },
+  };
+  const result = await checkSpf('198.51.100.7', 'one.example', resolvers);
+  assert.equal(result, 'fail');
+  assert.equal(asked.length, 10, `ten hosts cost ten address records, got ${asked.length}`);
+  assert.ok(asked.every((q) => q.rr === 'A'), 'an IPv4 client is never matched by an AAAA record');
+});
+
+test('an IPv6 client asks for AAAA, and only AAAA', async () => {
+  const asked: string[] = [];
+  const resolvers: SpfResolvers = {
+    txt: async () => ['v=spf1 a -all'],
+    mx: async () => [],
+    a: async (_n, rr) => {
+      asked.push(rr);
+      return rr === 'AAAA' ? ['2001:db8::1'] : ['198.51.100.1'];
+    },
+  };
+  const result = await checkSpf('2001:db8::1', 'one.example', resolvers);
+  assert.equal(result, 'pass');
+  assert.deepEqual(asked, ['AAAA']);
+});
+
+test('exists is an A lookup even for an IPv6 client, as §5.7 states outright', async () => {
+  // "The resulting domain name is used for a DNS A RR lookup (even when the connection type is
+  // IPv6)." A name carrying only AAAA records must NOT match.
+  cites('R-7208-5.7-a');
+  const asked: string[] = [];
+  const resolvers: SpfResolvers = {
+    txt: async () => ['v=spf1 exists:probe.one.example -all'],
+    mx: async () => [],
+    a: async (_n, rr) => {
+      asked.push(rr);
+      return rr === 'AAAA' ? ['2001:db8::1'] : [];
+    },
+  };
+  const result = await checkSpf('2001:db8::1', 'one.example', resolvers);
+  assert.deepEqual(asked, ['A'], 'exists asks for A regardless of the connection family');
+  assert.equal(result, 'fail', 'an AAAA-only name does not satisfy exists');
+});

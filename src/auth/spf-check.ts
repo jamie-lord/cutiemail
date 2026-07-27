@@ -23,8 +23,18 @@ export type SpfResult = 'pass' | 'fail' | 'softfail' | 'neutral' | 'none' | 'per
 export interface SpfResolvers {
   /** SPF/TXT records for a name (each already a single joined string); [] if none, throws on DNS error. */
   readonly txt: (name: string) => Promise<readonly string[]>;
-  /** A + AAAA addresses for a name; [] if none. */
-  readonly a: (name: string) => Promise<readonly string[]>;
+  /**
+   * Addresses of ONE record type for a name; [] if none.
+   *
+   * The type is the caller's to choose, and it is never "both". Only the family the client actually
+   * connected over can match, so querying the other one is work that cannot change the answer — and
+   * §4.6.4 counts it: "the evaluation of each 'MX' record MUST NOT result in querying more than 10
+   * address records -- either 'A' or 'AAAA'". Ten MX hosts asked for both types is twenty address
+   * records against a limit of ten. Asking for one is ten, and refuses no sender that the pair
+   * would have accepted. `exists` is the exception the RFC states outright (§5.7): an A lookup
+   * "even when the connection type is IPv6".
+   */
+  readonly a: (name: string, rr: 'A' | 'AAAA') => Promise<readonly string[]>;
   /** MX target hostnames for a name, in any order; [] if none. */
   readonly mx: (name: string) => Promise<readonly string[]>;
 }
@@ -56,6 +66,19 @@ const MAX_VOID_LOOKUPS = 2;
  * it), so only the MX half has anything to enforce.
  */
 const MAX_MX_ADDRESS_LOOKUPS = 10;
+
+/**
+ * Which address record type can possibly match a client at this address.
+ *
+ * An IPv4 client cannot be matched by an AAAA record and an IPv6 client cannot be matched by an A
+ * record, so the other query is work whose result is discarded — and under §4.6.4's cap of ten
+ * address records per "mx", issuing both is what turned ten permitted lookups into twenty. Asking
+ * for one halves the DNS this server can be made to emit on a stranger's behalf (§11.1's
+ * third-party reflection) without refusing a single sender the pair would have accepted.
+ */
+function addressRr(ip: string): 'A' | 'AAAA' {
+  return net.isIPv6(ip) ? 'AAAA' : 'A';
+}
 
 /** An IP address as a big integer plus its bit-width (32 for v4, 128 for v6), or null. */
 function ipToBig(ip: string): { value: bigint; bits: 32 | 128 } | null {
@@ -216,7 +239,7 @@ async function matchMechanism(term: SpfTerm, state: EvalState, depth: number, cu
       try {
         if (mech === 'a') {
           const { domain, v4, v6 } = splitDualCidr(value);
-          const addrs = await state.resolvers.a(domain || currentDomain);
+          const addrs = await state.resolvers.a(domain || currentDomain, addressRr(state.ip));
           if (addrs.length === 0 && ++state.voids > MAX_VOID_LOOKUPS) return 'error'; // §4.6.4
           return anyAddressMatches(state.ip, addrs, v4, v6);
         }
@@ -230,12 +253,14 @@ async function matchMechanism(term: SpfTerm, state: EvalState, depth: number, cu
           // see MAX_MX_ADDRESS_LOOKUPS for why the RFC decides this the other way for "ptr".
           if (hosts.length > MAX_MX_ADDRESS_LOOKUPS) return 'error';
           for (const host of hosts) {
-            if (anyAddressMatches(state.ip, await state.resolvers.a(host), v4, v6)) return true;
+            if (anyAddressMatches(state.ip, await state.resolvers.a(host, addressRr(state.ip)), v4, v6)) return true;
           }
           return false;
         }
         if (mech === 'exists') {
-          const addrs = await state.resolvers.a(value);
+          // "A RR lookup (even when the connection type is IPv6)" — §5.7, stated in those words.
+          // A name with only AAAA records must NOT match.
+          const addrs = await state.resolvers.a(value, 'A');
           if (addrs.length === 0 && ++state.voids > MAX_VOID_LOOKUPS) return 'error'; // §4.6.4
           return addrs.length > 0;
         }
