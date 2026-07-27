@@ -9,6 +9,12 @@ It ships **reporting-only**. It will tell you a new version is available and tha
 cleanly; it will not switch until you say so. Turn switching on once you have watched it be right a
 few times.
 
+Reporting-only is about the **switch**, not about execution. Verifying a candidate means running it
+— importing every module, and booting the daemon against a copy of your data — so `check` mode
+already executes code from the remote, as the ladder below describes. What `apply` adds is the
+symlink move. If you would rather a deployment ran nothing at all from the remote, `off` is the
+setting for that.
+
 The design and its reasoning are in [ADR 0025](decisions/0025-self-update.md), and what a live test
 of it found is in [the backlog](BACKLOG.md#closed-what-a-live-self-update-test-found). This page is
 how to run it. If you would rather upgrade by hand, that is

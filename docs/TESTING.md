@@ -300,6 +300,20 @@ through an injected service seam — a drain that never finishes, a version that
 that fails its probe, one that dies inside the probe window, and an interruption on either side of
 the symlink move.
 
+A fifth audit then found two of those rungs reporting success without having established what their
+own text claims, which is the failure mode that matters most for a safety mechanism: rung 4 said
+"N modules load" having imported one, because the sweep it spawns ends with `process.exit(0)` and a
+module that calls the same thing at import time ended it early with status 0; and rung 6a said
+"everything intact" while comparing only mailbox identity and message bytes, so a migration that
+emptied every flag, zeroed every internal date and reset the catalog high-water marks produced no
+findings. Both now check what they claim — the sweep records progress to a file the parent reads
+back, and the census covers flags, dates, the expunge journal and the marks that govern identifiers
+not yet allocated.
+
+The test that should have caught the first is worth recording, because it looked exactly like a
+guard: `assert.ok(result.modules > 150, 'the whole tree was swept, not a corner of it')`. That count
+is the number of modules *found*, not imported. It read 226 while the sweep imported four.
+
 None of that could establish the thing that actually mattered, and the subsystem is the project's
 sharpest example of why: the pre-flight *spawns* the candidate itself, so it has no systemd sandbox,
 no second user, no polkit, and no real database being checkpointed underneath it. A run against a
@@ -310,6 +324,20 @@ suite from the ladder (rungs 1 and 2 already prove the checkout is byte-identica
 commit) and added the rung that asks whether the *running* version can still read what the candidate
 migrated. The defect list, the deliberate failure drills, and what each says about where to look
 next are in [BACKLOG.md](BACKLOG.md#closed-what-a-live-self-update-test-found).
+
+A fifth audit then found two of those rungs reporting success without having established what their
+own text claims, which is the failure mode that matters most for a safety mechanism: rung 4 said
+"N modules load" having imported one, because the sweep it spawns ends with `process.exit(0)` and a
+module that calls the same thing at import time ended it early with status 0; and rung 6a said
+"everything intact" while comparing only mailbox identity and message bytes, so a migration that
+emptied every flag, zeroed every internal date and reset the catalog high-water marks produced no
+findings. Both now check what they claim — the sweep records progress to a file the parent reads
+back, and the census covers flags, dates, the expunge journal and the marks that govern identifiers
+not yet allocated.
+
+The test that should have caught the first is worth recording, because it looked exactly like a
+guard: `assert.ok(result.modules > 150, 'the whole tree was swept, not a corner of it')`. That count
+is the number of modules *found*, not imported. It read 226 while the sweep imported four.
 
 None of that could establish the thing that actually mattered, and the subsystem is the project's
 sharpest example of why: the pre-flight *spawns* the candidate itself, so it has no systemd sandbox,

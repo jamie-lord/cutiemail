@@ -105,6 +105,62 @@ Two properties worth carrying forward:
   looked at the file that had been edited rather than at the operation that was failing. `test -r`
   on a database whose sidecars are unreadable says readable.
 
+## Closed: what a fifth security audit found
+
+The first four runs covered the mail server. This one was weighted to `src/update/`, which did not
+exist when run 4 was written and had never been audited, plus everything else changed since. Twelve
+findings, all reproduced by running code, all fixed with a mutation-verified test.
+
+The one that matters most is a **confused deputy**, and it defeats the property ADR 0025 exists to
+deliver. The mail daemon owns the control database, so it chooses what an account's `login` says.
+The updater reads logins back out and joins them into filesystem paths — so a daemon that had been
+compromised could steer the pre-flight's `VACUUM INTO`, and the rollback's `copyFileSync`, into the
+version store it is forbidden to write. `ProtectSystem=strict` does not help: it constrains which
+process writes, and the point is that a *different* process does the writing. Nothing reached
+execution — the content always carries the SQLite header and nothing loads a file it finds by
+enumeration — so this was a boundary breach, not persistence.
+
+| # | What | Where |
+|---|---|---|
+| 1 | A daemon-chosen login steered a snapshot write into the code store; the containment assert ran after every copy | `update/snapshot.ts` |
+| 2 | The rollback followed a dangling symlink, which `existsSync` cannot see, out of the data directory | `update/cutover.ts` |
+| 3 | A pre-flight that failed every run still refreshed the freshness clock, so the staleness alarm never fired | `update/state.ts` |
+| 4 | Repeated STATUS items multiplied a mailbox scan per matched mailbox, freezing the whole event loop for every account | `server/imap-server.ts` |
+| 5 | The APPEND fairness budget was keyed on the wire spelling of the login, so case variants each got a slice | `server/imap-server.ts` |
+| 6 | An `mx` term queried both A and AAAA per host — twice the address records §4.6.4 permits — and `exists` ignored §5.7's A-only rule | `auth/spf-check.ts` |
+| 7 | The provisioning rsync carried 3 of the 12 exclude patterns its siblings carry, publishing key material at 0644 | `deploy/hetzner-up.sh` |
+| 8 | Doc titles and ADR filenames reached `<title>` and two `href`s unescaped, so a filename alone put script on every published page | `site/build.mjs` |
+| 9 | The submission fix-up validated truncation on its input and returned a larger buffer; the signer signed the truncated list | `server/submission-fixup.ts`, `server/dkim-signer.ts` |
+| 10 | A subtree rename stored a name `CREATE` could not produce, stranding a listed but unselectable mailbox | `store/mailbox-name.ts` |
+| 11 | Rung 4 reported every module loading after importing one, because a module that exits at import time ends the sweep with status 0 | `update/executable.ts` |
+| 12 | The migration census ignored flags, internal dates, the expunge journal and the marks governing future ids | `update/snapshot.ts` |
+
+**Two findings were rejected during validation, and that is the more useful result.** A packfile
+whose deltas expand without an aggregate bound, and a checkout whose limits count blobs but not
+directories, are both real — 20 KiB became 1.6 GiB of live buffers, and 929 bytes became 87,381
+directories. Neither is a security finding: an adversarial validator drove the real
+`acquireCandidate` against the project's own test git server and **925 bytes of fabricated history
+passed both provenance rules**, so anyone able to serve those bytes can ship code instead, which
+ADR 0025 already accepts. They remain as correctness defects, and `packfile.ts`'s claim that "every
+dimension a hostile pack could grow along is bounded here" is false — resolved aggregate is a fifth
+dimension. Recorded here rather than fixed, because the honest severity is low and the fix is a cap
+whose value nobody can justify from evidence yet.
+
+**Nine of the twelve are the same shape**, which is now the clearest signal this codebase gives
+about itself: a rule applied on one path and not on its structural twin. `checkout.ts` validates
+remote-supplied path components and the `login` path did not; `og:title` was escaped and `<title>`
+was not; the void-lookup budget covered `a` and `exists` but not `mx`; `migrateMailboxIdHwm`
+reconciles unconditionally and `migrateCatalogMeta` returned early; `.gitignore` and `.dockerignore`
+carry twelve exclude patterns and the rsync carried three. Fixing one instance without looking for
+the sibling is how each of these survived the review that created it.
+
+**Two tests were found that could not fail.** `executable.test.ts` asserted `result.modules > 150`
+with the comment "the whole tree was swept, not a corner of it" — but that count is the number of
+modules *found*, not imported, so it read 226 while the sweep imported four. And during this work a
+wall-clock assertion about the STATUS freeze passed with the defect still in place, so it was
+replaced by a deterministic count of mailbox scans. A test shaped like a guard is worse than no
+test, because it stops anyone looking.
+
 ## Open: MTA-STS policy without an `mx` list
 
 RFC 8461 §3.2's policy ABNF marks `sts-policy-mx` "required at least once, except when mode is
