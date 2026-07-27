@@ -239,6 +239,14 @@ reference](#configuration-reference).
   revocable per-device **app passwords** (ADR 0017); submission is **sender-authorized**: an
   authenticated account can only send *as* an address it owns, so one account can never spoof
   another's `From` (ADR 0015).
+- **Keep itself patched**: self-hosted software rots because upgrading is a chore nobody schedules,
+  so a deployment can pull its own updates. A candidate version is verified *on your machine against
+  a snapshot of your real data* — the migration is run and timed, your accounts and messages are
+  compared byte for byte afterwards, and the version you are running now must still be able to read
+  what the new one migrated — before a `rename(2)` over a symlink switches to it. If the live mail
+  path doesn't work after the switch, it rolls back on its own. The updater runs as a **separate
+  user**, so the internet-facing daemon can never write the code it will run next (ADR 0025). Off by
+  default, reporting-only when enabled; see [keeping a deployment up to date](docs/SELF-UPDATE.md).
 
 The wire between every layer is raw bytes: message content is a `Buffer` from the socket to the
 SQLite `BLOB` and back, never round-tripped through a JavaScript string. That "bytes, never
@@ -246,10 +254,12 @@ strings" rule is what lets a delivered message be read back byte-exact.
 
 ## How it's built
 
-The tree is really two programs sharing one spine: the runnable server, and a conformance test
-bed that drives *the same code* the daemon runs. [The architecture guide](docs/ARCHITECTURE.md) is
-the guided tour: the layering from octet primitives up to the daemon, and a byte-by-byte trace of
-one message from SMTP in to IMAP out. Start there to read the codebase.
+The tree is really three programs sharing one spine: the runnable server, a conformance test bed
+that drives *the same code* the daemon runs, and an updater that runs as a different user and
+verifies a candidate version with the server's own store and conformance code.
+[The architecture guide](docs/ARCHITECTURE.md) is the guided tour: the layering from octet
+primitives up to the daemon, and a byte-by-byte trace of one message from SMTP in to IMAP out.
+Start there to read the codebase.
 
 ## How it's tested, and why that's trustworthy
 

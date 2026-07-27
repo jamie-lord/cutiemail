@@ -279,6 +279,49 @@ transport-security policy that a single forged DNS answer could evict, revocatio
 reached a session sitting in IDLE, a shared upload budget one account could take whole, and
 remote text reaching an operator's terminal unsanitised in the conformance tool.
 
+### Self-update: ADR 0025
+
+The updater downloads and then runs code, so both halves are tested as hostile input. The git wire
+protocol (pkt-line framing, protocol v2 advertisement, packfile and delta decoding, object ids) runs
+against a fake server that emits real encodings, and every malformed shape is a refusal rather than
+a truncation: a delta with no base, a copy past the end of its base, a decompression bomb, a pack
+promising more objects than it carries. The checkout refuses traversal, `.git` in any case, symlink
+and gitlink modes, and leaves no partial tree behind when it does. Provenance is tested from both
+ends — a rewritten branch and a deployment older than the fetch depth are refused with *different*
+reasons, because "someone force-pushed" and "you are very far behind" need different answers.
+
+Each ladder rung is then tested by a candidate built to fail that rung and no other: a missing
+load-bearing module, a checkout of the wrong project, a version demanding a newer Node, a module the
+runtime cannot parse, a candidate that cannot start, one that breaks a conformance requirement the
+running version satisfies. The snapshot layer has its own: a control copy with any account still
+pointing at live data is refused rather than used, and the census comparison is proven to catch
+every way a migration can lose or alter data, credential material included. The cutover is driven
+through an injected service seam — a drain that never finishes, a version that will not start, one
+that fails its probe, one that dies inside the probe window, and an interruption on either side of
+the symlink move.
+
+None of that could establish the thing that actually mattered, and the subsystem is the project's
+sharpest example of why: the pre-flight *spawns* the candidate itself, so it has no systemd sandbox,
+no second user, no polkit, and no real database being checkpointed underneath it. A run against a
+real deployment found nine defects the whole suite had passed over, each a property of the machine
+rather than of the code. That produced a rule the ladder is now built on — **a pre-flight check must
+be able to fail for a reason CI could not have caught** — which removed the candidate's own test
+suite from the ladder (rungs 1 and 2 already prove the checkout is byte-identical to a tested
+commit) and added the rung that asks whether the *running* version can still read what the candidate
+migrated. The defect list, the deliberate failure drills, and what each says about where to look
+next are in [BACKLOG.md](BACKLOG.md#closed-what-a-live-self-update-test-found).
+
+None of that could establish the thing that actually mattered, and the subsystem is the project's
+sharpest example of why: the pre-flight *spawns* the candidate itself, so it has no systemd sandbox,
+no second user, no polkit, and no real database being checkpointed underneath it. A run against a
+real deployment found nine defects the whole suite had passed over, each a property of the machine
+rather than of the code. That produced a rule the ladder is now built on — **a pre-flight check must
+be able to fail for a reason CI could not have caught** — which removed the candidate's own test
+suite from the ladder (rungs 1 and 2 already prove the checkout is byte-identical to a tested
+commit) and added the rung that asks whether the *running* version can still read what the candidate
+migrated. The defect list, the deliberate failure drills, and what each says about where to look
+next are in [BACKLOG.md](BACKLOG.md#closed-what-a-live-self-update-test-found).
+
 ### End to end
 
 Two daemon instances exchange a signed, dual-`Received`-traced message over real sockets;

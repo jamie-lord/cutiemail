@@ -2,7 +2,10 @@
 
 ## Status
 
-Accepted. Implemented; automatic switching ships disabled (see below).
+Accepted. Implemented; automatic switching ships disabled (see below). Exercised end to end against
+a real deployment, which changed the verification ladder — see
+[the backlog](../BACKLOG.md#closed-what-a-live-self-update-test-found) for what it found and
+[keeping a deployment up to date](../SELF-UPDATE.md) for how to run it.
 
 ## Context
 

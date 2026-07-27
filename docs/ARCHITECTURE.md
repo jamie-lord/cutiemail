@@ -232,6 +232,23 @@ each check/command is tested in both directions (detects the broken state, no fa
 the healthy one). Accounts are provisioned here rather than by env (ADR 0012); there is
 deliberately no HTTP listener (ADR 0013).
 
+**`src/update/`**: the self-updater, and the one part of the tree that is *not* reachable from
+`main.ts`. It is a separate program run by a systemd timer as a separate user, because the whole
+security argument is that the internet-facing daemon cannot write the code it will run next
+(ADR 0025) — so the dependency arrow points the other way round from everything above: the updater
+imports the daemon's store and conformance code to verify a candidate, and the daemon imports
+nothing from here. Bottom up: `pkt-line.ts`, `smart-http.ts`, `packfile.ts` and `objects.ts` speak
+enough of git's wire protocol v2 over HTTPS to fetch and verify a commit with no `git` binary and no
+dependency; `acquire.ts` and `checkout.ts` turn that into a content-verified tree, `shape.ts` and
+`executable.ts` ask whether it can run on *this* machine, `snapshot.ts` copies the live databases
+with `VACUUM INTO`, and `preflight.ts` boots the candidate against those copies with the real
+configuration and measures the migration. `version-store.ts` owns the `current` symlink,
+`cutover.ts` performs the drained, crash-safe switch and the automatic revert, `state.ts` records
+the phase so an interrupted switch can be recovered, and `run-lock.ts` keeps two runs off one store.
+`candidate-process.ts` is the seam every "spawn the new version" step goes through, so all of it is
+testable without a second machine. The operator's view is
+[keeping a deployment up to date](SELF-UPDATE.md).
+
 ## The test bed, and why it can be trusted
 
 A conformance suite that reports all-green against a broken server is worse than

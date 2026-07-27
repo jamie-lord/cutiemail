@@ -191,7 +191,7 @@ UNIT
 ssh "root@$IP" 'chmod 600 /etc/systemd/system/mailserver.service'
 ssh "root@$IP" 'systemctl daemon-reload && systemctl enable --now mailserver && sleep 1 && systemctl --no-pager status mailserver | head -6'
 
-# ---- automatic updates (ADR 0025) -----------------------------------------------------------
+# ---- automatic updates (ADR 0025, docs/SELF-UPDATE.md) ---------------------------------------
 # Skipped for a dirty working tree: see the note where COMMIT is computed.
 if [ -n "$COMMIT" ]; then
   echo "wiring up automatic updates (reporting only; set MAIL_UPDATE_MODE=apply to let it switch)..."
@@ -284,6 +284,10 @@ TIMER
   # store holds only content-verified checkouts and a wrong commit fails here rather than silently
   # poisoning every later comparison.
   ssh "root@$IP" "sudo -u mailupd MAIL_UPDATE_ROOT=/opt/mailserver /usr/bin/node --disable-warning=ExperimentalWarning /opt/mailserver/current/src/update/main.ts adopt $COMMIT"
+  UPDATE_NOTE="  update status:   ssh root@$IP 'sudo -u mailupd MAIL_UPDATE_ROOT=/opt/mailserver node /opt/mailserver/current/src/update/main.ts status'
+                   (checks run six-hourly and only REPORT; docs/SELF-UPDATE.md to let it switch)"
+else
+  UPDATE_NOTE="  updates:         not wired up (the working tree was dirty); see docs/SELF-UPDATE.md"
 fi
 
 cat <<DONE
@@ -296,6 +300,7 @@ Reverse DNS is already set. Once DNS propagates, email $MAIL_USER@$MAIL_DOMAIN
 from your normal inbox and it should arrive.
 
   watch it land:   ssh root@$IP journalctl -fu mailserver
+$UPDATE_NOTE
   read over IMAP:  IMAPS $MAIL_DOMAIN:993, user '$MAIL_USER' (per-box self-signed cert -> accept
                    the warning, or upgrade to Let's Encrypt: certbot certonly --standalone
                    -d $MAIL_DOMAIN, then repoint MAIL_TLS_CERT/MAIL_TLS_KEY at the live cert)
