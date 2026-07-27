@@ -26,7 +26,9 @@
  * entry-point.ts, and note that the two are load-bearing for each other.
  */
 
-import { readdirSync } from 'node:fs';
+import { randomUUID } from 'node:crypto';
+import { readdirSync, readFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join, relative } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { runCommand } from './candidate-process.ts';
@@ -82,16 +84,32 @@ export async function checkExecutable(candidateDir: string, env: Record<string, 
   // has exactly such a guard by design (entry-point.ts). Passing the data out of band leaves argv
   // looking the way a loaded module expects.
   const list = JSON.stringify(modules.map((name) => ({ name, url: pathToFileURL(join(candidateDir, name)).href })));
+  // PROGRESS GOES TO A FILE, not to stdout, and the parent insists on reading it back.
+  //
+  // The child ends with an explicit `process.exit(0)`, and any module can call that too — at import
+  // time, which is the commonest shape a command-line entry point has. When it did, the child ended
+  // with status 0 and no LOAD-FAILED line, which was the whole of the parent's success test: the
+  // rung reported every module loading having imported only the ones before it. Nothing downstream
+  // compensates, because this is the only rung that touches the modules the daemon does not import.
+  //
+  // stdout cannot carry the answer: `console.log` is truncated when a process exits, so the count
+  // the sweep printed went missing in exactly the case that needed it. A file written after each
+  // import survives, because the write has already completed.
+  const marker = join(tmpdir(), `cutiemail-sweep-${randomUUID()}`);
   const script = [
     `const modules = ${list};`,
+    `const marker = ${JSON.stringify(marker)};`,
+    "const { writeFileSync } = await import('node:fs');",
+    'let done = 0;',
     'for (const m of modules) {',
     '  try { await import(m.url); }',
     '  catch (e) {',
     '    console.log(`LOAD-FAILED ${m.name}: ${e instanceof Error ? (e.stack ?? e.message) : String(e)}`);',
     '    process.exit(1);',
     '  }',
+    '  done++;',
+    '  writeFileSync(marker, `${done} ${m.name}`);',
     '}',
-    'console.log(`LOADED ${modules.length}`);',
     // Exit explicitly. A module that leaves a timer or a listener behind would otherwise hold this
     // process open long past the point where the question was answered, and the rung would report a
     // timeout when every module in fact loaded. What this rung measures is loading.
@@ -111,5 +129,29 @@ export async function checkExecutable(candidateDir: string, env: Record<string, 
   const failed = /^LOAD-FAILED (.*)$/m.exec(result.output);
   if (failed !== null) return { ok: false, modules: modules.length, detail: failed[1] ?? result.output.slice(-2000) };
   if (result.code !== 0) return { ok: false, modules: modules.length, detail: `exit ${String(result.code)}\n${result.output.slice(-2000)}` };
+
+  // "It exited cleanly" is not "it examined the tree". Read back how far the sweep actually got.
+  let progress = '';
+  try {
+    progress = readFileSync(marker, 'utf8');
+  } catch {
+    progress = '';
+  } finally {
+    rmSync(marker, { force: true });
+  }
+  const done = Number(progress.split(' ')[0] ?? 0);
+  if (!Number.isInteger(done) || done !== modules.length) {
+    // The marker records COMPLETED imports, so the module it died in is the next one — a module
+    // that exits during its own import never gets to record itself.
+    const at = modules[done] ?? 'an unknown module';
+    return {
+      ok: false,
+      modules: modules.length,
+      detail:
+        `the import sweep exited 0 having completed ${done}/${modules.length} modules; it stopped in ${at}, ` +
+        `so ${modules.length - done} module(s) were never examined. A module that calls process.exit at ` +
+        'import time ends the sweep without failing it.',
+    };
+  }
   return { ok: true, modules: modules.length, detail: `${modules.length} modules load under ${process.version}` };
 }

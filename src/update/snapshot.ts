@@ -238,9 +238,25 @@ export interface MailboxCensus {
   readonly uidValidity: number;
 }
 
+/**
+ * The two high-water marks that govern identifiers NOT YET ALLOCATED.
+ *
+ * Censused because their loss is invisible in everything else: every mailbox and every message is
+ * still present and byte-identical, and the damage arrives later, when the next CREATE hands out a
+ * UIDVALIDITY that collides with a live mailbox's — which sqlite-mailbox.ts's own comment says must
+ * never happen, because a client caches by (UIDVALIDITY, UID). A decrease is loss even though
+ * nothing is missing yet.
+ */
+export interface CatalogMarks {
+  readonly login: string;
+  readonly uidValidityHwm: number;
+  readonly mailboxIdHwm: number;
+}
+
 export interface Census {
   readonly accounts: ReadonlyArray<{ readonly login: string; readonly enabled: boolean; readonly aliases: readonly string[] }>;
   readonly mailboxes: readonly MailboxCensus[];
+  readonly catalogMarks: readonly CatalogMarks[];
   readonly queueDepth: number;
   readonly deadLetters: number;
   /**
@@ -349,12 +365,21 @@ export function censusOf(snapshot: Snapshot): Census {
   const digestIsFull = messageBytes <= FULL_DIGEST_LIMIT_BYTES;
 
   const mailboxes: MailboxCensus[] = [];
+  const catalogMarks: CatalogMarks[] = [];
   const mailSchemaVersions: Record<string, number> = {};
   const digest = createHash('sha256');
   for (const { login, path } of snapshot.mailDbs) {
     const db = new DatabaseSync(path, { readOnly: true });
     try {
       mailSchemaVersions[login] = Number((db.prepare('PRAGMA user_version').get() as { user_version: number | bigint }).user_version);
+      const marks = db.prepare('SELECT uid_validity_hwm, mailbox_id_hwm FROM catalog_meta WHERE id = 0').get() as
+        | { uid_validity_hwm: number | bigint; mailbox_id_hwm: number | bigint }
+        | undefined;
+      catalogMarks.push({
+        login,
+        uidValidityHwm: marks === undefined ? 0 : Number(marks.uid_validity_hwm),
+        mailboxIdHwm: marks === undefined ? 0 : Number(marks.mailbox_id_hwm),
+      });
       const boxes = db.prepare('SELECT id, name, uid_next, uid_validity FROM mailbox ORDER BY name').all() as Array<{
         id: number;
         name: string;
@@ -373,9 +398,38 @@ export function censusOf(snapshot: Snapshot): Census {
           uidValidity: Number(box.uid_validity),
         });
         // Ordered by uid so the digest is a function of the content, not of SQLite's row order.
-        const rows = db.prepare('SELECT uid, raw FROM message WHERE mailbox_id = ? ORDER BY uid').all(box.id) as Array<{ uid: number; raw: Buffer }>;
+        // internal_date is in the digest because it is what IMAP SINCE/BEFORE and every client's
+        // sort order run on: a migration that zeroed it would leave every message present, every
+        // byte identical, and every mailbox unusable in date order.
+        const rows = db.prepare('SELECT uid, raw, internal_date FROM message WHERE mailbox_id = ? ORDER BY uid').all(box.id) as Array<{
+          uid: number;
+          raw: Buffer;
+          internal_date: number | bigint;
+        }>;
+        // Flags are per (mailbox, uid) rather than on the message row, so they are read once per
+        // mailbox and indexed, not queried per message. Losing them marks every message in every
+        // account unread and discards every pending \\Deleted — user-visible, and irreversible once
+        // the pre-cutover snapshot is pruned.
+        const flagRows = db.prepare('SELECT uid, flag FROM flag WHERE mailbox_id = ? ORDER BY uid, flag').all(box.id) as Array<{
+          uid: number;
+          flag: string;
+        }>;
+        const flagsByUid = new Map<number, string[]>();
+        for (const f of flagRows) {
+          const list = flagsByUid.get(Number(f.uid));
+          if (list === undefined) flagsByUid.set(Number(f.uid), [f.flag]);
+          else list.push(f.flag);
+        }
+        // The expunge journal is what QRESYNC replays to a reconnecting client. Dropping it does
+        // not lose mail, but it silently degrades every phone's fast resync into a full refetch.
+        const expunged = db.prepare('SELECT uid, mod_seq FROM expunged WHERE mailbox_id = ? ORDER BY uid').all(box.id) as Array<{
+          uid: number;
+          mod_seq: number | bigint;
+        }>;
+        for (const e of expunged) digest.update(`${login}\0${box.name}\0X\0${e.uid}\0${String(e.mod_seq)}\0`);
         for (const row of rows) {
-          digest.update(`${login}\0${box.name}\0${row.uid}\0${row.raw.length}\0`);
+          digest.update(`${login}\0${box.name}\0${row.uid}\0${row.raw.length}\0${String(row.internal_date)}\0`);
+          digest.update(`${(flagsByUid.get(Number(row.uid)) ?? []).join(',')}\0`);
           if (digestIsFull) digest.update(row.raw);
           else {
             digest.update(row.raw.subarray(0, 8192));
@@ -391,6 +445,7 @@ export function censusOf(snapshot: Snapshot): Census {
   return {
     accounts,
     mailboxes,
+    catalogMarks,
     queueDepth,
     deadLetters,
     queueDigest,
@@ -418,6 +473,26 @@ export function compareCensus(before: Census, after: Census): string[] {
   const loginsOf = (c: Census): string => c.accounts.map((a) => `${a.login}:${a.enabled ? 'on' : 'off'}[${a.aliases.join('|')}]`).join(',');
   if (loginsOf(before) !== loginsOf(after)) {
     findings.push(`accounts changed across the migration: before [${loginsOf(before)}], after [${loginsOf(after)}]`);
+  }
+
+  // The marks that govern identifiers not yet allocated. A DECREASE is the finding: raising a
+  // high-water mark is how a migration legitimately reserves room, but lowering one hands the next
+  // CREATE a UIDVALIDITY or mailbox id that a live — or recently deleted — mailbox already holds,
+  // and a client that caches by (UIDVALIDITY, UID) then reads one folder's mail as another's.
+  const marksOf = (c: Census): Map<string, CatalogMarks> => new Map(c.catalogMarks.map((m) => [m.login, m]));
+  const beforeMarks = marksOf(before);
+  for (const [login, a] of marksOf(after)) {
+    const b = beforeMarks.get(login);
+    if (b === undefined) continue;
+    if (a.uidValidityHwm < b.uidValidityHwm) {
+      findings.push(
+        `${login}: the UIDVALIDITY high-water mark went BACKWARDS, ${b.uidValidityHwm} -> ${a.uidValidityHwm}. ` +
+          'The next mailbox created would reuse a value a live or deleted one already holds.',
+      );
+    }
+    if (a.mailboxIdHwm < b.mailboxIdHwm) {
+      findings.push(`${login}: the mailbox-id high-water mark went BACKWARDS, ${b.mailboxIdHwm} -> ${a.mailboxIdHwm}`);
+    }
   }
 
   const key = (m: MailboxCensus): string => `${m.login}/${m.mailbox}`;

@@ -57,14 +57,25 @@ CREATE TABLE IF NOT EXISTS catalog_meta (
  * a strictly-greater value than any live OR previously-deleted incarnation. A database created before
  * this table existed has none, so seed from MAX(uid_validity) over its mailboxes (falling back to the
  * requested value) — never lower, or a recreated name could reuse a live mailbox's (UIDVALIDITY, UID)
- * space. An existing row is left untouched: it already tracks names that have since been deleted.
+ * space.
+ *
+ * An existing row is RECONCILED rather than left alone, raise-only, exactly as its sibling
+ * migrateMailboxIdHwm already does. Leaving it meant a mark that had somehow fallen below the live
+ * maximum stayed there forever and the next CREATE collided; the reason the row was originally left
+ * untouched — that it legitimately tracks names since deleted, so it may exceed MAX(uid_validity) —
+ * is preserved by never lowering it.
  */
 function migrateCatalogMeta(db: DatabaseSync, uidValidity: number): void {
   const has = db.prepare('SELECT 1 FROM catalog_meta WHERE id = 0').get() !== undefined;
-  if (has) return;
-  const maxRow = db.prepare('SELECT COALESCE(MAX(uid_validity), 0) AS m FROM mailbox').get() as { m: number };
-  const seed = Math.max(uidValidity, Number(maxRow.m));
-  db.prepare('INSERT INTO catalog_meta (id, uid_validity_hwm) VALUES (0, ?)').run(seed);
+  if (!has) {
+    const maxRow = db.prepare('SELECT COALESCE(MAX(uid_validity), 0) AS m FROM mailbox').get() as { m: number };
+    const seed = Math.max(uidValidity, Number(maxRow.m));
+    db.prepare('INSERT INTO catalog_meta (id, uid_validity_hwm) VALUES (0, ?)').run(seed);
+    return;
+  }
+  db.prepare(
+    'UPDATE catalog_meta SET uid_validity_hwm = MAX(uid_validity_hwm, (SELECT COALESCE(MAX(uid_validity), 0) FROM mailbox)) WHERE id = 0',
+  ).run();
 }
 
 /**

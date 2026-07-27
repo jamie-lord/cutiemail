@@ -334,3 +334,69 @@ test('a snapshot that fails part-way leaves no copy of live mail on disk', () =>
     assert.equal(existsSync(dest), false, 'the partial snapshot directory was removed');
   });
 });
+
+test('the census sees flags, dates, the expunge journal and the marks that govern future ids', () => {
+  // Rung 6a's contract is "is everything still there afterwards, byte for byte", and it reports
+  // "everything intact (full message digest)". A migration that emptied the flag table, zeroed
+  // every internal_date, dropped the expunge journal and reset both catalog high-water marks
+  // produced NO findings: every message was present and byte-identical, so the digest agreed.
+  //
+  // What that costs: every message in every account marked unread with every pending \Deleted
+  // discarded; SINCE/BEFORE and client sort order broken; QRESYNC degraded to a full refetch; and
+  // the next CREATE handed a UIDVALIDITY that collides with a live mailbox's.
+  inTmp((dir) => {
+    const { controlDb } = makeLiveData(dir);
+    const dest = join(dir, 'snap');
+    const snap = takeSnapshot(controlDb, dest);
+    try {
+      const before = censusOf(snap);
+
+      for (const { path } of snap.mailDbs) {
+        const db = new DatabaseSync(path);
+        db.exec('DELETE FROM flag');
+        db.exec('UPDATE message SET internal_date = 0');
+        db.exec('DELETE FROM expunged');
+        db.exec('UPDATE catalog_meta SET uid_validity_hwm = 0, mailbox_id_hwm = 0');
+        db.close();
+      }
+
+      const findings = compareCensus(before, censusOf(snap));
+      assert.ok(findings.length > 0, 'wiping read state and the id marks is not "everything intact"');
+      assert.ok(
+        findings.some((f) => /message content or ordering|digest/i.test(f)),
+        `the digest covers flags and dates: ${findings.join(' | ')}`,
+      );
+      assert.ok(
+        findings.some((f) => /UIDVALIDITY high-water mark went BACKWARDS/.test(f)),
+        `a lowered mark is named: ${findings.join(' | ')}`,
+      );
+    } finally {
+      snap.destroy();
+    }
+  });
+});
+
+test('a UIDVALIDITY high-water mark below the live maximum is repaired on open, not left to collide', () => {
+  // The sibling migrateMailboxIdHwm reconciles unconditionally and this one returned early when the
+  // row existed, so a mark that had fallen below MAX(uid_validity) stayed there and the next CREATE
+  // reused a live mailbox's value — which sqlite-mailbox.ts's own comment says must never happen.
+  // Raise-only, so the original reason for leaving it alone (it tracks names since deleted) holds.
+  inTmp((dir) => {
+    const path = join(dir, 'mail-hwm.db');
+    let db = openMailDb(path);
+    let catalog = SqliteCatalog.open(db, 1);
+    for (const name of ['Sent', 'Trash']) catalog.create(name);
+    const liveMax = Math.max(...catalog.listNames().map((n) => catalog.get(n)!.uidValidity));
+    db.exec('UPDATE catalog_meta SET uid_validity_hwm = 0');
+    db.close();
+
+    db = openMailDb(path);
+    catalog = SqliteCatalog.open(db, 1);
+    const created = catalog.create('Archive')!;
+    assert.ok(
+      created.uidValidity > liveMax,
+      `a newly created mailbox must not reuse a live UIDVALIDITY (got ${created.uidValidity}, live max ${liveMax})`,
+    );
+    db.close();
+  });
+});

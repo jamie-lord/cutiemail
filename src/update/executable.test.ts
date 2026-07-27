@@ -106,5 +106,32 @@ test('this project\'s own tree loads — every module, under this runtime', asyn
   const repo = join(import.meta.dirname, '..', '..');
   const result = await checkExecutable(repo, { PATH: process.env.PATH ?? '' });
   assert.equal(result.ok, true, result.detail);
-  assert.ok(result.modules > 150, `the whole tree was swept, not a corner of it: ${result.modules} modules`);
+  // `modules` is the count FOUND, not the count imported, so on its own this asserts nothing about
+  // coverage — it read the same 226 while the sweep imported four. What makes `ok` mean "swept" is
+  // the completion check inside checkExecutable, pinned by the test below.
+  assert.ok(result.modules > 150, `the whole tree was found: ${result.modules} modules`);
+});
+
+test('a module that exits during the sweep fails the rung instead of ending it quietly', async () => {
+  // The rung's own governing rule is that it must be able to fail for a reason CI could not have
+  // caught. It could not fail for this one. The child ends with an explicit process.exit(0), and a
+  // module that calls the same thing at import time — the commonest command-line entry-point shape
+  // there is — ended the child with status 0 and no LOAD-FAILED line, which was the entirety of the
+  // parent's success test. Everything after it was never imported and the rung said so was fine.
+  //
+  // Not hypothetical: this tree shipped two modules with unconditional import-time side effects,
+  // found by this rung on its first real run against a deployment (see b0f4d61). Neither exited 0,
+  // which is the only reason the gap stayed invisible.
+  const dir = tree({
+    'aaa-exits.ts': 'process.exit(0);\n',
+    'zzz-broken.ts': 'export const broken = ;\n',
+  });
+  try {
+    const result = await checkExecutable(dir, ENV);
+    assert.equal(result.ok, false, 'the sweep must not report success having stopped early');
+    assert.match(result.detail, /completed 0\/2 modules/, result.detail);
+    assert.match(result.detail, /stopped in src\/aaa-exits\.ts/, `and it names where it stopped: ${result.detail}`);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
