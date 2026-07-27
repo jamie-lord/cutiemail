@@ -139,6 +139,13 @@ async function liveMailProbe(deps: CutoverDeps): Promise<{ ok: boolean; detail: 
   for (;;) {
     const up = await Promise.all([accepts(submission, 1000), accepts(imap, 1000)]);
     if (up.every(Boolean)) break;
+    // Patience is for a daemon that is still coming up, not for one that has gone. A version that
+    // dies at boot — because it needs something the unit's sandbox forbids, say — would otherwise
+    // hold the deployment down for the whole readiness budget before anyone reverted it. Asking
+    // systemd whether the unit is still active turns that into a prompt, accurate failure.
+    if (!(await deps.service.isActive())) {
+      return { ok: false, detail: 'the new version exited during startup: the unit is no longer active' };
+    }
     if ((deps.now ?? Date.now)() >= readyBy) {
       return {
         ok: false,
