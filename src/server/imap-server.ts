@@ -500,10 +500,19 @@ const LIST_RETURN_OPTIONS = new Set(['SUBSCRIBED', 'CHILDREN', 'STATUS', 'SPECIA
  */
 function statusItems(box: ServableMailbox, wanted: readonly string[]): string[] {
   const items: string[] = [];
+  // DE-DUPLICATED, and this is load-bearing rather than tidy. RFC 9051's ABNF for the request
+  // (`status-att *(SP status-att)`, §9) puts no uniqueness constraint on the list, so a repeat is
+  // legal and cannot be answered BAD — and each of UNSEEN, SIZE and DELETED costs a full pass over
+  // the mailbox. LIST … RETURN (STATUS …) then calls this once per matched mailbox, so the work is
+  // mailboxes × items × messages with all three chosen by the client: one 64 KiB line of repeated
+  // UNSEEN froze the whole event loop, and Node being single-threaded that is every account's IMAP
+  // session plus inbound SMTP plus the relay loop, not just the caller's. §6.3.9.5 only requires
+  // the response to carry the requested information, which a repeat does not add to.
+  const items_ = [...new Set(wanted)];
   // One metadata snapshot (no BLOBs) answers every counted item, including SIZE (from meta.size,
   // not the body). Read only if a count is actually requested.
-  const idx = wanted.some((w) => w === 'MESSAGES' || w === 'UNSEEN' || w === 'SIZE' || w === 'DELETED') ? box.index() : [];
-  for (const w of wanted) {
+  const idx = items_.some((w) => w === 'MESSAGES' || w === 'UNSEEN' || w === 'SIZE' || w === 'DELETED') ? box.index() : [];
+  for (const w of items_) {
     if (w === 'MESSAGES') items.push(`MESSAGES ${idx.length}`);
     else if (w === 'UIDNEXT') items.push(`UIDNEXT ${box.uidNext}`);
     else if (w === 'UIDVALIDITY') items.push(`UIDVALIDITY ${box.uidValidity}`);
@@ -1041,7 +1050,13 @@ export class ImapServer {
    */
   #reserveAppend(sock: net.Socket, login: string | null, size: number): boolean {
     const perLogin = Math.max(this.#maxAppendLiteral, Math.floor(this.#maxAppendInflight / APPEND_ACCOUNT_SHARES));
-    const key = login ?? '';
+    // Case-folded, because the principal is. Authentication resolves on `lower(login)` and
+    // `MailStores` keys its cache on the lower-cased login, so ALICE and alice are one account
+    // sharing one catalog and one mail database — but keyed on the wire spelling they were two
+    // principals, and a handful of sessions varying the case took the whole server-wide budget and
+    // locked every OTHER account out of APPEND. That is the exact failure the per-principal slice
+    // above exists to prevent.
+    const key = (login ?? '').toLowerCase();
     if ((this.#appendByLogin.get(key) ?? 0) + size > perLogin) return false;
     if (this.#appendInflight + size > this.#maxAppendInflight) return false;
     this.#appendInflight += size;
