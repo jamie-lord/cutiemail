@@ -1,7 +1,13 @@
 # The image needs only src/ and package.json (see Dockerfile). Keep everything else out so
 # a local checkout's state, git history, and the type-checker never bloat the build context.
+#
+# SHARED with deploy/hetzner-up.sh's rsync, which copies a working tree onto a public box and then
+# makes it world-readable. That copy previously kept its own hand-maintained list, drifted to three
+# of these entries, and uploaded key material. One list, so it cannot drift again — which means the
+# secret-bearing patterns below are load-bearing for more than image size.
 node_modules
 .git
+.DS_Store
 *.db
 *.db-wal
 *.db-shm

@@ -96,8 +96,22 @@ VERSION_DIR="/opt/mailserver/versions/${COMMIT:-working-tree}"
 
 echo "copying the mail server source to $VERSION_DIR..."
 ssh "root@$IP" "mkdir -p $VERSION_DIR"
+# ONE exclude list, shared with .dockerignore, and this is the copy that matters most: it lands on
+# a public box and line 109 then widens it to world-readable so the daemon can read its own code.
+# Maintained by hand it carried three of the twelve patterns its siblings carry, so a DKIM key or a
+# TLS key left in the working directory by a local `setup` was uploaded and published at 0644, and
+# the database write-ahead sidecars — verbatim page images of recent writes, message bodies and
+# SCRAM material — went with them. `--exclude '*.db'` does not match `control.db-wal`.
+#
+# None of it trips the dirty-tree guard above, because every one of these files is gitignored, so
+# `git status --porcelain` stays empty and the operator is never warned.
+#
+# Sharing that list also drops docs/, deploy/ and .github/ from the box. The daemon reads none of
+# them; a checkout the updater later fetches will contain them, so the two differ, and that is
+# harmless — every rung that inspects a tree inspects the candidate, which is always a full one.
 rsync -az --delete \
-  --exclude node_modules --exclude .git --exclude '*.db' \
+  --exclude-from "$REPO/.dockerignore" \
+  --exclude update-store \
   "$REPO/" "root@$IP:$VERSION_DIR/"
 
 # The daemon must NEVER be able to write its own code. It is the internet-facing part, and if a

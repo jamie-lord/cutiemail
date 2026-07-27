@@ -23,7 +23,10 @@ const GH_TREE = `${GH}/tree/main/`;
 
 /* ---------- the docs manifest: source markdown -> site URL, grouped for the sidebar ---------- */
 const adrEntries = readdirSync(join(REPO, 'docs/decisions'))
-  .filter((f) => /^\d{4}-.*\.md$/.test(f))
+  // Narrow, because this filename reaches an href on every page. The permissive form admitted a
+  // name carrying a quote and an event handler, which needs no change to any document's prose to
+  // land script on the whole site — a diff a reviewer reads as a new decision record.
+  .filter((f) => /^\d{4}-[a-z0-9-]+\.md$/.test(f))
   .sort()
   .map((f) => {
     const num = f.slice(0, 4);
@@ -115,7 +118,7 @@ function head(title, desc) {
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>${title}</title>
+<title>${esc(title)}</title>
 <meta name="description" content="${esc(desc)}">
 <meta property="og:title" content="${esc(title)}">
 <meta property="og:description" content="${esc(desc)}">
@@ -128,6 +131,10 @@ function head(title, desc) {
 <meta name="twitter:card" content="summary_large_image">
 <meta name="twitter:image" content="https://cuti.email/assets/og.png">
 <meta name="theme-color" content="#fff6f0">
+<!-- Everything this site loads is served from this origin: fonts and mermaid are vendored into
+     assets/ precisely so no CDN is involved. So a policy costs nothing and removes the class
+     entirely rather than relying on every future interpolation remembering to escape. -->
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'">
 <link rel="icon" href="/favicon.svg" type="image/svg+xml">
 ${FONTS}
 <link rel="stylesheet" href="/styles/site.css">
@@ -171,11 +178,13 @@ mermaid.run();
 </script>`;
 }
 
-function esc(s) { return String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c])); }
+// Escapes the single quote too: an unquoted or single-quoted attribute is one refactor away, and
+// the cost of covering it now is nothing.
+function esc(s) { return String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])); }
 
 function sidebar(activeUrl) {
   const groups = NAV.map((g) => {
-    const items = g.items.map((it) => `<li><a href="${it.url}"${it.url === activeUrl ? ' class="active"' : ''}>${esc(it.title)}</a></li>`).join('');
+    const items = g.items.map((it) => `<li><a href="${esc(it.url)}"${it.url === activeUrl ? ' class="active"' : ''}>${esc(it.title)}</a></li>`).join('');
     return `<div class="sidebar__group"><p class="sidebar__title">${esc(g.group)}</p><ul>${items}</ul></div>`;
   }).join('');
   // A <details> so small screens can fold the nav away; a script opens it on wide screens.
@@ -224,7 +233,7 @@ function buildDoc(item) {
   const doc = `<div class="prose">
 <p class="doc-top"><a href="/docs/">docs</a></p>
 ${content}
-<div class="doc-edit"><a href="${ghLink}">Edit this page on GitHub →</a><span>${esc(item.src)}</span></div>
+<div class="doc-edit"><a href="${esc(ghLink)}">Edit this page on GitHub →</a><span>${esc(item.src)}</span></div>
 </div>`;
   const html = `${head(`${title} · cutiemail docs`, `cutiemail documentation: ${title}`)}
 ${nav()}
