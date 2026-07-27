@@ -931,6 +931,11 @@ through authenticated submission rather than by the process merely being up. Tha
 privilege it appears to be — whoever chooses the code the mail server runs can already read all the
 mail. The separation that does the work is the one above: **the daemon cannot write its own code.**
 
+Only one update run works on a store at a time. systemd already prevents two instances of the
+timer's unit; the lock covers the rest, so a hand-run `check` or `apply` during a timer tick is
+declined rather than colliding with it. `status` is exempt — it changes nothing, and it is what you
+want when a run looks stuck.
+
 The updater also needs to restart the daemon. Grant it that for **one unit and three verbs**, so
 it never has to run as root:
 
