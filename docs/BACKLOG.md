@@ -63,6 +63,18 @@ the code.
 | 5 | The updater could not read the databases it exists to snapshot. | Requires the real two-user deployment; a developer runs both halves as themselves. |
 | 6 | A WAL database is three files, and only the one with the name was being secured. The sidecars are recreated at every checkpoint, so they reverted to owner-only and refused every reader the main file admitted. | Needs a live database being checkpointed by a running daemon. |
 
+The failure paths were then exercised deliberately, on side branches so `main` stayed clean:
+
+| Drill | Result |
+| --- | --- |
+| A module the installed runtime cannot parse | Refused at rung 4 in 325ms, naming the module. Nothing started, nothing switched. |
+| Submission AUTH broken for every login | Refused at rung 6b, against a snapshot of real data — before the switch, so no revert was needed. |
+| A version that dies under the unit's sandbox (writes outside `ReadWritePaths`) | Passed **every** pre-flight rung, because the pre-flight spawns the candidate itself and there is no sandbox there. Caught by the live probe after the switch and reverted. |
+
+The third is the one that matters, and it is the argument for the design: the pre-flight cannot test
+the environment the daemon will actually run in, the cutover can, and its answer to a failure is to
+rename the symlink back. Mail and service were intact after all three.
+
 Two properties worth carrying forward:
 
 - **An updater defect that blocks updates is self-perpetuating.** The deployment cannot pull its own
