@@ -221,7 +221,11 @@ test('daemon full stack: submission → fix-up → DKIM sign → queue → relay
     assert.match(relayed, /^Message-ID: </m, 'the §6409 fix-up ran before signing');
     // The DKIM-Signature must precede the headers it signed (it is prepended).
     assert.ok(relayed.indexOf('DKIM-Signature:') < relayed.indexOf('Message-ID:'), 'signature is at the top');
-    assert.equal(server.queue.size, 0, 'delivered and removed from the queue');
+    // Waited for, not asserted instantly. `received.length === 1` means the MX has the DATA; the
+    // queue row is removed afterwards, when the relay finishes and commits. Asserting across that
+    // gap is a race, and it lost under load — three times during one session's suite runs. The
+    // property being checked is the same; only the assumption about when it holds is gone.
+    await waitUntil(() => server.queue.size === 0, 'the queue row to be removed once the relay committed');
   } finally {
     await server.close();
     await mx.close();
