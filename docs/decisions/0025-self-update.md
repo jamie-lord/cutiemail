@@ -196,6 +196,12 @@ revert, and spurious reverts are what teach an operator to switch updates off. N
 reported as its own outcome, because "the process is up and has not begun serving" and "the mail
 path is broken" call for opposite responses.
 
+**Only one run at a time.** Every run begins by recovering an interrupted cutover, and no process
+can tell another's legitimate in-progress switch from a crashed one — so a second run reverts the
+first. systemd already prevents two instances of the update unit; the store's own lock covers
+everything else (a hand-run command during a timer tick, a stray second timer). `status` is exempt:
+it is read-only, and an operator diagnosing a stuck run is exactly who needs it.
+
 **What access the updater needs, and why it is not more than it looks.** The updater runs as its own
 user precisely so that a compromise of the internet-facing daemon cannot rewrite the code that runs
 next. That separation is one-directional: the updater still needs the *data*. It reads every
