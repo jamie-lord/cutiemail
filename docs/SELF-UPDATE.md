@@ -229,6 +229,25 @@ sudo -u mailupd env MAIL_UPDATE_ROOT=/opt/mailserver MAIL_UPDATE_UNIT=mailserver
 Environment=MAIL_UPDATE_MODE=apply
 ```
 
+Every step below is written down before it is taken, under the name in the diagram, so an
+interrupted run can be told apart from a finished one by a process that was not there.
+
+```mermaid
+stateDiagram-v2
+    [*] --> idle
+    idle --> fetched: candidate downloaded
+    fetched --> verified: the ladder passed
+    verified --> snapshotted: databases copied aside
+    snapshotted --> draining: systemctl stop
+    draining --> switching: drained in time
+    draining --> idle: still busy — abandoned, nothing changed
+    switching --> probing: symlink moved, daemon started
+    probing --> confirmed: mail path works, and kept working
+    probing --> reverting: probe failed, or the daemon died
+    reverting --> idle: symlink back, databases restored
+    confirmed --> idle
+```
+
 A cutover drains before it switches: `systemctl stop` lets an in-flight `DATA` handler finish and
 reply, and the relay tick complete. If that does not finish inside `MAIL_UPDATE_DRAIN_SECONDS` the
 cutover is **abandoned rather than forced** — an update can wait, an interrupted delivery cannot be

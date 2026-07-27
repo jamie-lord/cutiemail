@@ -38,6 +38,7 @@ const NAV = [
   { group: 'Start here', items: [
     { src: 'README.md', url: '/docs/', title: 'Overview' },
     { src: 'docs/DEPLOYMENT.md', url: '/docs/deployment/', title: 'Deploy it for real' },
+    { src: 'docs/SELF-UPDATE.md', url: '/docs/self-update/', title: 'Keeping it updated' },
   ]},
   { group: 'How it works', items: [
     { src: 'docs/ARCHITECTURE.md', url: '/docs/architecture/', title: 'Architecture' },
