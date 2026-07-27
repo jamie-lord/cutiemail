@@ -70,10 +70,17 @@ export const SCHEMA_VERSION = 1;
  */
 export function secureMailDbFile(path: string): void {
   if (path === ':memory:') return;
-  try {
-    chmodSync(path, 0o660);
-  } catch {
-    /* best-effort: :memory:, ENOENT, a read-only FS, or a foreign owner is not fatal */
+  // All THREE files, because a WAL database is three files and SQLite opens all of them. Fixing
+  // only the main one produced a database whose mode looked right and could not be opened: the
+  // sidecars are recreated at every checkpoint under the process umask, so they reverted to
+  // owner-only and refused every reader the main file had just admitted. The umask in main.ts is
+  // the other half of this and must agree with it.
+  for (const suffix of ['', '-wal', '-shm']) {
+    try {
+      chmodSync(path + suffix, 0o660);
+    } catch {
+      /* best-effort: :memory:, ENOENT (no sidecar yet), a read-only FS, or a foreign owner */
+    }
   }
 }
 

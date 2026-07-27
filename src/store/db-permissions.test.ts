@@ -74,3 +74,28 @@ test('the boot heal fixes a DISABLED (dormant) account whose DB the daemon never
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test('a WAL database is three files, and all three are secured', () => {
+  // The hole that made every earlier permission fix look correct and fail anyway: `secureMailDbFile`
+  // fixed the main file while the -wal and -shm sidecars were recreated owner-only at the next
+  // checkpoint. SQLite opens all three, so the sidecars decide who can actually open the database —
+  // and a reader admitted by the main file was refused by them, reporting "unable to open database
+  // file" against a database whose own mode looked right.
+  const dir = mkdtempSync(join(tmpdir(), 'wal-perms-'));
+  try {
+    const db = join(dir, 'x.db');
+    for (const suffix of ['', '-wal', '-shm']) writeFileSync(db + suffix, '', { mode: 0o600 });
+    secureMailDbFile(db);
+    for (const suffix of ['', '-wal', '-shm']) {
+      assert.equal(mode(db + suffix), 0o660, `${suffix || 'the main file'} is owner-and-group`);
+      assert.equal(mode(db + suffix) & 0o007, 0, `${suffix || 'the main file'} gives world nothing`);
+    }
+    // A database with no sidecars yet must not throw: they appear only once WAL mode is engaged.
+    const fresh = join(dir, 'fresh.db');
+    writeFileSync(fresh, '', { mode: 0o600 });
+    assert.doesNotThrow(() => secureMailDbFile(fresh));
+    assert.equal(mode(fresh), 0o660);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

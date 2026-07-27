@@ -1053,10 +1053,18 @@ async function main(): Promise<void> {
 if (invokedDirectly(import.meta.url, process.argv[1])) {
   // Every file this process creates — the control DB and per-user mail DBs (with SCRAM
   // credential material + raw message bytes), their WAL sidecars, and backup artifacts —
-  // is private to the mail user. A 0o077 umask makes new files 0600 and new dirs 0700 by
-  // default, closing the local-disclosure gap. Applies to the daemon and every
-  // operator subcommand (backup, account, setup) since they share this one entry point.
-  process.umask(0o077);
+  // is denied to the world. A 0o007 umask makes new files 0660 and new dirs 0770, which is
+  // the mode secureMailDbFile enforces on open: owner and group, never world, with the GROUP
+  // as the deployment's access-control decision (see that function for the whole argument).
+  // Applies to the daemon and every operator subcommand (backup, account, setup) since they
+  // share this one entry point.
+  //
+  // It must MATCH secureMailDbFile, and this is where that was learned. A WAL database is three
+  // files, and SQLite opens all three: with 0o077 here, `control.db` was chmodded to 0660 on open
+  // while `control.db-wal` and `control.db-shm` were recreated 0600 at the next checkpoint. The
+  // main file said shared, the sidecars said private, and the sidecars win — the updater's rung 6
+  // failed with "unable to open database file" against a database whose own mode looked correct.
+  process.umask(0o007);
   const opsArgs = process.argv.slice(2);
   if (opsArgs.length > 0) {
     const io = {
