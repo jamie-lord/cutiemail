@@ -23,6 +23,7 @@
 import { execFileSync } from 'node:child_process';
 import { argv, stdout, stderr, env as processEnv } from 'node:process';
 import { invokedDirectly } from '../entry-point.ts';
+import { acquireRunLock, RunLockError, type RunLock } from './run-lock.ts';
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { sanitizeForTerminalLine } from '../ops/terminal.ts';
@@ -346,9 +347,29 @@ export async function runUpdate(args: readonly string[], io: UpdateIo, env: Reco
     return 2;
   }
 
+  // `status` is the only read-only verb, so it is the only one that may run alongside another. Every
+  // other command touches the version store, and two of them at once is not merely wasteful: each
+  // run begins by recovering an interrupted cutover, and one process cannot tell another process's
+  // legitimate in-progress switch from a crashed one. The newcomer reverts it. See run-lock.ts.
+  if (command === 'status') return cmdStatus(cfg, io, env);
+  let lock: RunLock;
+  try {
+    lock = acquireRunLock(cfg.root);
+  } catch (e) {
+    if (e instanceof RunLockError) {
+      io.err(e.message);
+      return 1;
+    }
+    throw e;
+  }
+  try {
+    return await dispatch();
+  } finally {
+    lock.release();
+  }
+
+  async function dispatch(): Promise<number> {
   switch (command) {
-    case 'status':
-      return cmdStatus(cfg, io, env);
     case 'adopt':
       return cmdAdopt(cfg, rest, io);
     case 'check':
@@ -369,6 +390,7 @@ export async function runUpdate(args: readonly string[], io: UpdateIo, env: Reco
       io.err(`unknown command: ${sanitizeForTerminalLine(String(command))}`);
       io.err(USAGE);
       return 2;
+  }
   }
 }
 

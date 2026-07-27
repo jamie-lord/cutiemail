@@ -12,6 +12,7 @@ import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { runUpdate, systemdService } from './main.ts';
+import { acquireRunLock } from './run-lock.ts';
 import { VersionStore } from './version-store.ts';
 import { StateFile, INITIAL_STATE, enterPhase, recordCheck } from './state.ts';
 import { UpdateConfigError } from './config.ts';
@@ -181,4 +182,30 @@ test('an implausible unit name is refused rather than handed to systemctl', () =
   for (const ok of ['cutiemail.service', 'cutiemail@1.service', 'mail-server.service']) {
     assert.doesNotThrow(() => systemdService(ok), ok);
   }
+});
+
+test('a store-mutating command is refused while another run holds the lock', async () => {
+  // The collision this prevents was observed live: a timer-driven cutover had switched and passed
+  // its probe, a hand-run `apply` started during the watch window, and the deployment was rolled
+  // back off a good version. Every run begins by recovering an interrupted cutover, and one process
+  // cannot tell another's legitimate in-progress switch from a crashed one.
+  await inStore(async (root, env) => {
+    seedStore(root);
+    const held = acquireRunLock(root); // a live holder — this process, which is unarguably alive
+    try {
+      for (const command of ['check', 'apply', 'auto', 'adopt', 'reset']) {
+        const { io, err } = capture();
+        const code = await runUpdate([command, SHA], io, { ...env, MAIL_UPDATE_MODE: 'check' });
+        assert.equal(code, 1, `${command} is declined while another run holds the lock`);
+        assert.match(err.join('\n'), /another update run is already working/, command);
+        assert.match(err.join('\n'), /Nothing was changed/, command);
+      }
+      // `status` is read-only and must still work — an operator diagnosing a stuck run needs it.
+      const { io, out } = capture();
+      assert.equal(await runUpdate(['status'], io, { ...env, MAIL_UPDATE_MODE: 'check' }), 0);
+      assert.match(out.join('\n'), /running:/, 'status is not serialised');
+    } finally {
+      held.release();
+    }
+  });
 });
