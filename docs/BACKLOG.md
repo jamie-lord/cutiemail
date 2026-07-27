@@ -47,10 +47,10 @@ afterwards. Two of the thirteen exist only because a passing test can pass for t
 one lifts the `mx` cap and one puts the address lookups back on the term budget, and the original
 case would have survived the second.
 
-## Closed: what a live self-update test found (2026-07-27)
+## Closed: what a live self-update test found
 
 The self-update system (ADR 0025) was exercised against a real Hetzner box for the first time.
-Every rung of the ladder had passed in local rehearsal; the box found **six defects**, none of
+Every rung of the ladder had passed in local rehearsal; the box found **nine defects**, none of
 which local testing could have found, because each was a property of the machine rather than of
 the code.
 
@@ -62,6 +62,9 @@ the code.
 | 4 | Rung 4 ran the candidate's whole test suite, which does not finish inside its fifteen-minute cap on two shared cores — so every update was refused, blaming the candidate. | The suite takes ~110s on a developer machine. Only the target hardware shows it. |
 | 5 | The updater could not read the databases it exists to snapshot. | Requires the real two-user deployment; a developer runs both halves as themselves. |
 | 6 | A WAL database is three files, and only the one with the name was being secured. The sidecars are recreated at every checkpoint, so they reverted to owner-only and refused every reader the main file admitted. | Needs a live database being checkpointed by a running daemon. |
+| 7 | The post-cutover probe ran before the daemon was listening, so every cutover reverted a good version. `systemctl start` returns when a `Type=simple` process has *forked*, not when it serves; the gap measured 459ms on this box. | A local rehearsal starts the candidate and waits for its ports; only systemd reports success this early. |
+| 8 | No lock on the version store. A hand-run `apply` during a timer tick reverted a cutover that had already switched and passed its probe, because every run begins by *recovering* an interrupted cutover and cannot tell another process's legitimate in-progress switch from a crashed one. | Needs a timer firing on its own schedule alongside an operator. |
+| 9 | A failed start was waited out for the full 120-second probe window before being called a failure, when systemd already knew the unit was dead. | Only shows up as wasted downtime on a real cutover. |
 
 The failure paths were then exercised deliberately, on side branches so `main` stayed clean:
 
@@ -70,10 +73,26 @@ The failure paths were then exercised deliberately, on side branches so `main` s
 | A module the installed runtime cannot parse | Refused at rung 4 in 325ms, naming the module. Nothing started, nothing switched. |
 | Submission AUTH broken for every login | Refused at rung 6b, against a snapshot of real data — before the switch, so no revert was needed. |
 | A version that dies under the unit's sandbox (writes outside `ReadWritePaths`) | Passed **every** pre-flight rung, because the pre-flight spawns the candidate itself and there is no sandbox there. Caught by the live probe after the switch and reverted. |
+| `SIGKILL` in the instant between the symlink move and the restart | The next run broke the stale lock, read the recorded phase, reverted the version nothing had confirmed, and left the daemon serving. The timer applied the update again on its next tick. |
+| A hand-run `apply` during a timer tick | Declined, naming the holding pid and stating that nothing was changed. `status` still answered. |
+| Three consecutive unattended cutovers, then an idle soak | Each switched on its own; the soak reported "up to date" repeatedly with no churn. |
 
-The third is the one that matters, and it is the argument for the design: the pre-flight cannot test
-the environment the daemon will actually run in, the cutover can, and its answer to a failure is to
-rename the symlink back. Mail and service were intact after all three.
+The sandbox drill is the one that matters, and it is the argument for the design: the pre-flight
+cannot test the environment the daemon will actually run in, the cutover can, and its answer to a
+failure is to rename the symlink back. Mail was intact after every drill — the same ten messages
+throughout, a fresh delivery accepted after each, and no probe credential left behind.
+
+Defect 4 changed the design rather than just the code. The rule that came out of it is **a
+pre-flight check must be able to fail for a reason CI could not have caught**: rungs 1 and 2 already
+prove the checkout is byte-identical to a commit CI tested, so re-running deterministic tests
+re-answers a settled question, and on two shared cores they could not finish inside their cap. What
+the box uniquely knows is this runtime, this configuration, this data, and this old→new transition,
+so the rung became "every module imports under the Node actually installed" (487ms, from a 900s
+cap). Dropping the suite is affordable because correctness-confidence and recoverability are
+substitutes — which is why the same change added the rung that boots the *running* version against
+the migrated snapshot, rather than inferring reversibility from a schema version number. The whole
+ladder now finishes in ~43 seconds on the smallest box the project targets, which is the point: the
+same assurance for a deployment that cannot afford to run a test suite.
 
 Two properties worth carrying forward:
 
@@ -206,8 +225,10 @@ clear the bar. Most of these carry a revisit trigger.
 - **Backup MX / HA / clustering.** Personal scale; even Mox declines it, and
   accept-then-forward backup MXes create backscatter obligations. The `backup`/`verify`
   snapshot story is the honest availability answer here.
-- **Distro packaging / unattended updates.** Presupposes a distribution story the project
-  doesn't have and isn't seeking.
+- **Distro packaging.** A `.deb`/`.rpm` presupposes a distribution story the project doesn't have
+  and isn't seeking. Unattended updates were the part of this worth having, and they are built
+  instead as a self-updater over the git remote the deployment was installed from (ADR 0025), which
+  needs no packaging story at all.
 - **Multi-domain.** One domain per server is the current design (ADR 0009 notes a future
   multi-domain story would widen the account key, deliberately not now); multi-domain is
   a real scope expansion, revisitable with a stated reason.
