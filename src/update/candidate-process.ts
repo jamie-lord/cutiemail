@@ -80,7 +80,7 @@ async function reservePorts(): Promise<CandidatePorts> {
 }
 
 /** Does something accept a TCP connection on this port right now? */
-function accepts(port: number, timeoutMs: number): Promise<boolean> {
+export function accepts(port: number, timeoutMs: number): Promise<boolean> {
   return new Promise((resolve) => {
     const sock = net.connect({ host: '127.0.0.1', port });
     const done = (answer: boolean): void => {

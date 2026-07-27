@@ -14,6 +14,8 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { createServer } from 'node:net';
+import type { AddressInfo } from 'node:net';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -23,6 +25,7 @@ import { SqliteCatalog } from '../store/sqlite-mailbox.ts';
 import { VersionStore } from './version-store.ts';
 import { StateFile, enterPhase, INITIAL_STATE, type Phase } from './state.ts';
 import { cutover, recover, type CutoverDeps, type ServiceControl } from './cutover.ts';
+import { accepts } from './candidate-process.ts';
 
 const OLD = 'a'.repeat(40);
 const NEW = 'b'.repeat(40);
@@ -320,4 +323,41 @@ test('recovery from idle or confirmed does nothing at all', async () => {
       assert.equal(h.state.read().phase, phase, 'and does not rewrite the state either');
     }
   });
+});
+
+test('the probe waits for the daemon to be SERVING, not merely started', async () => {
+  // The race this pins, observed on a live box: `systemctl start` returns when a Type=simple unit's
+  // process is forked, not when it is listening. In between, the daemon opens its databases,
+  // migrates and binds three ports. Probing in that window failed with "could not connect to the
+  // submission port", the cutover reverted, and a good update was rejected because the check was
+  // faster than the thing it was checking.
+  //
+  // The default probe is the one under test here, so this drives it against a port that starts
+  // closed and opens shortly afterwards — exactly the shape of a daemon still coming up.
+  const server = createServer();
+  const listening = new Promise<number>((resolve) => {
+    setTimeout(() => {
+      server.listen(0, '127.0.0.1', () => resolve((server.address() as AddressInfo).port));
+    }, 300);
+  });
+
+  // Before it opens, nothing accepts; afterwards it does. `accepts` is what readiness is measured
+  // with, and measuring it on a socket that genuinely opens late is the only honest version of
+  // this test.
+  const port = await listening;
+  try {
+    assert.equal(await accepts(port, 500), true, 'the port accepts once the listener is up');
+    // A port nobody is listening on must answer false rather than hanging, or the readiness wait
+    // would block instead of timing out.
+    const closed = createServer();
+    const free = await new Promise<number>((resolve) => {
+      closed.listen(0, '127.0.0.1', () => {
+        const p = (closed.address() as AddressInfo).port;
+        closed.close(() => resolve(p));
+      });
+    });
+    assert.equal(await accepts(free, 500), false, 'a closed port answers false, promptly');
+  } finally {
+    await new Promise((r) => server.close(r));
+  }
 });

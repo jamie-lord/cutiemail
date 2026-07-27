@@ -47,6 +47,7 @@ import { AccountRegistry } from '../store/account-registry.ts';
 import { openMailDb } from '../store/open-mail-db.ts';
 import { runSelftest } from '../ops/selftest.ts';
 import { takeSnapshot, type Snapshot } from './snapshot.ts';
+import { accepts } from './candidate-process.ts';
 import { StateFile, enterPhase, type UpdateState } from './state.ts';
 import type { VersionStore } from './version-store.ts';
 
@@ -95,6 +96,16 @@ export interface CutoverResult {
 const DEFAULT_START_TIMEOUT_MS = 120_000;
 const PROBE_POLL_MS = 15_000;
 
+/**
+ * How long the daemon may take to go from started to listening after a cutover.
+ *
+ * Generous on purpose. The migration that runs in this window is the one rung 6a measured against a
+ * snapshot, and the live databases will only be bigger; a bound that is merely "usually enough"
+ * turns a slow migration into a spurious revert, which is the failure mode that teaches operators
+ * to switch updates off.
+ */
+const READY_TIMEOUT_MS = 120_000;
+
 /** Parse a positive-integer env var, mirroring main.ts so the probe dials the same ports. */
 function posInt(raw: string | undefined, fallback: number): number {
   if (raw === undefined || raw.trim() === '') return fallback;
@@ -110,6 +121,35 @@ function posInt(raw: string | undefined, fallback: number): number {
  * only for the duration.
  */
 async function liveMailProbe(deps: CutoverDeps): Promise<{ ok: boolean; detail: string }> {
+  // Wait for the daemon to be SERVING, not merely started.
+  //
+  // `systemctl start` returns when systemd considers the unit started, and for a Type=simple
+  // service that is the moment the process is forked — not the moment it is listening. Between
+  // those two the daemon opens its databases, applies any migration and binds three ports, which
+  // on real data takes as long as rung 6a measured and reported. Probing in that window fails with
+  // "could not connect to the submission port", the cutover reverts, and a perfectly good update is
+  // rejected because the check was faster than the thing it was checking.
+  //
+  // Readiness is the ports accepting, for the same reason the pre-flight uses that and not a log
+  // line: accepting a connection is a property of being a mail server, and a banner string is a
+  // property of one implementation of one.
+  const submission = posInt(deps.env.MAIL_SUBMISSION_PORT, 5587);
+  const imap = posInt(deps.env.MAIL_IMAP_PORT, 5993);
+  const readyBy = (deps.now ?? Date.now)() + READY_TIMEOUT_MS;
+  for (;;) {
+    const up = await Promise.all([accepts(submission, 1000), accepts(imap, 1000)]);
+    if (up.every(Boolean)) break;
+    if ((deps.now ?? Date.now)() >= readyBy) {
+      return {
+        ok: false,
+        detail:
+          `the new version started but was not listening on ${submission}/${imap} within ${READY_TIMEOUT_MS}ms. ` +
+          'That is a different failure from a broken mail path: the process is up and has not begun serving.',
+      };
+    }
+    await new Promise((r) => setTimeout(r, 250));
+  }
+
   const db = openMailDb(deps.controlDbPath);
   let login: string;
   let password: string;
