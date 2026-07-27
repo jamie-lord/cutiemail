@@ -119,7 +119,7 @@ test('status reports what runs, and raises the alarm when checks stop getting th
     const store = seedStore(root);
     const state = new StateFile(store.root);
 
-    state.write(recordCheck(INITIAL_STATE, Date.now(), 'up to date', { reachedRemote: true }));
+    state.write(recordCheck(INITIAL_STATE, Date.now(), 'up to date', { upToDate: true }));
     const healthy = capture();
     assert.equal(await runUpdate(['status'], healthy.io, env), 0);
     assert.match(healthy.out.join('\n'), new RegExp(`running:\\s+${SHA}`));
@@ -128,10 +128,10 @@ test('status reports what runs, and raises the alarm when checks stop getting th
 
     // Anyone who can block access to the remote otherwise pins this deployment forever, silently.
     // This is the report that stops that being silent, so it exits non-zero and says what to check.
-    state.write(recordCheck(INITIAL_STATE, Date.now() - 60 * DAY_MS, 'getaddrinfo ENOTFOUND', { reachedRemote: true }));
+    state.write(recordCheck(INITIAL_STATE, Date.now() - 60 * DAY_MS, 'getaddrinfo ENOTFOUND', { upToDate: true }));
     const stale = capture();
     assert.equal(await runUpdate(['status'], stale.io, env), 1);
-    assert.match(stale.err.join('\n'), /WARNING: the last successful update check was 60 day\(s\) ago/);
+    assert.match(stale.err.join('\n'), /WARNING: this deployment was last up to date 60 day\(s\) ago/);
     assert.match(stale.err.join('\n'), /Updates are configured but not arriving/);
   });
 });

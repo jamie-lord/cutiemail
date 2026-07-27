@@ -239,22 +239,26 @@ async function cmdCheckOrApply(cfg: UpdateConfig, io: UpdateIo, env: Record<stri
   } catch (e) {
     // A network failure is not a finding. It is recorded so the staleness alarm can see it, and
     // reported so an operator who is watching learns why nothing happened.
-    state.update((s) => recordCheck(s, now, `check failed: ${String(e)}`, { reachedRemote: false }));
+    state.update((s) => recordCheck(s, now, `check failed: ${String(e)}`, { upToDate: false }));
     io.err(`check failed: ${sanitizeForTerminalLine(String(e))}`);
     return 1;
   }
 
   switch (outcome.kind) {
     case 'up-to-date':
-      state.update((s) => recordCheck(s, now, 'up to date', { reachedRemote: true, sha: outcome.sha }));
+      state.update((s) => recordCheck(s, now, 'up to date', { upToDate: true, sha: outcome.sha }));
       io.out(`up to date on ${outcome.sha}`);
       return 0;
+    // Deliberately counted as up to date: the remote is reachable, the tip is known, and holding
+    // back is the bake rule working. A branch that receives a commit most days is ALWAYS within its
+    // bake window, so treating this as falling behind would raise the staleness alarm on exactly
+    // the deployments that are tracking a healthy, actively-developed branch.
     case 'not-yet-baked':
-      state.update((s) => recordCheck(s, now, `waiting for ${outcome.sha} to bake`, { reachedRemote: true, sha: outcome.sha }));
+      state.update((s) => recordCheck(s, now, `waiting for ${outcome.sha} to bake`, { upToDate: true, sha: outcome.sha }));
       io.out(`${outcome.sha} is available but only ${days(outcome.ageMs)} old; it becomes eligible at ${days(outcome.requiredMs)}.`);
       return 0;
     case 'refused':
-      state.update((s) => recordCheck(s, now, `refused ${outcome.sha}`, { reachedRemote: true, sha: outcome.sha }));
+      state.update((s) => recordCheck(s, now, `refused ${outcome.sha}`, { upToDate: false, sha: outcome.sha }));
       io.err(`refusing ${outcome.sha}: ${sanitizeForTerminalLine(outcome.reason)}`);
       return 1;
     case 'candidate':
@@ -263,7 +267,7 @@ async function cmdCheckOrApply(cfg: UpdateConfig, io: UpdateIo, env: Record<stri
 
   const candidate = outcome.candidate;
   const current = candidate.from!;
-  state.update((s) => enterPhase(recordCheck(s, now, `verifying ${candidate.sha}`, { reachedRemote: true, sha: candidate.sha }), 'fetched', now, { candidate: candidate.sha, previous: current }));
+  state.update((s) => enterPhase(recordCheck(s, now, `verifying ${candidate.sha}`, { upToDate: false, sha: candidate.sha }), 'fetched', now, { candidate: candidate.sha, previous: current }));
   io.out(`candidate ${candidate.sha} (${candidate.files} files), a descendant of ${current}. Verifying...`);
 
   const startBudget = unitStartTimeoutMs(env.MAIL_UPDATE_UNIT ?? 'cutiemail.service');
@@ -280,7 +284,7 @@ async function cmdCheckOrApply(cfg: UpdateConfig, io: UpdateIo, env: Record<stri
   });
   io.out(renderPreflight(report));
   if (!report.ok) {
-    state.update((s) => enterPhase(recordCheck(s, Date.now(), `${candidate.sha} failed pre-flight`, { reachedRemote: true, sha: candidate.sha }), 'idle', Date.now(), { candidate: null }));
+    state.update((s) => enterPhase(recordCheck(s, Date.now(), `${candidate.sha} failed pre-flight`, { upToDate: false, sha: candidate.sha }), 'idle', Date.now(), { candidate: null }));
     store.clearStaging();
     return 1;
   }
@@ -297,11 +301,11 @@ async function cmdCheckOrApply(cfg: UpdateConfig, io: UpdateIo, env: Record<stri
   store.promote(candidate.sha);
   const result = await cutover(cutoverDeps, candidate.sha, { schemaMovedForward: report.schemaMovedForward });
   if (!result.ok) {
-    state.update((s) => recordCheck(s, Date.now(), `cutover to ${candidate.sha} failed${result.reverted ? ' and was reverted' : ''}`, { reachedRemote: true, sha: candidate.sha }));
+    state.update((s) => recordCheck(s, Date.now(), `cutover to ${candidate.sha} failed${result.reverted ? ' and was reverted' : ''}`, { upToDate: false, sha: candidate.sha }));
     io.err(`cutover failed${result.reverted ? ' and was reverted' : ''}; running ${result.running ?? 'unknown'}`);
     return 1;
   }
-  state.update((s) => recordCheck(s, Date.now(), `updated to ${candidate.sha}`, { reachedRemote: true, sha: candidate.sha }));
+  state.update((s) => recordCheck(s, Date.now(), `updated to ${candidate.sha}`, { upToDate: true, sha: candidate.sha }));
   const pruned = store.prune(cfg.keepVersions, [current]);
   io.out(`updated to ${candidate.sha}${pruned.length > 0 ? `; pruned ${pruned.length} old version(s)` : ''}`);
   return 0;

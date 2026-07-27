@@ -68,9 +68,18 @@ export interface UpdateState {
    */
   readonly schemaMovedForward: boolean;
   readonly enteredAt: number;
+  /** When a check FIRST ran. Never updated, so the never-yet-up-to-date case can age from it. */
+  readonly firstCheckAt: number | null;
   /** When a check last RAN, successfully or not. */
   readonly lastCheckAt: number | null;
-  /** When a check last reached the remote. The staleness alarm measures from here. */
+  /**
+   * When this deployment was last actually up to date — on the branch tip, or deliberately waiting
+   * for a tip that has not baked yet. The staleness alarm measures from here.
+   *
+   * NOT "when a check last reached the remote", which is what this used to mean and is a different
+   * question. A check that fetched a candidate and then failed every rung reached the remote and
+   * left the deployment exactly as un-updated as one that could not resolve DNS.
+   */
   readonly lastSuccessAt: number | null;
   readonly lastOutcome: string | null;
   readonly history: readonly HistoryEntry[];
@@ -86,6 +95,7 @@ export const INITIAL_STATE: UpdateState = {
   snapshotDir: null,
   schemaMovedForward: false,
   enteredAt: 0,
+  firstCheckAt: null,
   lastCheckAt: null,
   lastSuccessAt: null,
   lastOutcome: null,
@@ -132,6 +142,9 @@ function parseState(raw: unknown, path: string): UpdateState {
     snapshotDir: typeof o.snapshotDir === 'string' ? o.snapshotDir : null,
     schemaMovedForward: o.schemaMovedForward === true,
     enteredAt: num(o.enteredAt) ?? 0,
+    // Absent in state written by a build before this field existed; the first check after an upgrade
+    // seeds it, which ages the alarm from then rather than from never.
+    firstCheckAt: num(o.firstCheckAt),
     lastCheckAt: num(o.lastCheckAt),
     lastSuccessAt: num(o.lastSuccessAt),
     lastOutcome: typeof o.lastOutcome === 'string' ? o.lastOutcome : null,
@@ -207,32 +220,47 @@ export function enterPhase(state: UpdateState, phase: Phase, now: number, patch:
   return { ...state, ...patch, phase, enteredAt: now };
 }
 
-/** Record the outcome of a check run, keeping the history bounded. */
+/**
+ * Record the outcome of a check run, keeping the history bounded.
+ *
+ * `upToDate` means what the staleness alarm needs to know: is this deployment ON the branch tip, or
+ * deliberately waiting for a tip that has not baked yet? Reaching the remote is not the same
+ * question and was the wrong one to ask — a check that fetched a candidate and then failed every
+ * rung reached the remote and updated nothing, yet kept refreshing the clock that exists to notice
+ * exactly that.
+ */
 export function recordCheck(
   state: UpdateState,
   now: number,
   outcome: string,
-  opts: { readonly reachedRemote: boolean; readonly sha?: string | null } = { reachedRemote: false },
+  opts: { readonly upToDate: boolean; readonly sha?: string | null } = { upToDate: false },
 ): UpdateState {
   return {
     ...state,
+    firstCheckAt: state.firstCheckAt ?? now,
     lastCheckAt: now,
-    lastSuccessAt: opts.reachedRemote ? now : state.lastSuccessAt,
+    lastSuccessAt: opts.upToDate ? now : state.lastSuccessAt,
     lastOutcome: outcome,
     history: [...state.history, { at: now, sha: opts.sha ?? null, outcome }].slice(-HISTORY_LIMIT),
   };
 }
 
 /**
- * How long since a check last reached the remote, and whether that is now a problem.
+ * How long since this deployment was last up to date, and whether that is now a problem.
  *
  * The mirror image of the bake rule. Anyone who can simply block access to the remote otherwise
  * pins a deployment on an old version forever and nothing notices — the same rot, arriving through
- * the mechanism meant to prevent it. A deployment that has NEVER succeeded is measured from the
- * first attempt, so a broken configuration surfaces on the same schedule rather than never.
+ * the mechanism meant to prevent it.
+ *
+ * TWO THINGS HERE HAVE TO BE THE RIGHT ONES, and both were wrong. The clock has to measure from
+ * being up to date rather than from touching the remote, or every failing check refreshes it. And
+ * the never-yet-up-to-date case has to age from the FIRST attempt, not the last: falling back to
+ * `lastCheckAt` — which every attempt refreshes — meant the age was always about zero, so the
+ * branch below could never fire and a deployment whose checks had never once succeeded reported
+ * itself perfectly healthy forever. That is the precise scenario ADR 0025 names this alarm for.
  */
 export function staleness(state: UpdateState, now: number, staleMs: number): { ageMs: number | null; stale: boolean; reason: string | null } {
-  const since = state.lastSuccessAt ?? state.lastCheckAt;
+  const since = state.lastSuccessAt ?? state.firstCheckAt;
   if (since === null) return { ageMs: null, stale: false, reason: null };
   const ageMs = now - since;
   if (ageMs < staleMs) return { ageMs, stale: false, reason: null };
@@ -242,7 +270,7 @@ export function staleness(state: UpdateState, now: number, staleMs: number): { a
     stale: true,
     reason:
       state.lastSuccessAt === null
-        ? `no update check has EVER reached the remote, and the first attempt was ${days} day(s) ago. This deployment is not being kept up to date. Last outcome: ${state.lastOutcome ?? 'unknown'}`
-        : `the last successful update check was ${days} day(s) ago. Something is blocking access to the remote, and this deployment is quietly falling behind. Last outcome: ${state.lastOutcome ?? 'unknown'}`,
+        ? `this deployment has NEVER been up to date, and the first check was ${days} day(s) ago. Nothing is arriving. Last outcome: ${state.lastOutcome ?? 'unknown'}`
+        : `this deployment was last up to date ${days} day(s) ago. Updates are not arriving — the remote may be unreachable, or every check may be failing — and it is quietly falling behind. Last outcome: ${state.lastOutcome ?? 'unknown'}`,
   };
 }

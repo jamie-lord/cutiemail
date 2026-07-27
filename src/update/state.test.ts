@@ -75,7 +75,7 @@ test('a state file with a field this build does not understand is refused', () =
 test('check history is recorded and bounded', () => {
   inTmp((state) => {
     let s = INITIAL_STATE;
-    for (let i = 0; i < 30; i++) s = recordCheck(s, 1000 + i, `check ${i}`, { reachedRemote: true, sha: SHA_A });
+    for (let i = 0; i < 30; i++) s = recordCheck(s, 1000 + i, `check ${i}`, { upToDate: true, sha: SHA_A });
     assert.equal(s.history.length, 20, 'a run every six hours for years must not grow this file without bound');
     assert.equal(s.history[0]!.outcome, 'check 10', 'the newest are kept');
     assert.equal(s.history[19]!.outcome, 'check 29');
@@ -84,12 +84,51 @@ test('check history is recorded and bounded', () => {
   });
 });
 
-test('a check that never reached the remote does not count as a success', () => {
-  let s = recordCheck(INITIAL_STATE, 1000, 'up-to-date', { reachedRemote: true });
+test('reaching the remote is not being up to date', () => {
+  let s = recordCheck(INITIAL_STATE, 1000, 'up-to-date', { upToDate: true });
   assert.equal(s.lastSuccessAt, 1000);
-  s = recordCheck(s, 2000, 'network unreachable', { reachedRemote: false });
+  s = recordCheck(s, 2000, 'network unreachable', { upToDate: false });
   assert.equal(s.lastCheckAt, 2000, 'the attempt is recorded');
   assert.equal(s.lastSuccessAt, 1000, 'but the staleness clock keeps running from the last real contact');
+});
+
+test('a check that reaches the remote and then fails every rung does not refresh the clock', () => {
+  // The defect this replaces: `reachedRemote` was true here, so a deployment whose pre-flight
+  // failed on every run — which is what a compromised daemon can arrange with one database row —
+  // reported itself freshly checked forever, and ADR 0025's only backstop never fired.
+  const staleMs = 30 * DAY_MS;
+  let s = recordCheck(INITIAL_STATE, 0, 'up to date', { upToDate: true });
+  for (let day = 1; day <= 40; day++) {
+    s = recordCheck(s, day * DAY_MS, `${'c'.repeat(40)} failed pre-flight`, { upToDate: false, sha: 'c'.repeat(40) });
+  }
+  assert.equal(s.lastSuccessAt, 0, 'forty failing checks moved the clock not at all');
+  const verdict = staleness(s, 40 * DAY_MS, staleMs);
+  assert.equal(verdict.stale, true, 'and the alarm fires');
+  assert.match(verdict.reason!, /failed pre-flight/, 'naming what kept failing');
+});
+
+test('a deployment that has never been up to date ages from its FIRST check, not its latest', () => {
+  // The sibling defect: staleness fell back to lastCheckAt, which every attempt refreshes, so the
+  // age was always about zero and the never-up-to-date branch could not fire at all. A single
+  // recorded check could not show this — only repeated ones can.
+  const staleMs = 30 * DAY_MS;
+  let s = INITIAL_STATE;
+  for (let day = 0; day <= 40; day++) {
+    s = recordCheck(s, day * DAY_MS, 'no such branch', { upToDate: false });
+  }
+  assert.equal(s.firstCheckAt, 0, 'the first attempt is remembered');
+  assert.equal(s.lastCheckAt, 40 * DAY_MS);
+  const never = staleness(s, 40 * DAY_MS, staleMs);
+  assert.equal(never.stale, true);
+  assert.match(never.reason!, /NEVER been up to date/);
+  assert.match(never.reason!, /no such branch/);
+});
+
+test('waiting for a commit to bake counts as up to date', () => {
+  // A branch that receives a commit most days is always inside its bake window, so counting this as
+  // falling behind would alarm on exactly the deployments that are tracking a healthy branch.
+  const s = recordCheck(INITIAL_STATE, 1000, 'waiting for abc to bake', { upToDate: true });
+  assert.equal(s.lastSuccessAt, 1000);
 });
 
 test('staleness is the mirror image of the bake rule', () => {
@@ -97,22 +136,14 @@ test('staleness is the mirror image of the bake rule', () => {
   // Never checked: nothing to be stale about yet.
   assert.deepEqual(staleness(INITIAL_STATE, 1_000_000, staleMs), { ageMs: null, stale: false, reason: null });
 
-  const healthy = recordCheck(INITIAL_STATE, 0, 'up-to-date', { reachedRemote: true });
+  const healthy = recordCheck(INITIAL_STATE, 0, 'up-to-date', { upToDate: true });
   assert.equal(staleness(healthy, 29 * DAY_MS, staleMs).stale, false);
 
   // Anyone who can block access to the remote otherwise pins a deployment forever, silently.
   const blocked = staleness(healthy, 40 * DAY_MS, staleMs);
   assert.equal(blocked.stale, true);
-  assert.match(blocked.reason!, /last successful update check was 40 day\(s\) ago/);
+  assert.match(blocked.reason!, /was last up to date 40 day\(s\) ago/);
   assert.match(blocked.reason!, /quietly falling behind/);
-
-  // Never succeeded at all: measured from the first attempt, so a broken configuration surfaces on
-  // the same schedule instead of never.
-  const brokenSinceStart = recordCheck(INITIAL_STATE, 0, 'no such branch', { reachedRemote: false });
-  const never = staleness(brokenSinceStart, 40 * DAY_MS, staleMs);
-  assert.equal(never.stale, true);
-  assert.match(never.reason!, /has EVER reached the remote/);
-  assert.match(never.reason!, /no such branch/);
 });
 
 test('update() reads, transforms and writes in one step', () => {
