@@ -40,10 +40,10 @@
  */
 
 import { randomUUID } from 'node:crypto';
-import { copyFileSync, existsSync, renameSync, rmSync } from 'node:fs';
+import { copyFileSync, existsSync, lstatSync, renameSync, rmSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
-import { AccountRegistry } from '../store/account-registry.ts';
+import { AccountRegistry, validLogin } from '../store/account-registry.ts';
 import { openMailDb } from '../store/open-mail-db.ts';
 import { runSelftest } from '../ops/selftest.ts';
 import { takeSnapshot, type Snapshot } from './snapshot.ts';
@@ -245,7 +245,26 @@ function restoreSnapshot(snapshotDir: string, controlDbPath: string, log: (line:
   const dir = dirname(controlDbPath);
   const restore = (from: string, to: string): void => {
     if (!existsSync(from)) return;
-    if (existsSync(to)) {
+    // WHAT IS AT `to` IS NOT NECESSARILY A FILE WE WROTE. The data directory is group-writable and
+    // belongs to the mail daemon, so it can put a symlink where a database should be — and a
+    // DANGLING one is invisible to `existsSync`, so the rename-aside below never fires and the copy
+    // follows the link instead. That turns this restore, which runs as the updater, into a write
+    // wherever the daemon points it: the confused-deputy shape again, on the path that runs
+    // precisely when something has already gone wrong. `lstat` does not follow, so it sees the link
+    // itself.
+    let target: ReturnType<typeof lstatSync> | null = null;
+    try {
+      target = lstatSync(to);
+    } catch {
+      target = null; // genuinely absent: a first restore of a database that never existed
+    }
+    if (target !== null && !target.isFile()) {
+      throw new CutoverError(
+        `refusing to restore over ${to}: it is not a regular file (${target.isSymbolicLink() ? 'symbolic link' : 'directory or special file'}). ` +
+          'Something other than this program put it there.',
+      );
+    }
+    if (target !== null) {
       // Moved aside, never deleted. Whatever arrived between the snapshot and the failure is in
       // here, and it is the operator's to keep or discard.
       renameSync(to, `${to}.failed-${stamp}`);
@@ -258,7 +277,17 @@ function restoreSnapshot(snapshotDir: string, controlDbPath: string, log: (line:
   };
 
   restore(control, controlDbPath);
-  for (const login of logins) restore(join(snapshotDir, `mail-${login}.db`), join(dir, `mail-${login}.db`));
+  // The destination name is rebuilt from the login rather than read from the snapshot's
+  // `mail_db_path`, so it must satisfy the same rule the snapshot enforced on the way in — a login
+  // the account CLI could never have created has no business becoming a filename here either.
+  for (const login of logins) {
+    if (!validLogin(login)) {
+      throw new CutoverError(
+        `refusing to restore the database for login ${JSON.stringify(login)}: it is not a valid login, so it cannot be part of a filename.`,
+      );
+    }
+    restore(join(snapshotDir, `mail-${login}.db`), join(dir, `mail-${login}.db`));
+  }
   log(`restored ${logins.length + 1} database(s) from ${snapshotDir}`);
 }
 

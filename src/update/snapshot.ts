@@ -27,11 +27,11 @@
 
 import { createHash } from 'node:crypto';
 import { chmodSync, existsSync, mkdirSync, rmSync, statfsSync, statSync } from 'node:fs';
-import { dirname, join } from 'node:path';
+import { dirname, join, resolve, sep } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { snapshotDatabase } from '../ops/backup.ts';
 import { openMailDb } from '../store/open-mail-db.ts';
-import { AccountRegistry } from '../store/account-registry.ts';
+import { AccountRegistry, validLogin } from '../store/account-registry.ts';
 
 export class SnapshotError extends Error {}
 
@@ -74,9 +74,31 @@ function dbBytes(path: string): number {
  * One rule, used both to write the copies and to rewrite the paths that point at them. When those
  * were two separate computations that happened to agree, neither was individually load-bearing:
  * deleting either one left the other quietly doing its job, and no test could tell.
+ *
+ * THE LOGIN IS UNTRUSTED HERE. It arrives from the control database, which belongs to the mail
+ * daemon — the internet-facing process ADR 0025 exists to contain — so it is attacker-influenced in
+ * exactly the case the whole two-user design is built for. Interpolating it into a path unchecked
+ * let a daemon-chosen `..` sequence steer `VACUUM INTO` into the version store: a write the daemon
+ * cannot perform itself, performed on its behalf by the one process that can. A sandbox cannot stop
+ * that, because it constrains which process writes and the wrong process is doing the writing.
+ *
+ * Both guards are here rather than at the call sites, because there are two call sites and a rule
+ * that has to be remembered twice is a rule that will be applied once. `validLogin` is the same
+ * predicate the account CLI enforces on creation; the containment assertion is the backstop for the
+ * day that predicate is loosened.
  */
 function snapshotPathFor(destDir: string, login: string): string {
-  return join(destDir, `mail-${login}.db`);
+  if (!validLogin(login)) {
+    throw new SnapshotError(
+      `account login ${JSON.stringify(login)} is not a valid login, so it cannot be part of a filename. ` +
+        'The control database has been written by something other than the account CLI; refusing to snapshot.',
+    );
+  }
+  const path = join(destDir, `mail-${login}.db`);
+  if (!resolve(path).startsWith(resolve(destDir) + sep)) {
+    throw new SnapshotError(`the snapshot path for ${JSON.stringify(login)} escapes ${destDir}; refusing to snapshot`);
+  }
+  return path;
 }
 
 /**
@@ -160,18 +182,30 @@ export function takeSnapshot(controlDbPath: string, destDir: string): Snapshot {
   // could never fire, and untestable code that looks like a safeguard is worse than the comment
   // that explains why it is not needed.
 
+  // EVERY destination is computed before ANY of them is written. The containment rule in
+  // `snapshotPathFor` is only worth having if it runs before the write it is guarding: checking as
+  // we go would refuse the escaping path having already copied the accounts that sorted ahead of
+  // it, which is the difference between a refusal and a partial breach.
+  const destinations = sources.slice(1).map((s) => ({ login: s.login, from: s.path, to: snapshotPathFor(destDir, s.login) }));
+
   mkdirSync(destDir, { recursive: true, mode: 0o700 });
   chmodSync(destDir, 0o700); // explicit: this directory holds every secret the live system holds
   const controlCopy = join(destDir, 'control.db');
-  snapshotDatabase(controlDbPath, controlCopy);
   const mailDbs: Array<{ login: string; path: string }> = [];
-  for (const source of sources.slice(1)) {
-    const copy = snapshotPathFor(destDir, source.login);
-    snapshotDatabase(source.path, copy);
-    mailDbs.push({ login: source.login, path: copy });
+  try {
+    snapshotDatabase(controlDbPath, controlCopy);
+    for (const d of destinations) {
+      snapshotDatabase(d.from, d.to);
+      mailDbs.push({ login: d.login, path: d.to });
+    }
+    redirectAccountsIntoSnapshot(controlCopy, destDir);
+  } catch (e) {
+    // A snapshot that failed half-way is not a snapshot, and what it did write is a copy of live
+    // mail sitting on disk. The caller cannot clean it up, because it never received the handle
+    // whose `destroy` would have done it.
+    rmSync(destDir, { recursive: true, force: true });
+    throw e;
   }
-
-  redirectAccountsIntoSnapshot(controlCopy, destDir);
 
   let bytes = 0;
   for (const path of [controlCopy, ...mailDbs.map((m) => m.path)]) bytes += dbBytes(path);

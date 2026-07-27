@@ -23,18 +23,14 @@
  */
 
 import { dirname, join } from 'node:path';
-import { AccountRegistry } from '../store/account-registry.ts';
+import { AccountRegistry, validLogin } from '../store/account-registry.ts';
 import { openMailDb } from '../store/open-mail-db.ts';
 import type { OpsIo } from './cli.ts';
 
-/**
- * A login must be safe as a local-part AND as a filename fragment — it becomes
- * `mail-<login>.db` on disk, so path metacharacters are refused outright, as are
- * the delimiters of the MAIL_ACCOUNTS env format and the address separator.
- */
-export function validLogin(login: string): boolean {
-  return /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(login) && !login.includes('..');
-}
+// The rule lives with the registry, not here, because the CLI is not its only reader — see the
+// comment on `validLogin` in store/account-registry.ts. Re-exported so existing callers of
+// `ops/account.ts` keep working.
+export { validLogin };
 
 const USAGE = [
   'usage: node src/main.ts account <verb> [login] [--db <control.db>]',

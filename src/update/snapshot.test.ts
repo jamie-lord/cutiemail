@@ -10,7 +10,7 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { copyFileSync, mkdirSync, mkdtempSync, rmSync, readFileSync, statSync } from 'node:fs';
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -288,5 +288,49 @@ test('a forward schema move is reported rather than flagged, because rollback ne
 test('a control database that does not exist is refused before anything is created', () => {
   inTmp((dir) => {
     assert.throws(() => takeSnapshot(join(dir, 'nope.db'), join(dir, 'snap')), /does not exist/);
+  });
+});
+
+test('a login the account CLI could never have created is refused before anything is copied', () => {
+  // The daemon owns the control database. A login is therefore untrusted input by the time the
+  // updater reads it back, and interpolating it into a path let a `..` sequence steer VACUUM INTO
+  // into the version store — a write the daemon cannot perform itself, performed for it by the one
+  // process that can. See snapshotPathFor's comment.
+  inTmp((dir) => {
+    const { controlDb } = makeLiveData(dir);
+    const codeStore = join(dir, 'versions', 'deadbeef', 'src');
+    mkdirSync(codeStore, { recursive: true });
+
+    // A real mail database for the row to point at, so the copy would otherwise succeed.
+    const source = join(dir, 'mail-alice.db');
+    const db = new DatabaseSync(controlDb);
+    db.prepare('UPDATE accounts SET login = ? WHERE login = ?').run('a/../../../versions/deadbeef/src/IMPLANT', 'bob');
+    db.prepare('UPDATE accounts SET mail_db_path = ? WHERE login = ?').run(source, 'a/../../../versions/deadbeef/src/IMPLANT');
+    db.close();
+
+    const dest = join(dir, 'snap');
+    assert.throws(() => takeSnapshot(controlDb, dest), /is not a valid login/);
+    assert.deepEqual(readdirSync(codeStore), [], 'nothing was written into the code store');
+    assert.equal(existsSync(dest), false, 'no partial snapshot was left behind');
+  });
+});
+
+test('a snapshot that fails part-way leaves no copy of live mail on disk', () => {
+  // takeSnapshot throws before the caller ever receives the handle whose destroy() would clean up,
+  // so it has to clean up after itself or a half-written copy of every secret stays on disk.
+  //
+  // The failure has to land AFTER the directory is created, or this test passes for the wrong
+  // reason: the login guard runs before any mkdir, so a bad login proves nothing about cleanup.
+  // A file that exists but is not a database gets past every pre-write check and fails inside the
+  // copy loop, with the control database already copied.
+  inTmp((dir) => {
+    const { controlDb } = makeLiveData(dir);
+    const notADatabase = join(dir, 'mail-bob.db');
+    rmSync(notADatabase, { force: true });
+    writeFileSync(notADatabase, 'this is not a SQLite file');
+
+    const dest = join(dir, 'snap');
+    assert.throws(() => takeSnapshot(controlDb, dest));
+    assert.equal(existsSync(dest), false, 'the partial snapshot directory was removed');
   });
 });

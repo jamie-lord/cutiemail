@@ -16,7 +16,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createServer } from 'node:net';
 import type { AddressInfo } from 'node:net';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { openMailDb } from '../store/open-mail-db.ts';
@@ -360,4 +360,67 @@ test('the probe waits for the daemon to be SERVING, not merely started', async (
   } finally {
     await new Promise((r) => server.close(r));
   }
+});
+
+test('a symlink where a database should be is refused, not followed', async () => {
+  // The data directory is group-writable and belongs to the mail daemon, so it can put a symlink
+  // where a database should be. A DANGLING one is invisible to existsSync, so the rename-aside
+  // never fires and copyFileSync follows the link — turning the restore, which runs as the updater,
+  // into a write wherever the daemon points it. The updater can write the version store; the daemon
+  // deliberately cannot (ADR 0025). A sandbox does not help: the wrong process is doing the writing.
+  //
+  // The account's mail_db_path points at a REAL file, so it is included in the snapshot; the
+  // dangling symlink goes at the canonical destination the restore rebuilds from the login. A
+  // dangling mail_db_path would instead be skipped by takeSnapshot and prove nothing.
+  await inHarness(async (h) => {
+    const codeStore = join(h.dir, 'store', 'versions', OLD, 'src');
+    const implant = join(codeStore, 'IMPLANT.ts');
+
+    const real = join(h.dir, 'data', 'real-source.db');
+    const db = openMailDb(h.controlDb);
+    db.prepare('UPDATE accounts SET mail_db_path = ?').run(real);
+    db.close();
+    const userDb = openMailDb(real);
+    SqliteCatalog.open(userDb, 1).get('INBOX')!.append(Buffer.from('Subject: x\r\n\r\nb\r\n', 'latin1'), [], 1);
+    userDb.close();
+
+    rmSync(h.mailDb, { force: true });
+    symlinkSync(implant, h.mailDb); // dangling: the target does not exist yet
+
+    const probe = async (): Promise<{ ok: boolean; detail: string }> => ({ ok: false, detail: 'forced revert' });
+    const result = await cutover({ ...h.deps, probe }, NEW, { schemaMovedForward: true });
+
+    assert.equal(existsSync(implant), false, 'nothing was written through the symlink into the code store');
+    const restore = result.steps.find((s) => s.name === 'restore');
+    assert.equal(restore?.ok, false, 'the restore refused rather than following the link');
+    assert.match(restore!.detail, /not a regular file/);
+  });
+});
+
+test('a login that could not have been created is refused when a restore rebuilds its path', async () => {
+  // restoreSnapshot rebuilds the destination from the login rather than reading mail_db_path, so it
+  // needs the same rule the snapshot enforces on the way in. Reachable through recover(), where the
+  // snapshot on disk was written by whatever build ran last — including one without the guard.
+  await inHarness(async (h) => {
+    const snapDir = join(h.dir, 'snapshots', 'from-an-older-build');
+    mkdirSync(snapDir, { recursive: true, mode: 0o700 });
+    const db = openMailDb(join(snapDir, 'control.db'));
+    AccountRegistry.open(db).upsert('alice', 'pw', join(h.dir, 'data', 'mail-alice.db'));
+    db.prepare('UPDATE accounts SET login = ?').run('../../escape');
+    db.close();
+
+    const lines: string[] = [];
+    h.store.switchTo(NEW);
+    h.state.update((s) =>
+      enterPhase(s, 'probing', 1, { candidate: NEW, previous: OLD, snapshotDir: snapDir, schemaMovedForward: true }),
+    );
+
+    await recover({ ...h.deps, log: (l: string) => lines.push(l) }, h.state.read());
+
+    assert.ok(
+      lines.some((l) => /RESTORE FAILED/.test(l) && /not a valid login/.test(l)),
+      `the restore refused and said why, got: ${lines.join(' | ')}`,
+    );
+    assert.equal(existsSync(join(h.dir, 'escape')), false, 'nothing was written outside the data directory');
+  });
 });

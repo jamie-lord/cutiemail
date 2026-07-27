@@ -100,6 +100,22 @@ const DEFAULT_HASH: ScramHash = 'sha256';
 export const POSTMASTER = 'postmaster';
 
 /**
+ * A login must be safe as a local-part AND as a filename fragment — it becomes `mail-<login>.db` on
+ * disk, so path metacharacters are refused outright, as are the delimiters of the MAIL_ACCOUNTS env
+ * format and the address separator.
+ *
+ * THIS LIVES HERE, NOT IN THE CLI THAT CREATES ACCOUNTS, because the CLI is not the only reader. The
+ * updater reads logins back out of this registry and joins them into filesystem paths (ADR 0025's
+ * snapshot and its restore), and a rule enforced only where accounts are *written* is no rule at all
+ * to a process that did not do the writing: the mail daemon owns the control database, so a login is
+ * untrusted input by the time anything reads it back. `checkout.ts` guards remote-supplied path
+ * components exactly this way; this is that guard's sibling, and it was missing.
+ */
+export function validLogin(login: string): boolean {
+  return /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(login) && !login.includes('..');
+}
+
+/**
  * Generate a strong app-specific password: 144 bits from the CSPRNG, base64url (24 chars, no
  * padding, copy-pasteable). App passwords are never memorised — a client stores them — so an
  * unambiguous typed format is not needed; entropy and a clean charset are. Far above the
