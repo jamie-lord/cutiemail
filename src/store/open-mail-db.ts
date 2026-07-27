@@ -37,16 +37,41 @@ export const BUSY_TIMEOUT_MS = 5000;
 export const SCHEMA_VERSION = 1;
 
 /**
- * Force a mail-database file to owner-only (0600) permissions. The DB holds SCRAM
- * credential material (salt/iterations/stored_key/server_key) and raw message bytes —
- * never group/world readable. The daemon's 0o077 umask makes NEW files 0600, but this
- * also fixes an ALREADY-DEPLOYED 0644 file. Best-effort and idempotent:
- * :memory:, a missing file, a read-only FS, or a foreign owner are all non-fatal.
+ * Force a mail-database file to owner-and-group (0660), never world.
+ *
+ * The database holds SCRAM credential material (salt/iterations/stored_key/server_key) and raw
+ * message bytes, so world access is denied absolutely and this also repairs an already-deployed
+ * 0644 file. Best-effort and idempotent: `:memory:`, a missing file, a read-only filesystem or a
+ * foreign owner are all non-fatal.
+ *
+ * WHY THE GROUP BITS ARE SET, having previously been 0600. These files live in a directory that is
+ * already group-restricted, so access is decided by group membership before the file mode is ever
+ * consulted; denying the group at the file level was a second boundary disagreeing with the first.
+ * The disagreement had a cost. ADR 0025's updater runs as its own user and must read every database
+ * to snapshot them — the whole of rung 6 — and must write the control database, because the cutover
+ * probe mints and revokes a credential there. Granting that on top of a 0600 file cannot work: this
+ * function runs on EVERY open, and a `chmod` resets a POSIX ACL's mask to nothing, so any grant
+ * survived exactly until the daemon next restarted, which a cutover always does. The observed
+ * result was a pre-flight that passed once and then failed forever, blaming the data.
+ *
+ * So the mode says "owner and group", and the GROUP is the deployment's access-control decision —
+ * the conventional Unix way to say two service accounts share data, verifiable with `getent group`.
+ * A deployment with no updater has one member in that group, where 0660 and 0600 are the same
+ * thing. A deployment with one puts the updater in it, and that is the entire grant.
+ *
+ * WHY NOT 0640 FOR MAILBOXES, reserving write for the control database. It would need a "which kind
+ * of database is this" flag threaded through `openMailDb`, whose entire job is to be the one safe
+ * way to open a database — a uniform, hard-to-misuse function is exactly the wrong place to add a
+ * mode parameter. And the boundary it would buy is not real: the updater chooses the code the
+ * daemon runs next, so it can modify any mailbox by shipping a version that does. Denying the
+ * direct write while leaving the indirect one is the kind of asymmetry that reads as security and
+ * is not. What remains real is enforced here — world gets nothing — and what actually protects the
+ * mail is that the DAEMON cannot write its own code (ADR 0025), which is untouched by this.
  */
 export function secureMailDbFile(path: string): void {
   if (path === ':memory:') return;
   try {
-    chmodSync(path, 0o600);
+    chmodSync(path, 0o660);
   } catch {
     /* best-effort: :memory:, ENOENT, a read-only FS, or a foreign owner is not fatal */
   }

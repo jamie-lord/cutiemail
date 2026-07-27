@@ -25,7 +25,7 @@ import { TEST_CERT, TEST_KEY } from '../testing/tls-test-cert.ts';
 
 const mode = (p: string): number => statSync(p).mode & 0o777;
 
-test('boot heals 0600 on a registered account whose mail database is never opened', async () => {
+test('boot heals permissions on a registered account whose mail database is never opened', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'cutiemail-dormant-'));
   const controlPath = join(dir, 'control.db');
   const dormantPath = join(dir, 'mail-dormant.db');
@@ -56,7 +56,8 @@ test('boot heals 0600 on a registered account whose mail database is never opene
   };
   const server = await startServer(cfg);
   try {
-    assert.equal(mode(dormantPath), 0o600, 'the dormant account\'s database is healed at boot');
+    assert.equal(mode(dormantPath), 0o660, 'the dormant account\'s database is healed at boot');
+    assert.equal(mode(dormantPath) & 0o007, 0, 'and world gets nothing, which is the part that matters');
   } finally {
     await server.close();
   }

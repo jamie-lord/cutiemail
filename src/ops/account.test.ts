@@ -94,7 +94,10 @@ test('a mail database is created private (0600), never world/group readable', ()
     const dbPath = join(dir, 'perms.db');
     openMailDb(dbPath).close();
     const mode = statSync(dbPath).mode & 0o777;
-    assert.equal(mode, 0o600, `the DB (SCRAM material + raw mail) must be 0600, got ${mode.toString(8)}`);
+    // Owner and group, never world. The group is the deployment's access-control decision — one
+    // member where there is no updater, two where there is (see secureMailDbFile).
+    assert.equal(mode, 0o660, `the DB (SCRAM material + raw mail) must not be world-accessible, got ${mode.toString(8)}`);
+    assert.equal(mode & 0o007, 0, 'world gets nothing');
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

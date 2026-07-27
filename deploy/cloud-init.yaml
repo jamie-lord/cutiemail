@@ -9,9 +9,6 @@ packages:
   - curl
   - rsync
   - ufw
-  # POSIX ACLs: the updater is granted read on the mail databases through a default ACL, which is
-  # what lets it snapshot them without the daemon having to widen its own 0600 umask.
-  - acl
   # for the doc's "is outbound port 25 open?" check (nc gmail-smtp-in.l.google.com 25)
   - netcat-openbsd
 

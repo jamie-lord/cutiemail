@@ -17,7 +17,7 @@ import { AccountRegistry } from './account-registry.ts';
 
 const mode = (p: string): number => statSync(p).mode & 0o777;
 
-test('secureMailDbFile tightens a world-readable file to 0600', () => {
+test('secureMailDbFile tightens a world-readable file to owner-and-group, never world', () => {
   const dir = mkdtempSync(join(tmpdir(), 'maildbperm-'));
   try {
     const f = join(dir, 'mail-charlie.db');
@@ -25,7 +25,8 @@ test('secureMailDbFile tightens a world-readable file to 0600', () => {
     chmodSync(f, 0o644);
     assert.equal(mode(f), 0o644, 'precondition: file starts world-readable');
     secureMailDbFile(f);
-    assert.equal(mode(f), 0o600, 'file is now owner-only');
+    assert.equal(mode(f), 0o660, 'file is now owner-and-group');
+    assert.equal(mode(f) & 0o007, 0, 'and world has been stripped, which is what a 0644 file was leaking');
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -44,7 +45,7 @@ test('openMailDb heals a pre-existing 0644 database on open', () => {
     chmodSync(f, 0o644);
     const db = openMailDb(f);
     db.close();
-    assert.equal(mode(f), 0o600);
+    assert.equal(mode(f), 0o660);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -66,7 +67,8 @@ test('the boot heal fixes a DISABLED (dormant) account whose DB the daemon never
     // The exact boot-time heal main.ts performs over every registered account.
     for (const acct of registry.list()) secureMailDbFile(acct.mailDbPath);
 
-    assert.equal(mode(charlie), 0o600, 'the disabled account DB was healed at boot');
+    assert.equal(mode(charlie), 0o660, 'the disabled account DB was healed at boot');
+    assert.equal(mode(charlie) & 0o007, 0, 'world gets nothing from a disabled account either');
     controlDb.close();
   } finally {
     rmSync(dir, { recursive: true, force: true });

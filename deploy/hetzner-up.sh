@@ -199,34 +199,23 @@ if [ -n "$COMMIT" ]; then
   # The updater needs to read and snapshot the databases, and to restart the one unit it manages.
   # It gets group access to the data directory rather than ownership: the mail user still owns its
   # own mail.
-  # The updater must READ the databases to snapshot them, and it is a different user from the daemon
-  # by design — a compromise of the thing that downloads code must not be a compromise of the mail.
+  # The updater must read every database to snapshot them, and write the control database, because
+  # the cutover probe mints and revokes a credential there. It runs as its own user by design — a
+  # compromise of the thing that downloads code must not be a compromise of the mail — so that
+  # access has to be granted explicitly.
   #
-  # Group membership alone does not achieve that, which is a trap worth naming: the daemon's unit
-  # sets UMask=0077, so every database it creates is 0600 mail:mail. Adding mailupd to the `mail`
-  # group and making the DIRECTORY group-readable lets it list the directory and read nothing in it,
-  # so rung 6 — the one that migrates a snapshot of your real data, the whole reason the ladder
-  # exists — failed with "unable to open database file" on every deployment this script produced.
+  # Plain group ownership, and nothing cleverer. An ACL cannot work here: the daemon chmods its
+  # databases on EVERY open (secureMailDbFile), and a chmod resets an ACL's mask to nothing, so the
+  # grant survives exactly until the next restart — which a cutover always performs. That failure is
+  # silent and delayed: the pre-flight passes once, then fails forever blaming the data. The daemon
+  # now sets 0660 rather than 0600, which means the GROUP is the access-control decision and the
+  # daemon's own enforcement cooperates with it instead of fighting it. World still gets nothing.
   #
-  # A POSIX ACL grants exactly the access needed to exactly one user, and the DEFAULT entry is
-  # inherited by files created later, which is what makes it survive the daemon's umask: with a
-  # default ACL present the umask is not applied to the inherited entries. The daemon's own posture
-  # is untouched — it still creates 0600 files and still owns its own mail.
-  #
-  # WRITE, not just read, and the reason is the cutover probe: it mints an app password immediately
-  # before the check and revokes it immediately after, so the update is confirmed by a real message
-  # through authenticated submission rather than by the process merely being up. ADR 0025 states
-  # that this is not a new privilege — the updater already holds database access in order to
-  # snapshot at all — but the access was never actually granted, so the probe failed with "attempt
-  # to write a readonly database", the cutover reverted, and no update could ever complete.
-  #
-  # Capital X in the recursive grant, deliberately: it means "execute on directories only". A plain
-  # `-R -m u:mailupd:rw` applies rw to the directory too, stripping its search bit, and then nothing
-  # inside can be reached whatever the files themselves permit. Both halves of that trap were hit
-  # here in turn, and each failed silently in the same way.
-  ssh "root@$IP" 'apt-get install -y acl >/dev/null 2>&1 || true'
-  ssh "root@$IP" 'usermod -a -G mail mailupd && chmod 750 /var/lib/mailserver'
-  ssh "root@$IP" 'setfacl -R -m u:mailupd:rwX /var/lib/mailserver && setfacl -d -m u:mailupd:rw /var/lib/mailserver'
+  # The directory is group-writable because the revert path restores databases from the pre-cutover
+  # snapshot, which means creating files here — and that path runs precisely when something has
+  # already gone wrong, which is the worst moment to discover a permission error.
+  ssh "root@$IP" 'usermod -a -G mail mailupd'
+  ssh "root@$IP" 'chown -R mail:mail /var/lib/mailserver && chmod 770 /var/lib/mailserver && chmod 660 /var/lib/mailserver/*.db* 2>/dev/null; true'
 
   # Exactly one unit, exactly one verb each way. Without this the updater would have to run as root,
   # and a compromise of the thing that downloads code would be a compromise of everything.
