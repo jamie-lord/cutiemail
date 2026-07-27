@@ -988,7 +988,15 @@ any rung abandons the update and leaves the running version untouched.
   is your cutover downtime, measured before you commit to it), does your configuration still
   satisfy the new version, and are all your accounts, mailboxes and messages still there afterwards,
   byte for byte. Then a real message through submission, delivery and IMAP read-back against a real
-  mailbox.
+  mailbox. Your stored authentication material is checked byte for byte too — a migration that
+  rewrote it would lock out every client while the server looked perfectly healthy, and SCRAM means
+  the passwords cannot be recovered from what is left.
+- **That you can get back.** The version you are *running now* is booted against the snapshot the
+  candidate just migrated. If it cannot read it, the update is one-way and is refused, because
+  reverting restores the code and not the data — set `MAIL_UPDATE_ALLOW_IRREVERSIBLE=yes` to accept
+  that deliberately. This is the rung the rest leans on: the pre-flight cannot test the systemd
+  sandbox (it spawns the candidate itself), the cutover can, and its answer to any failure there is
+  to rename the symlink back.
 
 The candidate is forced into `MAIL_OUTBOUND=hold` for all of that, because the snapshot contains
 your outbound queue and a candidate booted in delivery mode would relay every queued message a
