@@ -298,7 +298,13 @@ sudo -u mail env MAIL_DOMAIN=mail.example.com \
 
 By default `doctor`'s outbound-25 probe dials `gmail.com`'s MX; use `--probe <domain>` to dial
 a different one, or `--skip-dial` to skip it (e.g. offline). `doctor` checks the *outside* (DNS,
-cert, outbound 25). Once the daemon is running, prove the
+cert, outbound 25). Two of its checks ask the question that is easy to forget to ask, because
+a record can be correct about you and still be useless: `spf-exclusive` evaluates your SPF
+record from `192.0.2.1` — a reserved documentation address (RFC 5737) that can never be yours
+— and fails if the record *authorises* it, which catches a `+all` or an over-broad `include:`
+that the per-address check passes happily; and `dmarc-org` looks up the registered domain's
+DMARC record when your mail domain sits below it (see [One record does not cover a whole
+domain](#one-record-does-not-cover-a-whole-domain)). Once the daemon is running, prove the
 *mail path itself* (authenticated submission, local delivery, IMAP read-back) with
 `node src/main.ts selftest <login>` (below). Note that `doctor` does **not** test *inbound* port 25
 reachability from the internet; see the firewall note under [What you need](#what-you-need).
@@ -338,6 +344,39 @@ reputation: a prerequisite for the inbox, not a guarantee of it (see
 (`--dmarc-policy none`) while you confirm SPF and DKIM align (add a `rua=`
 address to the record and read the aggregate reports receivers send back), then tighten
 to `quarantine`/`reject` once the reports show clean passes and you trust your setup.
+`doctor` warns while you are still at `p=none`, so a rollout that was meant to be temporary
+does not quietly become permanent — that is the single most common DMARC state on the
+internet, and it enforces nothing.
+
+### One record does not cover a whole domain
+
+This guide uses `mail.example.com` for both the host and the mail domain, and that has a
+consequence worth knowing before someone else finds it for you: **the `_dmarc` record above
+protects exactly that one name.** It does not protect `example.com`, and it does not protect
+`anything-else.mail.example.com`.
+
+A receiver evaluating a forged `billing@notreal.mail.example.com` looks for
+`_dmarc.notreal.mail.example.com`, finds nothing, and — under RFC 7489 §6.6.3, which is what
+the receivers deciding today still implement — jumps straight to the *registered* domain,
+`_dmarc.example.com`, skipping `mail.example.com` entirely. If nothing is published there, no
+policy applies at all and the forgery is delivered.
+
+If you own the registered domain and it sends no mail of its own, publish this at its apex:
+
+```
+example.com.        IN TXT "v=spf1 -all"
+_dmarc.example.com. IN TXT "v=DMARC1; p=reject; sp=reject"
+```
+
+`sp=reject` is the part that matters here; without it, `sp` inherits from `p`, which is fine
+until someone sets `p` and forgets that subdomains are a separate decision. `doctor`'s
+`dmarc-org` check looks for this record whenever your mail domain sits below its registered
+domain, and tells you which record actually governs your subdomains.
+
+(The replacement spec, RFC 9989 §4.10, walks the intermediate names and *would* find your
+record. This server's own inbound evaluation follows it — [ADR
+0027](decisions/0027-dmarc-rfc9989.md) — but what protects your domain is what other people's
+receivers do, so publish the apex record anyway.)
 
 `setup` also prints an **optional inbound MTA-STS** section: the exact policy file to
 host at `https://mta-sts.<domain>/.well-known/mta-sts.txt` (any static HTTPS host; this

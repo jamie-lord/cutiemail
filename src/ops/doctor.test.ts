@@ -72,7 +72,7 @@ function detailOf(results: readonly { name: string; detail: string }[], name: st
 
 test('a healthy deployment: every check ok (no false alarms)', async () => {
   const results = await doctorChecks(params, healthyDeps());
-  for (const name of ['mx', 'address', 'fcrdns', 'spf', 'dkim', 'dmarc', 'tls', 'dial-25', 'age']) {
+  for (const name of ['mx', 'address', 'fcrdns', 'spf', 'spf-exclusive', 'dkim', 'dmarc', 'tls', 'dial-25', 'age']) {
     assert.equal(statusOf(results, name), 'ok', `${name}: ${JSON.stringify(results)}`);
   }
 });
@@ -150,6 +150,90 @@ test('dmarc: missing fails, unparseable fails, present parses ok with its policy
 
   const ok = await doctorChecks(params, healthyDeps());
   assert.match(ok.find((r) => r.name === 'dmarc')!.detail, /p=quarantine/);
+});
+
+test('dmarc: p=none is a WARNING — published but enforcing nothing is the state that protects nobody', async () => {
+  const monitorOnly = await doctorChecks(params, healthyDeps({
+    txt: async (name) => (name === `_dmarc.${DOMAIN}` ? ['v=DMARC1; p=none; rua=mailto:d@mutant.test'] : healthyDeps().txt(name)),
+  }));
+  assert.equal(statusOf(monitorOnly, 'dmarc'), 'warn');
+  assert.match(detailOf(monitorOnly, 'dmarc'), /MONITOR only/);
+  // ...but still exit 0: mid-rollout at p=none is a legitimate state, not a broken one.
+  assert.equal(reportChecks(monitorOnly, { out: (): void => {}, err: (): void => {} }), 0);
+
+  // The enforcing policies stay quiet — the warning must not fire on a healthy deployment.
+  for (const policy of ['quarantine', 'reject']) {
+    const enforcing = await doctorChecks(params, healthyDeps({
+      txt: async (name) => (name === `_dmarc.${DOMAIN}` ? [`v=DMARC1; p=${policy}`] : healthyDeps().txt(name)),
+    }));
+    assert.equal(statusOf(enforcing, 'dmarc'), 'ok', `p=${policy} must not warn`);
+  }
+});
+
+test('spf-exclusive: a record that authorises everyone fails; a softfail warns; -all is ok', async () => {
+  // The check the per-address one cannot make: `+all` authorises this host perfectly well.
+  for (const everyone of ['v=spf1 +all', `v=spf1 ip4:${IP} all`, 'v=spf1 +ip4:0.0.0.0/0 -all']) {
+    const open = await doctorChecks(params, healthyDeps({
+      txt: async (name) => (name === DOMAIN ? [everyone] : healthyDeps().txt(name)),
+    }));
+    assert.equal(statusOf(open, 'spf'), 'ok', `${everyone}: the per-address check still passes — that is the point`);
+    assert.equal(statusOf(open, 'spf-exclusive'), 'fail', everyone);
+    assert.match(detailOf(open, 'spf-exclusive'), /anyone on the internet passes SPF/);
+  }
+
+  const soft = await doctorChecks(params, healthyDeps({
+    txt: async (name) => (name === DOMAIN ? [`v=spf1 ip4:${IP} ~all`] : healthyDeps().txt(name)),
+  }));
+  assert.equal(statusOf(soft, 'spf-exclusive'), 'warn');
+
+  const neutral = await doctorChecks(params, healthyDeps({
+    txt: async (name) => (name === DOMAIN ? [`v=spf1 ip4:${IP} ?all`] : healthyDeps().txt(name)),
+  }));
+  assert.equal(statusOf(neutral, 'spf-exclusive'), 'warn');
+
+  // The reserved probe address must not be confused with a real one in the same /24:
+  // the healthy record authorises 192.0.2.7 and hard-fails 192.0.2.1.
+  assert.equal(statusOf(await doctorChecks(params, healthyDeps()), 'spf-exclusive'), 'ok');
+});
+
+test('dmarc-org: a subdomain mail domain is told which record actually governs its subdomains', async () => {
+  // The topology the deployment guide recommends: mail domain BELOW the registered domain.
+  const sub = { ...params, domain: `mail.${DOMAIN}`, mailHost: `mail.${DOMAIN}` };
+  const subDeps = (over: Partial<DoctorDeps> = {}): DoctorDeps => healthyDeps({
+    mx: async (name) => (name === sub.domain ? [{ exchange: sub.domain, priority: 10 }] : name === 'probe.example' ? [{ exchange: 'mx.probe.example', priority: 5 }] : []),
+    addr: async (name) => (name === sub.domain ? [IP] : []),
+    ptr: async (ip) => (ip === IP ? [sub.domain] : []),
+    txt: async (name) => {
+      if (name === sub.domain) return [`v=spf1 ip4:${IP} -all`];
+      if (name === `sel._domainkey.${sub.domain}`) return [publishedDkim];
+      if (name === `_dmarc.${sub.domain}`) return ['v=DMARC1; p=quarantine'];
+      return [];
+    },
+    ...over,
+  });
+
+  // Nothing at the registered domain: our own record does not cover our subdomains.
+  const bare = await doctorChecks(sub, subDeps());
+  assert.equal(statusOf(bare, 'dmarc'), 'ok'); // the mail domain's own record is fine...
+  assert.equal(statusOf(bare, 'dmarc-org'), 'warn'); // ...and governs only itself
+  assert.match(detailOf(bare, 'dmarc-org'), new RegExp(`no DMARC record at _dmarc\\.${DOMAIN}`));
+
+  const covered = await doctorChecks(sub, subDeps({
+    txt: async (name) => (name === `_dmarc.${DOMAIN}` ? ['v=DMARC1; p=reject; sp=reject'] : subDeps().txt(name)),
+  }));
+  assert.equal(statusOf(covered, 'dmarc-org'), 'ok');
+  assert.match(detailOf(covered, 'dmarc-org'), /sp=reject/);
+
+  // An apex that publishes a policy but exempts its subdomains is the trap worth naming.
+  const spNone = await doctorChecks(sub, subDeps({
+    txt: async (name) => (name === `_dmarc.${DOMAIN}` ? ['v=DMARC1; p=reject; sp=none'] : subDeps().txt(name)),
+  }));
+  assert.equal(statusOf(spNone, 'dmarc-org'), 'warn');
+  assert.match(detailOf(spNone, 'dmarc-org'), /sp=none/);
+
+  // And when the mail domain IS the registered domain there is no second record to want,
+  // so the check must not fire at all rather than nag about a name nobody should publish.
+  assert.equal((await doctorChecks(params, healthyDeps())).some((r) => r.name === 'dmarc-org'), false);
 });
 
 test('tls: expiry-soon warns, expired fails, wrong host fails, wrong key fails, unconfigured warns', async () => {

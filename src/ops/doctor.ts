@@ -12,8 +12,12 @@
  *   fcrdns    each address reverse-resolves back to the host (Gmail checks this)
  *   spf       the published SPF authorises each address — evaluated by OUR OWN
  *             RFC 7208 evaluator, not a reimplementation
+ *   spf-exclusive  ...and REFUSES an address that is not ours (a record that
+ *             authorises everyone passes the check above)
  *   dkim      the published DKIM TXT contains exactly this server's public key
- *   dmarc     a DMARC policy is published and parses
+ *   dmarc     a DMARC policy is published, parses, and actually enforces
+ *   dmarc-org when the mail domain is a subdomain, the registered domain — which
+ *             is what receivers consult for our subdomains — publishes one too
  *   tls       the certificate covers the host, matches the private key, isn't
  *             expired or about to be
  *   dial-25   outbound port 25 actually reaches a real MX (greeting read)
@@ -43,6 +47,14 @@ import { sanitizeForTerminalLine } from './terminal.ts';
 
 /** Mirrors MAX_REPLY_BYTES in wire/reply.ts: a greeting is one line, not a stream. */
 const MAX_GREETING_BYTES = 64 * 1024;
+
+/**
+ * The address the SPF exclusivity check evaluates from: TEST-NET-1 (RFC 5737 §3),
+ * reserved for documentation and never routed, so no deployment can legitimately
+ * authorise it. A published record that does NOT hard-fail this address does not
+ * hard-fail an attacker either.
+ */
+const SPF_OUTSIDER_IP = '192.0.2.1';
 
 /** Read a response body incrementally, abandoning it past `maxBytes`. Null if over. */
 async function readCapped(res: Response, maxBytes: number): Promise<string | null> {
@@ -142,12 +154,12 @@ export async function doctorChecks(p: DoctorParams, deps: DoctorDeps): Promise<C
   }
 
   // -- spf (evaluated by the real RFC 7208 evaluator, per address) --------------
+  const spfResolvers: SpfResolvers = {
+    txt: deps.txt,
+    a: deps.addr,
+    mx: async (name) => (await deps.mx(name)).map((m) => m.exchange),
+  };
   if (ips.length > 0) {
-    const spfResolvers: SpfResolvers = {
-      txt: deps.txt,
-      a: deps.addr,
-      mx: async (name) => (await deps.mx(name)).map((m) => m.exchange),
-    };
     const verdicts: string[] = [];
     let worst: 'ok' | 'warn' | 'fail' = 'ok';
     for (const ip of ips) {
@@ -164,6 +176,37 @@ export async function doctorChecks(p: DoctorParams, deps: DoctorDeps): Promise<C
     if (worst === 'ok') push('spf', 'ok', `SPF authorises this host (${verdicts.join('; ')})`);
     else if (worst === 'warn') push('spf', 'warn', `SPF could not be evaluated right now (${verdicts.join('; ')})`);
     else push('spf', 'fail', `published SPF does not authorise this host (${verdicts.join('; ')}): re-run setup and compare`);
+  }
+
+  // -- spf-exclusive ------------------------------------------------------------
+  // The check above answers "does SPF authorise ME". That is only half the record's
+  // job, and the half that cannot detect the failure that matters: a record ending
+  // `+all` (or carrying an `include:` for a service the operator stopped using years
+  // ago) authorises this host perfectly well AND authorises the entire internet. SPF
+  // exists to EXCLUDE, so evaluate it from an address that is definitely not ours and
+  // require a hard fail. 192.0.2.1 is TEST-NET-1 (RFC 5737 §3), reserved for
+  // documentation and never routed, so it can never legitimately be a sender.
+  try {
+    const outsider = await checkSpf(SPF_OUTSIDER_IP, p.domain, spfResolvers);
+    if (outsider === 'fail') {
+      push('spf-exclusive', 'ok', `SPF rejects senders other than this host (${SPF_OUTSIDER_IP}: fail)`);
+    } else if (outsider === 'pass') {
+      push(
+        'spf-exclusive',
+        'fail',
+        `published SPF authorises ${SPF_OUTSIDER_IP} — an address that is not yours and never can be: anyone on the internet passes SPF for ${p.domain}. Look for "+all", a bare "all", or an over-broad "include:"; setup publishes "-all".`,
+      );
+    } else if (outsider === 'softfail' || outsider === 'neutral') {
+      push(
+        'spf-exclusive',
+        'warn',
+        `published SPF only ${outsider}s other senders (${SPF_OUTSIDER_IP}), so forged mail is not refused outright: "-all" is what setup publishes and what receivers act on`,
+      );
+    } else {
+      push('spf-exclusive', 'warn', `could not decide whether SPF excludes other senders (${SPF_OUTSIDER_IP}: ${outsider})`);
+    }
+  } catch (e) {
+    push('spf-exclusive', 'warn', `SPF exclusivity check failed: ${String(e)}`);
   }
 
   // -- dkim ---------------------------------------------------------------------
@@ -202,11 +245,58 @@ export async function doctorChecks(p: DoctorParams, deps: DoctorDeps): Promise<C
       push('dmarc', 'fail', `no DMARC record at _dmarc.${p.domain}: big receivers now expect one; run setup`);
     } else {
       const parsed = parseDmarcRecord(Buffer.from(rec, 'latin1'));
-      if (!parsed.valid) push('dmarc', 'fail', `the DMARC record does not parse: ${rec}`);
-      else push('dmarc', 'ok', `p=${parsed.policy ?? '?'} published`);
+      if (!parsed.valid) {
+        push('dmarc', 'fail', `the DMARC record does not parse: ${rec}`);
+      } else if (parsed.policy === 'none') {
+        // Publishing a record and asking receivers to do nothing about failures is the
+        // most common DMARC state on the internet and the one that protects nobody: it
+        // buys reports, not enforcement. `setup` emits p=quarantine, so a deployment
+        // sitting at p=none is either mid-rollout or drift that nothing else would catch.
+        push(
+          'dmarc',
+          'warn',
+          'p=none published: receivers are asked to MONITOR only, so mail forging this domain is still delivered. Once SPF and DKIM check out above, publish p=quarantine (what setup emits) or p=reject.',
+        );
+      } else {
+        push('dmarc', 'ok', `p=${parsed.policy ?? '?'} published`);
+      }
     }
   } catch (e) {
     push('dmarc', 'fail', `DMARC lookup failed: ${String(e)}`);
+  }
+
+  // -- dmarc-org ------------------------------------------------------------------
+  // When the mail domain sits BELOW its registered domain — which the deployment guide
+  // recommends (`you@mail.example.com`) — the record checked above does not govern the
+  // mail domain's own subdomains. A receiver evaluating `anything.mail.example.com`
+  // finds no record there and, under RFC 7489 §6.6.3, jumps straight to the
+  // organizational domain (`example.com`), skipping `mail.example.com` entirely. So the
+  // record `setup` generated protects exactly one name, and both `@example.com` and
+  // `@*.mail.example.com` are unprotected unless the apex publishes a record too.
+  // (RFC 9989 §4.10's tree walk visits the intermediate names and would find ours —
+  // but the receivers deciding today are the ones that matter. See ADR 0027.)
+  const orgDomain = registeredDomain(p.domain);
+  if (orgDomain !== null && orgDomain !== stripDot(p.domain)) {
+    try {
+      const { record: orgRec, multiple: orgMultiple } = selectDmarcRecord(await deps.txt(`_dmarc.${orgDomain}`));
+      if (orgMultiple) {
+        push('dmarc-org', 'fail', `several DMARC records at _dmarc.${orgDomain}: the set is discarded, so subdomains of ${p.domain} get NO policy`);
+      } else if (orgRec === null) {
+        push(
+          'dmarc-org',
+          'warn',
+          `no DMARC record at _dmarc.${orgDomain}. ${p.domain} is a subdomain, so receivers consult ${orgDomain}'s record — not this one — for anything under ${p.domain}, and for ${orgDomain} itself. Publish "v=DMARC1; p=reject; sp=reject" there if you own it and it sends no mail.`,
+        );
+      } else {
+        const parsedOrg = parseDmarcRecord(Buffer.from(orgRec, 'latin1'));
+        const governing = parsedOrg.subdomainPolicy ?? parsedOrg.policy;
+        if (!parsedOrg.valid) push('dmarc-org', 'warn', `the DMARC record at _dmarc.${orgDomain} does not parse, so subdomains of ${p.domain} get no policy`);
+        else if (governing === 'none') push('dmarc-org', 'warn', `_dmarc.${orgDomain} governs subdomains of ${p.domain} and asks receivers to monitor only (${parsedOrg.subdomainPolicy !== null ? 'sp' : 'p'}=none)`);
+        else push('dmarc-org', 'ok', `_dmarc.${orgDomain} covers subdomains of ${p.domain} (${parsedOrg.subdomainPolicy !== null ? 'sp' : 'p'}=${governing})`);
+      }
+    } catch (e) {
+      push('dmarc-org', 'warn', `could not check _dmarc.${orgDomain}: ${String(e)}`);
+    }
   }
 
   // -- tls --------------------------------------------------------------------------
