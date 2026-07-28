@@ -4,8 +4,12 @@
  * DMARC ties SPF and DKIM to the RFC 5322 From domain: it passes when at least one of
  * them PASSED *and* its identifier is ALIGNED with the From domain (relaxed = same
  * organizational domain; strict = exact). It composes the tested auth/dmarc.ts
- * (parseDmarcRecord + checkAlignment) with a From-domain extractor, a DNS fetch (with
- * the §6.6.3 organizational-domain fallback), and an org-domain function.
+ * (parseDmarcRecord + checkAlignment) with a From-domain extractor, a DNS fetch (walking
+ * the ancestors of the From domain, RFC 9989 §4.10.1), and an org-domain function.
+ *
+ * Policy discovery follows the replacement spec, RFC 9989, within a Public Suffix List
+ * floor; alignment still uses the PSL organizational domain rather than 9989's per-identifier
+ * tree walk. ADR 0027 records exactly which half is which, and why.
  *
  * The org-domain function uses the full embedded Public Suffix List (auth/public-suffix.ts),
  * so relaxed alignment is computed against the true registered domain even under multi-label
@@ -15,7 +19,7 @@
  */
 
 import { domainToASCII } from 'node:url';
-import { parseDmarcRecord, checkAlignment } from '../auth/dmarc.ts';
+import { parseDmarcRecord, checkAlignment, testModePolicy } from '../auth/dmarc.ts';
 import { fromAuthor, domainOfAddrSpec } from '../message/from-author.ts';
 import { registeredDomain } from '../auth/public-suffix.ts';
 
@@ -33,10 +37,19 @@ export interface DmarcInput {
 
 export interface DmarcOutcome {
   readonly verdict: DmarcVerdict;
+  /**
+   * The policy that GOVERNS this message: the applicable published policy, already demoted
+   * if the owner set RFC 9989 §4.7 test mode. The enforcement path reads this and nothing
+   * else, so test mode cannot be forgotten at a call site.
+   */
   readonly policy: string | null;
+  /** What the zone actually says, before any test-mode demotion. Reporting only. */
+  readonly publishedPolicy: string | null;
   readonly fromDomain: string | null;
   /** The published `pct` (0–100): the share of failures the owner wants the policy applied to. */
   readonly pct: number;
+  /** Whether `t=y` was published, so a trace can explain why an enforcing policy did not fire. */
+  readonly testMode: boolean;
 }
 
 /**
@@ -103,6 +116,46 @@ async function fetchDmarc(domain: string, resolveTxt: DmarcInput['resolveTxt']):
   return selectDmarcRecord(await resolveTxt(dmarcQueryName(domain)));
 }
 
+/** RFC 9989 §4.10: a tree walk visits at most eight names, however long the Author Domain. */
+const MAX_POLICY_QUERIES = 8;
+
+/**
+ * The names above `fromDomain` that may carry the governing policy, ORDERED AS THE
+ * SELECTION PREFERS THEM: the organizational domain first, then downward towards (but never
+ * reaching) the Author Domain itself.
+ *
+ * That order is the whole subtlety of RFC 9989 §4.10.2, and it is the opposite of the
+ * intuitive one. The tree walk does not stop at the first record it meets going up; it
+ * collects them and then, absent a `psd` tag, "select[s] the DMARC Policy Record found at
+ * the name with the fewest number of labels". So the SHALLOWEST published record wins, not
+ * the most specific — which is why querying shallowest-first and taking the first hit is both
+ * correct and cheaper: an ordinary sender one label below its organizational domain still
+ * costs the same two lookups it did under 7489.
+ *
+ * What this buys over RFC 7489's single jump to the organizational domain: a policy
+ * published at an intermediate name is currently skipped entirely. For an Author Domain of
+ * `alerts.corp.example.com` where `corp.example.com` publishes p=reject and the apex
+ * publishes nothing, 7489 discovery looks at the Author Domain, then `example.com`, finds
+ * neither, and applies NO policy at all. The walk finds `corp.example.com`.
+ *
+ * The floor is the PSL organizational domain rather than the TLD, so no `psd` handling is
+ * needed and the walk can never apply a public suffix operator's policy (ADR 0027).
+ *
+ * §4.10 step 4 caps the cost: an Author Domain of eight or more labels jumps straight to its
+ * seven-label suffix, so a From of a hundred labels cannot buy a hundred DNS queries on an
+ * unauthenticated path. Exported for the test that pins that bound.
+ */
+export function policyAncestors(fromDomain: string, orgDomain: string): readonly string[] {
+  const labels = fromDomain.split('.');
+  const orgLabelCount = orgDomain.split('.').length;
+  const first = labels.length >= MAX_POLICY_QUERIES ? labels.length - (MAX_POLICY_QUERIES - 1) : 1;
+  const names: string[] = [];
+  // i counts labels dropped from the left: i=1 is the immediate parent, and the last
+  // iteration is the organizational domain itself.
+  for (let i = first; i <= labels.length - orgLabelCount; i++) names.push(labels.slice(i).join('.'));
+  return names.reverse(); // shallowest (fewest labels) first — the selection order
+}
+
 export async function checkDmarc(input: DmarcInput): Promise<DmarcOutcome> {
   const { domain: fromDomain, count: fromCount } = fromHeaderInfo(input.rawMessage);
   // §3.6.1: exactly one From is required. More than one is the canonical display-spoof
@@ -112,43 +165,57 @@ export async function checkDmarc(input: DmarcInput): Promise<DmarcOutcome> {
   // of a p=reject domain reach the INBOX instead of Junk (the enforcement predicate keys
   // on the policy), so the MORE deceptive attack evaded the enforcement the plainer one hit.
   const spoofMultiFrom = fromCount > 1;
-  const noPolicy = (): DmarcOutcome => ({ verdict: spoofMultiFrom ? 'fail' : 'none', policy: null, fromDomain, pct: 100 });
-  if (fromDomain === null) return { verdict: spoofMultiFrom ? 'fail' : 'none', policy: null, fromDomain: null, pct: 100 };
+  const noPolicy = (): DmarcOutcome => ({ verdict: spoofMultiFrom ? 'fail' : 'none', policy: null, publishedPolicy: null, fromDomain, pct: 100, testMode: false });
+  if (fromDomain === null) return { verdict: spoofMultiFrom ? 'fail' : 'none', policy: null, publishedPolicy: null, fromDomain: null, pct: 100, testMode: false };
 
-  let recordText: string | null;
-  // Whether the record came from the organizational domain rather than the From domain
-  // itself — in that case the subdomain policy (sp=) governs the From (§6.6.3).
-  let viaOrgFallback = false;
+  let recordText: string | null = null;
+  // Whether the record came from a name ABOVE the From domain rather than the From domain
+  // itself — in that case the subdomain policy (sp=) governs the From (§6.6.3, RFC 9989
+  // §4.10.1: "In the absence of applicable "sp" or "np" tags, the "p" tag policy is used
+  // for subdomains").
+  let viaParent = false;
   try {
+    // §4.10.1: a record at the Author Domain is applied outright and outranks every
+    // ancestor, so the common case is still exactly one query.
     const primary = await fetchDmarc(fromDomain, input.resolveTxt);
     // §6.6.3 step 5: multiple published records terminate discovery with no policy applied.
     if (primary.multiple) return noPolicy();
     recordText = primary.record;
     if (recordText === null) {
-      const org = organizationalDomain(fromDomain);
-      if (org !== fromDomain) {
-        const fallback = await fetchDmarc(org, input.resolveTxt);
-        if (fallback.multiple) return noPolicy();
-        recordText = fallback.record;
-        viaOrgFallback = recordText !== null;
+      for (const ancestor of policyAncestors(fromDomain, organizationalDomain(fromDomain))) {
+        const up = await fetchDmarc(ancestor, input.resolveTxt);
+        // Terminating here cannot lose a policy that 7489 discovery would have applied: the
+        // organizational domain is queried FIRST, so an ancestor is only reached once the
+        // organizational domain has been shown to publish nothing.
+        if (up.multiple) return noPolicy();
+        if (up.record !== null) {
+          recordText = up.record;
+          viaParent = true;
+          break;
+        }
       }
     }
   } catch {
-    return { verdict: 'temperror', policy: null, fromDomain, pct: 100 };
+    return { verdict: 'temperror', policy: null, publishedPolicy: null, fromDomain, pct: 100, testMode: false };
   }
   if (recordText === null) return noPolicy();
 
   const record = parseDmarcRecord(Buffer.from(recordText, 'latin1'));
-  if (!record.valid) return { verdict: spoofMultiFrom ? 'fail' : 'none', policy: null, fromDomain, pct: 100 };
+  if (!record.valid) return { verdict: spoofMultiFrom ? 'fail' : 'none', policy: null, publishedPolicy: null, fromDomain, pct: 100, testMode: false };
 
   const dkimAligned = input.dkimPassedDomains.some((d) => checkAlignment(fromDomain, d, record.adkim, organizationalDomain));
   const spfAligned = input.spfResult === 'pass' && input.spfDomain !== '' && checkAlignment(fromDomain, input.spfDomain, record.aspf, organizationalDomain);
 
-  // §6.6.3: a subdomain governed by the org-domain record uses sp= (when published),
+  // §6.6.3: a subdomain governed by an ancestor's record uses sp= (when published),
   // falling back to p=. The applicable policy is what a downstream reader must see.
-  const policy = viaOrgFallback && record.subdomainPolicy !== null ? record.subdomainPolicy : record.policy;
+  const publishedPolicy = viaParent && record.subdomainPolicy !== null ? record.subdomainPolicy : record.policy;
+  // RFC 9989 §4.7: `t=y` says the owner is still testing and wants the policy applied one
+  // level down. `policy` is therefore the policy that GOVERNS, already demoted — there is
+  // deliberately no second field for the enforcement path to choose between, and
+  // `publishedPolicy` is for reporting only.
+  const policy = record.testMode ? testModePolicy(publishedPolicy) : publishedPolicy;
   // A multi-From message is a fail regardless of alignment (the display-spoof); with the
   // real policy now fetched, a published quarantine/reject is enforced to Junk.
   const verdict = spoofMultiFrom || !(dkimAligned || spfAligned) ? 'fail' : 'pass';
-  return { verdict, policy, fromDomain, pct: record.pct };
+  return { verdict, policy, publishedPolicy, fromDomain, pct: record.pct, testMode: record.testMode };
 }

@@ -31,6 +31,7 @@ export type SpecSource =
   | 'rfc8463'
   | 'rfc7208'
   | 'rfc7489'
+  | 'rfc9989'
   | 'rfc8461'
   | 'rfc8617'
   | 'rfc6531'
@@ -132,8 +133,15 @@ export interface RequirementDef {
   readonly rfc?: SpecSource;
   /** Section within the source RFC, e.g. "2.3.8" or (for rfc3207) "4.2". */
   readonly section: string;
-  /** Page in the source spec .txt, for locating the text by hand. */
-  readonly page: number;
+  /**
+   * Page in the source spec .txt, for locating the text by hand.
+   *
+   * Optional because the RFC Editor's current text format has no page breaks at all: RFC
+   * 9989 carries zero "[Page N]" markers where RFC 7489 carries 73. For those documents the
+   * section number IS the locator, and a page number would be a figure nobody could check
+   * against the vendored file — which is the one thing this register must never contain.
+   */
+  readonly page?: number;
   readonly level: Level;
   readonly party: Party;
   readonly normativeSource: NormativeSource;

@@ -398,7 +398,8 @@ export async function startServer(cfg: MailServerConfig): Promise<RunningServer>
       spf = 'temperror';
     }
     // DMARC ties it together: an aligned DKIM or SPF pass, keyed to the From domain.
-    let dmarc: { verdict: string; policy: string | null; fromDomain: string | null; pct: number } = { verdict: 'none', policy: null, fromDomain: null, pct: 100 };
+    let dmarc: { verdict: string; policy: string | null; publishedPolicy: string | null; fromDomain: string | null; pct: number; testMode: boolean } =
+      { verdict: 'none', policy: null, publishedPolicy: null, fromDomain: null, pct: 100, testMode: false };
     try {
       dmarc = await checkDmarc({
         rawMessage: m.data,
@@ -408,7 +409,7 @@ export async function startServer(cfg: MailServerConfig): Promise<RunningServer>
         resolveTxt: spfResolvers.txt,
       });
     } catch {
-      dmarc = { verdict: 'temperror', policy: null, fromDomain: null, pct: 100 };
+      dmarc = { verdict: 'temperror', policy: null, publishedPolicy: null, fromDomain: null, pct: 100, testMode: false };
     }
     // ARC (RFC 8617 §5.2): validate any Authenticated Received Chain. A cv=pass means the
     // chain is intact and every seal + the newest message signature verify — but that only
@@ -426,7 +427,10 @@ export async function startServer(cfg: MailServerConfig): Promise<RunningServer>
     const authResults =
       `Authentication-Results: ${cfg.domain}; dkim=${dkim.verdict}${dkimDomain !== null ? ` header.d=${dkimDomain}` : ''}` +
       `; spf=${spf}${spfDomain !== '' ? ` smtp.mailfrom=${spfDomain}` : ''}` +
-      `; dmarc=${dmarc.verdict}${dmarc.policy !== null ? ` (p=${dmarc.policy})` : ''}` +
+      // The PUBLISHED policy goes in the trace, not the governing one: under RFC 9989 test
+      // mode they differ, and "p=quarantine t=y" tells a reader why an enforcing policy did
+      // not fire, where a bare "p=none" would look like the zone had said nothing.
+      `; dmarc=${dmarc.verdict}${dmarc.publishedPolicy !== null ? ` (p=${dmarc.publishedPolicy}${dmarc.testMode ? ' t=y' : ''})` : ''}` +
       // arc's cv is a fixed enum (none/pass/fail) — safe to splice; the sealer domain is
       // NOT echoed (it is attacker-controlled and would need AR-delimiter sanitisation).
       `; arc=${arc.cv}`;
@@ -449,6 +453,8 @@ export async function startServer(cfg: MailServerConfig): Promise<RunningServer>
     // p=quarantine or p=reject is filed to Junk rather than the INBOX — never hard-rejected
     // (we don't do ARC, so rejecting would lose legitimately-forwarded mail; Junk is
     // recoverable). p=none stays informational. `pct` gates the share of failures acted on.
+    // `dmarc.policy` is already demoted where the owner published RFC 9989 `t=y`, so a
+    // domain testing p=quarantine reaches the INBOX without this line needing to know.
     const enforce = dmarc.verdict === 'fail' && (dmarc.policy === 'quarantine' || dmarc.policy === 'reject') && dmarcSample() < dmarc.pct;
     // ARC override (RFC 8617): a DMARC failure that would be junked is instead delivered to the
     // INBOX when a valid ARC chain (cv=pass) was sealed by a forwarder we trust — the case ARC

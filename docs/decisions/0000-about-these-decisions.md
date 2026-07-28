@@ -63,3 +63,4 @@ suite covers:
 - [0024](0024-login-case-insensitive-identity.md), A login is case-insensitive identity, enforced by the database
 - [0025](0025-self-update.md), Self-update: a separate updater, and a cutover that must earn the switch
 - [0026](0026-reserved-postmaster-mailbox.md), The reserved postmaster mailbox is a floor, not a convention
+- [0027](0027-dmarc-rfc9989.md), Which half of RFC 9989 this server implements

@@ -190,11 +190,11 @@ the send path **`From` is oversigned** (listed in `h=` once more than it appears
 prepended-`From` replay breaks the signature (with a reproduce-first attack test), and signer
 and verifier share one RFC 6376 §5.4.2 header selector, the same code ARC uses.
 
-### DMARC: RFC 7489
+### DMARC: RFC 7489, and the parts of RFC 9989 that replace it
 
 Record parsing, strict and relaxed alignment, organizational-domain derivation via a fully
-embedded Public Suffix List (it passes the canonical publicsuffix.org test suite), the §6.6.3
-fallback, and `sp=` for subdomains. Three spoof / edge classes are pinned: a single-header
+embedded Public Suffix List (it passes the canonical publicsuffix.org test suite), and `sp=` for
+subdomains. Three spoof / edge classes are pinned: a single-header
 mailbox-list `From` (two addr-specs in one header) is treated as multi-author and fails to Junk,
 the same hardening the outbound send-as gate uses; **multiple published DMARC records** =>
 no policy applied (§6.6.3, never silently first-wins); and an IDN `From` is normalized to
@@ -202,6 +202,16 @@ A-labels before alignment (RFC 5890) so a U-label `From` aligns with an A-label 
 domain rather than false-failing. Enforcement is tested end to end: a `p=quarantine` /
 `p=reject` failure is filed to Junk (never hard-rejected, so forwarded mail is not lost),
 with `pct` honoured (ADR 0010).
+
+Policy discovery follows RFC 9989 §4.10 rather than 7489's single jump to the organizational
+domain, and the tests cover the part that is easy to get backwards: where both an intermediate
+name and the apex publish a record, §4.10.2 selects the one with the *fewest* labels, not the
+most specific. A mutant that walks most-specific-first is killed by that test. Also pinned: a
+record at the Author Domain costs exactly one query and outranks every ancestor; the ordinary
+two-label sender still costs the two lookups it always did; a 202-label `From` stays inside
+§4.10's eight-query budget; and `t=y` demotes the policy one level while `t=n`, `t=yes`, `t=Y`
+and an empty value all leave it alone — only a literal `y` disarms enforcement. The deliberate
+gaps (`np`, `psd`, tree-walk alignment) are ADR 0027, not oversights.
 
 ### ARC: RFC 8617
 

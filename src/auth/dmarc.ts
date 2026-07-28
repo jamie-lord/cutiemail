@@ -2,6 +2,11 @@
  * A DMARC record parser and identifier-alignment check (RFC 7489 §6.3/§3.1), with
  * switchable defects.
  *
+ * RFC 9989 (May 2026) obsoletes 7489. The record grammar and alignment rules quoted here
+ * survive it unchanged; what it adds — the `t` test-mode tag, honoured below — and what it
+ * changes elsewhere are recorded in ADR 0027, which says exactly which parts of the
+ * replacement this server implements and which it does not.
+ *
  * Two pure functions: parse a "v=DMARC1; p=...; ..." record into its tags, and
  * decide whether an authenticated domain is ALIGNED with the RFC5322.From domain
  * under a given mode. DNS lookup of the record and Public Suffix List resolution
@@ -16,7 +21,12 @@ export type DmarcPolicy = 'none' | 'quarantine' | 'reject';
 export type AlignmentMode = 'r' | 's';
 
 const POLICIES: readonly string[] = ['none', 'quarantine', 'reject'];
-const KNOWN_TAGS = new Set(['v', 'p', 'sp', 'adkim', 'aspf', 'pct', 'rua', 'ruf', 'fo', 'rf', 'ri']);
+// `t` is RFC 9989 §4.7's test mode, the successor to `pct` (which that document retires to
+// historic in Appendix A.6 but which is still widely published, so both are honoured).
+// `np` and `psd` are deliberately absent: they are real 9989 tags, but this server does not
+// implement their semantics, and listing a tag we ignore as "known" would claim otherwise.
+// Leaving them unknown is both honest and correct — §6.3 requires unknown tags be ignored.
+const KNOWN_TAGS = new Set(['v', 'p', 'sp', 'adkim', 'aspf', 'pct', 't', 'rua', 'ruf', 'fo', 'rf', 'ri']);
 
 export interface DmarcRecord {
   readonly valid: boolean;
@@ -26,8 +36,26 @@ export interface DmarcRecord {
   readonly adkim: AlignmentMode;
   readonly aspf: AlignmentMode;
   readonly pct: number;
+  /** RFC 9989 §4.7 `t=y`: the owner is testing this policy and asks that it not be applied. */
+  readonly testMode: boolean;
   readonly tags: ReadonlyMap<string, string>;
   readonly anomalies: readonly string[];
+}
+
+/**
+ * RFC 9989 §4.7: under `t=y` the Domain Owner "has an expectation that the policy applied to
+ * any failing messages will be one level below the specified policy" — reject becomes
+ * quarantine, quarantine becomes none, and none is unaffected.
+ *
+ * Honouring this matters more than it looks: a domain part-way through a DMARC rollout
+ * publishes its target policy with `t=y` precisely so receivers do NOT act on it yet. A
+ * receiver that ignores the tag junks mail the owner explicitly asked it to deliver — the
+ * exact failure mode that keeps domains parked at p=none for years.
+ */
+export function testModePolicy(policy: DmarcPolicy | null): DmarcPolicy | null {
+  if (policy === 'reject') return 'quarantine';
+  if (policy === 'quarantine') return 'none';
+  return policy;
 }
 
 export interface DmarcParseDefects {
@@ -103,6 +131,9 @@ export function parseDmarcRecord(record: Buffer, defects: DmarcParseDefects = {}
     adkim: asMode(tags.get('adkim')),
     aspf: asMode(tags.get('aspf')),
     pct,
+    // §4.7: "default is 'n'". Only an explicit "y" turns test mode on, so a garbled value
+    // fails towards enforcing the published policy rather than silently disarming it.
+    testMode: tags.get('t') === 'y',
     tags,
     anomalies,
   };

@@ -250,6 +250,19 @@ clear the bar. Most of these carry a revisit trigger.
 
 - **DMARC `rua`/`ruf` and TLS-RPT emission.** Outbound scheduled-report machinery with near-zero
   value at personal scale; `ruf` is privacy-fraught besides.
+- **Reading the DMARC aggregate reports you *receive*.** Distinct from the entry above, which is
+  about reports this server would send, and worth its own reason because it is the step operators
+  most often give up at: you publish a `rua=`, Gmail and Microsoft start mailing you gzipped XML
+  every day, and without a parser it is unreadable — so people turn DMARC off rather than leave
+  it collecting attachments. A `dmarc-report` summary command beside `doctor` would fit the
+  house style (SQLite is already here, `node:zlib` is a builtin). Declined on two counts. The
+  reports exist to inventory *unknown* senders, and a one-domain one-box deployment has none —
+  every path that can send is the daemon itself, which is why `setup` emits `p=quarantine`
+  outright rather than the `p=none`-and-wait rollout the reports are designed to support. And
+  the cost is not the summary, it is a from-scratch XML parser fed unsolicited third-party
+  attachments: a new hostile-input surface bought for an operator convenience that
+  publicly-hosted analysers already provide. **Revisit** if multi-domain ever lands, since a
+  second sending path is exactly the condition that makes the reports say something.
 - **Prometheus metrics / structured-log tooling.** `doctor` and the queue CLI answer the
   operator's real questions at this scale; a metrics endpoint has no consumer here.
 - **Richer `account list` (created / last-login).** A marginal nicety. Its one real use,
@@ -312,6 +325,16 @@ clear the bar. Most of these carry a revisit trigger.
 - **DKIM key-record `h=` permitted-hash enforcement.** Declined: `sha1` is already rejected
   outright (RFC 8301), so honouring a key record that restricts the hash to a set adds no
   security over what the algorithm gate already denies.
+- **The rest of RFC 9989 (DMARC): `psd`, `np`, and per-identifier tree-walk alignment.**
+  Deferred, recorded as [ADR 0027](decisions/0027-dmarc-rfc9989.md). Policy discovery and the
+  `t` test-mode tag were adopted; alignment still compares Public Suffix List organizational
+  domains rather than running §4.10.2's tree walk per authenticated identifier, which would cost
+  up to eight DNS queries for the Author Domain plus eight for each DKIM `d=` and the SPF domain,
+  per message, on an unauthenticated path. `np` needs a non-existent-domain determination this
+  server does not make; `psd` needs the walk to continue past the registered domain to the TLD,
+  which the PSL floor deliberately prevents. **Revisit** if a legitimate sender is observed
+  relying on tree-walk alignment to split alignment between intermediate names, or if PSL refresh
+  cadence becomes the thing that breaks alignment.
 - **Concurrent per-domain outbound relay.** Declined. The serial single-flight drain is
   deliberate: the `stop()` / DB-close safety design depends on there being one in-flight relay,
   and per-message host attempts are already bounded by the MX list. A concurrency rework

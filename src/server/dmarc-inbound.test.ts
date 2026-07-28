@@ -8,7 +8,11 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { checkDmarc, organizationalDomain } from './dmarc-inbound.ts';
+import { checkDmarc, organizationalDomain, policyAncestors } from './dmarc-inbound.ts';
+import { authRequirement, type AuthRequirementId } from '../register/auth/index.ts';
+
+/** Traceability: naming the requirement a test covers is a compile error if it does not exist. */
+const cites = (id: AuthRequirementId): void => assert.ok(authRequirement(id).id === id);
 
 const msg = (fromDomain: string): Buffer => Buffer.from(`From: Alice <alice@${fromDomain}>\r\nSubject: hi\r\n\r\nbody\r\n`, 'latin1');
 const dmarcAt = (records: Record<string, string>) => async (name: string) => (records[name] !== undefined ? [records[name]!] : []);
@@ -221,4 +225,120 @@ test('an IDN U-label From aligns with an A-label d= and is not junked (RFC 6376 
   const aMessage = Buffer.from(`From: buch@${aLabel}\r\nSubject: hi\r\n\r\nbody\r\n`, 'latin1');
   const viaSpf = await checkDmarc({ rawMessage: aMessage, dkimPassedDomains: [], spfResult: 'pass', spfDomain: uFrom, resolveTxt: rec });
   assert.equal(viaSpf.verdict, 'pass', 'A-label From aligns with a U-label SPF identifier');
+});
+
+// -- RFC 9989 §4.10 policy discovery ------------------------------------------------------
+// The replacement for 7489's single jump to the organizational domain. See ADR 0027.
+
+test('policyAncestors visits shallowest-first and never exceeds RFC 9989 §4.10\'s eight queries', () => {
+  cites('R-9989-4.10-a');
+  cites('R-9989-4.10.2-a');
+  // Shallowest first, because §4.10.2 selects "the DMARC Policy Record found at the name
+  // with the fewest number of labels" — NOT the most specific one.
+  assert.deepEqual(policyAncestors('a.b.example.com', 'example.com'), ['example.com', 'b.example.com']);
+  // Nothing to walk when the From domain IS the organizational domain: one query, as before.
+  assert.deepEqual(policyAncestors('example.com', 'example.com'), []);
+  assert.deepEqual(policyAncestors('mail.example.com', 'example.com'), ['example.com']);
+  // Multi-part public suffix: the floor is the registered domain, not the suffix.
+  assert.deepEqual(policyAncestors('a.example.co.uk', 'example.co.uk'), ['example.co.uk']);
+
+  // The DoS shortcut: an attacker-chosen From cannot buy a query per label. The walk plus
+  // the Author Domain query itself must stay within the eight the RFC budgets.
+  const hostile = `${'x.'.repeat(200)}example.com`;
+  const names = policyAncestors(hostile, 'example.com');
+  assert.ok(names.length + 1 <= 8, `walk cost ${names.length + 1} queries, budget is 8`);
+  // ...and it still reaches the shallow names that actually matter.
+  assert.equal(names[0], 'example.com');
+});
+
+test('a policy published at an INTERMEDIATE name is applied — the case RFC 7489 discovery skips', async () => {
+  cites('R-9989-4.10.1-a');
+  cites('R-9989-4.10.1-b');
+  // 7489 §6.6.3 queries the Author Domain then jumps to the organizational domain, so a
+  // policy published in between is never seen. Here the apex publishes nothing at all.
+  const rec = dmarcAt({ '_dmarc.corp.example.com': 'v=DMARC1; p=reject' });
+  const out = await checkDmarc({
+    rawMessage: msg('alerts.corp.example.com'),
+    dkimPassedDomains: [], spfResult: 'none', spfDomain: '', resolveTxt: rec,
+  });
+  assert.equal(out.verdict, 'fail');
+  assert.equal(out.policy, 'reject', 'the intermediate policy governs; 7489 discovery applied none at all');
+
+  // And sp= governs when the record came from above the Author Domain.
+  const withSp = dmarcAt({ '_dmarc.corp.example.com': 'v=DMARC1; p=reject; sp=quarantine' });
+  const sub = await checkDmarc({
+    rawMessage: msg('alerts.corp.example.com'),
+    dkimPassedDomains: [], spfResult: 'none', spfDomain: '', resolveTxt: withSp,
+  });
+  assert.equal(sub.policy, 'quarantine');
+});
+
+test('when several ancestors publish, the SHALLOWEST wins (§4.10.2), not the most specific', async () => {
+  cites('R-9989-4.10.2-a');
+  // The counter-intuitive half of the tree walk, and the reason the walk queries downward.
+  // Getting this backwards would silently apply the wrong domain owner's policy.
+  const rec = dmarcAt({
+    '_dmarc.corp.example.com': 'v=DMARC1; p=none',
+    '_dmarc.example.com': 'v=DMARC1; p=reject',
+  });
+  const out = await checkDmarc({
+    rawMessage: msg('alerts.corp.example.com'),
+    dkimPassedDomains: [], spfResult: 'none', spfDomain: '', resolveTxt: rec,
+  });
+  assert.equal(out.policy, 'reject', 'example.com has the fewest labels, so its record is the one selected');
+});
+
+test('a record at the Author Domain outranks every ancestor and costs exactly one query', async () => {
+  cites('R-9989-4.10.1-a');
+  const asked: string[] = [];
+  const rec = async (name: string): Promise<readonly string[]> => {
+    asked.push(name);
+    if (name === '_dmarc.alerts.corp.example.com') return ['v=DMARC1; p=none'];
+    if (name === '_dmarc.example.com') return ['v=DMARC1; p=reject'];
+    return [];
+  };
+  const out = await checkDmarc({
+    rawMessage: msg('alerts.corp.example.com'),
+    dkimPassedDomains: [], spfResult: 'none', spfDomain: '', resolveTxt: rec,
+  });
+  assert.equal(out.policy, 'none', '§4.10.1: the Author Domain record is applied outright');
+  assert.deepEqual(asked, ['_dmarc.alerts.corp.example.com'], 'no ancestor is queried once the Author Domain answers');
+});
+
+test('the walk never costs more than the old fallback for an ordinary two-label sender', async () => {
+  const asked: string[] = [];
+  const rec = async (name: string): Promise<readonly string[]> => {
+    asked.push(name);
+    return name === '_dmarc.example.com' ? ['v=DMARC1; p=reject'] : [];
+  };
+  await checkDmarc({ rawMessage: msg('mail.example.com'), dkimPassedDomains: [], spfResult: 'none', spfDomain: '', resolveTxt: rec });
+  assert.deepEqual(asked, ['_dmarc.mail.example.com', '_dmarc.example.com'], 'the common case is the same two lookups it always was');
+});
+
+test('RFC 9989 §4.7 test mode demotes the policy one level, so a domain mid-rollout is not junked', async () => {
+  cites('R-9989-4.7-a');
+  const under = async (record: string): Promise<{ policy: string | null; publishedPolicy: string | null; testMode: boolean }> => {
+    const out = await checkDmarc({
+      rawMessage: msg('example.com'),
+      dkimPassedDomains: [], spfResult: 'none', spfDomain: '', resolveTxt: dmarcAt({ '_dmarc.example.com': record }),
+    });
+    assert.equal(out.verdict, 'fail', 'nothing aligns, so every case below is a DMARC failure');
+    return out;
+  };
+
+  // quarantine + t=y => none: main.ts enforces on `policy`, so this reaches the INBOX.
+  const testingQuarantine = await under('v=DMARC1; p=quarantine; t=y');
+  assert.equal(testingQuarantine.policy, 'none');
+  assert.equal(testingQuarantine.publishedPolicy, 'quarantine', 'the trace still shows what the zone says');
+  assert.equal(testingQuarantine.testMode, true);
+
+  // reject + t=y => quarantine: still junked, but not treated as the stronger policy.
+  assert.equal((await under('v=DMARC1; p=reject; t=y')).policy, 'quarantine');
+
+  // t=n and a garbled value both leave the policy alone: only an explicit "y" disarms it,
+  // so a typo cannot silently switch enforcement off.
+  for (const t of ['n', 'yes', 'Y', '']) {
+    assert.equal((await under(`v=DMARC1; p=quarantine; t=${t}`)).policy, 'quarantine', `t=${t} must not demote`);
+  }
+  assert.equal((await under('v=DMARC1; p=quarantine')).policy, 'quarantine', 'absent t= is the default n');
 });
