@@ -62,7 +62,7 @@ test('SEARCH SUBJECT with a quoted multi-word phrase matches the whole phrase', 
   inbox.append(Buffer.from('From: b@y.test\r\nSubject: annual report draft\r\n\r\nb\r\n', 'latin1')); // 2
   inbox.append(Buffer.from('From: c@z.test\r\nSubject: the annual meeting\r\n\r\nb\r\n', 'latin1')); // 3
 
-  const server = await ImapServer.start(cat, { authenticate: () => true });
+  const server = await ImapServer.start(cat, { authenticate: async () => true });
   const sock = net.connect(server.port, '127.0.0.1');
   const s = new S(sock);
   try {
@@ -83,7 +83,7 @@ test('SEARCH SUBJECT with a quoted multi-word phrase matches the whole phrase', 
 test('SEARCH rejects an over-long key list instead of doing O(keys×messages) work', async () => {
   const cat = new MemoryCatalog();
   cat.get('INBOX')!.append(Buffer.from('From: a@x.test\r\nSubject: hi\r\n\r\nbody\r\n', 'latin1'));
-  const server = await ImapServer.start(cat, { authenticate: () => true });
+  const server = await ImapServer.start(cat, { authenticate: async () => true });
   const sock = net.connect(server.port, '127.0.0.1');
   const s = new S(sock);
   try {
@@ -114,7 +114,7 @@ test('SEARCH NOT / dates / size / OR are executed, not silently dropped', async 
   inbox.append(Buffer.from('From: alice@x.test\r\nSubject: old note\r\n\r\nhello world\r\n', 'latin1'), [], Date.UTC(2024, 0, 1)); // 1: unseen, old, small
   inbox.append(Buffer.from(`From: bob@y.test\r\nSubject: big recent\r\n\r\n${'x'.repeat(5000)}\r\n`, 'latin1'), ['\\Seen'], Date.UTC(2026, 5, 1)); // 2: seen, recent, large
 
-  const server = await ImapServer.start(cat, { authenticate: () => true });
+  const server = await ImapServer.start(cat, { authenticate: async () => true });
   const sock = net.connect(server.port, '127.0.0.1');
   const s = new S(sock);
   try {
@@ -140,7 +140,7 @@ test('SEARCH NOT / dates / size / OR are executed, not silently dropped', async 
 test('SEARCH with an unsupported key is rejected with BAD, not answered with wrong results', async () => {
   const cat = new MemoryCatalog();
   cat.get('INBOX')!.append(Buffer.from('Subject: x\r\n\r\nb\r\n', 'latin1'));
-  const server = await ImapServer.start(cat, { authenticate: () => true });
+  const server = await ImapServer.start(cat, { authenticate: async () => true });
   const sock = net.connect(server.port, '127.0.0.1');
   const s = new S(sock);
   try {
@@ -162,7 +162,7 @@ test('extended SEARCH RETURN yields an ESEARCH aggregate (RFC 9051 §7.3.4)', as
   inbox.storeFlags(2, 'add', ['\\Seen']);
   inbox.storeFlags(3, 'add', ['\\Seen']);
   inbox.storeFlags(4, 'add', ['\\Seen']); // SEEN = 2,3,4 ; UNSEEN = 1,5,6
-  const server = await ImapServer.start(cat, { authenticate: () => true });
+  const server = await ImapServer.start(cat, { authenticate: async () => true });
   const sock = net.connect(server.port, '127.0.0.1');
   const s = new S(sock);
   try {
@@ -186,7 +186,7 @@ test('extended SEARCH RETURN yields an ESEARCH aggregate (RFC 9051 §7.3.4)', as
 
 test('mailbox names with spaces (Outlook-style) work through CREATE/SELECT/STATUS/LIST', async () => {
   const cat = new MemoryCatalog();
-  const server = await ImapServer.start(cat, { authenticate: () => true });
+  const server = await ImapServer.start(cat, { authenticate: async () => true });
   const sock = net.connect(server.port, '127.0.0.1');
   const s = new S(sock);
   try {
@@ -210,7 +210,7 @@ test('mailbox names with spaces (Outlook-style) work through CREATE/SELECT/STATU
 test('extended LIST forms (RFC 9051 §6.3.9): (SUBSCRIBED) selection and RETURN options', async () => {
   const cat = new MemoryCatalog();
   cat.create('Sent');
-  const server = await ImapServer.start(cat, { authenticate: () => true });
+  const server = await ImapServer.start(cat, { authenticate: async () => true });
   const sock = net.connect(server.port, '127.0.0.1');
   const s = new S(sock);
   try {

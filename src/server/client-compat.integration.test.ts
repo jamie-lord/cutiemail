@@ -71,7 +71,7 @@ test('the Thunderbird account-setup sequence completes against the server', asyn
   mailbox.append(raw);
   mailbox.append(Buffer.from('Subject: second\r\n\r\ntwo\r\n', 'latin1'));
 
-  const server = await ImapServer.start(mailbox, { authenticate: (u, p) => u === 'test' && p === 'pw' });
+  const server = await ImapServer.start(mailbox, { authenticate: async (u, p) => u === 'test' && p === 'pw' });
   const sock = net.connect(server.port, '127.0.0.1');
   const s = new Session(sock);
   try {
@@ -151,7 +151,7 @@ test('the Thunderbird folder workflow: CREATE Trash, APPEND to Sent, MOVE to del
   inbox.append(Buffer.from('Subject: keep\r\n\r\none\r\n', 'latin1'));
   inbox.append(Buffer.from('Subject: bin me\r\n\r\ntwo\r\n', 'latin1'));
 
-  const server = await ImapServer.start(catalog, { authenticate: (u, p) => u === 'test' && p === 'pw' });
+  const server = await ImapServer.start(catalog, { authenticate: async (u, p) => u === 'test' && p === 'pw' });
   const sock = net.connect(server.port, '127.0.0.1');
   const s = new Session(sock);
   try {

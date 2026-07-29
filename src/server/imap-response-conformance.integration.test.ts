@@ -51,7 +51,7 @@ test('every response from a rich live session parses as well-formed RFC 9051', a
   inbox.append(Buffer.from('From: a@b.test\r\nTo: c@d.test\r\nSubject: hi\r\nDate: Thu, 16 Jul 2026 12:00:00 +0000\r\n\r\nbody\r\n', 'latin1'));
   inbox.append(Buffer.from('Subject: two\r\n\r\nsecond\r\n', 'latin1'));
 
-  const server = await ImapServer.start(catalog, { authenticate: () => true });
+  const server = await ImapServer.start(catalog, { authenticate: async () => true });
   const sock = net.connect(server.port, '127.0.0.1');
   let acc = Buffer.alloc(0);
   sock.on('data', (d) => (acc = Buffer.concat([acc, Buffer.from(d)])));

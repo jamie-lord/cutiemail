@@ -76,7 +76,7 @@ test('malformed CONDSTORE STORE/FETCH never crash the server and leave the conne
   const catalog = new MemoryCatalog();
   const inbox = catalog.get('INBOX')!;
   for (let i = 0; i < 4; i++) inbox.append(Buffer.from(`Subject: m${i}\r\n\r\nx\r\n`, 'latin1'));
-  const server = await ImapServer.start(catalog, { authenticate: () => true });
+  const server = await ImapServer.start(catalog, { authenticate: async () => true });
   const s = new Session(net.connect(server.port, '127.0.0.1'));
   try {
     await s.waitFor('* OK');

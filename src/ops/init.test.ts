@@ -37,8 +37,8 @@ test('init creates the first account; the password authenticates and never touch
     // The credential works via the real registry, and the plaintext is nowhere on disk.
     const db = openMailDb(dbPath);
     const registry = AccountRegistry.open(db);
-    assert.equal(registry.verifyPassword('admin', 's3cret-pw'), true);
-    assert.equal(registry.verifyPassword('admin', 'wrong'), false);
+    assert.equal(await registry.verifyPassword('admin', 's3cret-pw'), true);
+    assert.equal(await registry.verifyPassword('admin', 'wrong'), false);
     const row = registry.lookup('admin');
     assert.equal(row?.mailDbPath, join(dir, 'mail-admin.db'));
     db.close();
@@ -69,7 +69,7 @@ test('init refuses once any account exists — points at account add', async () 
     const db = openMailDb(dbPath);
     const registry = AccountRegistry.open(db);
     assert.equal(registry.lookup('other'), undefined, 'the refused account was not created');
-    assert.equal(registry.verifyPassword('admin', 'admin-pw1'), true, 'the existing account is untouched');
+    assert.equal(await registry.verifyPassword('admin', 'admin-pw1'), true, 'the existing account is untouched');
     db.close();
   } finally {
     rmSync(dir, { recursive: true, force: true });

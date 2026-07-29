@@ -61,7 +61,7 @@ test('re-authenticating does not carry the previous account\'s mailbox into the 
 
   let aliceEnabled = true;
   const server = await ImapServer.start(alice, {
-    authenticate: (u, p) => (u === 'alice' && p === 'apw') || (u === 'bob' && p === 'bpw'),
+    authenticate: async (u, p) => (u === 'alice' && p === 'apw') || (u === 'bob' && p === 'bpw'),
     resolveAccount: (login) => {
       const catalog = stores[login];
       return catalog === undefined ? undefined : { catalog };
@@ -100,7 +100,7 @@ test('re-authenticating does not carry the previous account\'s mailbox into the 
 
 test('LOGIN is refused once authenticated, so one credential cannot loop key derivation', async () => {
   const cat = new MemoryCatalog();
-  const server = await ImapServer.start(cat, { authenticate: (u, p) => u === 'alice' && p === 'apw' });
+  const server = await ImapServer.start(cat, { authenticate: async (u, p) => u === 'alice' && p === 'apw' });
   const c = connect(server.port);
   try {
     await new Promise<void>((r) => c.sock.once('connect', () => r()));
@@ -115,7 +115,7 @@ test('LOGIN is refused once authenticated, so one credential cannot loop key der
 
 test('an APPEND line of runaway whitespace is answered promptly, not parsed cubically', async () => {
   const cat = new MemoryCatalog();
-  const server = await ImapServer.start(cat, { authenticate: (u, p) => u === 'alice' && p === 'apw' });
+  const server = await ImapServer.start(cat, { authenticate: async (u, p) => u === 'alice' && p === 'apw' });
   const c = connect(server.port);
   try {
     await new Promise<void>((r) => c.sock.once('connect', () => r()));
@@ -140,7 +140,7 @@ test('an APPEND line of runaway whitespace is answered promptly, not parsed cubi
 
 test('APPEND still accepts every form RFC 9051 §6.3.12 allows', async () => {
   const cat = new MemoryCatalog();
-  const server = await ImapServer.start(cat, { authenticate: (u, p) => u === 'alice' && p === 'apw' });
+  const server = await ImapServer.start(cat, { authenticate: async (u, p) => u === 'alice' && p === 'apw' });
   const c = connect(server.port);
   try {
     await new Promise<void>((r) => c.sock.once('connect', () => r()));
@@ -175,7 +175,7 @@ test('a repeated BODY[] section costs no more than asking for it once', async ()
     Buffer.alloc(1024 * 1024, 0x41),
   ]);
   cat.get('INBOX')!.append(oneMib);
-  const server = await ImapServer.start(cat, { authenticate: (u, p) => u === 'alice' && p === 'apw' });
+  const server = await ImapServer.start(cat, { authenticate: async (u, p) => u === 'alice' && p === 'apw' });
   const c = connect(server.port);
   try {
     await new Promise<void>((r) => c.sock.once('connect', () => r()));
@@ -199,7 +199,7 @@ test('a repeated BODY[] section costs no more than asking for it once', async ()
 
 test('CREATE refuses a mailbox name deep enough to make LIST quadratic', async () => {
   const cat = new MemoryCatalog();
-  const server = await ImapServer.start(cat, { authenticate: (u, p) => u === 'alice' && p === 'apw' });
+  const server = await ImapServer.start(cat, { authenticate: async (u, p) => u === 'alice' && p === 'apw' });
   const c = connect(server.port);
   try {
     await new Promise<void>((r) => c.sock.once('connect', () => r()));

@@ -59,7 +59,7 @@ test('the id high-water mark survives reopening the database', () => {
 });
 
 test('a mailbox named after an Object.prototype key gets no special-use attribute', async () => {
-  const server = await ImapServer.start(new MemoryCatalog(), { authenticate: (u, p) => u === 'alice' && p === 'pw' });
+  const server = await ImapServer.start(new MemoryCatalog(), { authenticate: async (u, p) => u === 'alice' && p === 'pw' });
   const sock = net.connect(server.port, '127.0.0.1');
   let acc = '';
   sock.on('data', (d) => (acc += d.toString('latin1')));

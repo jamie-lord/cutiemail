@@ -54,7 +54,7 @@ test('a message one connection expunges is announced to another at its next NOOP
   const inbox = catalog.get('INBOX')!;
   for (const subj of ['one', 'two', 'three']) inbox.append(Buffer.from(`Subject: ${subj}\r\n\r\nx\r\n`, 'latin1'));
   const notifier = new MailboxNotifier();
-  const server = await ImapServer.start(catalog, { authenticate: () => true, notifier });
+  const server = await ImapServer.start(catalog, { authenticate: async () => true, notifier });
   const a = await open(server.port);
   const b = await open(server.port);
   try {
@@ -94,7 +94,7 @@ test('an idling connection is told in real time when another connection expunges
   const inbox = catalog.get('INBOX')!;
   for (const subj of ['one', 'two']) inbox.append(Buffer.from(`Subject: ${subj}\r\n\r\nx\r\n`, 'latin1'));
   const notifier = new MailboxNotifier();
-  const server = await ImapServer.start(catalog, { authenticate: () => true, notifier });
+  const server = await ImapServer.start(catalog, { authenticate: async () => true, notifier });
   const a = await open(server.port);
   const b = await open(server.port);
   try {
@@ -119,7 +119,7 @@ test('an idling connection is told in real time when another connection expunges
 test('mail one connection files with APPEND appears for another (NOOP and IDLE)', async () => {
   const catalog = new MemoryCatalog();
   const notifier = new MailboxNotifier();
-  const server = await ImapServer.start(catalog, { authenticate: () => true, notifier });
+  const server = await ImapServer.start(catalog, { authenticate: async () => true, notifier });
   const a = await open(server.port); // INBOX starts empty
   const b = await open(server.port);
   try {
@@ -146,7 +146,7 @@ test('a flag one connection sets is announced to another as an untagged FETCH', 
   const inbox = catalog.get('INBOX')!;
   for (const subj of ['one', 'two']) inbox.append(Buffer.from(`Subject: ${subj}\r\n\r\nx\r\n`, 'latin1'));
   const notifier = new MailboxNotifier();
-  const server = await ImapServer.start(catalog, { authenticate: () => true, notifier });
+  const server = await ImapServer.start(catalog, { authenticate: async () => true, notifier });
   const a = await open(server.port);
   const b = await open(server.port);
   try {
@@ -175,7 +175,7 @@ test('a message another connection reads (\\Seen via BODY[] fetch) shows as read
   const inbox = catalog.get('INBOX')!;
   inbox.append(Buffer.from('Subject: unread\r\n\r\nbody\r\n', 'latin1'));
   const notifier = new MailboxNotifier();
-  const server = await ImapServer.start(catalog, { authenticate: () => true, notifier });
+  const server = await ImapServer.start(catalog, { authenticate: async () => true, notifier });
   const a = await open(server.port);
   const b = await open(server.port);
   try {
@@ -205,7 +205,7 @@ test('a peer expunge is not swallowed when this connection then runs its own EXP
   const inbox = catalog.get('INBOX')!;
   for (const subj of ['one', 'two', 'three']) inbox.append(Buffer.from(`Subject: ${subj}\r\n\r\nx\r\n`, 'latin1'));
   const notifier = new MailboxNotifier();
-  const server = await ImapServer.start(catalog, { authenticate: () => true, notifier });
+  const server = await ImapServer.start(catalog, { authenticate: async () => true, notifier });
   const a = await open(server.port);
   const b = await open(server.port);
   try {
@@ -241,7 +241,7 @@ test('a peer expunge is not swallowed when this connection then runs its own MOV
   for (const subj of ['one', 'two', 'three']) inbox.append(Buffer.from(`Subject: ${subj}\r\n\r\nx\r\n`, 'latin1'));
   catalog.create('Archive');
   const notifier = new MailboxNotifier();
-  const server = await ImapServer.start(catalog, { authenticate: () => true, notifier });
+  const server = await ImapServer.start(catalog, { authenticate: async () => true, notifier });
   const a = await open(server.port);
   const b = await open(server.port);
   try {
@@ -280,7 +280,7 @@ test('a SEQUENCE-mode COPY/MOVE under a concurrent peer EXPUNGE never hits the W
     for (const subj of ['one', 'two', 'three']) inbox.append(Buffer.from(`Subject: ${subj}\r\n\r\nx\r\n`, 'latin1'));
     catalog.create('Archive');
     const notifier = new MailboxNotifier();
-    const server = await ImapServer.start(catalog, { authenticate: () => true, notifier });
+    const server = await ImapServer.start(catalog, { authenticate: async () => true, notifier });
     const a = await open(server.port);
     const b = await open(server.port);
     try {
@@ -310,7 +310,7 @@ test('CLOSE expunges silently for the closer but still tells a peer the messages
   const inbox = catalog.get('INBOX')!;
   for (const subj of ['keep', 'drop']) inbox.append(Buffer.from(`Subject: ${subj}\r\n\r\nx\r\n`, 'latin1'));
   const notifier = new MailboxNotifier();
-  const server = await ImapServer.start(catalog, { authenticate: () => true, notifier });
+  const server = await ImapServer.start(catalog, { authenticate: async () => true, notifier });
   const a = await open(server.port);
   const b = await open(server.port);
   try {
@@ -340,7 +340,7 @@ test('EXPUNGE sequence numbers are descending so an earlier removal never invali
   const inbox = catalog.get('INBOX')!;
   for (const subj of ['1', '2', '3', '4', '5']) inbox.append(Buffer.from(`Subject: ${subj}\r\n\r\nx\r\n`, 'latin1'));
   const notifier = new MailboxNotifier();
-  const server = await ImapServer.start(catalog, { authenticate: () => true, notifier });
+  const server = await ImapServer.start(catalog, { authenticate: async () => true, notifier });
   const a = await open(server.port);
   const b = await open(server.port);
   try {
@@ -371,7 +371,7 @@ test('a peer expunge does not renumber a bare-sequence FETCH before the client i
   const inbox = catalog.get('INBOX')!;
   for (let i = 1; i <= 5; i++) inbox.append(Buffer.from(`Subject: m${i}\r\n\r\nbody ${i}\r\n`, 'latin1')); // UIDs 1..5
   const notifier = new MailboxNotifier();
-  const server = await ImapServer.start(catalog, { authenticate: () => true, notifier });
+  const server = await ImapServer.start(catalog, { authenticate: async () => true, notifier });
   const a = await open(server.port);
   const b = await open(server.port);
   try {
@@ -417,7 +417,7 @@ test('a peer expunge does not renumber SEARCH results before the client is told 
   const inbox = catalog.get('INBOX')!;
   for (let i = 1; i <= 5; i++) inbox.append(Buffer.from(`Subject: m${i}\r\n\r\nx\r\n`, 'latin1'));
   const notifier = new MailboxNotifier();
-  const server = await ImapServer.start(catalog, { authenticate: () => true, notifier });
+  const server = await ImapServer.start(catalog, { authenticate: async () => true, notifier });
   const a = await open(server.port);
   const b = await open(server.port);
   try {

@@ -51,8 +51,8 @@ test('add provisions a working account and the password never touches the disk',
 
     const db = openMailDb(dbPath);
     const registry = AccountRegistry.open(db);
-    assert.equal(registry.verifyPassword('alice', 's3cret-hunter2'), true);
-    assert.equal(registry.verifyPassword('alice', 'wrong'), false);
+    assert.equal(await registry.verifyPassword('alice', 's3cret-hunter2'), true);
+    assert.equal(await registry.verifyPassword('alice', 'wrong'), false);
     assert.equal(registry.lookup('alice')!.mailDbPath, join(dir, 'mail-alice.db'));
     db.close();
 
@@ -88,7 +88,7 @@ test('a new account uses a modern PBKDF2 iteration count and rejects a case-fold
   }
 });
 
-test('a mail database is created private (0600), never world/group readable', () => {
+test('a mail database is created private (0600), never world/group readable', async () => {
   const dir = tmp();
   try {
     const dbPath = join(dir, 'perms.db');
@@ -103,7 +103,7 @@ test('a mail database is created private (0600), never world/group readable', ()
   }
 });
 
-test('password policy: passwordPolicyError rejects below the floor, accepts at/above it', () => {
+test('password policy: passwordPolicyError rejects below the floor, accepts at/above it', async () => {
   assert.ok(passwordPolicyError('short') !== null, 'a short password is rejected');
   assert.ok(passwordPolicyError('x'.repeat(MIN_PASSWORD_LENGTH - 1)) !== null, 'one below the floor is rejected');
   assert.equal(passwordPolicyError('x'.repeat(MIN_PASSWORD_LENGTH)), null, 'exactly the floor is accepted');
@@ -129,8 +129,8 @@ test('add / set-password / policy: a too-short password is refused and nothing i
     assert.match(cap2.err.join('\n'), /too short/i);
     const db2 = openMailDb(dbPath);
     const reg = AccountRegistry.open(db2);
-    assert.equal(reg.verifyPassword('ok', 'good-enough-pw'), true, 'the original password is unchanged');
-    assert.equal(reg.verifyPassword('ok', 'weak'), false, 'the too-short password did not take');
+    assert.equal(await reg.verifyPassword('ok', 'good-enough-pw'), true, 'the original password is unchanged');
+    assert.equal(await reg.verifyPassword('ok', 'weak'), false, 'the too-short password did not take');
     db2.close();
   } finally {
     rmSync(dir, { recursive: true, force: true });
@@ -151,7 +151,7 @@ test('add refuses an existing login; mismatched or empty confirmation creates no
 
     const db = openMailDb(dbPath);
     const registry = AccountRegistry.open(db);
-    assert.equal(registry.verifyPassword('bob', 'bob-secret'), true);
+    assert.equal(await registry.verifyPassword('bob', 'bob-secret'), true);
     assert.equal(registry.lookup('carol'), undefined);
     assert.equal(registry.lookup('dave'), undefined);
     db.close();
@@ -169,8 +169,8 @@ test('set-password rotates the credential and preserves routing + enabled state'
 
     const db = openMailDb(dbPath);
     const registry = AccountRegistry.open(db);
-    assert.equal(registry.verifyPassword('erin', 'erin-new-pw'), true);
-    assert.equal(registry.verifyPassword('erin', 'erin-old-pw'), false); // the rotation took
+    assert.equal(await registry.verifyPassword('erin', 'erin-new-pw'), true);
+    assert.equal(await registry.verifyPassword('erin', 'erin-old-pw'), false); // the rotation took
     assert.equal(registry.lookup('erin')!.mailDbPath, join(dir, 'mail-erin.db'));
     db.close();
 
@@ -190,14 +190,14 @@ test('disable refuses auth (reversibly) and never touches the mailbox database p
 
     const db = openMailDb(dbPath);
     const registry = AccountRegistry.open(db);
-    assert.equal(registry.verifyPassword('frank', 'bob-secret'), false); // disabled = no auth
+    assert.equal(await registry.verifyPassword('frank', 'bob-secret'), false); // disabled = no auth
     assert.equal(registry.lookup('frank')!.enabled, false);
     assert.equal(registry.lookup('frank')!.mailDbPath, join(dir, 'mail-frank.db')); // untouched
     db.close();
 
     assert.equal(await runAccount(['enable', 'frank', '--db', dbPath], capture().io, {}), 0);
     const db2 = openMailDb(dbPath);
-    assert.equal(AccountRegistry.open(db2).verifyPassword('frank', 'bob-secret'), true); // reversible
+    assert.equal(await AccountRegistry.open(db2).verifyPassword('frank', 'bob-secret'), true); // reversible
     db2.close();
 
     const cap = capture();
@@ -232,7 +232,7 @@ test('a piped (non-interactive) password is read exactly once — echo "pw" | ac
     const piped: PasswordSource = { interactive: false, read: () => Promise.resolve('piped-pw') };
     assert.equal(await runAccount(['add', 'scripted', '--db', dbPath], capture().io, {}, piped), 0);
     const db = openMailDb(dbPath);
-    assert.equal(AccountRegistry.open(db).verifyPassword('scripted', 'piped-pw'), true);
+    assert.equal(await AccountRegistry.open(db).verifyPassword('scripted', 'piped-pw'), true);
     db.close();
     // An empty piped password is still refused.
     const empty: PasswordSource = { interactive: false, read: () => Promise.resolve('') };
@@ -253,7 +253,7 @@ test('logins that would be unsafe as filenames or ambiguous in addresses are ref
   }
 });
 
-test('ADR 0012 seeding: env accounts are create-only — an existing password is never overwritten at boot', () => {
+test('ADR 0012 seeding: env accounts are create-only — an existing password is never overwritten at boot', async () => {
   const dir = tmp();
   try {
     const db = openMailDb(join(dir, 'control.db'));
@@ -261,8 +261,8 @@ test('ADR 0012 seeding: env accounts are create-only — an existing password is
     const logs: string[] = [];
 
     // First boot: the account doesn't exist — env seeds it.
-    seedAccounts(registry, [{ user: 'demo', pass: 'boot-pw', mailDbPath: ':memory:' }], (l) => void logs.push(l));
-    assert.equal(registry.verifyPassword('demo', 'boot-pw'), true);
+    await seedAccounts(registry, [{ user: 'demo', pass: 'boot-pw', mailDbPath: ':memory:' }], (l) => void logs.push(l));
+    assert.equal(await registry.verifyPassword('demo', 'boot-pw'), true);
 
     // Operator rotates the password out-of-band (what `account set-password` does).
     registry.upsert('demo', 'rotated-pw', ':memory:');
@@ -270,14 +270,14 @@ test('ADR 0012 seeding: env accounts are create-only — an existing password is
     // Next boot still carries the STALE env password. The pre-ADR behaviour
     // (unconditional upsert) would silently revert the rotation — the negative
     // control is that the rotated password must still be the one that works.
-    seedAccounts(registry, [{ user: 'demo', pass: 'boot-pw', mailDbPath: ':memory:' }], (l) => void logs.push(l));
-    assert.equal(registry.verifyPassword('demo', 'rotated-pw'), true);
-    assert.equal(registry.verifyPassword('demo', 'boot-pw'), false);
+    await seedAccounts(registry, [{ user: 'demo', pass: 'boot-pw', mailDbPath: ':memory:' }], (l) => void logs.push(l));
+    assert.equal(await registry.verifyPassword('demo', 'rotated-pw'), true);
+    assert.equal(await registry.verifyPassword('demo', 'boot-pw'), false);
     // And the operator is told, not left guessing why the env password fails.
     assert.equal(logs.filter((l) => l.includes('IGNORED')).length, 1);
 
     // Same-password reboot is silent about IGNORED (no false alarm every boot).
-    seedAccounts(registry, [{ user: 'demo', pass: 'rotated-pw', mailDbPath: ':memory:' }], (l) => void logs.push(l));
+    await seedAccounts(registry, [{ user: 'demo', pass: 'rotated-pw', mailDbPath: ':memory:' }], (l) => void logs.push(l));
     assert.equal(logs.filter((l) => l.includes('IGNORED')).length, 1);
     db.close();
   } finally {
@@ -292,10 +292,10 @@ test('seedAccounts advises removing redundant plaintext seeds once the account e
     const registry = AccountRegistry.open(db);
     const logs: string[] = [];
     // First boot (genuine bootstrap): the account is created — no "redundant" advisory.
-    seedAccounts(registry, [{ user: 'demo', pass: 'boot-pw', mailDbPath: ':memory:' }], (l) => void logs.push(l));
+    await seedAccounts(registry, [{ user: 'demo', pass: 'boot-pw', mailDbPath: ':memory:' }], (l) => void logs.push(l));
     assert.equal(logs.filter((l) => l.includes('redundant')).length, 0, 'first boot bootstraps — not redundant');
     // Every subsequent boot: the seed is now redundant → one advisory to remove it.
-    seedAccounts(registry, [{ user: 'demo', pass: 'boot-pw', mailDbPath: ':memory:' }], (l) => void logs.push(l));
+    await seedAccounts(registry, [{ user: 'demo', pass: 'boot-pw', mailDbPath: ':memory:' }], (l) => void logs.push(l));
     const advisories = logs.filter((l) => l.includes('redundant plaintext'));
     assert.equal(advisories.length, 1, 'one advisory on a redundant reboot');
     assert.match(advisories[0]!, /MAIL_PASS\/MAIL_ACCOUNTS/);
@@ -305,7 +305,7 @@ test('seedAccounts advises removing redundant plaintext seeds once the account e
   }
 });
 
-test('seedAccounts warns (but does not fail) when a newly-seeded password is below the policy floor', () => {
+test('seedAccounts warns (but does not fail) when a newly-seeded password is below the policy floor', async () => {
   const dir = tmp();
   try {
     const db = openMailDb(join(dir, 'control.db'));
@@ -314,12 +314,12 @@ test('seedAccounts warns (but does not fail) when a newly-seeded password is bel
     // A weak env seed is ADVISORY only — the account is still created (a boot must not fail on it),
     // but the operator is told to strengthen it. This is the softer counterpart of the hard reject
     // the interactive `account add` / `init` paths apply.
-    seedAccounts(registry, [{ user: 'weak', pass: 'short', mailDbPath: ':memory:' }], (l) => void logs.push(l));
+    await seedAccounts(registry, [{ user: 'weak', pass: 'short', mailDbPath: ':memory:' }], (l) => void logs.push(l));
     assert.ok(registry.lookup('weak') !== undefined, 'the account is still created (no hard boot failure)');
     assert.equal(logs.filter((l) => /under \d+ characters/.test(l)).length, 1, 'one weak-password advisory');
     // A strong seed draws no such warning.
     const logs2: string[] = [];
-    seedAccounts(registry, [{ user: 'strong', pass: 'a-strong-enough-pw', mailDbPath: ':memory:' }], (l) => void logs2.push(l));
+    await seedAccounts(registry, [{ user: 'strong', pass: 'a-strong-enough-pw', mailDbPath: ':memory:' }], (l) => void logs2.push(l));
     assert.equal(logs2.filter((l) => /under \d+ characters/.test(l)).length, 0, 'a strong seed is not warned about');
     db.close();
   } finally {
@@ -410,8 +410,8 @@ test('app-password: add prints a working secret ONCE, list shows it, remove revo
     // The secret authenticates as jamie via the real verify path; the primary still works too.
     const db = openMailDb(dbPath);
     const reg = AccountRegistry.open(db);
-    assert.equal(reg.verifyPassword('jamie', secret!), true, 'the printed app password authenticates');
-    assert.equal(reg.verifyPassword('jamie', 'primary-password'), true, 'the primary is unaffected');
+    assert.equal(await reg.verifyPassword('jamie', secret!), true, 'the printed app password authenticates');
+    assert.equal(await reg.verifyPassword('jamie', 'primary-password'), true, 'the primary is unaffected');
     db.close();
 
     // list shows the name (never the secret); account list shows the count.
@@ -426,7 +426,7 @@ test('app-password: add prints a working secret ONCE, list shows it, remove revo
     // remove revokes it — it stops authenticating.
     assert.equal(await runAccount(['app-password', 'remove', 'jamie', 'phone'], capture().io, env), 0);
     const db2 = openMailDb(dbPath);
-    assert.equal(AccountRegistry.open(db2).verifyPassword('jamie', secret!), false, 'the revoked secret no longer authenticates');
+    assert.equal(await AccountRegistry.open(db2).verifyPassword('jamie', secret!), false, 'the revoked secret no longer authenticates');
     db2.close();
   } finally {
     rmSync(dir, { recursive: true, force: true });

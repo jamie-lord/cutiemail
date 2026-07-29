@@ -39,7 +39,7 @@ class C {
 
 test('a configured maxAppendLiteral is enforced, and a literal under it still works', async () => {
   const cat = new MemoryCatalog();
-  const server = await ImapServer.start(cat, { authenticate: () => true, maxAppendLiteral: 1024 });
+  const server = await ImapServer.start(cat, { authenticate: async () => true, maxAppendLiteral: 1024 });
   const c = new C(net.connect(server.port, '127.0.0.1'));
   try {
     await c.until(/\* OK/);
@@ -65,7 +65,7 @@ test('a configured maxAppendLiteral is enforced, and a literal under it still wo
 
 test('the default cap (25 MiB) still applies when none is configured', async () => {
   const cat = new MemoryCatalog();
-  const server = await ImapServer.start(cat, { authenticate: () => true });
+  const server = await ImapServer.start(cat, { authenticate: async () => true });
   const c = new C(net.connect(server.port, '127.0.0.1'));
   try {
     await c.until(/\* OK/);

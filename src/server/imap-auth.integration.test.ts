@@ -38,7 +38,7 @@ const plainToken = (user: string, pass: string): string => Buffer.from(`\0${user
 test('an unauthenticated client cannot SELECT or FETCH (no mailbox access before login)', async () => {
   const cat = new MemoryCatalog();
   cat.get('INBOX')!.append(Buffer.from('Subject: secret\r\n\r\nconfidential contents\r\n', 'latin1'));
-  const server = await ImapServer.start(cat, { authenticate: (u, p) => u === 'alice' && p === 'right' });
+  const server = await ImapServer.start(cat, { authenticate: async (u, p) => u === 'alice' && p === 'right' });
   const c = connect(server.port);
   try {
     await new Promise<void>((r) => c.sock.once('connect', () => r()));
@@ -57,7 +57,7 @@ test('an unauthenticated client cannot SELECT or FETCH (no mailbox access before
 
 test('AUTHENTICATE PLAIN grants access — initial-response and continuation forms', async () => {
   const cat = new MemoryCatalog();
-  const server = await ImapServer.start(cat, { authenticate: (u, p) => u === 'alice' && p === 'right' });
+  const server = await ImapServer.start(cat, { authenticate: async (u, p) => u === 'alice' && p === 'right' });
   // Initial-response form: AUTHENTICATE PLAIN <base64>.
   {
     const c = connect(server.port);
@@ -87,7 +87,7 @@ test('AUTHENTICATE PLAIN grants access — initial-response and continuation for
 
 test('LOGIN accepts a quoted passphrase containing spaces', async () => {
   const cat = new MemoryCatalog();
-  const server = await ImapServer.start(cat, { authenticate: (u, p) => u === 'alice' && p === 'correct horse battery staple' });
+  const server = await ImapServer.start(cat, { authenticate: async (u, p) => u === 'alice' && p === 'correct horse battery staple' });
   const c = connect(server.port);
   try {
     await new Promise<void>((r) => c.sock.once('connect', () => r()));
@@ -102,7 +102,7 @@ test('LOGIN accepts a quoted passphrase containing spaces', async () => {
 
 test('LOGIN with a wrong quoted passphrase is refused', async () => {
   const cat = new MemoryCatalog();
-  const server = await ImapServer.start(cat, { authenticate: (u, p) => u === 'alice' && p === 'right pass phrase' });
+  const server = await ImapServer.start(cat, { authenticate: async (u, p) => u === 'alice' && p === 'right pass phrase' });
   const c = connect(server.port);
   try {
     await new Promise<void>((r) => c.sock.once('connect', () => r()));

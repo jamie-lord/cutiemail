@@ -179,11 +179,11 @@ const resolveDkimKeyViaDns: DkimKeyResolver = async (domain, selector) => {
  * be silently reverted by a stale unit file at the next boot. Exported for its
  * unit test.
  */
-export function seedAccounts(
+export async function seedAccounts(
   registry: AccountRegistry,
   accounts: ReadonlyArray<{ readonly user: string; readonly pass: string; readonly mailDbPath: string }>,
   log: (line: string) => void,
-): void {
+): Promise<void> {
   let redundant = 0;
   // Case-insensitive login uniqueness: two logins differing only in case map to the same
   // mail-<login>.db on a case-insensitive filesystem (macOS/Windows), route inbound mail
@@ -220,7 +220,7 @@ export function seedAccounts(
       // The account already exists → the registry is authoritative and this env seed does
       // nothing but keep a plaintext password in the unit file / environment.
       redundant++;
-      if (existing.enabled && !registry.verifyPassword(a.user, a.pass)) {
+      if (existing.enabled && !(await registry.verifyPassword(a.user, a.pass))) {
         log(`account ${a.user}: already provisioned: the differing env password is IGNORED (change it with \`node src/main.ts account set-password ${a.user}\`)`);
       }
     }
@@ -273,7 +273,7 @@ export async function startServer(cfg: MailServerConfig): Promise<RunningServer>
   // A user's mail DB defaults to `mail-<user>.db` in the SAME directory as the control
   // DB (so a production deploy keeps all databases together), or `:memory:` in-memory.
   const mailDbPathFor = (user: string, explicit?: string): string => explicit ?? (inMemory ? ':memory:' : join(dirname(cfg.dbPath), `mail-${user}.db`));
-  seedAccounts(registry, cfg.accounts.map((a) => ({ user: a.user, pass: a.pass, mailDbPath: mailDbPathFor(a.user, a.mailDbPath) })), log);
+  await seedAccounts(registry, cfg.accounts.map((a) => ({ user: a.user, pass: a.pass, mailDbPath: mailDbPathFor(a.user, a.mailDbPath) })), log);
   // Enforce owner-only (0600) permissions on EVERY registered account's mail DB at boot —
   // including a disabled/dormant account whose DB the lazy store manager never opens (so
   // openMailDb's on-open heal never fires for it). Without this, a disabled account's DB
@@ -297,7 +297,10 @@ export async function startServer(cfg: MailServerConfig): Promise<RunningServer>
     // On a non-loopback bind nothing is seeded, so the at-least-one-enabled-account
     // guard below fails the boot with an actionable message instead.
   }
-  const verify = (user: string, pass: string): boolean => registry.verifyPassword(user, pass);
+  // Asynchronous because the key derivation behind it is: at 600,000 PBKDF2 iterations a check
+  // is ~55 ms, and on the event loop that was ~55 ms of silence for every other account and for
+  // inbound mail. See scram.ts `hiAsync`.
+  const verify = async (user: string, pass: string): Promise<boolean> => registry.verifyPassword(user, pass);
 
   // The per-user store manager: opens each user's mail DB once, provisioning INBOX + the
   // RFC 6154 special-use folders, and caches the live {catalog, notifier} so all of that

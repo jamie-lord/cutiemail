@@ -79,7 +79,7 @@ export interface ReceiverOptions {
   /** Submission mode: require a successful AUTH before MAIL (rejects unauthenticated mail 530). */
   readonly requireAuth?: boolean;
   /** Verify a SASL PLAIN (username, password); wired to the account store by the caller. */
-  readonly authenticate?: (username: string, password: string) => boolean;
+  readonly authenticate?: (username: string, password: string) => Promise<boolean>;
   /** Idle-connection timeout in ms (default 5 min). Tests set it short. */
   readonly idleTimeoutMs?: number;
   /**
@@ -387,7 +387,7 @@ class Connection {
         if (DEBUG) process.stderr.write('[smtp<] <SASL continuation redacted>\n');
         this.#awaitingAuth = false;
         if (line.trim() === '*') this.#write('501 5.7.0 authentication cancelled');
-        else this.#verifySaslPlain(line.trim());
+        else await this.#verifySaslPlain(line.trim());
         continue;
       }
       // RFC 5321 §4.1.2: a command carrying an ASCII control octet (the CRLF
@@ -420,14 +420,14 @@ class Connection {
       }
       // A malformed command must never crash the connection or the process.
       try {
-        this.#command(verb, line);
+        await this.#command(verb, line);
       } catch {
         this.#write('451 4.3.0 internal error processing command');
       }
     }
   }
 
-  #command(verb: string, line: string): void {
+  async #command(verb: string, line: string): Promise<void> {
     switch (verb) {
       case 'EHLO': {
         this.#helo = line.split(/\s+/)[1] ?? '';
@@ -452,7 +452,7 @@ class Connection {
         break;
       }
       case 'AUTH':
-        this.#auth(line);
+        await this.#auth(line);
         break;
       case 'HELO':
         this.#helo = line.split(/\s+/)[1] ?? '';
@@ -570,7 +570,7 @@ class Connection {
   }
 
   /** Handle "AUTH PLAIN <base64>". SASL PLAIN is offered only over TLS (ADR 0007). */
-  #auth(line: string): void {
+  async #auth(line: string): Promise<void> {
     if (this.#opts.authenticate === undefined) {
       this.#write('504 5.5.4 AUTH not supported');
       return;
@@ -608,11 +608,11 @@ class Connection {
       this.#write('334 ');
       return;
     }
-    this.#verifySaslPlain(parts[2]);
+    await this.#verifySaslPlain(parts[2]);
   }
 
   /** Verify a base64 SASL PLAIN payload (authzid NUL authcid NUL passwd). */
-  #verifySaslPlain(b64: string): void {
+  async #verifySaslPlain(b64: string): Promise<void> {
     if (this.#opts.authenticate === undefined) {
       this.#write('504 5.5.4 AUTH not supported');
       return;
@@ -626,7 +626,7 @@ class Connection {
     const decoded = Buffer.from(b64, 'base64').toString('latin1').split(NUL);
     const username = decoded[1] ?? '';
     const password = decoded[2] ?? '';
-    if (this.#opts.authenticate(username, password)) {
+    if (await this.#opts.authenticate(username, password)) {
       this.#opts.throttle?.recordSuccess(this.#remoteAddress);
       this.#authed = true;
       this.#authedUser = username;

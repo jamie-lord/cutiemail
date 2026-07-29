@@ -92,7 +92,7 @@ test('a metadata command loads zero bodies; a body fetch loads exactly one', asy
     get: (name) => (canonicalMailboxName(name) === 'INBOX' ? box : undefined),
     create: () => undefined,
   };
-  const server = await ImapServer.start(catalog, { authenticate: () => true });
+  const server = await ImapServer.start(catalog, { authenticate: async () => true });
   const c = connect(server.port);
 
   try {

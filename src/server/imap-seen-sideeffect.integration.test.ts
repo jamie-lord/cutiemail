@@ -19,7 +19,7 @@ async function run(commands: string, done: string): Promise<{ acc: string; cat: 
   const inbox = cat.get('INBOX')!;
   inbox.append(Buffer.from('Subject: one\r\n\r\nbody one\r\n', 'latin1')); // uid 1
   inbox.append(Buffer.from('Subject: two\r\n\r\nbody two\r\n', 'latin1')); // uid 2
-  const server = await ImapServer.start(cat, { authenticate: () => true });
+  const server = await ImapServer.start(cat, { authenticate: async () => true });
   const sock = net.connect(server.port, '127.0.0.1');
   let acc = '';
   sock.on('data', (d) => (acc += d.toString('latin1')));
@@ -49,7 +49,7 @@ test('a non-PEEK fetch preserves existing flags when adding \\Seen', async () =>
   const cat = new MemoryCatalog();
   const inbox = cat.get('INBOX')!;
   inbox.append(Buffer.from('Subject: kept\r\n\r\nb\r\n', 'latin1'), ['\\Flagged']); // uid 1, already \Flagged
-  const server = await ImapServer.start(cat, { authenticate: () => true });
+  const server = await ImapServer.start(cat, { authenticate: async () => true });
   const sock = net.connect(server.port, '127.0.0.1');
   let acc = '';
   sock.on('data', (d) => (acc += d.toString('latin1')));

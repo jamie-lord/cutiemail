@@ -66,7 +66,7 @@ async function loggedIn(
 ): Promise<{ s: Session; server: ImapServer; sock: net.Socket; cat: MemoryCatalog }> {
   const cat = new MemoryCatalog();
   seed?.(cat);
-  const server = await ImapServer.start(cat, { authenticate: () => true });
+  const server = await ImapServer.start(cat, { authenticate: async () => true });
   const sock = net.connect(server.port, '127.0.0.1');
   const s = new Session(sock);
   await s.greeting();
@@ -248,7 +248,7 @@ test('the VANISHED FETCH modifier requires ENABLE QRESYNC (RFC 7162 §3.2.6)', a
 test('PERMANENTFLAGS advertises \\* and stored keywords survive a reconnect and appear in FLAGS (§7.1)', async () => {
   const cat = new MemoryCatalog();
   cat.get('INBOX')!.append(Buffer.from('Subject: x\r\n\r\nb\r\n', 'latin1'));
-  const server = await ImapServer.start(cat, { authenticate: () => true });
+  const server = await ImapServer.start(cat, { authenticate: async () => true });
   try {
     // Session 1: SELECT read-write, confirm \* is advertised, store a keyword.
     const sock1 = net.connect(server.port, '127.0.0.1');
@@ -411,7 +411,7 @@ test('partial BODY[...]<origin.count> fetch: exact, mid-slice, past-end, overrun
 
 test('the per-listener connection cap refuses the excess and spares existing sessions', async () => {
   const cat = new MemoryCatalog();
-  const server = await ImapServer.start(cat, { authenticate: () => true, maxConnections: 2 });
+  const server = await ImapServer.start(cat, { authenticate: async () => true, maxConnections: 2 });
   const opened: net.Socket[] = [];
   const greet = async (sock: net.Socket, ms: number): Promise<boolean> => {
     let got = false;
@@ -451,7 +451,7 @@ test('the per-listener connection cap refuses the excess and spares existing ses
 
 test('lowering the connection cap moves the boundary (negative control)', async () => {
   const cat = new MemoryCatalog();
-  const server = await ImapServer.start(cat, { authenticate: () => true, maxConnections: 1 });
+  const server = await ImapServer.start(cat, { authenticate: async () => true, maxConnections: 1 });
   const opened: net.Socket[] = [];
   const greet = async (sock: net.Socket, ms: number): Promise<boolean> => {
     let got = false;
@@ -541,7 +541,7 @@ test('STORE (UNCHANGEDSINCE 0) leaves everything unchanged and lists it all in M
 
 test('AUTHENTICATE: cancel (*) is BAD; an unsupported mechanism is NO [CANNOT] (RFC 9051 §6.2.2)', async () => {
   const cat = new MemoryCatalog();
-  const server = await ImapServer.start(cat, { authenticate: (u, p) => u === 'u' && p === 'p' });
+  const server = await ImapServer.start(cat, { authenticate: async (u, p) => u === 'u' && p === 'p' });
   const sock = net.connect(server.port, '127.0.0.1');
   const s = new Session(sock);
   try {

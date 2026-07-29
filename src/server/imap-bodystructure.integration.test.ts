@@ -26,7 +26,7 @@ test('FETCH BODYSTRUCTURE returns the MIME tree; BODY[...] still fetches content
         'latin1',
       ),
     );
-  const server = await ImapServer.start(cat, { authenticate: () => true });
+  const server = await ImapServer.start(cat, { authenticate: async () => true });
   const sock = net.connect(server.port, '127.0.0.1');
   let acc = '';
   sock.on('data', (d) => (acc += d.toString('latin1')));

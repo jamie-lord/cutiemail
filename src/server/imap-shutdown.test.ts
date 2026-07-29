@@ -38,7 +38,7 @@ function loggedIn(port: number): Promise<{ sock: net.Socket; text: () => string 
 }
 
 test('a shutdown sends BYE to every connected session before closing it', async () => {
-  const server = await ImapServer.start(new MemoryCatalog(), { authenticate: () => true });
+  const server = await ImapServer.start(new MemoryCatalog(), { authenticate: async () => true });
   const sessions = await Promise.all([loggedIn(server.port), loggedIn(server.port), loggedIn(server.port)]);
   const closed = sessions.map(
     (s) => new Promise<void>((resolve) => s.sock.once('close', () => resolve())),
@@ -53,7 +53,7 @@ test('a shutdown sends BYE to every connected session before closing it', async 
 });
 
 test('a client that stops reading cannot hold the shutdown open', async () => {
-  const server = await ImapServer.start(new MemoryCatalog(), { authenticate: () => true });
+  const server = await ImapServer.start(new MemoryCatalog(), { authenticate: async () => true });
   const { sock } = await loggedIn(server.port);
   // Stop consuming, and never close: the shape of a wedged or half-dead client. Without the
   // bounded grace period, `close()` would wait on this socket for as long as it chose to exist.

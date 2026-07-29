@@ -43,7 +43,7 @@ class C {
 test('FETCH FAST and ALL expand to include INTERNALDATE (and SIZE, ENVELOPE)', async () => {
   const cat = new MemoryCatalog();
   cat.get('INBOX')!.append(Buffer.from('From: a@x.test\r\nSubject: hi\r\n\r\nbody\r\n', 'latin1'), [], Date.UTC(2025, 0, 15, 9, 30, 0));
-  const server = await ImapServer.start(cat, { authenticate: () => true });
+  const server = await ImapServer.start(cat, { authenticate: async () => true });
   const c = new C(net.connect(server.port, '127.0.0.1'));
   try {
     c.send('a1 LOGIN u p\r\na2 SELECT INBOX\r\n');
@@ -66,7 +66,7 @@ test('FETCH FAST and ALL expand to include INTERNALDATE (and SIZE, ENVELOPE)', a
 test('APPEND preserves a client-supplied date; COPY carries it to the target', async () => {
   const cat = new MemoryCatalog();
   cat.create('Archive');
-  const server = await ImapServer.start(cat, { authenticate: () => true });
+  const server = await ImapServer.start(cat, { authenticate: async () => true });
   const c = new C(net.connect(server.port, '127.0.0.1'));
   try {
     c.send('a1 LOGIN u p\r\na2 SELECT INBOX\r\n');
@@ -94,7 +94,7 @@ test('APPEND preserves a client-supplied date; COPY carries it to the target', a
 test('APPEND without a date stamps a current, well-formed INTERNALDATE (not 1970)', async () => {
   const cat = new MemoryCatalog();
   const before = Date.now();
-  const server = await ImapServer.start(cat, { authenticate: () => true });
+  const server = await ImapServer.start(cat, { authenticate: async () => true });
   const c = new C(net.connect(server.port, '127.0.0.1'));
   try {
     c.send('a1 LOGIN u p\r\na2 SELECT INBOX\r\n');

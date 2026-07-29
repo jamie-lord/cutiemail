@@ -53,7 +53,7 @@ async function beginAppend(port: number, tag: string, size: number): Promise<{ c
 test('APPEND is refused once the in-flight budget is full, and admitted again as reservations free', async () => {
   const SIZE = 2_000_000;
   // Budget fits two 2 MB literals but not three.
-  const server = await ImapServer.start(new MemoryCatalog(), { authenticate: () => true, maxAppendInflight: 5_000_000 });
+  const server = await ImapServer.start(new MemoryCatalog(), { authenticate: async () => true, maxAppendInflight: 5_000_000 });
   try {
     // A and B each reserve 2 MB (4 MB) and hold at the "+ " go-ahead without sending the literal.
     const a = await beginAppend(server.port, 'a1', SIZE);

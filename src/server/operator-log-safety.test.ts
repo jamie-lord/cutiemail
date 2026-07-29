@@ -111,7 +111,7 @@ test('a failed login cannot put DEL or C1 bytes into the operator log', async ()
   const events: string[] = [];
   const cat = new MemoryCatalog();
   const server = await ImapServer.start(cat, {
-    authenticate: () => false,
+    authenticate: async () => false,
     log: (line) => events.push(line),
   });
   try {

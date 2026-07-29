@@ -69,7 +69,7 @@ test('each user sees only their own mailboxes and messages', async () => {
   const { alice, bob } = twoAccounts();
   const accounts: Record<string, { catalog: MemoryCatalog; notifier: MailboxNotifier }> = { alice, bob };
   const server = await ImapServer.start(alice.catalog, {
-    authenticate: (u, p) => p === 'pw' && u in accounts,
+    authenticate: async (u, p) => p === 'pw' && u in accounts,
     resolveAccount: (login) => accounts[login],
   });
   const a = await connect(server);
@@ -108,7 +108,7 @@ test('credentials that verify but resolve to no account are rejected (disabled/u
   const { alice } = twoAccounts();
   // `carol` passes the credential check but the resolver has no store for her (disabled).
   const server = await ImapServer.start(alice.catalog, {
-    authenticate: (u, p) => p === 'pw' && (u === 'alice' || u === 'carol'),
+    authenticate: async (u, p) => p === 'pw' && (u === 'alice' || u === 'carol'),
     resolveAccount: (login) => (login === 'alice' ? alice : undefined),
   });
   const s = await connect(server);
@@ -126,7 +126,7 @@ test('IDLE notifications are scoped per user: Bob\'s new mail does not wake Alic
   const { alice, bob } = twoAccounts();
   const accounts: Record<string, { catalog: MemoryCatalog; notifier: MailboxNotifier }> = { alice, bob };
   const server = await ImapServer.start(alice.catalog, {
-    authenticate: (u, p) => p === 'pw' && u in accounts,
+    authenticate: async (u, p) => p === 'pw' && u in accounts,
     resolveAccount: (login) => accounts[login],
   });
   const a = await connect(server);
@@ -160,7 +160,7 @@ test('two of one user\'s devices share a store: a change on one connection surfa
   // The resolver hands BOTH of Alice's connections the SAME store instance (as MailStores'
   // per-login cache does in production) â€” the precondition for multi-connection sync.
   const server = await ImapServer.start(alice.catalog, {
-    authenticate: (u, p) => p === 'pw' && u in accounts,
+    authenticate: async (u, p) => p === 'pw' && u in accounts,
     resolveAccount: (login) => accounts[login],
   });
   const phone = await connect(server);
@@ -189,7 +189,7 @@ test('negative control: a resolver that mis-maps Bob to Alice\'s catalog leaks â
   const { alice } = twoAccounts();
   // Deliberately broken: every login is handed Alice's catalog.
   const server = await ImapServer.start(alice.catalog, {
-    authenticate: (u, p) => p === 'pw',
+    authenticate: async (u, p) => p === 'pw',
     resolveAccount: () => alice,
   });
   const b = await connect(server);

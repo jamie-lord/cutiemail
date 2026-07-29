@@ -40,7 +40,7 @@ class Conn {
 test('IMAP survives a barrage of malformed commands and still serves a valid one', async () => {
   const catalog = new MemoryCatalog();
   catalog.get('INBOX')!.append(Buffer.from('Subject: x\r\n\r\nb\r\n', 'latin1'));
-  const server = await ImapServer.start(catalog, { authenticate: () => true });
+  const server = await ImapServer.start(catalog, { authenticate: async () => true });
   const c = new Conn(net.connect(server.port, '127.0.0.1'));
   try {
     await c.waitFor('* OK');
@@ -72,7 +72,7 @@ test('IMAP survives a barrage of malformed commands and still serves a valid one
 
 test('an unterminated command line is bounded, not buffered without limit', async () => {
   // IMAP: stream a huge line with no CRLF; the server must cut it off, not OOM.
-  const imap = await ImapServer.start(new MemoryCatalog(), { authenticate: () => true });
+  const imap = await ImapServer.start(new MemoryCatalog(), { authenticate: async () => true });
   const ci = new Conn(net.connect(imap.port, '127.0.0.1'));
   try {
     await ci.waitFor('* OK');
@@ -139,7 +139,7 @@ test('an idle SMTP connection is timed out (421) rather than held open forever',
 
 test('an idle IMAP connection is autologged out (* BYE) rather than held open forever', async () => {
   const cat = new MemoryCatalog();
-  const server = await ImapServer.start(cat, { authenticate: () => true, autologoutMs: 150 });
+  const server = await ImapServer.start(cat, { authenticate: async () => true, autologoutMs: 150 });
   const c = new Conn(net.connect(server.port, '127.0.0.1'));
   try {
     await c.waitFor('* OK');

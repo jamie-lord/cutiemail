@@ -45,7 +45,7 @@ function seededCatalog(): MemoryCatalog {
 }
 
 test('CAPABILITY advertises SPECIAL-USE', async () => {
-  const server = await ImapServer.start(new MemoryCatalog(), { authenticate: () => true });
+  const server = await ImapServer.start(new MemoryCatalog(), { authenticate: async () => true });
   const s = new Session(net.connect(server.port, '127.0.0.1'));
   try {
     await s.waitFor('* OK');
@@ -59,7 +59,7 @@ test('CAPABILITY advertises SPECIAL-USE', async () => {
 });
 
 test('LIST tags each special-use folder with its RFC 6154 attribute', async () => {
-  const server = await ImapServer.start(seededCatalog(), { authenticate: () => true });
+  const server = await ImapServer.start(seededCatalog(), { authenticate: async () => true });
   const s = new Session(net.connect(server.port, '127.0.0.1'));
   try {
     await s.waitFor('* OK');
@@ -79,7 +79,7 @@ test('LIST tags each special-use folder with its RFC 6154 attribute', async () =
 });
 
 test('LIST (SPECIAL-USE) returns only the special-use folders, not INBOX', async () => {
-  const server = await ImapServer.start(seededCatalog(), { authenticate: () => true });
+  const server = await ImapServer.start(seededCatalog(), { authenticate: async () => true });
   const s = new Session(net.connect(server.port, '127.0.0.1'));
   try {
     await s.waitFor('* OK');

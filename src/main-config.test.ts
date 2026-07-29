@@ -39,7 +39,7 @@ function withEnv(overrides: Record<string, string | undefined>, fn: () => void):
   }
 }
 
-test('refuses to boot with the dev cert on a non-loopback interface', () => {
+test('refuses to boot with the dev cert on a non-loopback interface', async () => {
   for (const host of ['0.0.0.0', '::', '203.0.113.5']) {
     withEnv({ MAIL_HOST: host }, () => {
       assert.throws(() => configFromEnv(), /refusing to bind .* DEV certificate/, `host ${host} must fail closed`);
@@ -47,7 +47,7 @@ test('refuses to boot with the dev cert on a non-loopback interface', () => {
   }
 });
 
-test('allows the dev cert on loopback (the development default)', () => {
+test('allows the dev cert on loopback (the development default)', async () => {
   for (const host of ['127.0.0.1', '::1', 'localhost', undefined]) {
     withEnv({ MAIL_HOST: host }, () => {
       const cfg = configFromEnv();
@@ -56,14 +56,14 @@ test('allows the dev cert on loopback (the development default)', () => {
   }
 });
 
-test('MAIL_ALLOW_DEV_CERT=1 is an explicit unsafe opt-in for a public interface', () => {
+test('MAIL_ALLOW_DEV_CERT=1 is an explicit unsafe opt-in for a public interface', async () => {
   withEnv({ MAIL_HOST: '0.0.0.0', MAIL_ALLOW_DEV_CERT: '1' }, () => {
     const cfg = configFromEnv();
     assert.equal(cfg.usingDevCert, true);
   });
 });
 
-test('a malformed numeric env var falls back to its default rather than becoming NaN', () => {
+test('a malformed numeric env var falls back to its default rather than becoming NaN', async () => {
   // posIntEnv guards against a NaN limit silently disabling every `value > limit` check: a
   // malformed MAIL_MAX_SIZE must fall back to the default, not turn the size ceiling off. Same
   // for the ports: a bad value takes the default rather than binding port 0 or NaN.
@@ -82,7 +82,7 @@ test('a malformed numeric env var falls back to its default rather than becoming
   });
 });
 
-test('an invalid MAIL_USER or MAIL_ACCOUNTS login is rejected at boot (not turned into a bad filename)', () => {
+test('an invalid MAIL_USER or MAIL_ACCOUNTS login is rejected at boot (not turned into a bad filename)', async () => {
   for (const bad of ['../evil', 'a/b', 'a:b', '.hidden', 'x'.repeat(65)]) {
     withEnv({ MAIL_USER: bad }, () => assert.throws(() => configFromEnv(), /invalid account login/, `MAIL_USER=${bad}`));
   }
@@ -99,7 +99,7 @@ test('an invalid MAIL_USER or MAIL_ACCOUNTS login is rejected at boot (not turne
   withEnv({}, () => assert.deepEqual(configFromEnv().accounts, [], 'no env accounts → empty (registry is the source of truth)'));
 });
 
-test('a real cert on a public interface is fine (no guard tripped)', () => {
+test('a real cert on a public interface is fine (no guard tripped)', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'cert-test-'));
   try {
     const certPath = join(dir, 'cert.pem');
@@ -116,7 +116,7 @@ test('a real cert on a public interface is fine (no guard tripped)', () => {
   }
 });
 
-test('a TLS/DKIM env var pointing at a missing file fails with the variable, the path, and the way out', () => {
+test('a TLS/DKIM env var pointing at a missing file fails with the variable, the path, and the way out', async () => {
   // The raw alternative is an ENOENT stack trace — which under systemd Restart=on-failure
   // becomes a silent crash loop. Classic trigger: enabling the unit before certbot ran.
   const missing = join(tmpdir(), 'nope', 'cert.pem');
@@ -128,7 +128,7 @@ test('a TLS/DKIM env var pointing at a missing file fails with the variable, the
   });
 });
 
-test('MAIL_USER without MAIL_PASS refuses to seed a well-known default credential on a public bind', () => {
+test('MAIL_USER without MAIL_PASS refuses to seed a well-known default credential on a public bind', async () => {
   // The sibling of the loopback-only demo/demo fallback: MAIL_USER + an unset/empty MAIL_PASS
   // would otherwise seed the documented primary login with the well-known password 'demo' (or
   // an empty password) on public 587/993. A real cert gets us past the dev-cert refusal so the
@@ -178,7 +178,7 @@ test('MAIL_USER without MAIL_PASS refuses to seed a well-known default credentia
   }
 });
 
-test('exercising the MAIL_ALLOW_DEV_CERT override on a public bind is flagged for the loud warning', () => {
+test('exercising the MAIL_ALLOW_DEV_CERT override on a public bind is flagged for the loud warning', async () => {
   withEnv({ MAIL_HOST: '0.0.0.0', MAIL_ALLOW_DEV_CERT: '1' }, () => {
     assert.equal(configFromEnv().devCertForcedPublic, true, 'public bind + override → flagged');
   });
@@ -190,7 +190,7 @@ test('exercising the MAIL_ALLOW_DEV_CERT override on a public bind is flagged fo
   });
 });
 
-test('describeCertExpiry warns on an expired or soon-expiring certificate, is quiet otherwise', () => {
+test('describeCertExpiry warns on an expired or soon-expiring certificate, is quiet otherwise', async () => {
   // Derive the reference times from the bundled cert's own validTo, so the test is
   // deterministic regardless of when the cert was generated.
   const expires = Date.parse(new X509Certificate(TEST_CERT).validTo);
@@ -203,7 +203,7 @@ test('describeCertExpiry warns on an expired or soon-expiring certificate, is qu
   assert.equal(describeCertExpiry('not a certificate', Date.now()), null, 'garbage input is quiet (the TLS server itself fails loudly)');
 });
 
-test(':memory: control DB keeps the env-seeded primary mailbox in memory too (no stale ./mail.db)', () => {
+test(':memory: control DB keeps the env-seeded primary mailbox in memory too (no stale ./mail.db)', async () => {
   // The regression: `?? 'mail.db'` made the path always explicit, bypassing the
   // in-memory default — a "fully ephemeral" CI run with MAIL_USER set reopened
   // whatever mail.db was lying around in the working directory.
@@ -218,7 +218,7 @@ test(':memory: control DB keeps the env-seeded primary mailbox in memory too (no
   });
 });
 
-test('MAIL_OUTBOUND parses deliver/hold and fails loud on anything else', () => {
+test('MAIL_OUTBOUND parses deliver/hold and fails loud on anything else', async () => {
   withEnv({}, () => assert.equal(configFromEnv().outboundMode, 'deliver'));
   withEnv({ MAIL_OUTBOUND: 'hold' }, () => assert.equal(configFromEnv().outboundMode, 'hold'));
   // A typo must never silently become a really-relaying server.
@@ -232,7 +232,7 @@ test('seedAccounts skips a login that collides case-insensitively (env-seed uniq
   const reg = AccountRegistry.open(new DatabaseSync(':memory:'));
   const logs: string[] = [];
   // Two logins differing only in case would share one mail-<login>.db on a case-insensitive FS.
-  seedAccounts(
+  await seedAccounts(
     reg,
     [
       { user: 'Alice', pass: 'password1', mailDbPath: ':memory:' },
@@ -247,7 +247,7 @@ test('seedAccounts skips a login that collides case-insensitively (env-seed uniq
 
   // Control: distinct logins are both seeded.
   const reg2 = AccountRegistry.open(new DatabaseSync(':memory:'));
-  seedAccounts(reg2, [
+  await seedAccounts(reg2, [
     { user: 'bob', pass: 'password1', mailDbPath: ':memory:' },
     { user: 'carol', pass: 'password2', mailDbPath: ':memory:' },
   ], () => {});
@@ -267,14 +267,14 @@ test('seedAccounts skips a login an alias already claims (env-seed namespace gua
   // seeding it anyway silently rerouted sales@ into a new mailbox while `alias list` still showed
   // the old mapping.
   const logs: string[] = [];
-  seedAccounts(reg, [{ user: 'sales', pass: 'password2', mailDbPath: ':memory:' }], (l) => logs.push(l));
+  await seedAccounts(reg, [{ user: 'sales', pass: 'password2', mailDbPath: ':memory:' }], (l) => logs.push(l));
 
   assert.deepEqual(reg.list().map((a) => a.login), ['jamie'], 'no account was created for the alias');
   assert.equal(reg.resolveLocalPart('sales'), 'jamie', 'sales@ still routes to its owner');
   assert.ok(logs.some((l) => /SKIPPED.*already an alias/.test(l)), 'the operator is told why');
 });
 
-test('a MAIL_ACCOUNTS entry without a colon fails loudly rather than being silently dropped', () => {
+test('a MAIL_ACCOUNTS entry without a colon fails loudly rather than being silently dropped', async () => {
   // Every other malformed value in configFromEnv fails closed; silently discarding an entry
   // provisioned fewer accounts than asked for, and the missing user's mail then 550s at RCPT.
   withEnv({ MAIL_ACCOUNTS: 'bob:pw-one,carol,dave:pw-two', MAIL_DOMAIN: 'x.test' }, () =>

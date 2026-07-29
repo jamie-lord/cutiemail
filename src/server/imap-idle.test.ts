@@ -43,7 +43,7 @@ test('IDLE pushes EXISTS when the mailbox gains a message, then DONE terminates'
   inbox.append(Buffer.from('Subject: one\r\n\r\nx\r\n', 'latin1'));
   const notifier = new MailboxNotifier();
 
-  const server = await ImapServer.start(catalog, { authenticate: () => true, notifier });
+  const server = await ImapServer.start(catalog, { authenticate: async () => true, notifier });
   const sock = net.connect(server.port, '127.0.0.1');
   const s = new Session(sock);
   try {
@@ -72,7 +72,7 @@ test('IDLE pushes EXISTS when the mailbox gains a message, then DONE terminates'
 
 test('IDLE without a notifier is refused, not hung', async () => {
   const catalog = new MemoryCatalog();
-  const server = await ImapServer.start(catalog, { authenticate: () => true }); // no notifier
+  const server = await ImapServer.start(catalog, { authenticate: async () => true }); // no notifier
   const sock = net.connect(server.port, '127.0.0.1');
   const s = new Session(sock);
   try {
@@ -89,7 +89,7 @@ test('IDLE without a notifier is refused, not hung', async () => {
 
 test('an oversized APPEND literal is refused, not buffered, and the connection survives', async () => {
   const catalog = new MemoryCatalog();
-  const server = await ImapServer.start(catalog, { authenticate: () => true });
+  const server = await ImapServer.start(catalog, { authenticate: async () => true });
   const sock = net.connect(server.port, '127.0.0.1');
   const s = new Session(sock);
   try {
@@ -113,7 +113,7 @@ test('an oversized APPEND literal is refused, not buffered, and the connection s
 test('a notification with no net change does not push a spurious EXISTS', async () => {
   const catalog = new MemoryCatalog();
   const notifier = new MailboxNotifier();
-  const server = await ImapServer.start(catalog, { authenticate: () => true, notifier });
+  const server = await ImapServer.start(catalog, { authenticate: async () => true, notifier });
   const sock = net.connect(server.port, '127.0.0.1');
   const s = new Session(sock);
   try {

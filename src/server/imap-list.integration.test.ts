@@ -53,7 +53,7 @@ function listedNames(rows: string[]): string[] {
 async function openServer(): Promise<{ server: Awaited<ReturnType<typeof ImapServer.start>>; s: Session }> {
   const catalog = new MemoryCatalog();
   for (const name of ['Sent', 'Drafts']) catalog.create(name);
-  const server = await ImapServer.start(catalog, { authenticate: () => true });
+  const server = await ImapServer.start(catalog, { authenticate: async () => true });
   const s = new Session(net.connect(server.port, '127.0.0.1'));
   await new Promise<void>((r) => setTimeout(r, 30));
   await s.run('a1', 'a1 LOGIN u p');

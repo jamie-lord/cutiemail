@@ -68,7 +68,7 @@ async function login(port: number): Promise<Session> {
 }
 
 test('CAPABILITY advertises CONDSTORE', async () => {
-  const server = await ImapServer.start(new MemoryCatalog(), { authenticate: () => true });
+  const server = await ImapServer.start(new MemoryCatalog(), { authenticate: async () => true });
   const s = new Session(net.connect(server.port, '127.0.0.1'));
   try {
     const g = await s.waitFor('* OK');
@@ -80,7 +80,7 @@ test('CAPABILITY advertises CONDSTORE', async () => {
 });
 
 test('every SELECT reports HIGHESTMODSEQ (RFC 7162 §3.1.2.2), but MODSEQ in FETCH stays gated on enabling', async () => {
-  const server = await ImapServer.start(catalogWith(2), { authenticate: () => true });
+  const server = await ImapServer.start(catalogWith(2), { authenticate: async () => true });
   const s = await login(server.port);
   try {
     // A CONDSTORE server MUST send HIGHESTMODSEQ on a plain SELECT too — it is how a
@@ -102,7 +102,7 @@ test('every SELECT reports HIGHESTMODSEQ (RFC 7162 §3.1.2.2), but MODSEQ in FET
 });
 
 test('once CONDSTORE is enabled, FETCH carries MODSEQ; MODSEQ can be requested explicitly', async () => {
-  const server = await ImapServer.start(catalogWith(1), { authenticate: () => true });
+  const server = await ImapServer.start(catalogWith(1), { authenticate: async () => true });
   const s = await login(server.port);
   try {
     // Explicit request enables CONDSTORE even without SELECT (CONDSTORE).
@@ -119,7 +119,7 @@ test('once CONDSTORE is enabled, FETCH carries MODSEQ; MODSEQ can be requested e
 });
 
 test('FETCH (CHANGEDSINCE n) returns only messages modified after n', async () => {
-  const server = await ImapServer.start(catalogWith(2), { authenticate: () => true });
+  const server = await ImapServer.start(catalogWith(2), { authenticate: async () => true });
   const s = await login(server.port);
   try {
     await s.run('a2', 'SELECT INBOX (CONDSTORE)');
@@ -138,7 +138,7 @@ test('FETCH (CHANGEDSINCE n) returns only messages modified after n', async () =
 });
 
 test('STORE (UNCHANGEDSINCE n) applies to unchanged messages and rejects changed ones with MODIFIED', async () => {
-  const server = await ImapServer.start(catalogWith(1), { authenticate: () => true });
+  const server = await ImapServer.start(catalogWith(1), { authenticate: async () => true });
   const s = await login(server.port);
   try {
     await s.run('a2', 'SELECT INBOX (CONDSTORE)'); // HIGHESTMODSEQ 2, message 1 modseq 2
@@ -164,7 +164,7 @@ test('a CONDSTORE-enabled connection sees MODSEQ in a peer flag change pushed du
   // (B) flags a message; A must be told as an untagged FETCH carrying the new MODSEQ, so
   // A can advance its own sync state without a HIGHESTMODSEQ round-trip.
   const catalog = catalogWith(1);
-  const server = await ImapServer.start(catalog, { authenticate: () => true, notifier: new MailboxNotifier() });
+  const server = await ImapServer.start(catalog, { authenticate: async () => true, notifier: new MailboxNotifier() });
   const a = await login(server.port);
   const b = await login(server.port);
   try {
@@ -187,7 +187,7 @@ test('a CONDSTORE-enabled connection sees MODSEQ in a peer flag change pushed du
 });
 
 test('SEARCH MODSEQ n returns messages at or above n and reports the highest match', async () => {
-  const server = await ImapServer.start(catalogWith(2), { authenticate: () => true });
+  const server = await ImapServer.start(catalogWith(2), { authenticate: async () => true });
   const s = await login(server.port);
   try {
     await s.run('a2', 'SELECT INBOX (CONDSTORE)'); // msg1 modseq 2, msg2 modseq 3
@@ -212,7 +212,7 @@ test('SEARCH MODSEQ n returns messages at or above n and reports the highest mat
 test('UID STORE (UNCHANGEDSINCE n) parses correctly and reports MODIFIED by UID', async () => {
   // Real clients address STORE by UID, and the UID prefix shifts the positional args —
   // the (UNCHANGEDSINCE n) modifier must still be found and MODIFIED must list UIDs.
-  const server = await ImapServer.start(catalogWith(1), { authenticate: () => true });
+  const server = await ImapServer.start(catalogWith(1), { authenticate: async () => true });
   const s = await login(server.port);
   try {
     await s.run('a2', 'SELECT INBOX (CONDSTORE)'); // message UID 1, modseq 2
@@ -231,7 +231,7 @@ test('UID STORE (UNCHANGEDSINCE n) parses correctly and reports MODIFIED by UID'
 
 test('STATUS HIGHESTMODSEQ reports the mailbox mod-sequence and it advances on a flag change', async () => {
   const catalog = catalogWith(1);
-  const server = await ImapServer.start(catalog, { authenticate: () => true, notifier: new MailboxNotifier() });
+  const server = await ImapServer.start(catalog, { authenticate: async () => true, notifier: new MailboxNotifier() });
   const s = await login(server.port);
   try {
     const st1 = await s.run('a2', 'STATUS INBOX (HIGHESTMODSEQ)');

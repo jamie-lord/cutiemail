@@ -85,7 +85,7 @@ async function fuzzSession(port: number, lines: string[]): Promise<void> {
 }
 
 test('IMAP survives 60 fuzzed command streams and a clean session still works', async () => {
-  const server = await ImapServer.start(new MemoryCatalog(), { authenticate: () => true });
+  const server = await ImapServer.start(new MemoryCatalog(), { authenticate: async () => true });
   const rand = rng(0xf00d);
   try {
     for (let i = 0; i < 60; i++) {

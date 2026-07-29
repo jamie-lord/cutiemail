@@ -18,7 +18,7 @@ test('disabling an account mid-session drops the live IMAP connection with BYE a
   const cat = new MemoryCatalog();
   let enabled = true;
   const server = await ImapServer.start(cat, {
-    authenticate: (u, p) => u === 'alice' && p === 'right',
+    authenticate: async (u, p) => u === 'alice' && p === 'right',
     isEnabled: (login) => login === 'alice' && enabled,
   });
   const sock = net.connect(server.port, '127.0.0.1');

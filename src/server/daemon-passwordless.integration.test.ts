@@ -82,7 +82,7 @@ test('a genuinely empty registry with no config gets a demo/demo dev fallback', 
     try {
       assert.deepEqual([...s.logins], ['demo'], 'the dev fallback account is seeded and served');
       const check = openMailDb(join(dir, 'control.db'));
-      assert.equal(AccountRegistry.open(check).verifyPassword('demo', 'demo'), true);
+      assert.equal(await AccountRegistry.open(check).verifyPassword('demo', 'demo'), true);
       check.close();
     } finally {
       await s.close();

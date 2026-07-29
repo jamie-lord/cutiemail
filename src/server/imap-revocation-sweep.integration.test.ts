@@ -69,7 +69,7 @@ test('an IDLE session is cut when the account is disabled, without sending anoth
   const cat = new MemoryCatalog();
   let enabled = true;
   const server = await ImapServer.start(cat, {
-    authenticate: (u, p) => u === 'alice' && p === 'right',
+    authenticate: async (u, p) => u === 'alice' && p === 'right',
     isEnabled: (login) => login === 'alice' && enabled,
     notifier: new MailboxNotifier(),
     revocationSweepMs: 25,
@@ -95,7 +95,7 @@ test('a session that never completes a command line is cut too (the autologout c
   const cat = new MemoryCatalog();
   let enabled = true;
   const server = await ImapServer.start(cat, {
-    authenticate: (u, p) => u === 'alice' && p === 'right',
+    authenticate: async (u, p) => u === 'alice' && p === 'right',
     isEnabled: (login) => login === 'alice' && enabled,
     revocationSweepMs: 25,
   });
@@ -124,7 +124,7 @@ test('rotating the password alone cuts a live session, even while the account st
   // changes it. The account is never disabled here — rotation is the whole containment action.
   let tag = 'credential-v1';
   const server = await ImapServer.start(cat, {
-    authenticate: (u, p) => u === 'alice' && p === 'right',
+    authenticate: async (u, p) => u === 'alice' && p === 'right',
     isEnabled: () => true,
     credentialTag: () => tag,
     revocationSweepMs: 25,

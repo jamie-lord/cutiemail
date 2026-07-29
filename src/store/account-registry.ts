@@ -15,7 +15,7 @@
 
 import { DatabaseSync } from 'node:sqlite';
 import { randomBytes, timingSafeEqual, createHash } from 'node:crypto';
-import { deriveCredential } from './accounts.ts';
+import { deriveCredential, deriveCredentialAsync } from './accounts.ts';
 import type { ScramHash } from '../auth/scram.ts';
 import { stampSchema, CONTROL_SCHEMA } from './schema-version.ts';
 
@@ -416,8 +416,8 @@ export class AccountRegistry {
   }
 
   /** Re-derive StoredKey from the password and compare it against a stored credential (constant-time). */
-  #credentialMatches(password: string, cred: RawCredential): boolean {
-    const { storedKey } = deriveCredential(password, Buffer.from(cred.salt), cred.iterations, cred.hash as ScramHash);
+  async #credentialMatches(password: string, cred: RawCredential): Promise<boolean> {
+    const { storedKey } = await deriveCredentialAsync(password, Buffer.from(cred.salt), cred.iterations, cred.hash as ScramHash);
     const expected = Buffer.from(cred.stored_key);
     return storedKey.length === expected.length && timingSafeEqual(storedKey, expected);
   }
@@ -430,13 +430,18 @@ export class AccountRegistry {
    * check and per-IP throttle. No password is ever stored. (An account with N app passwords costs
    * up to N+1 PBKDF2 derivations on a wrong guess; N is a handful of devices at this scale, and
    * the per-IP throttle bounds probing.)
+   *
+   * ASYNCHRONOUS, and that is a security property rather than a style choice: each derivation is
+   * ~55 ms of work, and running it on the event loop made every credential check a pause for
+   * every other account and for inbound mail. See `hiAsync`. The N+1 fan-out above is the same
+   * cost multiplied, which is the other reason it belongs off the main thread.
    */
-  verifyPassword(login: string, password: string): boolean {
+  async verifyPassword(login: string, password: string): Promise<boolean> {
     const r = this.#row(login);
     if (r === undefined || r.enabled !== 1) return false;
-    if (this.#credentialMatches(password, r)) return true;
+    if (await this.#credentialMatches(password, r)) return true;
     for (const cred of this.#appCredentials(r.login)) {
-      if (this.#credentialMatches(password, cred)) return true;
+      if (await this.#credentialMatches(password, cred)) return true;
     }
     return false;
   }

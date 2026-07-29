@@ -12,15 +12,44 @@
  * channel binding are later increments; this is the cryptographic heart.
  */
 
-import { pbkdf2Sync, createHmac, createHash, timingSafeEqual } from 'node:crypto';
+import { pbkdf2, pbkdf2Sync, createHmac, createHash, timingSafeEqual } from 'node:crypto';
+import { promisify } from 'node:util';
 
 export type ScramHash = 'sha1' | 'sha256';
 
 const DK_LEN: Record<ScramHash, number> = { sha1: 20, sha256: 32 };
 
-/** Hi(str, salt, i): PBKDF2 with HMAC-`hash`, output one hash block. */
+const pbkdf2Async = promisify(pbkdf2);
+
+/**
+ * Hi(str, salt, i): PBKDF2 with HMAC-`hash`, output one hash block.
+ *
+ * Synchronous, and deliberately kept for the PROVISIONING path only — `account add`,
+ * `set-password`, seeding — where one 55 ms pause in a CLI is nothing and simple code is worth
+ * more. Anything on the VERIFICATION path must use `hiAsync`: see the note there.
+ */
 export function hi(password: string, salt: Buffer, iterations: number, hash: ScramHash): Buffer {
   return pbkdf2Sync(Buffer.from(password, 'utf8'), salt, iterations, DK_LEN[hash], hash);
+}
+
+/**
+ * The same derivation, on libuv's threadpool instead of the event loop.
+ *
+ * The iteration count is deliberately high (600,000 — far above RFC 7677's floor) to make an
+ * offline attack on stolen material expensive. That is the right call, and it is exactly why
+ * this must not run on the main thread: it turns every credential check into ~55 ms of BLOCKING
+ * work on the one thread that also serves inbound SMTP, submission and every other IMAP
+ * session. Measured, one client looping logins with a single valid credential took the
+ * unauthenticated port-25 greeting from 0 ms to over a second, because a *successful* auth costs
+ * no throttle budget — correctly, since charging successes would let an attacker lock out
+ * legitimate users (auth-throttle.ts). The cost had no bound, so the fix is to stop it being
+ * loop time at all: same work, ~2 ms of loop lag instead of ~55.
+ *
+ * Dovecot runs slow password schemes in separate `auth-worker` processes and Postfix delegates
+ * to `saslauthd` for the same reason; this is the zero-dependency equivalent.
+ */
+export async function hiAsync(password: string, salt: Buffer, iterations: number, hash: ScramHash): Promise<Buffer> {
+  return pbkdf2Async(Buffer.from(password, 'utf8'), salt, iterations, DK_LEN[hash], hash);
 }
 
 const hmac = (key: Buffer, data: string | Buffer, hash: ScramHash): Buffer => createHmac(hash, key).update(data).digest();

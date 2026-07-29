@@ -69,7 +69,7 @@ async function login(port: number): Promise<Session> {
 }
 
 test('CAPABILITY advertises QRESYNC and ENABLE QRESYNC is accepted', async () => {
-  const server = await ImapServer.start(new MemoryCatalog(), { authenticate: () => true });
+  const server = await ImapServer.start(new MemoryCatalog(), { authenticate: async () => true });
   const s = new Session(net.connect(server.port, '127.0.0.1'));
   try {
     await s.waitFor('* OK');
@@ -85,7 +85,7 @@ test('CAPABILITY advertises QRESYNC and ENABLE QRESYNC is accepted', async () =>
 
 test('SELECT (QRESYNC ...) replays VANISHED and changed flags since the client mod-sequence', async () => {
   const catalog = catalogWith(3); // UIDs 1,2,3; UIDVALIDITY 1
-  const server = await ImapServer.start(catalog, { authenticate: () => true, notifier: new MailboxNotifier() });
+  const server = await ImapServer.start(catalog, { authenticate: async () => true, notifier: new MailboxNotifier() });
   const setup = await login(server.port);
   try {
     // Learn the mod-sequence the client would have cached at first sync.
@@ -115,7 +115,7 @@ test('SELECT (QRESYNC ...) replays VANISHED and changed flags since the client m
 
 test('UID FETCH (CHANGEDSINCE n VANISHED) reports expunged UIDs in the set', async () => {
   const catalog = catalogWith(3);
-  const server = await ImapServer.start(catalog, { authenticate: () => true });
+  const server = await ImapServer.start(catalog, { authenticate: async () => true });
   const s = await login(server.port);
   try {
     const sel = await s.run('a3', 'SELECT INBOX (CONDSTORE)');
@@ -138,7 +138,7 @@ test('a QRESYNC-enabled session receives VANISHED, not EXPUNGE, for a real-time 
   // expunges, not the EXPUNGE response. A desktop with QRESYNC on, idling, must be told
   // VANISHED when the phone expunges a message.
   const catalog = catalogWith(3);
-  const server = await ImapServer.start(catalog, { authenticate: () => true, notifier: new MailboxNotifier() });
+  const server = await ImapServer.start(catalog, { authenticate: async () => true, notifier: new MailboxNotifier() });
   const a = await login(server.port); // QRESYNC enabled
   const b = await login(server.port);
   try {
@@ -164,7 +164,7 @@ test('a QRESYNC-enabled session receives VANISHED, not EXPUNGE, for a real-time 
 });
 
 test('SELECT (QRESYNC ...) without ENABLE QRESYNC is a tagged BAD (RFC 7162 §3.2.5)', async () => {
-  const server = await ImapServer.start(catalogWith(2), { authenticate: () => true });
+  const server = await ImapServer.start(catalogWith(2), { authenticate: async () => true });
   const s = new Session(net.connect(server.port, '127.0.0.1'));
   try {
     await s.waitFor('* OK');
@@ -180,7 +180,7 @@ test('SELECT (QRESYNC ...) without ENABLE QRESYNC is a tagged BAD (RFC 7162 §3.
 
 test('SELECT (CONDSTORE QRESYNC ...) — QRESYNC after another param still replays (regex not anchored)', async () => {
   const catalog = catalogWith(3);
-  const server = await ImapServer.start(catalog, { authenticate: () => true });
+  const server = await ImapServer.start(catalog, { authenticate: async () => true });
   const s = await login(server.port);
   try {
     const sel = await s.run('a3', 'SELECT INBOX (CONDSTORE)');
@@ -197,7 +197,7 @@ test('SELECT (CONDSTORE QRESYNC ...) — QRESYNC after another param still repla
 });
 
 test('FETCH VANISHED misuse (non-UID, or no CHANGEDSINCE) is a tagged BAD (RFC 7162 §3.2.6)', async () => {
-  const server = await ImapServer.start(catalogWith(2), { authenticate: () => true });
+  const server = await ImapServer.start(catalogWith(2), { authenticate: async () => true });
   const s = await login(server.port);
   try {
     await s.run('a3', 'SELECT INBOX (CONDSTORE)');
@@ -217,7 +217,7 @@ test('FETCH VANISHED misuse (non-UID, or no CHANGEDSINCE) is a tagged BAD (RFC 7
 
 test('SELECT (QRESYNC ...) with a stale UIDVALIDITY does not replay (client must full-resync)', async () => {
   const catalog = catalogWith(2);
-  const server = await ImapServer.start(catalog, { authenticate: () => true });
+  const server = await ImapServer.start(catalog, { authenticate: async () => true });
   const s = await login(server.port);
   try {
     // Present a UIDVALIDITY (999) that does not match the mailbox's (1).

@@ -36,7 +36,7 @@ function client(port: number): { sock: net.Socket; run: (tag: string, cmd: strin
 test('DELETE and RENAME manage mailboxes; INBOX is protected', async () => {
   const cat = SqliteCatalog.open(new DatabaseSync(':memory:'));
   cat.create('Work')!.append(Buffer.from('Subject: w\r\n\r\nbody\r\n', 'latin1'));
-  const server = await ImapServer.start(cat, { authenticate: () => true });
+  const server = await ImapServer.start(cat, { authenticate: async () => true });
   const c = client(server.port);
   try {
     await new Promise<void>((r) => c.sock.once('connect', () => r()));
@@ -65,7 +65,7 @@ test('LIST/STATUS serialise a mailbox name as a proper astring (quote/special ch
   cat.create('a b"c'); // space AND an embedded double-quote
   cat.create('foo)bar'); // a special char but NO space (old code emitted a bare atom)
   cat.create('café'); // an 8-bit char → must be a length-correct literal, never a bare 8-bit atom
-  const server = await ImapServer.start(cat, { authenticate: () => true });
+  const server = await ImapServer.start(cat, { authenticate: async () => true });
   const c = client(server.port);
   try {
     await new Promise<void>((r) => c.sock.once('connect', () => r()));
@@ -89,7 +89,7 @@ test('LIST/STATUS serialise a mailbox name as a proper astring (quote/special ch
 test('RENAME INBOX moves its messages to the target and leaves INBOX empty', async () => {
   const cat = SqliteCatalog.open(new DatabaseSync(':memory:'));
   cat.get('INBOX')!.append(Buffer.from('Subject: keep me\r\n\r\nbody\r\n', 'latin1'));
-  const server = await ImapServer.start(cat, { authenticate: () => true });
+  const server = await ImapServer.start(cat, { authenticate: async () => true });
   const c = client(server.port);
   try {
     await new Promise<void>((r) => c.sock.once('connect', () => r()));
@@ -109,7 +109,7 @@ test('RENAME INBOX moves its messages to the target and leaves INBOX empty', asy
 test('EXAMINE opens read-only: [READ-ONLY], no \\Seen on fetch, STORE/EXPUNGE refused', async () => {
   const cat = SqliteCatalog.open(new DatabaseSync(':memory:'));
   cat.get('INBOX')!.append(Buffer.from('Subject: t\r\n\r\nbody\r\n', 'latin1'));
-  const server = await ImapServer.start(cat, { authenticate: () => true });
+  const server = await ImapServer.start(cat, { authenticate: async () => true });
   const c = client(server.port);
   try {
     await new Promise<void>((r) => c.sock.once('connect', () => r()));
@@ -132,7 +132,7 @@ test('EXAMINE opens read-only: [READ-ONLY], no \\Seen on fetch, STORE/EXPUNGE re
 test('ENABLE, CHECK and UNSELECT are supported (RFC 9051 §6.3.1/§6.4.1/§6.4.2)', async () => {
   const cat = SqliteCatalog.open(new DatabaseSync(':memory:'));
   cat.get('INBOX')!.append(Buffer.from('Subject: t\r\n\r\nb\r\n', 'latin1'));
-  const server = await ImapServer.start(cat, { authenticate: () => true });
+  const server = await ImapServer.start(cat, { authenticate: async () => true });
   const c = client(server.port);
   try {
     await new Promise<void>((r) => c.sock.once('connect', () => r()));
@@ -155,7 +155,7 @@ test('RFC 9051 §5.1: INBOX is case-insensitive over the wire, and responses ech
   // actually sees it. A response echoing the client's own spelling (`* LIST ... "inbox"`) while
   // LIST reports `INBOX` gives a folder cache keyed on the response two entries for one mailbox.
   const cat = SqliteCatalog.open(new DatabaseSync(':memory:'));
-  const server = await ImapServer.start(cat, { authenticate: () => true });
+  const server = await ImapServer.start(cat, { authenticate: async () => true });
   const c = client(server.port);
   try {
     await new Promise<void>((r) => c.sock.once('connect', () => r()));
@@ -182,7 +182,7 @@ test('RFC 9051 §5.1: a denormalised (non-NFC) 8-bit mailbox name is refused', a
   // other, and a client that normalises its input (macOS yields NFD) unable to SELECT what it
   // sees in LIST. RFC 9051 §5.1 makes prohibiting a non-Net-Unicode 8-bit name a MUST.
   const cat = SqliteCatalog.open(new DatabaseSync(':memory:'));
-  const server = await ImapServer.start(cat, { authenticate: () => true });
+  const server = await ImapServer.start(cat, { authenticate: async () => true });
   const c = client(server.port);
   try {
     await new Promise<void>((r) => c.sock.once('connect', () => r()));
@@ -212,7 +212,7 @@ test('a leading separator does not mint an empty-named phantom mailbox in LIST',
   // phantom-ancestor walk added "" — which LIST then described as \NonExistent \HasChildren while
   // the bare-root probe describes the same name as \Noselect.
   const cat = SqliteCatalog.open(new DatabaseSync(':memory:'));
-  const server = await ImapServer.start(cat, { authenticate: () => true });
+  const server = await ImapServer.start(cat, { authenticate: async () => true });
   const c = client(server.port);
   try {
     await new Promise<void>((r) => c.sock.once('connect', () => r()));

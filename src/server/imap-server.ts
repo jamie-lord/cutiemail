@@ -1018,7 +1018,7 @@ export class ImapServer {
   readonly #server: net.Server;
   readonly #catalog: ServableCatalog;
   readonly #sockets = new Set<net.Socket>();
-  readonly #authenticate: ((user: string, pass: string) => boolean) | undefined;
+  readonly #authenticate: ((user: string, pass: string) => Promise<boolean>) | undefined;
   readonly #notifier: MailboxNotifier | undefined;
   readonly #resolveAccount: ((login: string) => { catalog: ServableCatalog; notifier?: MailboxNotifier } | undefined) | undefined;
   readonly #isEnabled: ((login: string) => boolean) | undefined;
@@ -1047,7 +1047,7 @@ export class ImapServer {
     server: net.Server,
     port: number,
     catalog: ServableCatalog,
-    authenticate?: (user: string, pass: string) => boolean,
+    authenticate?: (user: string, pass: string) => Promise<boolean>,
     notifier?: MailboxNotifier,
     autologoutMs = AUTOLOGOUT_MS,
     resolveAccount?: (login: string) => { catalog: ServableCatalog; notifier?: MailboxNotifier } | undefined,
@@ -1148,7 +1148,7 @@ export class ImapServer {
       tls?: { key: string; cert: string };
       host?: string;
       port?: number;
-      authenticate?: (user: string, pass: string) => boolean;
+      authenticate?: (user: string, pass: string) => Promise<boolean>;
       notifier?: MailboxNotifier;
       autologoutMs?: number;
       resolveAccount?: (login: string) => { catalog: ServableCatalog; notifier?: MailboxNotifier } | undefined;
@@ -1321,13 +1321,13 @@ export class ImapServer {
    * authenticated username on success, or null on failure — the username is needed to
    * resolve the account in multi-account mode.
    */
-  #saslPlainUser(b64: string): string | null {
+  async #saslPlainUser(b64: string): Promise<string | null> {
     const parts = Buffer.from(b64, 'base64').toString('latin1').split('\0');
     const user = parts[1] ?? '';
     const pass = parts[2] ?? '';
     // No authenticate callback configured = permissive (test servers); still requires
     // the client to actually authenticate, just accepts any credentials.
-    return this.#authenticate === undefined || this.#authenticate(user, pass) ? user : null;
+    return this.#authenticate === undefined || (await this.#authenticate(user, pass)) ? user : null;
   }
 
   #emitFetch(sock: net.Socket, seq: number, meta: MessageMeta, atts: FetchAtts, uidMode: boolean, mailbox: ServableMailbox): void {
@@ -1619,7 +1619,13 @@ export class ImapServer {
     });
     write(sock, `* OK [CAPABILITY ${CAPABILITIES}] server ready`);
 
-    sock.on('data', (chunk: Buffer) => {
+    // Chunk processing is SERIALISED: the handler is async (credential verification runs its
+    // key derivation on the threadpool rather than the event loop — see scram.ts hiAsync), so
+    // without chaining, a pipelined client's next chunk could re-enter this handler while it is
+    // awaiting and corrupt the shared receive buffer. Same shape, and same reason, as
+    // smtp-receiver's #processing chain.
+    let processing: Promise<void> = Promise.resolve();
+    const handleChunk = async (chunk: Buffer): Promise<void> => {
       buf = Buffer.concat([buf, Buffer.from(chunk)]);
       for (;;) {
         // A pending APPEND literal consumes raw octets before any line parsing.
@@ -1705,7 +1711,7 @@ export class ImapServer {
             // the command and its continuation gets no free guess here.
             write(sock, `${authTag} NO [AUTHENTICATIONFAILED] too many attempts, try later`);
           } else {
-            const authedUser = this.#saslPlainUser(line.trim());
+            const authedUser = await this.#saslPlainUser(line.trim());
             if (authedUser !== null && bindAccount(authedUser)) {
               noteAuthSuccess();
               authenticated = true;
@@ -2056,7 +2062,7 @@ export class ImapServer {
             if (authBlocked()) {
               // Too many recent failures from this IP — refuse without checking the password.
               write(sock, `${tag} NO [UNAVAILABLE] too many failed attempts, try again later`);
-            } else if (this.#authenticate !== undefined && !this.#authenticate(user, pass)) {
+            } else if (this.#authenticate !== undefined && !(await this.#authenticate(user, pass))) {
               noteAuthFailure(user);
               write(sock, `${tag} NO [AUTHENTICATIONFAILED] invalid credentials`);
             } else if (!bindAccount(user)) {
@@ -2095,7 +2101,7 @@ export class ImapServer {
               if (tooManyBadCommands()) return;
               write(sock, `${tag} BAD invalid base64 in AUTHENTICATE initial response`);
             } else {
-              const authedUser = this.#saslPlainUser(ir);
+              const authedUser = await this.#saslPlainUser(ir);
               if (authedUser !== null && bindAccount(authedUser)) {
                 noteAuthSuccess();
                 authenticated = true;
@@ -2710,6 +2716,9 @@ export class ImapServer {
           write(sock, `${tag} BAD internal error handling command`);
         }
       }
+    };
+    sock.on('data', (chunk: Buffer) => {
+      processing = processing.then(() => handleChunk(chunk)).catch(() => {});
     });
   }
 }

@@ -53,7 +53,7 @@ test('one account cannot consume the whole APPEND budget and lock every other ac
   ]);
   const literal = 1024 * 1024; // 1 MiB max literal
   const server = await ImapServer.start(catalogs.get('mallory')!, {
-    authenticate: (u, p) => catalogs.has(u) && p === 'pw',
+    authenticate: async (u, p) => catalogs.has(u) && p === 'pw',
     resolveAccount: (login) => {
       const c = catalogs.get(login);
       return c === undefined ? undefined : { catalog: c };
@@ -101,7 +101,7 @@ test('spelling the same login in different cases does not buy extra APPEND budge
   ]);
   const literal = 1024 * 1024;
   const server = await ImapServer.start(catalogs.get('mallory')!, {
-    authenticate: (u, p) => catalogs.has(u.toLowerCase()) && p === 'pw',
+    authenticate: async (u, p) => catalogs.has(u.toLowerCase()) && p === 'pw',
     resolveAccount: (login) => {
       const c = catalogs.get(login.toLowerCase());
       return c === undefined ? undefined : { catalog: c };
@@ -138,7 +138,7 @@ test('spelling the same login in different cases does not buy extra APPEND budge
 });
 
 test('an unauthenticated peer streaming junk commands loses its connection slot', async () => {
-  const server = await ImapServer.start(new MemoryCatalog(), { authenticate: () => false });
+  const server = await ImapServer.start(new MemoryCatalog(), { authenticate: async () => false });
   const c = connect(server.port);
   try {
     await c.run('', /^\* OK/m);
@@ -159,7 +159,7 @@ test('an unauthenticated peer streaming junk commands loses its connection slot'
 
 test('an ordinary client is never dropped for a stray bad command', async () => {
   const cat = new MemoryCatalog();
-  const server = await ImapServer.start(cat, { authenticate: (u, p) => u === 'alice' && p === 'pw' });
+  const server = await ImapServer.start(cat, { authenticate: async (u, p) => u === 'alice' && p === 'pw' });
   const c = connect(server.port);
   try {
     await c.run('', /^\* OK/m);
@@ -219,7 +219,7 @@ test('a repeated STATUS item does not multiply the passes over a mailbox', async
     },
   } as unknown as MemoryCatalog;
 
-  const server = await ImapServer.start(counting, { authenticate: () => true });
+  const server = await ImapServer.start(counting, { authenticate: async () => true });
   const c = connect(server.port);
   try {
     await c.run('', /^\* OK/m);
@@ -243,7 +243,7 @@ test('a repeated STATUS item does not multiply the passes over a mailbox', async
 test('a repeated STATUS item is answered once, as the ABNF permits it to be sent', async () => {
   const cat = new MemoryCatalog();
   cat.get('INBOX')!.append(Buffer.from('Subject: one\r\n\r\nx\r\n', 'latin1'), [], 1);
-  const server = await ImapServer.start(cat, { authenticate: () => true });
+  const server = await ImapServer.start(cat, { authenticate: async () => true });
   const c = connect(server.port);
   try {
     await c.run('', /^\* OK/m);

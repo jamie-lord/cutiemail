@@ -49,7 +49,7 @@ function idleConn(port: number): Promise<net.Socket> {
 
 test('connections and IDLE subscriptions are fully released on abrupt close, across cycles', async () => {
   const notifier = new MailboxNotifier();
-  const server = await ImapServer.start(new MemoryCatalog(), { authenticate: () => true, notifier });
+  const server = await ImapServer.start(new MemoryCatalog(), { authenticate: async () => true, notifier });
   try {
     const K = 25;
     for (let cycle = 0; cycle < 3; cycle++) {

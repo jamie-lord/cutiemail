@@ -31,7 +31,7 @@ async function main(): Promise<void> {
   const server = await ImapServer.start(catalog, {
     host: '127.0.0.1',
     port,
-    authenticate: (u, p) => u === user && p === pass,
+    authenticate: async (u, p) => u === user && p === pass,
     notifier,
   });
   process.stdout.write(`imap-plaintext-launcher listening on 127.0.0.1:${server.port} (user=${user})\n`);

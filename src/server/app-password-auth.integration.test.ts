@@ -1,6 +1,6 @@
 /**
  * App-specific passwords authenticate over the wire (ADR 0017), end to end through the SAME
- * registry-backed verify closure the daemon wires (`(u, p) => registry.verifyPassword(u, p)`,
+ * registry-backed verify closure the daemon wires (`(u, p) => await registry.verifyPassword(u, p)`,
  * main.ts). This proves the feature works where it matters — a real IMAP LOGIN — not only in the
  * registry unit test, and that a revocation takes effect live (the daemon reads the registry per
  * attempt). Because every live auth path funnels through that one closure, an app password that
@@ -41,7 +41,7 @@ test('an app password logs in over IMAP via the real registry verify; revocation
   const cat = new MemoryCatalog();
   // The exact closure the daemon uses (main.ts): auth against the registry, so app passwords are
   // accepted with no change to the IMAP server itself.
-  const server = await ImapServer.start(cat, { authenticate: (u, p) => reg.verifyPassword(u, p) });
+  const server = await ImapServer.start(cat, { authenticate: async (u, p) => await reg.verifyPassword(u, p) });
 
   const login = async (user: string, pass: string): Promise<boolean> => {
     const c = connect(server.port);

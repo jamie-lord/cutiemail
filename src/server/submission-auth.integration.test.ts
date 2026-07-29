@@ -44,7 +44,7 @@ test('submission: MAIL is refused until AUTH succeeds over TLS; wrong creds and 
   const receiver = await SmtpReceiver.start((m) => { delivered.push(m); }, {
     tls: { key: TEST_KEY, cert: TEST_CERT },
     requireAuth: true,
-    authenticate: (u, p) => accounts.verifyPassword(u, p),
+    authenticate: async (u, p) => await accounts.verifyPassword(u, p),
   });
   try {
     const raw = net.connect(receiver.port, '127.0.0.1');
@@ -104,7 +104,7 @@ test('submission: AUTH is refused DURING a mail transaction (RFC 4954 §4, R-495
   accounts.setPassword('alice', 'correct horse', Buffer.from('saltsalt'), 4096, 'sha256');
   const receiver = await SmtpReceiver.start(() => {}, {
     tls: { key: TEST_KEY, cert: TEST_CERT },
-    authenticate: (u, p) => accounts.verifyPassword(u, p),
+    authenticate: async (u, p) => await accounts.verifyPassword(u, p),
   });
   try {
     const raw = net.connect(receiver.port, '127.0.0.1');
@@ -138,7 +138,7 @@ test('submission: unsupported AUTH mechanisms are 504, a second AUTH after succe
   const receiver = await SmtpReceiver.start(() => {}, {
     tls: { key: TEST_KEY, cert: TEST_CERT },
     requireAuth: true,
-    authenticate: (u, p) => accounts.verifyPassword(u, p),
+    authenticate: async (u, p) => await accounts.verifyPassword(u, p),
   });
   try {
     const raw = net.connect(receiver.port, '127.0.0.1');
@@ -205,7 +205,7 @@ test('submission: AUTH PLAIN two-step continuation form (RFC 4954) is supported'
   const receiver = await SmtpReceiver.start((m) => { delivered.push(m); }, {
     tls: { key: TEST_KEY, cert: TEST_CERT },
     requireAuth: true,
-    authenticate: (u, p) => accounts.verifyPassword(u, p),
+    authenticate: async (u, p) => await accounts.verifyPassword(u, p),
   });
   try {
     const raw = net.connect(receiver.port, '127.0.0.1');

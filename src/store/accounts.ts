@@ -10,7 +10,7 @@
  */
 
 import { createHmac, timingSafeEqual } from 'node:crypto';
-import { hi, storedKey, verifyClientProof, type ScramHash } from '../auth/scram.ts';
+import { hi, hiAsync, storedKey, verifyClientProof, type ScramHash } from '../auth/scram.ts';
 
 /** ServerKey = HMAC(SaltedPassword, "Server Key"). */
 function serverKeyOf(saltedPassword: Buffer, hash: ScramHash): Buffer {
@@ -25,6 +25,23 @@ function serverKeyOf(saltedPassword: Buffer, hash: ScramHash): Buffer {
  */
 export function deriveCredential(password: string, salt: Buffer, iterations: number, hash: ScramHash): { storedKey: Buffer; serverKey: Buffer } {
   const salted = hi(password, salt, iterations, hash);
+  return { storedKey: storedKey(salted, hash), serverKey: serverKeyOf(salted, hash) };
+}
+
+/**
+ * The same derivation off the event loop, for the VERIFICATION path.
+ *
+ * Provisioning (above) stays synchronous — a CLI can afford the pause. Verification cannot: it
+ * is driven by unauthenticated peers, and at 600,000 iterations each check is ~55 ms of blocking
+ * work on the single thread serving every account. See `hiAsync` for the measurement.
+ */
+export async function deriveCredentialAsync(
+  password: string,
+  salt: Buffer,
+  iterations: number,
+  hash: ScramHash,
+): Promise<{ storedKey: Buffer; serverKey: Buffer }> {
+  const salted = await hiAsync(password, salt, iterations, hash);
   return { storedKey: storedKey(salted, hash), serverKey: serverKeyOf(salted, hash) };
 }
 

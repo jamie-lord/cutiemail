@@ -94,7 +94,7 @@ test('cross-subsystem: SMTP delivery wakes a CONDSTORE-enabled idling IMAP clien
     mailbox.append(msg.data);
     notifier.notify('INBOX'); // exactly what main.ts does after an inbound delivery
   });
-  const imap = await ImapServer.start(mailbox, { authenticate: () => true, notifier });
+  const imap = await ImapServer.start(mailbox, { authenticate: async () => true, notifier });
   const sock = net.connect(imap.port, '127.0.0.1');
   let acc = '';
   sock.on('data', (d) => (acc += d.toString('latin1')));
