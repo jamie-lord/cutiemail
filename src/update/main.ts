@@ -55,7 +55,9 @@ const USAGE = [
   '',
   'Configured by MAIL_UPDATE_MODE (off/check/apply), MAIL_UPDATE_REPO, MAIL_UPDATE_BRANCH,',
   'MAIL_UPDATE_ROOT, MAIL_UPDATE_BAKE_DAYS, MAIL_UPDATE_STALE_DAYS, MAIL_UPDATE_KEEP,',
-  'MAIL_UPDATE_UNIT, and the daemon\'s own MAIL_* variables.',
+  'MAIL_UPDATE_UNIT, MAIL_UPDATE_DRAIN_SECONDS, MAIL_UPDATE_PROBE_SECONDS,',
+  'MAIL_UPDATE_MAX_DEPTH, MAIL_UPDATE_ALLOW_IRREVERSIBLE, and the daemon\'s own MAIL_* variables.',
+  'docs/SELF-UPDATE.md explains what each one trades away.',
 ].join('\n');
 
 /**
@@ -116,9 +118,9 @@ export function parseSystemdTimespan(out: string): number | undefined {
   return sawOne && total > 0 ? total : undefined;
 }
 
-function unitStartTimeoutMs(unit: string): number | undefined {
+function unitTimeoutMs(unit: string, property: 'TimeoutStartUSec' | 'TimeoutStopUSec'): number | undefined {
   try {
-    const out = execFileSync('systemctl', ['show', unit, '-p', 'TimeoutStartUSec', '--value'], {
+    const out = execFileSync('systemctl', ['show', unit, '-p', property, '--value'], {
       encoding: 'utf8',
       timeout: 5000,
       stdio: ['ignore', 'pipe', 'ignore'],
@@ -127,6 +129,39 @@ function unitStartTimeoutMs(unit: string): number | undefined {
   } catch {
     return undefined;
   }
+}
+
+const unitStartTimeoutMs = (unit: string): number | undefined => unitTimeoutMs(unit, 'TimeoutStartUSec');
+const unitStopTimeoutMs = (unit: string): number | undefined => unitTimeoutMs(unit, 'TimeoutStopUSec');
+
+/**
+ * Does the unit allow the daemon at least as long to stop as this updater waits for a drain?
+ *
+ * The updater ships code. It does not, and must not, ship unit files: writing to
+ * /etc/systemd/system would let the account that downloads code rewrite `User=` and hand itself
+ * root, which is precisely the containment ADR 0025 exists to keep. The consequence is a settings
+ * split — the deployment's behaviour lives in a file no update can reach — and one of those
+ * settings is load-bearing for the update mechanism itself.
+ *
+ * `stop()` already refuses to call a SIGKILL a clean drain (it asks systemd for `Result`), and the
+ * cutover abandons rather than forces when the drain does not finish. But if TimeoutStopSec is
+ * below the drain deadline, systemd always kills first, so the abandon branch fires on every slow
+ * shutdown and the deployment can never cut over while a delivery is in flight. The operator sees
+ * an updater that mysteriously refuses to switch, and nothing anywhere names the cause.
+ *
+ * So name it. A warning, not a failure: an operator who deliberately set a short stop budget has
+ * made a legitimate choice, and refusing every update over it would pin them on the running version.
+ */
+export function drainBudgetFinding(stopTimeoutMs: number | undefined, drainDeadlineMs: number, unit: string): string | null {
+  // No answer is not a finding. systemd may be absent (a container, a developer's laptop), the unit
+  // may not exist yet, or the budget may be "infinity" — none of which is evidence of a problem.
+  if (stopTimeoutMs === undefined || stopTimeoutMs >= drainDeadlineMs) return null;
+  const s = (ms: number): string => `${Math.round(ms / 1000)}s`;
+  return (
+    `${unit} allows ${s(stopTimeoutMs)} for a stop, but this updater waits ${s(drainDeadlineMs)} for a clean drain. `
+    + `systemd will SIGKILL the daemon first — mid-delivery — so a cutover that should have been abandoned is instead forced. `
+    + `Set TimeoutStopSec=${s(drainDeadlineMs)} or more in ${unit}, or lower MAIL_UPDATE_DRAIN_SECONDS to match.`
+  );
 }
 
 export function systemdService(unit: string): ServiceControl {
@@ -142,11 +177,15 @@ export function systemdService(unit: string): ServiceControl {
     isActive,
     async stop(timeoutMs) {
       // Inactivity is NOT proof of a drain. systemd SIGKILLs at TimeoutStopSec and the stop job
-      // then completes successfully, so a forced kill and a clean exit were indistinguishable here
-      // — and the shipped unit sets no TimeoutStopSec, inheriting systemd's 90 s default, which is
-      // BELOW the 120 s drain deadline. The abandon branch in cutover.ts could therefore never
-      // fire for the reason it was written for, while ADR 0025 promises the cutover is "abandoned
-      // rather than forced". Ask systemd how the unit stopped, not merely whether it is running.
+      // then completes successfully, so a forced kill and a clean exit are indistinguishable to a
+      // caller that only asks whether the unit is running — while ADR 0025 promises the cutover is
+      // "abandoned rather than forced". Ask systemd HOW the unit stopped instead.
+      //
+      // The shipped unit now sets TimeoutStopSec=180, comfortably above the 120s drain deadline, so
+      // on a deployment provisioned from deploy/hetzner-up.sh the kill should never happen. This
+      // check stays because that is a fact about a file the updater cannot manage: unit files live
+      // outside the version store by design, so a hand-written or older unit may carry systemd's
+      // 90s default and be killed every time. `drainBudgetFinding` reports that case up front.
       const code = await systemctl(['stop', unit], timeoutMs);
       if (code !== 0) return false;
       if (await isActive()) return false;
@@ -233,6 +272,16 @@ function cmdStatus(cfg: UpdateConfig, io: UpdateIo, env: Record<string, string |
   } else {
     io.out('last check:  never');
   }
+
+  // Settings the updater depends on but cannot manage. `status` is where an operator looks when
+  // they want to know whether this deployment is healthy, and a stop budget that silently defeats
+  // the drain guarantee should not first announce itself halfway through a cutover.
+  const drainFinding = drainBudgetFinding(
+    unitStopTimeoutMs(env.MAIL_UPDATE_UNIT ?? 'cutiemail.service'),
+    cfg.drainDeadlineMs,
+    env.MAIL_UPDATE_UNIT ?? 'cutiemail.service',
+  );
+  if (drainFinding !== null) io.err(`unit:        ${sanitizeForTerminalLine(drainFinding)}`);
 
   // The alarm that matters. Everything else here is a fact; this one is a verdict.
   const stale = staleness(s, Date.now(), cfg.staleMs);
@@ -327,7 +376,13 @@ async function cmdCheckOrApply(cfg: UpdateConfig, io: UpdateIo, env: Record<stri
   state.update((s) => enterPhase(recordCheck(s, now, `verifying ${candidate.sha}`, { upToDate: false, sha: candidate.sha }), 'fetched', now, { candidate: candidate.sha, previous: current }));
   io.out(`candidate ${candidate.sha} (${candidate.files} files), a descendant of ${current}. Verifying...`);
 
-  const startBudget = unitStartTimeoutMs(env.MAIL_UPDATE_UNIT ?? 'cutiemail.service');
+  const unitName = env.MAIL_UPDATE_UNIT ?? 'cutiemail.service';
+  const startBudget = unitStartTimeoutMs(unitName);
+  // Asked before the ladder rather than after it, because it is a fact about the deployment and not
+  // about the candidate: an operator who is going to have to edit a unit file should hear it while
+  // the update is still a choice, not once the cutover has already been abandoned.
+  const drainFinding = drainBudgetFinding(unitStopTimeoutMs(unitName), cfg.drainDeadlineMs, unitName);
+  if (drainFinding !== null) io.err(`  note: ${sanitizeForTerminalLine(drainFinding)}`);
   const report = await runPreflight({
     candidateDir: candidate.path,
     baselineDir: store.pathFor(current),

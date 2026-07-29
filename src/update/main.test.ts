@@ -11,7 +11,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { runUpdate, systemdService, parseSystemdTimespan } from './main.ts';
+import { runUpdate, systemdService, parseSystemdTimespan, drainBudgetFinding } from './main.ts';
 import { acquireRunLock } from './run-lock.ts';
 import { VersionStore } from './version-store.ts';
 import { StateFile, INITIAL_STATE, enterPhase, recordCheck } from './state.ts';
@@ -231,4 +231,30 @@ test('the unit start budget is read from the timespan systemd actually prints', 
   // The raw-integer form the old code assumed is NOT something systemd emits for this property;
   // accepting it anyway would resurrect the false-confidence path.
   assert.equal(parseSystemdTimespan('90000000'), undefined, 'a bare integer is not a timespan');
+});
+
+test('a stop budget below the drain deadline is reported, because no update can fix it', () => {
+  const UNIT = 'mailserver.service';
+
+  // The exact shape of a real deployment before TimeoutStopSec was added to the shipped unit:
+  // systemd's 90s default against the updater's 120s drain wait. systemd kills first, every time,
+  // so the cutover's "abandoned rather than forced" promise cannot hold — and no amount of updating
+  // repairs it, because the updater ships code and never unit files.
+  const found = drainBudgetFinding(90_000, 120_000, UNIT);
+  assert.notEqual(found, null);
+  assert.match(found!, /90s/);
+  assert.match(found!, /120s/);
+  assert.match(found!, /SIGKILL/, 'it names what actually happens');
+  assert.match(found!, /TimeoutStopSec=120s/, 'and the setting that fixes it, with a value');
+  assert.match(found!, new RegExp(UNIT), 'in the unit the operator has to edit');
+
+  // Equal is sufficient: the drain deadline is the longest the updater will wait, so a stop budget
+  // that matches it can never be the thing that cuts the drain short.
+  assert.equal(drainBudgetFinding(120_000, 120_000, UNIT), null);
+  assert.equal(drainBudgetFinding(180_000, 120_000, UNIT), null, 'the shipped unit is comfortable');
+
+  // Not knowing is not a finding. systemd may be absent entirely (a container, a laptop), the unit
+  // may not exist yet, or the budget may be "infinity" — parseSystemdTimespan returns undefined for
+  // all three, and inventing a number to compare against would manufacture a false alarm.
+  assert.equal(drainBudgetFinding(undefined, 120_000, UNIT), null);
 });
