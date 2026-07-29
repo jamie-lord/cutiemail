@@ -166,7 +166,7 @@ folder. Read the pair as one word, the way `systemctl <verb>` is one word:
 | `MAIL_TRUSTED_ARC_SEALERS` | unset | comma-separated forwarder domains whose valid ARC chain may rescue a DMARC failure to the inbox |
 | `MAIL_MAX_SIZE` | `26214400` | max accepted message size in octets (25 MiB), applied to SMTP `SIZE` and the IMAP `APPEND` literal alike |
 | `MAIL_OUTBOUND` | `deliver` | set `hold` for a dev/test sink: remote mail is queued (inspect with `queue list`) but **never relayed**, so nothing can escape a test instance (ADR 0019). Any other value refuses to boot. |
-| `MAIL_DEBUG` | unset | `1` logs every received SMTP/IMAP command line to stderr (credentials redacted), the protocol-level debugging view |
+| `MAIL_DEBUG` | unset | `1` logs every received SMTP/IMAP command line to stderr (credentials redacted, control characters stripped), the protocol-level debugging view. The log still records who tried to authenticate and from where, so treat it as sensitive |
 
 Running it from your own code instead of as a standalone daemon? `startServer(config)` takes a `MailServerConfig`
 object directly, with the same knobs plus injection seams (DNS resolvers, the auth throttle, the

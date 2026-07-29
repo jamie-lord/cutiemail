@@ -47,4 +47,24 @@ export const IMAP_COMMANDS = [
       'parser accepts a repeated tag; the rejectTagReuse defect (fail the second use) ' +
       'is the negative control.',
   },
+  {
+    id: 'R-9051-9-b',
+    rfc: 'rfc9051',
+    section: '9',
+    level: 'MUST',
+    party: 'both',
+    normativeSource: 'prose',
+    text: '; Valid only when in Not Authenticated state',
+    testability: { kind: 'wire' },
+    note:
+      'The annotation on `command-nonauth = login / authenticate / "STARTTLS"`. These three ' +
+      'are out of grammar once a session is authenticated, and treating that as merely ' +
+      'pedantic cost two real properties. Re-authenticating in place rebound the account but ' +
+      'left `selected` pointing at the PREVIOUS account\'s mailbox — a handle captured at ' +
+      'SELECT that FETCH/STORE/EXPUNGE reuse — while the revocation sweep began evaluating ' +
+      'the new login, so `account disable` and a password rotation, the only two containment ' +
+      'verbs this server has (ADR 0012), both stopped reaching the session. It also removed ' +
+      'the only bound on how much key derivation one connection could buy, since a successful ' +
+      'auth costs no throttle budget. Dovecot answers `BAD Already authenticated`; so do we.',
+  },
 ] as const satisfies readonly RequirementDef[];

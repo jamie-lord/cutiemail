@@ -31,6 +31,31 @@ export function canonicalMailboxName(name: string, defects: MailboxNameDefects =
   return n;
 }
 
+/**
+ * Bounds on a mailbox name a client may create.
+ *
+ * RFC 9051 §5.1 sets no limit, so this is ours, and it exists for a denial-of-service reason
+ * rather than a storage one: LIST rebuilds every ancestor prefix of every name it considers,
+ * which is quadratic in segment count. One 64 KB CREATE of a 32,000-segment name made every
+ * later `LIST "" *` block the single event loop for ~18 seconds — for every account on the
+ * server, not just the one that created it — and the name is stored, so the cost recurred on
+ * every LIST and survived a restart.
+ *
+ * The limits are generous next to real use: Dovecot's own default is 255 characters, and the
+ * deepest nests real clients create are single-digit segment counts. Length is measured in
+ * octets of the latin1 wire string (`name.length`), which is what the parser hands us — using
+ * a UTF-8 byte count here would silently halve the limit for non-ASCII names.
+ *
+ * Exported and applied at BOTH creation paths — CREATE and RENAME — because a bound on one and
+ * not its twin is the shape of defect this codebase keeps reproducing.
+ */
+export const MAX_MAILBOX_NAME_OCTETS = 512;
+export const MAX_MAILBOX_SEGMENTS = 32;
+
+export function withinMailboxNameBounds(name: string): boolean {
+  return name.length <= MAX_MAILBOX_NAME_OCTETS && name.split('/').length <= MAX_MAILBOX_SEGMENTS;
+}
+
 /** Do two names refer to the same mailbox (INBOX case-insensitive, others exact)? */
 export function sameMailbox(a: string, b: string, defects: MailboxNameDefects = {}): boolean {
   return canonicalMailboxName(a, defects) === canonicalMailboxName(b, defects);

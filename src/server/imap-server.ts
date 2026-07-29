@@ -26,7 +26,8 @@ import { bodyResponse, bodyStructureResponse, resolvePart } from '../message/bod
 import { buildEnvelope, serializeEnvelope } from '../imap/envelope.ts';
 import { matchesSearch, type SearchableMessage, type SearchKey } from '../imap/search.ts';
 import { parseSequenceSet } from '../imap/sequence-set.ts';
-import { canonicalMailboxName } from '../store/mailbox-name.ts';
+import { canonicalMailboxName, withinMailboxNameBounds } from '../store/mailbox-name.ts';
+import { sanitizeForTerminalLine } from '../ops/terminal.ts';
 import type { MessageMeta } from '../store/mailbox.ts';
 import type { MailboxNotifier } from './mailbox-notifier.ts';
 import type { AuthThrottle } from './auth-throttle.ts';
@@ -186,6 +187,12 @@ const AUTOLOGOUT_MS = 1_800_000;
 const REVOCATION_SWEEP_MS = 15_000;
 const MAX_SEARCH_KEYS = 64; // top-level SEARCH keys; a real query uses a handful (DoS bound)
 const MAX_SEARCH_NODES = 256; // TOTAL keys across the tree incl. nested OR/NOT (recursion DoS bound)
+/**
+ * Distinct BODY[...] sections one FETCH may name. A real client asks for a handful; the cap is
+ * the second half of the de-duplication in `parseFetchAtts`, since 32 DISTINCT sections of a
+ * 25 MiB message is still a 800 MiB response built as one contiguous buffer.
+ */
+const MAX_BODY_SECTIONS = 32;
 const MAX_CONNECTIONS = 512; // concurrent-connection ceiling per listener (pre-auth DoS bound)
 const HANDSHAKE_TIMEOUT_MS = 10_000; // IMAPS TLS-handshake deadline (handshake-slowloris bound)
 
@@ -264,9 +271,17 @@ const SPECIAL_USE: Record<string, string> = Object.assign(Object.create(null) as
  */
 export function redactImapDebugLine(line: string, isSaslContinuation: boolean): string {
   if (isSaslContinuation) return '<SASL response redacted>';
-  return line
-    .replace(/^(\S+\s+LOGIN\s+\S+\s+)\S+/i, '$1***')
-    .replace(/^(\S+\s+AUTHENTICATE\s+\S+\s+).*/i, '$1***');
+  return sanitizeForTerminalLine(
+    line
+      // Redact the ARGUMENT, not one whitespace-delimited token. The LOGIN handler is
+      // deliberately quote-aware — a passphrase may be a quoted string containing spaces — and
+      // this was not, so `LOGIN "alice" "correct horse battery staple"` logged everything after
+      // the first word of a credential that had just SUCCEEDED. Deliberately not `$`-anchored:
+      // `LOGIN bob s3cr3t ` (trailing space) is a successful login here, and an anchored
+      // pattern would stop matching and leak the whole password.
+      .replace(/^(\S+\s+LOGIN\s+(?:"(?:[^"\\]|\\.)*"|\S+)\s+)(?:"(?:[^"\\]|\\.)*"|\S+).*/i, '$1***')
+      .replace(/^(\S+\s+AUTHENTICATE\s+\S+\s+).*/i, '$1***'),
+  );
 }
 
 /** MAIL_DEBUG=1 logs each received command line (credentials redacted) to stderr. */
@@ -881,12 +896,41 @@ function parseFetchAtts(spec: string): { atts: FetchAtts; ok: boolean } {
   };
   // Pull out BODY[..] / BODY.PEEK[..] first — brackets may contain spaces — with
   // an optional <origin.count> partial specifier (TB: BODY.PEEK[TEXT]<0.2048>).
+  // DE-DUPLICATED and CAPPED, for exactly the reason `statusItems` is (see its comment).
+  // §9's `fetch-att *(SP fetch-att)` puts no uniqueness constraint on the list, so a repeat is
+  // legal and cannot be answered BAD — but every repeat here costs a FULL COPY of the message
+  // body, and `#emitFetch` concatenates them all into ONE contiguous buffer before writing. A
+  // 2 KB command repeating `BODY[]` 300 times against a 4 MiB message allocated 1.2 GB and took
+  // the process to 2.5 GB RSS; at the 25 MiB APPEND ceiling the same shape is a 7.5 GB
+  // allocation, i.e. an immediate OOM of a process serving every account. The write-backlog
+  // shedder cannot help — it runs after the concatenation, and exempts this socket.
+  //
+  // The key distinguishes sections that genuinely differ (a different part, a different partial
+  // range); it deliberately folds BODY[…] and BODY.PEEK[…] of the same section together, since
+  // the emitted payload is identical and only the \Seen side effect differs, which is applied
+  // once either way. Section names are compared case-insensitively because `#emitFetch`
+  // upper-cases them before use.
+  const sectionIndex = new Map<string, number>();
   const rest = spec.replace(/BODY(\.PEEK)?\[([^\]]*)\](?:<(\d+)\.(\d+)>)?/gi, (_m, peek: string | undefined, section: string, origin?: string, count?: string) => {
     const isPeek = peek !== undefined;
+    const trimmed = section.trim();
+    const key = `${trimmed.toUpperCase()}|${origin ?? ''}.${count ?? ''}`;
+    const already = sectionIndex.get(key);
+    if (already !== undefined) {
+      // Same bytes requested twice. Emit once — but a non-peek request still marks \Seen, so
+      // the side effect is the OR across the duplicates, never silently downgraded to PEEK.
+      if (!isPeek) atts.bodySections[already]!.peek = false;
+      return ' ';
+    }
+    if (sectionIndex.size >= MAX_BODY_SECTIONS) {
+      ok = false;
+      return ' ';
+    }
+    sectionIndex.set(key, atts.bodySections.length);
     atts.bodySections.push(
       origin !== undefined && count !== undefined
-        ? { section: section.trim(), partial: { origin: Number(origin), count: Number(count) }, peek: isPeek }
-        : { section: section.trim(), peek: isPeek },
+        ? { section: trimmed, partial: { origin: Number(origin), count: Number(count) }, peek: isPeek }
+        : { section: trimmed, peek: isPeek },
     );
     return ' ';
   });
@@ -1385,7 +1429,11 @@ export class ImapServer {
     const authBlocked = (): boolean => this.#throttle?.isBlocked(ip) === true;
     const noteAuthFailure = (user?: string): void => {
       this.#throttle?.recordFailure(ip);
-      this.#log?.(`imap auth failed${user !== undefined ? ` for ${JSON.stringify(user)}` : ''} from ${ip}`);
+      // JSON.stringify escapes C0, `"` and `\` — but NOT DEL (0x7f) or the C1 range
+      // (0x80-0x9f), which is exactly the 33-byte set sanitizeForTerminal strips and which some
+      // terminals treat as 8-bit escape introducers. JSON-escaping is not a terminal sanitiser,
+      // and this line is documented as the fail2ban feed.
+      this.#log?.(sanitizeForTerminalLine(`imap auth failed${user !== undefined ? ` for ${JSON.stringify(user)}` : ''} from ${ip}`));
       if (this.#throttle?.isBlocked(ip) === true) this.#log?.(`auth throttle engaged for ${ip} (imap), refusing further attempts while the window drains`);
     };
     const noteAuthSuccess = (): void => this.#throttle?.recordSuccess(ip);
@@ -1698,6 +1746,29 @@ export class ImapServer {
           continue;
         }
 
+        // …and the other half of that gate: §9's `command-nonauth = login / authenticate /
+        // "STARTTLS"` is annotated "Valid only when in Not Authenticated state", so these are
+        // out of grammar once authenticated. Two things went wrong without this.
+        //
+        // `bindAccount` rebinds the connection's catalog but does NOT clear `selected`, and
+        // `selected` is a mailbox HANDLE captured at SELECT that FETCH/STORE/EXPUNGE reuse
+        // without re-deriving. So logging in as a second account kept the FIRST account's
+        // mailbox open while the revocation sweep and the per-command recheck both started
+        // evaluating the new login — `account disable` and a password rotation, the only two
+        // containment verbs this server has (ADR 0012), stopped reaching the session, and it
+        // could still read and expunge the victim's mail.
+        //
+        // It also removed the only bound on how much key derivation one connection can buy:
+        // verification is a deliberately expensive PBKDF2 and a SUCCESSFUL auth costs no
+        // throttle budget (auth-throttle.ts, correctly — charging successes would let an
+        // attacker lock out legitimate users), so an unlimited LOGIN loop was an unlimited
+        // supply of work on the only thread. Dovecot answers `BAD Already authenticated`.
+        if (authenticated && (cmd === 'LOGIN' || cmd === 'AUTHENTICATE')) {
+          if (tooManyBadCommands()) return;
+          write(sock, `${tag} BAD already authenticated`);
+          continue;
+        }
+
         // Containment for a disabled/compromised account: `account disable` must cut a session
         // that is ALREADY authenticated, not only refuse the next LOGIN. Re-check enabled status
         // on every authenticated command (a cheap in-memory registry lookup) and drop the
@@ -1835,6 +1906,15 @@ export class ImapServer {
             const name = qarg(1);
             if (canonicalMailboxName(name) === 'INBOX') {
               write(sock, `${tag} NO INBOX already exists`);
+            } else if (!withinMailboxNameBounds(name)) {
+              // §5.1 sets no length limit, so this is our own bound and it is a DoS one, not a
+              // storage one. LIST rebuilds every ancestor prefix of every name, which is
+              // quadratic in segment count: a single 64 KB CREATE of a 32,000-segment name made
+              // every subsequent `LIST "" *` block the event loop for ~18 seconds — for every
+              // account, not just the one that created it — and because the name is stored, the
+              // cost recurred on every later LIST and survived restarts. Dovecot's own default
+              // limit is 255 characters, so this is generous rather than restrictive.
+              write(sock, `${tag} NO [CANNOT] mailbox name too long`);
             } else if (!isNetUnicode(name)) {
               // RFC 9051 §5.1: a server MUST prohibit creating an 8-bit mailbox name that is not
               // Net-Unicode (RFC 5198), which requires NFC. Names are stored as raw octets, so a
@@ -1876,6 +1956,12 @@ export class ImapServer {
               write(sock, `${tag} NO [CANNOT] mailbox name must be Unicode NFC (RFC 9051 §5.1)`);
               break;
             }
+            // Same argument, same door: the length/depth bound is about what names may EXIST,
+            // so RENAME has to enforce it too or it is the back way in.
+            if (!withinMailboxNameBounds(qarg(2))) {
+              write(sock, `${tag} NO [CANNOT] mailbox name too long`);
+              break;
+            }
             const outcome = connCatalog.rename === undefined ? 'notfound' : connCatalog.rename(qarg(1), qarg(2));
             if (outcome === 'ok') write(sock, `${tag} OK RENAME completed`);
             else if (outcome === 'exists') write(sock, `${tag} NO target mailbox already exists`);
@@ -1901,7 +1987,19 @@ export class ImapServer {
           }
           case 'APPEND': {
             // APPEND "name" [(\Flags)] ["date"] {n} — the literal octets follow.
-            const m = /^APPEND\s+("[^"]*"|\S+)\s*(?:\(([^)]*)\))?\s*(?:"([^"]*)")?\s*\{(\d+)(\+)?\}$/i.exec(line.slice(tag.length + 1));
+            //
+            // Each separator is ONE literal space, not `\s+`/`\s*`, and that is load-bearing
+            // rather than pedantic. §6.3.12's grammar is
+            //   append = "APPEND" SP mailbox [SP flag-list] [SP date-time] SP literal
+            // i.e. exactly one SP between components. The previous spelling had three
+            // quantified whitespace runs separated by two OPTIONAL groups, so when the trailing
+            // `{n}` failed to match, the engine tried every way of splitting the whitespace
+            // across those boundaries — cubic backtracking. `APPEND x` + 6 KB of tabs + `Z`
+            // took 42 seconds, and the 64 KiB command-line cap (which is calibrated for a
+            // LINEAR parser) left room for hours of it, on the single event loop that also
+            // serves SMTP, submission and every other IMAP session. A byte cap is not a guard
+            // against a super-linear matcher; the matcher has to be linear.
+            const m = /^APPEND ("[^"]*"|\S+)(?: \(([^)]*)\))?(?: "([^"]*)")? \{(\d+)(\+)?\}$/i.exec(line.slice(tag.length + 1));
             if (m === null) {
               write(sock, `${tag} BAD APPEND syntax`);
               break;
