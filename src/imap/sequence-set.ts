@@ -20,19 +20,27 @@ export interface SequenceSetDefects {
  * [1, largest]. `largest` is the largest message number / UID in use.
  */
 export function parseSequenceSet(set: string, largest: number, defects: SequenceSetDefects = {}): number[] {
-  const result = new Set<number>();
   const resolve = (token: string): number => {
     if (token === '*') return defects.starIsLiteralOne === true ? 1 : largest;
     return Number(token);
   };
 
+  // Collect the ranges FIRST and enumerate once, merged.
+  //
+  // Enumerating inside this loop made the cost O(ranges × largest): the result was always a Set,
+  // so the ANSWER was de-duplicated, but the WORK was not. A 64 KB `UID FETCH` repeating `1:*`
+  // sixteen thousand times against a 20,000-message mailbox blocked the single event loop for
+  // seconds — for every account, and repeatably. Clamping each range (below) bounds one range;
+  // only merging bounds the set of them. De-duplicating the range STRINGS would not do it
+  // either: four thousand distinct-but-overlapping ranges cost the same.
+  const ranges: Array<[number, number]> = [];
   for (const part of set.split(',')) {
     const trimmed = part.trim();
     if (trimmed === '') continue;
     const colon = trimmed.indexOf(':');
     if (colon === -1) {
       const n = resolve(trimmed);
-      if (Number.isInteger(n) && n >= 1) result.add(n);
+      if (Number.isInteger(n) && n >= 1 && n <= largest) ranges.push([n, n]);
       continue;
     }
     const a = resolve(trimmed.slice(0, colon));
@@ -43,7 +51,20 @@ export function parseSequenceSet(set: string, largest: number, defects: Sequence
     // Clamp the range to [1, largest]. No message exists beyond `largest`, so a
     // range extending past it matches nothing there — and enumerating to a huge
     // literal endpoint (e.g. "1:99999999999") would exhaust memory (a DoS).
-    for (let n = Math.max(lo, 1); n <= Math.min(hi, largest); n++) result.add(n);
+    const from = Math.max(lo, 1);
+    const to = Math.min(hi, largest);
+    if (from <= to) ranges.push([from, to]);
   }
-  return [...result].sort((x, y) => x - y);
+  // Sweep the merged intervals in order: each message number is emitted at most once, so the
+  // total work is bounded by the mailbox size regardless of how many ranges named it.
+  ranges.sort((x, y) => x[0] - y[0]);
+  const out: number[] = [];
+  let emittedTo = 0; // the highest number already emitted
+  for (const [lo, hi] of ranges) {
+    for (let n = Math.max(lo, emittedTo + 1); n <= hi; n++) out.push(n);
+    if (hi > emittedTo) emittedTo = hi;
+  }
+  // The sweep already guarantees ascending order and no duplicates, so no sort or Set pass is
+  // needed — which is also why a repeated single-number token costs nothing extra.
+  return out;
 }

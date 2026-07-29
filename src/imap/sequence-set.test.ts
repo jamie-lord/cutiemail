@@ -33,3 +33,29 @@ test('R-9051-2.3.1.1-d: ranges are order-independent (rangeNotCommutative caught
   // Negative control: a high:low range treated as empty.
   assert.deepEqual(parseSequenceSet('12:10', 20, { rangeNotCommutative: true }), [], 'rangeNotCommutative must be detectable');
 });
+
+test('repeated and overlapping ranges cost what the messages cost, not what the ranges cost', () => {
+  // The result was always a Set, so the OUTPUT was de-duplicated — but the enumeration ran once
+  // PER RANGE, so N ranges each walked up to `largest`: O(ranges x largest). A 64 KB command
+  // repeating `1:*` sixteen thousand times against a 20,000-message mailbox blocked the single
+  // event loop for over three seconds, for every account on the server, and was repeatable at
+  // will. Merging the intervals first makes the cost proportional to the messages designated.
+  const largest = 20_000;
+  const repeated = Array.from({ length: 4000 }, () => '1:*').join(',');
+
+  const started = Date.now();
+  const out = parseSequenceSet(repeated, largest);
+  const elapsed = Date.now() - started;
+
+  assert.equal(out.length, largest, 'the answer is still every message');
+  assert.equal(out[0], 1);
+  assert.equal(out[out.length - 1], largest);
+  assert.ok(elapsed < 1000, `4000 repeats of 1:* took ${elapsed}ms — enumeration must be merged`);
+
+  // Overlapping-but-distinct ranges collapse too; string de-duplication alone would not catch these.
+  const overlapping = Array.from({ length: 4000 }, (_, i) => `${i + 1}:${largest}`).join(',');
+  const started2 = Date.now();
+  const out2 = parseSequenceSet(overlapping, largest);
+  assert.equal(out2.length, largest, 'overlapping ranges still designate every message');
+  assert.ok(Date.now() - started2 < 1000, 'overlapping ranges are merged, not enumerated one by one');
+});

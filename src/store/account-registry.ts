@@ -183,15 +183,30 @@ export class AccountRegistry {
     const iterations = opts.iterations ?? DEFAULT_ITERATIONS;
     const hash = opts.hash ?? DEFAULT_HASH;
     const { storedKey, serverKey } = deriveCredential(password, salt, iterations, hash);
+    // Canonical spelling, or a case variant would address the wrong row: `set-password ALICE`
+    // must rotate the credential auth actually reads, not report success against a second one.
+    const canonical = this.#canonicalLogin(login);
+    // UPDATE an existing row rather than INSERT OR REPLACE, and that is not a style preference.
+    // SQLite implements INSERT OR REPLACE as delete-then-insert, which assigns a NEW rowid — and
+    // `list()` orders by rowid while the postmaster fallback (#postmasterAccount) takes the first
+    // enabled row. So rotating the first account's password silently moved the postmaster mailbox
+    // — abuse reports, DMARC aggregate reports, TLS-RPT, CA validation mail — and the right to
+    // SEND as postmaster@ to whichever account was created next, with no warning and no restart
+    // needed. Its sibling `setEnabled` was always a rowid-preserving UPDATE; this is that guard's
+    // missing twin.
+    if (this.#row(canonical) !== undefined) {
+      this.#db
+        .prepare(
+          'UPDATE accounts SET salt = ?, iterations = ?, hash = ?, stored_key = ?, server_key = ?, mail_db_path = ?, enabled = ? WHERE login = ?',
+        )
+        .run(salt, iterations, hash, storedKey, serverKey, mailDbPath, opts.enabled === false ? 0 : 1, canonical);
+      return;
+    }
     this.#db
       .prepare(
-        'INSERT OR REPLACE INTO accounts (login, salt, iterations, hash, stored_key, server_key, mail_db_path, enabled) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+        'INSERT INTO accounts (login, salt, iterations, hash, stored_key, server_key, mail_db_path, enabled) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
       )
-      // Canonical spelling, or INSERT OR REPLACE misses the case-sensitive PRIMARY KEY and adds a
-      // SECOND row for the same identity: `set-password ALICE` would report success while the row
-      // auth actually reads keeps the OLD credential — a password rotation that silently does
-      // nothing. The rest of the class is covered by the unique index below.
-      .run(this.#canonicalLogin(login), salt, iterations, hash, storedKey, serverKey, mailDbPath, opts.enabled === false ? 0 : 1);
+      .run(canonical, salt, iterations, hash, storedKey, serverKey, mailDbPath, opts.enabled === false ? 0 : 1);
   }
 
   /** Enable or disable an account (a disabled account fails auth and is not routable). */

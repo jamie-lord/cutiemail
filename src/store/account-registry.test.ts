@@ -13,7 +13,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { AccountRegistry } from './account-registry.ts';
 
-test('verifyPassword: right password passes, wrong password and unknown login fail', () => {
+test('verifyPassword: right password passes, wrong password and unknown login fail', async () => {
   const reg = AccountRegistry.open(new DatabaseSync(':memory:'));
   reg.upsert('alice', 'correct horse', 'mail-alice.db');
   assert.equal(reg.verifyPassword('alice', 'correct horse'), true);
@@ -21,7 +21,7 @@ test('verifyPassword: right password passes, wrong password and unknown login fa
   assert.equal(reg.verifyPassword('bob', 'correct horse'), false, 'unknown login rejected');
 });
 
-test('a disabled account fails auth even with the right password, until re-enabled', () => {
+test('a disabled account fails auth even with the right password, until re-enabled', async () => {
   const reg = AccountRegistry.open(new DatabaseSync(':memory:'));
   reg.upsert('alice', 'pw', 'mail-alice.db', { enabled: false });
   assert.equal(reg.verifyPassword('alice', 'pw'), false, 'disabled → no auth');
@@ -30,7 +30,7 @@ test('a disabled account fails auth even with the right password, until re-enabl
   assert.equal(reg.verifyPassword('alice', 'pw'), true, 're-enabled → auth');
 });
 
-test('a login is case-insensitive identity across every login-keyed operation', () => {
+test('a login is case-insensitive identity across every login-keyed operation', async () => {
   // Routing (resolveLocalPart) and creation (nameTaken) have always compared lower(login), and
   // mail-<login>.db collides case-insensitively on a case-insensitive filesystem — so a login IS
   // case-insensitive identity. Any statement that disagreed fragmented the account across
@@ -70,7 +70,7 @@ test('a login is case-insensitive identity across every login-keyed operation', 
   assert.equal(reg.resolveLocalPart('SALES'), 'alice', 'and still routes');
 });
 
-test('a password rotation typed in the wrong case replaces the credential, never forks the account', () => {
+test('a password rotation typed in the wrong case replaces the credential, never forks the account', async () => {
   // INSERT OR REPLACE keys on the case-SENSITIVE primary key, so an upsert that wrote the raw
   // spelling added a SECOND row for the same identity: `set-password ALICE` reported success while
   // auth kept reading the original row — a rotation that silently left the old password working.
@@ -87,7 +87,7 @@ test('a password rotation typed in the wrong case replaces the credential, never
   assert.equal(reg.verifyPassword('alice', 'old password'), false, 'the old credential no longer authenticates');
 });
 
-test('the registry refuses to open a database whose logins differ only in case', () => {
+test('the registry refuses to open a database whose logins differ only in case', async () => {
   // Defence in depth for the above: the database itself enforces case-insensitive identity, so a
   // future write path that forgets to canonicalise fails loudly instead of forking an account.
   const db = new DatabaseSync(':memory:');
@@ -105,14 +105,14 @@ test('the registry refuses to open a database whose logins differ only in case',
   );
 });
 
-test('lookup returns routing; unknown login is undefined', () => {
+test('lookup returns routing; unknown login is undefined', async () => {
   const reg = AccountRegistry.open(new DatabaseSync(':memory:'));
   reg.upsert('alice', 'pw', '/var/lib/mail/mail-alice.db');
   assert.deepEqual(reg.lookup('alice'), { login: 'alice', mailDbPath: '/var/lib/mail/mail-alice.db', enabled: true });
   assert.equal(reg.lookup('nobody'), undefined);
 });
 
-test('list enumerates every account in insertion order', () => {
+test('list enumerates every account in insertion order', async () => {
   const reg = AccountRegistry.open(new DatabaseSync(':memory:'));
   reg.upsert('alice', 'a', 'mail-alice.db');
   reg.upsert('bob', 'b', 'mail-bob.db');
@@ -123,7 +123,7 @@ test('list enumerates every account in insertion order', () => {
   );
 });
 
-test('credentials and routing survive a close/reopen of the same database file', () => {
+test('credentials and routing survive a close/reopen of the same database file', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'acctreg-'));
   const path = join(dir, 'control.db');
   try {
@@ -145,7 +145,7 @@ test('credentials and routing survive a close/reopen of the same database file',
   }
 });
 
-test('app passwords: each authenticates like the primary, is independently revocable (ADR 0017)', () => {
+test('app passwords: each authenticates like the primary, is independently revocable (ADR 0017)', async () => {
   const reg = AccountRegistry.open(new DatabaseSync(':memory:'));
   reg.upsert('alice', 'primary-password', 'mail-alice.db');
   const phone = reg.addAppPassword('alice', 'phone', 1000);
@@ -173,7 +173,7 @@ test('app passwords: each authenticates like the primary, is independently revoc
   assert.equal(reg.appPasswordNameTaken('alice', 'phone'), false);
 });
 
-test('app passwords: a disabled account fails auth on the app password too', () => {
+test('app passwords: a disabled account fails auth on the app password too', async () => {
   const reg = AccountRegistry.open(new DatabaseSync(':memory:'));
   reg.upsert('alice', 'primary-password', 'mail-alice.db');
   const secret = reg.addAppPassword('alice', 'phone', 1000);
@@ -184,7 +184,7 @@ test('app passwords: a disabled account fails auth on the app password too', () 
   assert.equal(reg.verifyPassword('alice', secret), true, 're-enabling restores them');
 });
 
-test('negative control: an app password secret is never written to the database', () => {
+test('negative control: an app password secret is never written to the database', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'acctreg-'));
   const path = join(dir, 'control.db');
   try {
@@ -200,7 +200,7 @@ test('negative control: an app password secret is never written to the database'
   }
 });
 
-test('negative control: the database never contains the plaintext password', () => {
+test('negative control: the database never contains the plaintext password', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'acctreg-'));
   const path = join(dir, 'control.db');
   const password = 'UNIQUE-PLAINTEXT-marker-8842';
@@ -221,4 +221,26 @@ test('negative control: the database never contains the plaintext password', () 
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
+});
+
+test('rotating a password does not move the postmaster mailbox to another account', () => {
+  // `upsert` used INSERT OR REPLACE, and with a TEXT primary key SQLite deletes and reinserts —
+  // giving the row a NEW rowid. `list()` orders by rowid and the postmaster fallback takes the
+  // first enabled row, so `account set-password alice` silently handed postmaster@ — abuse
+  // reports, DMARC aggregate reports, TLS-RPT, CA validation mail — and the right to SEND as
+  // postmaster@ to whoever was created next. The trigger is the compromise-response action
+  // itself: rotate a password after a breach and the mailbox moves.
+  //
+  // `setEnabled` was always a rowid-preserving UPDATE; this is that guard's missing twin.
+  const reg = AccountRegistry.open(new DatabaseSync(':memory:'));
+  reg.upsert('alice', 'password-one', ':memory:');
+  reg.upsert('bob', 'password-two', ':memory:');
+  assert.equal(reg.resolveLocalPart('postmaster'), 'alice', 'precondition: postmaster falls back to alice');
+
+  reg.upsert('alice', 'password-three', ':memory:'); // a rotation, not a creation
+
+  assert.equal(reg.resolveLocalPart('postmaster'), 'alice', 'postmaster did not move');
+  assert.deepEqual(reg.list().map((a) => a.login), ['alice', 'bob'], 'creation order is preserved');
+  assert.equal(reg.verifyPassword('alice', 'password-three'), true, 'the new password works');
+  assert.equal(reg.verifyPassword('alice', 'password-one'), false, 'the old one does not');
 });
