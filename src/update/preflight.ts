@@ -37,10 +37,13 @@
  * version is provenance (acquire.ts), and nothing here should be read as a substitute for it.
  */
 
-import { randomUUID } from 'node:crypto';
-import { accessSync, constants, mkdirSync, rmSync } from 'node:fs';
+import { generateKeyPairSync, randomUUID } from 'node:crypto';
+import net from 'node:net';
+import tls from 'node:tls';
+import { accessSync, constants, existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
+import { TEST_CERT, TEST_KEY } from '../testing/tls-test-cert.ts';
 import { AccountRegistry } from '../store/account-registry.ts';
 import { runSelftest } from '../ops/selftest.ts';
 import { runSuite } from '../conformance/runner.ts';
@@ -146,7 +149,7 @@ function baseEnv(env: Record<string, string | undefined>): Record<string, string
  * version store that is currently deciding its fate.
  */
 export function candidateEnv(
-  opts: Pick<PreflightOptions, 'env'>,
+  opts: Pick<PreflightOptions, 'env' | 'workDir'>,
   snapshot: Pick<Snapshot, 'dir' | 'controlDb'>,
   warnings: string[],
 ): Record<string, string> {
@@ -165,21 +168,76 @@ export function candidateEnv(
 
   // The real certificate and DKIM key are used when this process can read them. In a correct
   // deployment the updater is a different user from the daemon and those files are 0600, so it
-  // usually cannot — the check then falls back to the bundled loopback-only development
-  // certificate. That is a real reduction in fidelity, so it is stated rather than glossed over.
-  if (!readable(env.MAIL_TLS_CERT) || !readable(env.MAIL_TLS_KEY)) {
-    if (env.MAIL_TLS_CERT !== undefined) {
-      warnings.push('the configured TLS certificate is not readable by the updater, so the candidate was checked with the bundled development certificate instead');
-    }
+  // usually cannot.
+  //
+  // What it must NOT then do is delete the variables. That was the original behaviour, and it
+  // quietly moved the candidate onto a DIFFERENT code path from the one production runs: with no
+  // MAIL_TLS_CERT the daemon loads the bundled dev certificate instead of `readEnvFile`, and with
+  // no MAIL_DKIM_KEY the signer is `undefined`, so the signing path never executes at all. A
+  // candidate whose DKIM signing was broken outright therefore passed every rung, cut over, and
+  // sent unsigned mail — which nothing downstream can catch, because the daemon is entirely
+  // healthy: the probe delivers locally (unsigned by design) and the watch window only asks
+  // whether the service is still up. The operator learns from DMARC aggregate reports, days later.
+  //
+  // So substitute a STAND-IN instead of switching the feature off. The updater still never holds
+  // the real private keys — that containment is ADR 0025 working as intended, not an obstacle —
+  // and the candidate exercises the same branches with material of the same shape. What stays
+  // unverified is genuinely narrower, and is said out loud: whether the operator's own key files
+  // parse. Those files are not what an update changes.
+  const tlsConfigured = env.MAIL_TLS_CERT !== undefined && env.MAIL_TLS_KEY !== undefined;
+  if (tlsConfigured && !(readable(env.MAIL_TLS_CERT) && readable(env.MAIL_TLS_KEY))) {
+    warnings.push(
+      'the configured TLS certificate is not readable by the updater, so the candidate was checked with a stand-in certificate: '
+        + 'the certificate-loading path is exercised, but your own certificate file is not proved to still parse',
+    );
+    const standIn = standInMaterial(opts.workDir);
+    env.MAIL_TLS_CERT = standIn.certPath;
+    env.MAIL_TLS_KEY = standIn.keyPath;
+  } else if (!tlsConfigured) {
+    // Genuinely unconfigured: this deployment really does run the bundled development certificate,
+    // so that is the honest thing to test. Both must go, or `usingDevCert` reads one of them.
     delete env.MAIL_TLS_CERT;
     delete env.MAIL_TLS_KEY;
   }
-  if (env.MAIL_DKIM_KEY !== undefined && !readable(env.MAIL_DKIM_KEY)) {
-    warnings.push('the configured DKIM key is not readable by the updater, so the candidate was checked without outbound signing');
+  const dkimConfigured = env.MAIL_DKIM_KEY !== undefined && env.MAIL_DKIM_SELECTOR !== undefined;
+  if (dkimConfigured && !readable(env.MAIL_DKIM_KEY)) {
+    warnings.push(
+      'the configured DKIM key is not readable by the updater, so the candidate signed with a stand-in key: '
+        + 'the signature is checked for presence and identity, not against your published DNS record',
+    );
+    env.MAIL_DKIM_KEY = standInMaterial(opts.workDir).dkimKeyPath;
+  } else if (!dkimConfigured) {
     delete env.MAIL_DKIM_KEY;
     delete env.MAIL_DKIM_SELECTOR;
   }
   return env;
+}
+
+/**
+ * Throwaway key material for the candidate, written once per work directory.
+ *
+ * It lives in the work directory rather than the snapshot, so the snapshot stays exactly the set of
+ * databases the census measures and nothing else.
+ *
+ * The certificate is the bundled development pair, which is already public and therefore costs
+ * nothing to reuse: the candidate binds loopback on ephemeral ports, so no one can reach it. The
+ * DKIM key is GENERATED rather than bundled. A committed signing key is a different kind of object
+ * from a committed certificate — if one ever found its way to a real selector it would be a forgery
+ * primitive for that domain — and generating a fresh one costs a few hundred milliseconds, once.
+ */
+function standInMaterial(workDir: string): { certPath: string; keyPath: string; dkimKeyPath: string } {
+  const dir = join(workDir, 'stand-in');
+  mkdirSync(dir, { recursive: true, mode: 0o700 });
+  const certPath = join(dir, 'tls-cert.pem');
+  const keyPath = join(dir, 'tls-key.pem');
+  const dkimKeyPath = join(dir, 'dkim.key');
+  if (!existsSync(certPath)) writeFileSync(certPath, TEST_CERT, { mode: 0o600 });
+  if (!existsSync(keyPath)) writeFileSync(keyPath, TEST_KEY, { mode: 0o600 });
+  if (!existsSync(dkimKeyPath)) {
+    const { privateKey } = generateKeyPairSync('rsa', { modulusLength: 2048 });
+    writeFileSync(dkimKeyPath, privateKey.export({ type: 'pkcs8', format: 'pem' }) as string, { mode: 0o600 });
+  }
+  return { certPath, keyPath, dkimKeyPath };
 }
 
 /**
@@ -201,6 +259,129 @@ function mintProbeCredential(snapshot: Snapshot): { login: string; password: str
   } finally {
     db.close();
   }
+}
+
+const PROBE_STEP_TIMEOUT_MS = 30_000;
+
+/** Read from a socket until `re` matches the accumulated text, or give up. */
+function until(sock: net.Socket, re: RegExp, what: string): Promise<string> {
+  return new Promise((resolve, reject) => {
+    let acc = '';
+    const finish = (fn: () => void): void => {
+      clearTimeout(timer);
+      sock.off('data', onData);
+      sock.off('error', onError);
+      fn();
+    };
+    const onData = (d: Buffer): void => {
+      acc += d.toString('latin1');
+      if (re.test(acc)) finish(() => resolve(acc));
+    };
+    const onError = (e: Error): void => finish(() => reject(e));
+    const timer = setTimeout(
+      () => finish(() => reject(new Error(`timed out waiting for ${what}; last saw ${JSON.stringify(acc.slice(-200))}`))),
+      PROBE_STEP_TIMEOUT_MS,
+    );
+    sock.on('data', onData);
+    sock.on('error', onError);
+  });
+}
+
+/**
+ * Submit one message addressed to a REMOTE domain over the candidate's authenticated submission
+ * port. The evidence is not the reply — it is what lands in the outbound queue.
+ *
+ * Remote on purpose: signing happens only on the outbound copy. Local delivery is stamped with a
+ * Received trace and stored unsigned (see the submission handler in main.ts), so a probe that
+ * delivers to itself — which is exactly what the selftest above does — cannot see the signer at all.
+ *
+ * Safe because two things hold at once: `MAIL_OUTBOUND=hold` is forced for every candidate boot, so
+ * the queue is never drained, and the recipient domain is reserved by RFC 2606, so it could not
+ * resolve even if something tried.
+ */
+async function submitToRemote(port: number, login: string, password: string, from: string, subject: string): Promise<void> {
+  const plain = net.connect(port, '127.0.0.1');
+  let sock: net.Socket = plain;
+  try {
+    await new Promise<void>((resolve, reject) => {
+      plain.once('connect', () => resolve());
+      plain.once('error', reject);
+    });
+    await until(plain, /^220 /m, 'the SMTP greeting');
+    plain.write('EHLO preflight.one.example\r\n');
+    await until(plain, /^250 /m, 'the EHLO response');
+    plain.write('STARTTLS\r\n');
+    await until(plain, /^220 /m, 'the STARTTLS go-ahead');
+    sock = await new Promise<tls.TLSSocket>((resolve, reject) => {
+      const t = tls.connect({ socket: plain, rejectUnauthorized: false });
+      t.once('secureConnect', () => resolve(t));
+      t.once('error', reject);
+    });
+    sock.write('EHLO preflight.one.example\r\n');
+    await until(sock, /^250 /m, 'the EHLO response inside TLS');
+    sock.write(`AUTH PLAIN ${Buffer.from(`\0${login}\0${password}`, 'utf8').toString('base64')}\r\n`);
+    const auth = await until(sock, /^\d{3} /m, 'the AUTH response');
+    if (!auth.startsWith('235')) throw new Error(`the candidate refused the probe credential: ${auth.trim()}`);
+    sock.write(`MAIL FROM:<${from}>\r\n`);
+    if (!(await until(sock, /^\d{3} /m, 'the MAIL FROM response')).startsWith('250')) throw new Error('the candidate rejected MAIL FROM');
+    sock.write('RCPT TO:<probe@preflight-remote.one.example>\r\n');
+    if (!(await until(sock, /^\d{3} /m, 'the RCPT TO response')).startsWith('250')) throw new Error('the candidate rejected a remote recipient, so nothing could be queued');
+    sock.write('DATA\r\n');
+    await until(sock, /^354/m, 'the DATA go-ahead');
+    sock.write(
+      [`From: ${from}`, 'To: probe@preflight-remote.one.example', `Subject: ${subject}`, '', 'Outbound signing probe. Queued and never sent.', '.', ''].join('\r\n'),
+    );
+    if (!(await until(sock, /^\d{3} /m, 'the end-of-DATA response')).startsWith('250')) throw new Error('the candidate did not accept the probe message');
+    sock.write('QUIT\r\n');
+  } finally {
+    sock.destroy();
+    plain.destroy();
+  }
+}
+
+/** The queued outbound message carrying `token` in its headers, as text, or null if there is none. */
+function queuedMessageContaining(controlDb: string, token: string): string | null {
+  const db = new DatabaseSync(controlDb);
+  try {
+    const rows = db.prepare('SELECT data FROM outbound_queue ORDER BY first_queued DESC LIMIT 64').all() as { data: Uint8Array }[];
+    for (const row of rows) {
+      const text = Buffer.from(row.data).toString('latin1');
+      if (text.includes(token)) return text;
+    }
+    return null;
+  } finally {
+    db.close();
+  }
+}
+
+/** Literal text inside a built regex: a domain has dots, and a selector is operator-supplied. */
+const escapeRe = (s: string): string => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+/**
+ * Does the queued message carry a DKIM signature claiming this domain and selector?
+ *
+ * Presence and identity only. Verifying the signature would need the public key from DNS, which is
+ * a property of the operator's zone rather than of the candidate — and a stand-in key was very
+ * likely used, so there would be nothing published to check it against. What this catches is the
+ * failure that matters: a version that stopped signing, or that signs as something else.
+ */
+export function signatureIdentity(message: string, domain: string, selector: string): { ok: boolean; detail: string } {
+  const header = /^DKIM-Signature:[^\n]*(?:\r?\n[ \t][^\n]*)*/mi.exec(message)?.[0];
+  if (header === undefined) {
+    return {
+      ok: false,
+      detail:
+        'the candidate queued an outbound message with NO DKIM-Signature header, though MAIL_DKIM_KEY and MAIL_DKIM_SELECTOR are both set. '
+        + 'Mail from this deployment would leave unsigned, and every receiver enforcing DMARC would see it fail.',
+    };
+  }
+  const unfolded = header.replace(/\r?\n[ \t]+/g, ' ');
+  for (const [tag, want] of [['d', domain], ['s', selector]] as const) {
+    if (!new RegExp(`[;:\\s]${tag}=${escapeRe(want)}\\s*(?:;|$)`).test(unfolded)) {
+      return { ok: false, detail: `the candidate signed the outbound copy, but not as ${tag}=${want}: ${unfolded.slice(0, 200)}` };
+    }
+  }
+  return { ok: true, detail: `d=${domain} s=${selector}` };
 }
 
 export interface ConformanceRun {
@@ -430,7 +611,27 @@ export async function runPreflight(opts: PreflightOptions): Promise<PreflightRep
             probe.password,
           );
           if (code !== 0) return { ok: false, detail: `selftest against the candidate failed:\n${selftest.text()}` };
-          return { ok: true, detail: `authenticated submission, local delivery and IMAP read-back all work against ${probe.login}'s real mailbox` };
+          const local = `authenticated submission, local delivery and IMAP read-back all work against ${probe.login}'s real mailbox`;
+
+          // Outbound signing, for deployments that sign. The selftest above cannot reach this: it
+          // delivers to the account itself, and the local copy is never signed.
+          const selector = env.MAIL_DKIM_SELECTOR;
+          if (env.MAIL_DKIM_KEY === undefined || selector === undefined) {
+            return { ok: true, detail: `${local}; this deployment does not sign, so outbound signing was not checked` };
+          }
+          const token = `preflight-dkim-${randomUUID()}`;
+          await submitToRemote(running.ports.submission, probe.login, probe.password, `${probe.login}@${domain}`, token);
+          // Read the queue only once the candidate has let go of the database.
+          await candidate.stop();
+          candidate = null;
+          const queued = queuedMessageContaining(snapshot.controlDb, token);
+          if (queued === null) {
+            return { ok: false, detail: 'the candidate accepted a message for a remote domain but never queued it, so outbound signing could not be checked' };
+          }
+          const signature = signatureIdentity(queued, domain, selector);
+          return signature.ok
+            ? { ok: true, detail: `${local}, and the outbound copy is DKIM-signed as ${signature.detail}` }
+            : { ok: false, detail: signature.detail };
         } finally {
           await candidate?.stop();
         }
@@ -508,7 +709,10 @@ export async function runPreflight(opts: PreflightOptions): Promise<PreflightRep
       ok: rungs.every((r) => r.ok),
       migrationMs,
       schemaMovedForward: movedForward,
-      warnings,
+      // De-duplicated: the candidate's configuration is built once per boot, so a deployment whose
+      // TLS certificate the updater cannot read pushed the same note on rungs 6a, 6b and 6c and the
+      // operator read it three times. Three identical lines look like three findings.
+      warnings: [...new Set(warnings)],
     };
   }
 }

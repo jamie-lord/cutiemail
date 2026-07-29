@@ -267,7 +267,13 @@ Environment=MAIL_UPDATE_UNIT=mailserver.service
 # Reporting only until the mechanism has earned trust on this deployment; then set 'apply'.
 Environment=MAIL_UPDATE_MODE=check
 # The daemon's own configuration, because the pre-flight boots a candidate against a SNAPSHOT of
-# your data with your real settings. MAIL_OUTBOUND is forced to hold there regardless of this.
+# your data with these settings. MAIL_OUTBOUND is forced to hold there regardless of what is set.
+#
+# Two of them are not literally the daemon's: the TLS certificate and the DKIM key are 0600 to the
+# mail user, and the updater — a different user on purpose — cannot read either. It substitutes
+# stand-in key material rather than switching those features off, so the candidate still exercises
+# certificate loading and outbound signing, and says in its report that it did. What stays
+# unproven is whether YOUR key files parse, and an update does not change those files.
 Environment=MAIL_DOMAIN=$MAIL_DOMAIN
 Environment=MAIL_CONTROL_DB=/var/lib/mailserver/control.db
 Environment=MAIL_SMTP_PORT=25

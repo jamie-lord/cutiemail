@@ -26,7 +26,7 @@ import { openMailDb } from '../store/open-mail-db.ts';
 import { AccountRegistry } from '../store/account-registry.ts';
 import { SqliteCatalog } from '../store/sqlite-mailbox.ts';
 import { SqliteQueue } from '../store/sqlite-queue.ts';
-import { runPreflight, renderPreflight, candidateEnv, conformanceVerifiedNothing } from './preflight.ts';
+import { runPreflight, renderPreflight, candidateEnv, conformanceVerifiedNothing, signatureIdentity } from './preflight.ts';
 
 /** This checkout, used as the candidate. */
 const REPO = resolve(import.meta.dirname, '..', '..');
@@ -86,7 +86,17 @@ function baseOptions(live: Live, work: string, candidateDir = REPO): Parameters<
     baselineDir: REPO,
     sha: 'f'.repeat(40),
     controlDbPath: live.controlDb,
-    env: { ...process.env, MAIL_DOMAIN: DOMAIN, MAIL_CONTROL_DB: live.controlDb },
+    // DKIM configured but pointing at a file this process cannot read — the shape of every correct
+    // deployment, where the updater runs as its own user and the signing key is 0600 to the daemon.
+    // Without this the outbound-signing rung silently reports "this deployment does not sign" and
+    // the check it performs is never exercised by any test.
+    env: {
+      ...process.env,
+      MAIL_DOMAIN: DOMAIN,
+      MAIL_CONTROL_DB: live.controlDb,
+      MAIL_DKIM_KEY: join(work, 'no-such-dkim.key'),
+      MAIL_DKIM_SELECTOR: 'preflight',
+    },
     workDir: work,
     bootTimeoutMs: 120_000,
   };
@@ -116,6 +126,12 @@ test('the ladder runs against real data and leaves every live file byte-identica
       ],
     );
     assert.ok(report.migrationMs !== null && report.migrationMs > 0, 'the migration was timed, because that is the cutover downtime');
+    // The outbound copy really was signed, by a candidate booted from a stand-in key. This is the
+    // assertion that makes the rung more than decoration: it proves the signer ran.
+    const mailPath = report.rungs.find((r) => r.name === 'mail path against your data')!;
+    assert.match(mailPath.detail, /DKIM-signed as d=preflight\.one\.example s=preflight/, mailPath.detail);
+    // Signing with a stand-in key is a real reduction in fidelity, and the operator is told once.
+    assert.equal(report.warnings.filter((w) => /DKIM key is not readable/.test(w)).length, 1, 'said once, not once per boot');
 
     // THE ASSERTIONS THAT MATTER. Four daemons were spawned across the ladder, two of them against
     // a copy of this data, and one was driven through authenticated submission, local delivery and
@@ -161,6 +177,37 @@ test('a candidate that cannot start fails the ladder, and still leaves the live 
   }
 });
 
+test('a candidate that stopped signing outbound mail is refused', { timeout: 300_000 }, async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'cutiemail-preflight-unsigned-'));
+  try {
+    const live = makeLive(dir);
+    const before = digestOf(live.files);
+
+    // The nastiest shape of regression this ladder faces, because everything else about the
+    // candidate is fine. It boots, it migrates, it delivers locally, it answers the conformance
+    // corpus, it passes the cutover probe and it stays up through the watch window. It just quietly
+    // stops signing — and unsigned mail fails DMARC at every receiver that enforces it, which the
+    // operator discovers from aggregate reports days after the version was confirmed.
+    const unsigned = join(dir, 'unsigned-candidate');
+    cpSync(REPO, unsigned, { recursive: true, filter: (src) => !src.includes('node_modules') && !src.includes(`${REPO}/.git`) });
+    const mainPath = join(unsigned, 'src', 'main.ts');
+    const source = readFileSync(mainPath, 'utf8');
+    const anchor = 'const outData = signer !== undefined ? dkimSign(traced, signer) : traced;';
+    assert.equal(source.split(anchor).length - 1, 1, 'the submission signing call is where this test expects it');
+    writeFileSync(mainPath, source.replace(anchor, 'const outData = traced;'));
+
+    const report = await runPreflight(baseOptions(live, join(dir, 'work'), unsigned));
+    assert.equal(report.ok, false, `an unsigned candidate must not pass:\n${renderPreflight(report)}`);
+    const failed = report.rungs.find((r) => !r.ok);
+    assert.equal(failed?.name, 'mail path against your data');
+    assert.match(failed!.detail, /NO DKIM-Signature/);
+
+    assert.deepEqual(digestOf(live.files), before, 'and it never reached real data on the way to being refused');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test('a candidate that breaks conformance the running version satisfies is refused', { timeout: 300_000 }, async () => {
   const dir = mkdtempSync(join(tmpdir(), 'cutiemail-preflight-regress-'));
   try {
@@ -201,38 +248,108 @@ test('a conformance run where every case was inconclusive verified nothing', () 
 });
 
 test('the candidate is configured to hold outbound mail, on a snapshot, with no updater of its own', () => {
-  const warnings: string[] = [];
-  const env = candidateEnv(
-    {
-      env: {
-        PATH: '/usr/bin',
-        MAIL_DOMAIN: DOMAIN,
-        MAIL_CONTROL_DB: '/live/control.db',
-        MAIL_DB: '/live/mail.db',
-        MAIL_OUTBOUND: 'deliver',
-        MAIL_MAX_SIZE: '1000000',
-        MAIL_UPDATE_MODE: 'apply',
-        MAIL_UPDATE_REPO: 'https://one.example/repo.git',
-        MAIL_TLS_CERT: '/does/not/exist/cert.pem',
-        MAIL_TLS_KEY: '/does/not/exist/key.pem',
+  const workDir = mkdtempSync(join(tmpdir(), 'preflight-env-'));
+  try {
+    const warnings: string[] = [];
+    const env = candidateEnv(
+      {
+        workDir,
+        env: {
+          PATH: '/usr/bin',
+          MAIL_DOMAIN: DOMAIN,
+          MAIL_CONTROL_DB: '/live/control.db',
+          MAIL_DB: '/live/mail.db',
+          MAIL_OUTBOUND: 'deliver',
+          MAIL_MAX_SIZE: '1000000',
+          MAIL_UPDATE_MODE: 'apply',
+          MAIL_UPDATE_REPO: 'https://one.example/repo.git',
+          MAIL_TLS_CERT: '/does/not/exist/cert.pem',
+          MAIL_TLS_KEY: '/does/not/exist/key.pem',
+          MAIL_DKIM_KEY: '/does/not/exist/dkim.key',
+          MAIL_DKIM_SELECTOR: 'sel1',
+        },
       },
-    },
-    { dir: '/snap', controlDb: '/snap/control.db' },
-    warnings,
-  );
+      { dir: '/snap', controlDb: '/snap/control.db' },
+      warnings,
+    );
 
-  // The single most dangerous thing about testing with real data: the snapshot contains the
-  // outbound queue, and a candidate in deliver mode would relay every queued message a second time.
-  assert.equal(env.MAIL_OUTBOUND, 'hold', 'hold is forced, overriding whatever the real configuration says');
-  assert.equal(env.MAIL_CONTROL_DB, '/snap/control.db', 'and it points at the copy, not the original');
-  assert.equal(env.MAIL_DB, '/snap/mail.db');
-  // A program we are still deciding whether to trust must not go and update anything itself.
-  assert.equal(env.MAIL_UPDATE_MODE, undefined);
-  assert.equal(env.MAIL_UPDATE_REPO, undefined);
-  // The rest of the real configuration is what makes this rung worth anything.
-  assert.equal(env.MAIL_DOMAIN, DOMAIN);
-  assert.equal(env.MAIL_MAX_SIZE, '1000000');
-  // An unreadable certificate degrades the check rather than failing it, and says so out loud.
-  assert.equal(env.MAIL_TLS_CERT, undefined);
-  assert.match(warnings.join('\n'), /TLS certificate is not readable/);
+    // The single most dangerous thing about testing with real data: the snapshot contains the
+    // outbound queue, and a candidate in deliver mode would relay every queued message a second time.
+    assert.equal(env.MAIL_OUTBOUND, 'hold', 'hold is forced, overriding whatever the real configuration says');
+    assert.equal(env.MAIL_CONTROL_DB, '/snap/control.db', 'and it points at the copy, not the original');
+    assert.equal(env.MAIL_DB, '/snap/mail.db');
+    // A program we are still deciding whether to trust must not go and update anything itself.
+    assert.equal(env.MAIL_UPDATE_MODE, undefined);
+    assert.equal(env.MAIL_UPDATE_REPO, undefined);
+    // The rest of the real configuration is what makes this rung worth anything.
+    assert.equal(env.MAIL_DOMAIN, DOMAIN);
+    assert.equal(env.MAIL_MAX_SIZE, '1000000');
+
+    // Unreadable key material must SUBSTITUTE, never switch the feature off. Deleting the variables
+    // moved the candidate onto the bundled-dev-certificate branch and disabled the signer outright,
+    // so neither production code path was exercised at all.
+    assert.notEqual(env.MAIL_TLS_CERT, undefined, 'a stand-in certificate is supplied, not nothing');
+    assert.notEqual(env.MAIL_TLS_CERT, '/does/not/exist/cert.pem', 'and it is not the unreadable one');
+    assert.ok(existsSync(env.MAIL_TLS_CERT!), 'the stand-in certificate exists on disk');
+    assert.ok(existsSync(env.MAIL_TLS_KEY!), 'the stand-in key exists on disk');
+    assert.notEqual(env.MAIL_DKIM_KEY, undefined, 'signing stays ON with a stand-in key');
+    assert.ok(existsSync(env.MAIL_DKIM_KEY!), 'the stand-in DKIM key exists on disk');
+    assert.equal(env.MAIL_DKIM_SELECTOR, 'sel1', 'the real selector is kept, so the signature identity is checkable');
+    assert.match(readFileSync(env.MAIL_DKIM_KEY!, 'utf8'), /BEGIN PRIVATE KEY/, 'and it is a real generated key');
+    assert.match(warnings.join('\n'), /TLS certificate is not readable/);
+    assert.match(warnings.join('\n'), /DKIM key is not readable/);
+  } finally {
+    rmSync(workDir, { recursive: true, force: true });
+  }
+});
+
+test('an outbound copy that lost its signature is a failure, not a detail', () => {
+  const signed = [
+    'DKIM-Signature: v=1; a=rsa-sha256; c=relaxed/relaxed; d=mail.one.example;',
+    ' s=jul2026; h=from:to:subject; bh=abc=; b=sig==',
+    'From: you@mail.one.example',
+    'Subject: probe',
+    '',
+    'body',
+  ].join('\r\n');
+
+  // The header is folded across lines, as a real one always is (RFC 5322 §2.2.3). A check that
+  // only looked at the first physical line would never see the selector.
+  assert.equal(signatureIdentity(signed, 'mail.one.example', 'jul2026').ok, true);
+
+  // The regression this whole rung exists for: the candidate still boots, still delivers locally,
+  // still passes the probe and the watch window — and sends unsigned.
+  const unsigned = signed.split('\r\n').slice(2).join('\r\n');
+  const gone = signatureIdentity(unsigned, 'mail.one.example', 'jul2026');
+  assert.equal(gone.ok, false);
+  assert.match(gone.detail, /NO DKIM-Signature/);
+  assert.match(gone.detail, /DMARC/, 'and it says what the consequence is, not just what is missing');
+
+  // Signing as the wrong identity is its own failure: a signature that does not align with the
+  // From domain fails DMARC exactly as an absent one does.
+  assert.equal(signatureIdentity(signed, 'other.one.example', 'jul2026').ok, false, 'wrong d=');
+  assert.equal(signatureIdentity(signed, 'mail.one.example', 'jan2026').ok, false, 'wrong selector');
+
+  // A domain is a substring of longer ones, and a regex built by hand would happily match those.
+  const neighbour = signed.replace('d=mail.one.example', 'd=notmail.one.example');
+  assert.equal(signatureIdentity(neighbour, 'mail.one.example', 'jul2026').ok, false, 'd= must match the whole value');
+});
+
+test('a deployment that configures neither TLS nor DKIM is tested as it actually runs', () => {
+  const workDir = mkdtempSync(join(tmpdir(), 'preflight-env-'));
+  try {
+    const warnings: string[] = [];
+    const env = candidateEnv(
+      { workDir, env: { PATH: '/usr/bin', MAIL_DOMAIN: DOMAIN } },
+      { dir: '/snap', controlDb: '/snap/control.db' },
+      warnings,
+    );
+    // Substituting here would test a configuration this operator does not run. Unconfigured is a
+    // fact about the deployment, not a gap in the updater's access.
+    assert.equal(env.MAIL_TLS_CERT, undefined);
+    assert.equal(env.MAIL_DKIM_KEY, undefined);
+    assert.deepEqual(warnings, [], 'and there is nothing to warn about');
+  } finally {
+    rmSync(workDir, { recursive: true, force: true });
+  }
 });
