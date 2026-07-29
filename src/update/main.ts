@@ -118,14 +118,40 @@ export function parseSystemdTimespan(out: string): number | undefined {
   return sawOne && total > 0 ? total : undefined;
 }
 
+/**
+ * Read a unit's timeout, and answer `undefined` unless the unit genuinely exists.
+ *
+ * `systemctl show` does NOT fail for a unit it has never heard of. It exits 0 and prints the
+ * MANAGER DEFAULT for every property asked for — `TimeoutStopUSec=1min 30s` for a name with nothing
+ * behind it — so a caller that only catches exceptions reads a fabricated number as fact. That is
+ * how the drain-budget check first ran on a real box: invoked by hand without MAIL_UPDATE_UNIT set,
+ * it fell back to the default unit name, was handed systemd's own 90s default for it, and reported
+ * a confident finding about a unit the deployment does not have.
+ *
+ * `LoadState` is the field that answers the question actually being asked, so both are read in one
+ * call and the timeout is trusted only when the unit is loaded. Properties come back in systemd's
+ * order rather than the order requested, so they are parsed by name.
+ */
+export function unitTimeoutFromShow(out: string, property: string): number | undefined {
+  const fields = new Map<string, string>();
+  for (const line of out.split('\n')) {
+    const at = line.indexOf('=');
+    if (at > 0) fields.set(line.slice(0, at), line.slice(at + 1).trim());
+  }
+  if (fields.get('LoadState') !== 'loaded') return undefined;
+  return parseSystemdTimespan(fields.get(property) ?? '');
+}
+
 function unitTimeoutMs(unit: string, property: 'TimeoutStartUSec' | 'TimeoutStopUSec'): number | undefined {
   try {
-    const out = execFileSync('systemctl', ['show', unit, '-p', property, '--value'], {
-      encoding: 'utf8',
-      timeout: 5000,
-      stdio: ['ignore', 'pipe', 'ignore'],
-    }).trim();
-    return parseSystemdTimespan(out);
+    return unitTimeoutFromShow(
+      execFileSync('systemctl', ['show', unit, '-p', 'LoadState', '-p', property], {
+        encoding: 'utf8',
+        timeout: 5000,
+        stdio: ['ignore', 'pipe', 'ignore'],
+      }),
+      property,
+    );
   } catch {
     return undefined;
   }

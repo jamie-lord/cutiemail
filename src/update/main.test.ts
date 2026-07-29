@@ -11,7 +11,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { runUpdate, systemdService, parseSystemdTimespan, drainBudgetFinding } from './main.ts';
+import { runUpdate, systemdService, parseSystemdTimespan, drainBudgetFinding, unitTimeoutFromShow } from './main.ts';
 import { acquireRunLock } from './run-lock.ts';
 import { VersionStore } from './version-store.ts';
 import { StateFile, INITIAL_STATE, enterPhase, recordCheck } from './state.ts';
@@ -231,6 +231,27 @@ test('the unit start budget is read from the timespan systemd actually prints', 
   // The raw-integer form the old code assumed is NOT something systemd emits for this property;
   // accepting it anyway would resurrect the false-confidence path.
   assert.equal(parseSystemdTimespan('90000000'), undefined, 'a bare integer is not a timespan');
+});
+
+test('a unit systemd has never heard of has no budget, whatever systemctl prints', () => {
+  // `systemctl show` does not fail for an unknown unit. It exits 0 and prints the MANAGER DEFAULT
+  // for every property asked for, so the reply for a nonexistent unit is indistinguishable from a
+  // real one unless LoadState is read too. Caught on a live box: `status` run by hand without
+  // MAIL_UPDATE_UNIT fell back to the default unit name, was handed systemd's own 90s default for
+  // it, and reported a confident drain-budget finding about a unit that does not exist.
+  const notFound = 'TimeoutStopUSec=1min 30s\nLoadState=not-found\n';
+  assert.equal(unitTimeoutFromShow(notFound, 'TimeoutStopUSec'), undefined);
+  assert.equal(drainBudgetFinding(unitTimeoutFromShow(notFound, 'TimeoutStopUSec'), 120_000, 'x.service'), null);
+
+  // A unit that exists is read normally. Note systemd returns properties in its own order, not the
+  // order requested, so they cannot be read positionally.
+  assert.equal(unitTimeoutFromShow('TimeoutStopUSec=3min\nLoadState=loaded\n', 'TimeoutStopUSec'), 180_000);
+  assert.equal(unitTimeoutFromShow('LoadState=loaded\nTimeoutStartUSec=45min\n', 'TimeoutStartUSec'), 2_700_000);
+
+  // Masked and error states are not "loaded", and inventing a budget for them would be the same
+  // fabrication in a different disguise.
+  assert.equal(unitTimeoutFromShow('LoadState=masked\nTimeoutStopUSec=1min 30s\n', 'TimeoutStopUSec'), undefined);
+  assert.equal(unitTimeoutFromShow('', 'TimeoutStopUSec'), undefined);
 });
 
 test('a stop budget below the drain deadline is reported, because no update can fix it', () => {
