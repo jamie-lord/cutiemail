@@ -372,30 +372,19 @@ commit) and added the rung that asks whether the *running* version can still rea
 migrated. The defect list, the deliberate failure drills, and what each says about where to look
 next are in [BACKLOG.md](BACKLOG.md#closed-what-a-live-self-update-test-found).
 
-A fifth audit then found two of those rungs reporting success without having established what their
-own text claims, which is the failure mode that matters most for a safety mechanism: rung 4 said
-"N modules load" having imported one, because the sweep it spawns ends with `process.exit(0)` and a
-module that calls the same thing at import time ended it early with status 0; and rung 6a said
-"everything intact" while comparing only mailbox identity and message bytes, so a migration that
-emptied every flag, zeroed every internal date and reset the catalog high-water marks produced no
-findings. Both now check what they claim — the sweep records progress to a file the parent reads
-back, and the census covers flags, dates, the expunge journal and the marks that govern identifiers
-not yet allocated.
-
-The test that should have caught the first is worth recording, because it looked exactly like a
-guard: `assert.ok(result.modules > 150, 'the whole tree was swept, not a corner of it')`. That count
-is the number of modules *found*, not imported. It read 226 while the sweep imported four.
-
-None of that could establish the thing that actually mattered, and the subsystem is the project's
-sharpest example of why: the pre-flight *spawns* the candidate itself, so it has no systemd sandbox,
-no second user, no polkit, and no real database being checkpointed underneath it. A run against a
-real deployment found nine defects the whole suite had passed over, each a property of the machine
-rather than of the code. That produced a rule the ladder is now built on — **a pre-flight check must
-be able to fail for a reason CI could not have caught** — which removed the candidate's own test
-suite from the ladder (rungs 1 and 2 already prove the checkout is byte-identical to a tested
-commit) and added the rung that asks whether the *running* version can still read what the candidate
-migrated. The defect list, the deliberate failure drills, and what each says about where to look
-next are in [BACKLOG.md](BACKLOG.md#closed-what-a-live-self-update-test-found).
+The same rule caught a further gap in the mail-path rung, and this one is the sharpest illustration
+of why a green ladder is not evidence on its own. That rung delivers to the account itself, and a
+submitted message is signed only on the copy bound for a *remote* domain — so the signer was never
+executed, and the rung's configuration made that worse rather than better: key material the updater
+could not read had its environment variable deleted, which switched signing off entirely and moved
+TLS onto the bundled-certificate branch instead of the one that reads a file. A candidate that had
+stopped signing altogether therefore passed every rung, the cutover probe, and the watch window,
+because none of those can tell a healthy daemon from a healthy daemon sending unsigned mail. The
+negative control is a copy of this checkout with the signing call replaced by a pass-through, and it
+must be refused at the mail-path rung with `NO DKIM-Signature` — a test that fails against the
+ladder as it stood. Unreadable keys now substitute stand-ins rather than disabling the feature, and
+a second probe message to a reserved remote domain is checked, in the queue it is held in, for a
+signature carrying the expected domain and selector.
 
 ### End to end
 

@@ -65,6 +65,20 @@ open, so the grant survives exactly until the next restart — which a cutover a
 the failure both silent and delayed. The pre-flight passes once and then fails forever with
 `unable to open database file`, blaming your data.
 
+**Your TLS certificate and DKIM key stay out of reach, deliberately.** Those live under
+`/var/lib/mailserver/tls` and `/var/lib/mailserver/dkim` at `0700` to the mail user: the updater is
+in the data group, not in those directories. A compromise of the thing that downloads code must not
+become the ability to decrypt your sessions or sign mail as your domain.
+
+The pre-flight therefore cannot boot a candidate with your real key material — and it must not
+respond by switching those features *off*, which is what it used to do. Deleting `MAIL_TLS_CERT`
+moves the candidate onto the bundled-development-certificate branch instead of the one that reads a
+file, and deleting `MAIL_DKIM_KEY` disables the signer completely, so neither path is exercised at
+all. Instead it substitutes **stand-in key material**: the bundled certificate written to a real
+file, and a freshly generated DKIM key. The candidate runs the same code with keys of the same
+shape, and the report says so. What is left unproven is narrower and stated plainly — whether *your*
+key files still parse — and an update does not change those files.
+
 The directory is group-**writable** because a failed cutover restores the databases from its
 pre-cutover snapshot, which means creating files there. That path runs when something has already
 gone wrong, which is the worst moment to meet a permission error.
@@ -199,7 +213,14 @@ that stopped it.
   byte too — a migration that rewrote it would lock out every client while the server looked
   perfectly healthy, and SCRAM means the passwords cannot be recovered from what is left.
 - **`mail path against your data`**: a real message through submission, delivery and IMAP read-back
-  against a real mailbox, on the snapshot.
+  against a real mailbox, on the snapshot. If your deployment signs, a second message addressed to a
+  remote domain is submitted and the **queued outbound copy is checked for a `DKIM-Signature`
+  carrying your domain and selector**. Signing only happens on the outbound copy, so a probe that
+  delivers locally never reaches the signer: a candidate that had stopped signing altogether would
+  otherwise pass every rung, cut over, and send unsigned mail — invisible to the probe and to the
+  watch window, because the daemon is perfectly healthy, and discovered from DMARC reports days
+  later. The queued probe is never sent: `MAIL_OUTBOUND=hold` is forced, and the recipient domain is
+  reserved by RFC 2606.
 - **`the running version can still read the migrated data`.** The version you are *running now* is
   booted against the snapshot the candidate just migrated. If it cannot read it, the update is
   one-way and is refused, because reverting restores the code and not the data — set
@@ -263,6 +284,15 @@ That deadline only binds if systemd gives the daemon at least as long, which is 
 systemd would SIGKILL first and the stop job would still report success — and the updater, which
 asked only whether the unit was still running, read that forced kill as a clean drain. It now asks
 systemd *how* the unit stopped.
+
+**The updater ships code, never unit files.** Writing to `/etc/systemd/system` would let the account
+that downloads code rewrite `User=` and hand itself root, which is exactly the containment this
+design exists to keep. The consequence is that the unit is a file no update can reach, and one of
+its settings is load-bearing for the update mechanism itself: a `TimeoutStopSec` below your drain
+deadline means systemd always kills first, so every cutover during a slow shutdown is abandoned and
+nothing says why. `check`, `apply` and `status` therefore all report it by name, with the value to
+set — a warning rather than a refusal, because a short stop budget can be a deliberate choice, and
+refusing every update over one would pin you on the version you are running.
 
 After the switch the new version has to pass a live mail-path probe and stay healthy for
 `MAIL_UPDATE_PROBE_SECONDS`, or it is reverted automatically. The probe waits for the listeners to

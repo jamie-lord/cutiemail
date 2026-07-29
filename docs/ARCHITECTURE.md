@@ -268,8 +268,8 @@ from a vendored RFC, with its RFC 2119 level, the party it binds (server / clien
 both), and an honest `testability` tag. `register/types.ts` defines the shape;
 `register/gate.ts` is a test that checks every quote against the `spec/*.txt` file
 it claims to come from, so a paraphrased or fabricated quote fails the build. It
-is the fixed baseline everything else is measured against: 668 requirements across six
-domains from 18 RFCs (`npm run registry` prints the live count). Registrations you
+is the fixed baseline everything else is measured against: 761 requirements across six
+domains from 19 RFCs (`npm run registry` prints the live count). Registrations you
 *can't* test (client-binding, out-of-band) stay in the register anyway. Deleting
 them would shrink the denominator and flatter the coverage number.
 

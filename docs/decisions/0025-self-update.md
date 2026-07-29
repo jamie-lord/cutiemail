@@ -43,6 +43,16 @@ The updater necessarily uses `node:child_process` (to run a candidate and its te
 anywhere in the tree. That is acceptable *because* it is not the mail server, and the zero-dependency
 claim is about what answers port 25. Stated here so it is not later mistaken for erosion.
 
+The same boundary runs the other way: **the updater ships code and never unit files.** Write access
+to `/etc/systemd/system` would let it change `User=` and hand itself root, which would make every
+other restriction here decorative — the polkit rule grants exactly one unit and three verbs for this
+reason. The cost is that the unit is configuration no update can correct, and at least one of its
+settings (`TimeoutStopSec`, which has to be at least the drain deadline or systemd kills first) is
+load-bearing for the update mechanism itself. That is answered by *reporting* rather than by
+widening the grant: `check`, `apply` and `status` each name a stop budget that is too short, the
+setting that fixes it, and the value to use. Detection is compatible with containment; correction is
+not.
+
 ### Git, spoken in Node, with no `git` binary
 
 The updater implements git's smart HTTP protocol v2 directly over `fetch`, `node:zlib` and
@@ -197,6 +207,25 @@ delivery and IMAP read-back, driven by `selftest` against a real account's real 
 store SCRAM material, so no existing password can be recovered — which is the right property, and
 means the updater mints an **app password inside the snapshot** to log in with. That is safe there
 and only there: it is a copy, destroyed minutes later, and the live registry is untouched.
+
+**Outbound signing is checked separately, because local delivery never reaches the signer.** A
+submitted message is signed only on the copy bound for a remote domain; the local copy is stamped
+with a `Received` trace and stored unsigned. So the `selftest` probe above — which delivers to the
+account itself — cannot see the signer at all, and a candidate that stopped signing outright passed
+every rung, cut over, and sent unsigned mail. Nothing downstream catches that: the probe passes, the
+watch window passes, the daemon is entirely healthy, and the operator finds out from DMARC aggregate
+reports days after the version was confirmed. The rung therefore submits a second message to a
+reserved remote domain and inspects the **queued** copy for a `DKIM-Signature` carrying the expected
+domain and selector. Nothing is sent — `MAIL_OUTBOUND=hold` is forced for every candidate boot.
+
+That check needs a key, and the updater cannot read yours by design (see the containment argument
+above; it is a different user precisely so a compromise of it is not a compromise of the mail). The
+answer is a **stand-in**, not a skip. Unreadable key material used to delete the variable, which
+moved the candidate onto a different branch — the bundled dev certificate rather than a file read,
+and no signer at all rather than a signer — so the production path went untested in exactly the two
+places most likely to break mail. A written-out certificate and a generated DKIM key exercise the
+same code with material of the same shape. The reduction in fidelity that remains is real, narrow,
+and reported: whether the operator's own key files parse, which an update does not affect.
 
 **Readiness is the ports accepting, in the cutover as well as the pre-flight.** `systemctl start`
 returns when systemd considers a `Type=simple` unit started — the moment its process is forked, not

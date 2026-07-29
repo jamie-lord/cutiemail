@@ -35,7 +35,7 @@ here, each recorded as a decision with reasons ([how it's tested](docs/TESTING.m
 enforcement, multiple domains per instance, and clustering. One domain, a handful of humans, on a
 small box you own: that's what it serves best.
 
-**Maturity:** young (v0, one maintainer) but held to a high verification bar: 1,200+
+**Maturity:** young (v0, one maintainer) but held to a high verification bar: 1,500+
 tests including negative controls, self-audited hostile-input surfaces, and a production
 instance exchanging authenticated mail with Gmail daily. Run it for mail you care about only after
 reading the honest limitations in [the deployment guide](docs/DEPLOYMENT.md).
@@ -242,9 +242,10 @@ reference](#configuration-reference).
 - **Keep itself patched**: self-hosted software rots because upgrading is a chore nobody schedules,
   so a deployment can pull its own updates. A candidate version is verified *on your machine against
   a snapshot of your real data* — the migration is run and timed, your accounts and messages are
-  compared byte for byte afterwards, and the version you are running now must still be able to read
-  what the new one migrated — before a `rename(2)` over a symlink switches to it. If the live mail
-  path doesn't work after the switch, it rolls back on its own. The updater runs as a **separate
+  compared byte for byte afterwards, the version you are running now must still be able to read what
+  the new one migrated, and if you sign your mail, a held outbound copy is checked for a
+  `DKIM-Signature` that carries your domain — before a `rename(2)` over a symlink switches to it. If
+  the live mail path doesn't work after the switch, it rolls back on its own. The updater runs as a **separate
   user**, so the internet-facing daemon can never write the code it will run next (ADR 0025). Off by
   default, reporting-only when enabled; see [keeping a deployment up to date](docs/SELF-UPDATE.md).
 
@@ -264,7 +265,7 @@ Start there to read the codebase.
 ## How it's tested, and why that's trustworthy
 
 Correctness is the point of the project, so the test bed is not an afterthought. Several
-independent disciplines back the 1,200+ tests:
+independent disciplines back the 1,500+ tests:
 
 - **The persistent store is proven against a reference model.** The SQLite mailbox and an
   in-memory reference mailbox are driven through one shared invariant harness and must agree

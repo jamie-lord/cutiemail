@@ -241,6 +241,53 @@ asserted an outbound queue was drained at the moment the *recipient* stored the 
 necessarily earlier. Both now wait for the condition they mean. A test that fails for a reason other
 than the defect it targets is the same problem as one that cannot fail at all.
 
+## Closed: the two things the update path could not see about itself
+
+Both came out of putting the self-updater to work on a real deployment rather than reading it, and
+both are the same species of defect: a safety mechanism reporting success about something it had
+never actually exercised.
+
+**The pre-flight never ran the signer.** Its mail-path rung delivers to the probe account itself,
+and a submitted message is signed only on the copy bound for a remote domain — the local copy is
+stamped with a `Received` trace and stored unsigned. So the signing code was never reached. Worse,
+the rung's own configuration made it unreachable on purpose: the updater runs as a different user
+and cannot read the DKIM key, and its response was to *delete* `MAIL_DKIM_KEY`, which disables the
+signer outright. `MAIL_TLS_CERT` got the same treatment, moving the candidate onto the bundled
+development certificate rather than the branch that reads a file. The two settings most likely to
+break mail were the two the ladder tested least.
+
+A candidate that had stopped signing altogether therefore passed every rung, passed the cutover
+probe, and passed the watch window — because none of those can distinguish a healthy daemon from a
+healthy daemon sending unsigned mail. The operator would have learned from DMARC aggregate reports,
+days after the version was confirmed and its snapshot destroyed.
+
+Unreadable key material now substitutes a **stand-in** rather than switching the feature off: the
+bundled certificate written to a real file, and a freshly generated DKIM key. The candidate runs the
+same code paths with keys of the same shape, and a second probe message addressed to a reserved
+remote domain is inspected — in the queue it is held in, never sent — for a `DKIM-Signature`
+carrying the expected domain and selector. The negative control is a copy of this checkout with the
+signing call replaced by a pass-through; it is refused at the mail-path rung, and it passes against
+the ladder as it stood. Containment is unchanged: the updater still holds neither real key, which is
+the point of it being a separate user.
+
+**A setting the updater depends on lives where no update can reach it.** The updater ships code and
+deliberately never unit files — write access to `/etc/systemd/system` would let the account that
+downloads code rewrite `User=` and hand itself root. But `TimeoutStopSec` has to be at least the
+drain deadline or systemd SIGKILLs the daemon before the drain completes, which means every cutover
+during a slow shutdown is abandoned with nothing naming the cause. `check`, `apply` and `status` now
+report a stop budget that is too short, the setting that fixes it, and the value to use. A warning
+rather than a refusal: a short stop budget can be deliberate, and refusing every update over one
+would pin the deployment on the version it is running. Detection is compatible with containment;
+correction is not.
+
+Three stale claims were corrected alongside them — a comment asserting the shipped unit sets no
+`TimeoutStopSec` (it has since it was added), a deploy-script comment promising the pre-flight boots
+a candidate "with your real settings" (not true of TLS or DKIM, and the pre-flight's own comment was
+already honest about it), and a duplicated twenty-four-line block in [TESTING.md](TESTING.md).
+Pre-flight warnings are also de-duplicated now: the candidate's configuration is built once per
+boot, so a deployment whose certificate the updater cannot read printed the same note three times,
+which reads as three findings.
+
 ## Open: MTA-STS policy without an `mx` list
 
 RFC 8461 §3.2's policy ABNF marks `sts-policy-mx` "required at least once, except when mode is
