@@ -17,6 +17,19 @@ import type { ParserDefects } from './parse.ts';
 import { messageRequirement } from '../register/message/index.ts';
 import type { MessageRequirementId } from '../register/message/index.ts';
 
+/**
+ * Ceiling for the "parses in bounded time" smoke checks below, deliberately loose.
+ *
+ * Each of these tests has a DETERMINISTIC assertion alongside it — an anomaly recorded, a value
+ * bounded by its cap — and that is what actually proves the guard works. The clock is a second
+ * opinion: the defects these target took tens of seconds and gigabytes, so a generous ceiling
+ * still catches a regression, while a tight one fails whenever the suite's other files are busy.
+ * A test that fails for a reason other than the defect it targets is the same problem as one that
+ * cannot fail at all, and these were doing it about one run in two on a loaded machine.
+ */
+const BOUNDED_PARSE_MS = 10_000;
+
+
 const CRLF = '\r\n';
 const b = (s: string): Buffer => Buffer.from(s, 'latin1');
 
@@ -46,7 +59,7 @@ test('a large all-CRLF message parses with bounded memory/time', () => {
   const ms = Number(process.hrtime.bigint() - start) / 1e6;
   assert.equal(msg.headers.length, 2, 'headers still parsed correctly');
   assert.equal(msg.body.length, body.length, 'the body is a subarray, not re-materialised');
-  assert.ok(ms < 1500, `a large message must parse in bounded time (took ${ms.toFixed(0)}ms)`);
+  assert.ok(ms < BOUNDED_PARSE_MS, `a large message must parse in bounded time (took ${ms.toFixed(0)}ms)`);
 });
 
 test('a header section with millions of fields is capped in bounded memory/time (too-many-headers)', () => {
@@ -61,7 +74,7 @@ test('a header section with millions of fields is capped in bounded memory/time 
   const ms = Number(process.hrtime.bigint() - start) / 1e6;
   assert.ok(hasAnomaly(msg, 'too-many-headers'), 'the header-count cap is recorded as an anomaly');
   assert.ok(msg.headers.length <= MAX_HEADERS, `the field count is capped at MAX_HEADERS (${msg.headers.length})`);
-  assert.ok(ms < 1500, `a huge header section must parse in bounded time (took ${ms.toFixed(0)}ms)`);
+  assert.ok(ms < BOUNDED_PARSE_MS, `a huge header section must parse in bounded time (took ${ms.toFixed(0)}ms)`);
 });
 
 test('the header-count cap engages exactly at MAX_HEADERS and is off below it (dontCapHeaderCount caught)', () => {
@@ -88,14 +101,17 @@ test('a single header folded across millions of lines is capped by bytes (header
   // cap this accumulates ~2 GB and stalls the (single) event loop, and inbound mail is parsed 3x.
   const fold = ' \r\n'.repeat(8_000_000); // one field, ~24 MiB of continuation lines, < SIZE default
   const big = b(`From: a@example.com${CRLF}X: a\r\n${fold}${CRLF}body`);
+
   const start = process.hrtime.bigint();
   const msg = parseMessage(big);
   const ms = Number(process.hrtime.bigint() - start) / 1e6;
+
   assert.ok(hasAnomaly(msg, 'header-section-over-cap'), 'the header-section byte cap is recorded as an anomaly');
-  // The assembled X value must be bounded by the cap, not the full ~24 MiB of folds.
+  // THIS is the guarantee, and it is deterministic: the assembled X value is bounded by the cap,
+  // not by the ~24 MiB of folds the peer sent. It holds whatever else the machine is doing.
   const x = msg.headers.find((h) => h.name.toString('latin1') === 'X');
   assert.ok(x !== undefined && x.value.length <= MAX_HEADER_SECTION_BYTES + 8, 'the folded value is bounded by the byte cap');
-  assert.ok(ms < 1500, `a monster folded header must parse in bounded time (took ${ms.toFixed(0)}ms)`);
+  assert.ok(ms < BOUNDED_PARSE_MS, `a monster folded header must parse in bounded time (took ${ms.toFixed(0)}ms)`);
 });
 
 test('the header-byte cap is off below it and detectable via dontCapHeaderBytes', () => {
@@ -192,7 +208,7 @@ test('the anomaly list is capped so a hostile body cannot OOM the parser (too-ma
   assert.ok(msg.anomalies.length <= 10_001, `anomalies are capped (got ${msg.anomalies.length})`);
   assert.ok(hasAnomaly(msg, 'too-many-anomalies'), 'the cap is recorded as an anomaly');
   assert.ok(hasAnomaly(msg, 'nul-octet') && hasAnomaly(msg, 'eight-bit'), 'the kinds present before the cap are still recorded');
-  assert.ok(ms < 1500, `a hostile body must parse in bounded time (took ${ms.toFixed(0)}ms)`);
+  assert.ok(ms < BOUNDED_PARSE_MS, `a hostile body must parse in bounded time (took ${ms.toFixed(0)}ms)`);
 });
 
 test('a normal message stays well under the anomaly cap (no false truncation)', () => {

@@ -132,7 +132,13 @@ test('two daemons: a submission to A is DKIM-signed, relayed, and lands in B, tr
     const receivedCount = (arrived.match(/^Received:/gm) ?? []).length;
     assert.equal(receivedCount, 2, 'exactly two Received hops — one per server');
 
-    // A's queue drained (delivery succeeded, nothing left).
+    // A's queue drained (delivery succeeded, nothing left). Poll rather than assert outright:
+    // B storing the message and A retiring the queue row are two different events, and the
+    // second necessarily follows the first — A only removes the row once B's 250 has been read
+    // and the transaction closed. Asserting immediately after B's arrival raced that ordering
+    // and failed roughly one run in three under load, on unmodified code.
+    const queueDeadline = Date.now() + 30_000;
+    while (Date.now() < queueDeadline && A.queue.size > 0) await delay(25);
     assert.equal(A.queue.size, 0, "A's outbound queue is empty after delivery");
   } finally {
     await A.close();

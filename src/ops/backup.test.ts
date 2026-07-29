@@ -118,7 +118,26 @@ test('a backup taken under a concurrent writer is a consistent snapshot', async 
     child.stderr.on('data', (d: Buffer) => (childErr += d.toString()));
     const childDone = new Promise<number>((res) => child.on('close', (code) => res(code ?? -1)));
 
-    await new Promise((r) => setTimeout(r, 150)); // let the writer get going
+    // Wait for the writer to be genuinely mid-flight, by OBSERVING it rather than by sleeping.
+    // A fixed 150 ms delay was a race against process startup: on a loaded machine the child
+    // had not written its first row yet and the snapshot was legitimately empty, so the test
+    // failed for a reason that had nothing to do with backup consistency (measured: 3 runs in 4
+    // on an otherwise busy host, and identically on unmodified code). Poll until at least one
+    // message exists — that is the precondition the assertions below actually need.
+    const readCount = (): number => {
+      const probe = new DatabaseSync(mailPath, { readOnly: true });
+      try {
+        const row = probe.prepare('SELECT COUNT(*) AS n FROM message').get() as { n: number | bigint };
+        return Number(row.n);
+      } catch {
+        return 0; // mid-write; try again
+      } finally {
+        probe.close();
+      }
+    };
+    for (let i = 0; i < 400 && readCount() === 0; i++) await new Promise((r) => setTimeout(r, 5));
+    assert.ok(readCount() > 0, 'the writer child never started writing');
+
     const snapPath = join(dir, 'snap.db');
     snapshotDatabase(mailPath, snapPath);
 
