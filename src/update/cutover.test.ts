@@ -24,7 +24,7 @@ import { AccountRegistry } from '../store/account-registry.ts';
 import { SqliteCatalog } from '../store/sqlite-mailbox.ts';
 import { VersionStore } from './version-store.ts';
 import { StateFile, enterPhase, INITIAL_STATE, type Phase } from './state.ts';
-import { cutover, recover, type CutoverDeps, type ServiceControl } from './cutover.ts';
+import { cutover, recover, restoreOne, type CutoverDeps, type ServiceControl } from './cutover.ts';
 import { accepts } from './candidate-process.ts';
 
 const OLD = 'a'.repeat(40);
@@ -423,4 +423,38 @@ test('a login that could not have been created is refused when a restore rebuild
     );
     assert.equal(existsSync(join(h.dir, 'escape')), false, 'nothing was written outside the data directory');
   });
+});
+
+test('a revert keeps the failed version\'s write-ahead log with the database it belongs to', () => {
+  // ADR 0025: "A revert never deletes." A WAL database is three files, and the aside copy was
+  // only ever one of them — the sidecars kept the ORIGINAL name and were then unlinked, so the
+  // preserved copy was silently rolled back to its last checkpoint. Everything committed since
+  // was gone, including mail the server had already answered 250 for. The daemon is stopped by
+  // `systemctl stop`, which SIGKILLs at TimeoutStopSec, so a hot WAL at this moment is the
+  // normal case rather than the exotic one.
+  const dir = mkdtempSync(join(tmpdir(), 'cm-revert-wal-'));
+  try {
+    const live = join(dir, 'mail-alice.db');
+    const snap = join(dir, 'snap-mail-alice.db');
+    writeFileSync(live, 'LIVE-MAIN');
+    writeFileSync(`${live}-wal`, 'LIVE-WAL-COMMITTED-AFTER-SNAPSHOT');
+    writeFileSync(`${live}-shm`, 'LIVE-SHM');
+    writeFileSync(snap, 'SNAPSHOT-MAIN');
+
+    restoreOne(snap, live, 'stamp1', () => {});
+
+    // The snapshot is back in place…
+    assert.equal(readFileSync(live, 'utf8'), 'SNAPSHOT-MAIN', 'the pre-cutover database is restored');
+    // …and the failed version's data is ALL still on disk, where the operator was told it is.
+    assert.equal(readFileSync(`${live}.failed-stamp1`, 'utf8'), 'LIVE-MAIN');
+    assert.equal(
+      readFileSync(`${live}.failed-stamp1-wal`, 'utf8'),
+      'LIVE-WAL-COMMITTED-AFTER-SNAPSHOT',
+      'the write-ahead log travelled with the database it belongs to',
+    );
+    // The restored database must not inherit the failed version's sidecars.
+    assert.equal(existsSync(`${live}-wal`), false, 'no stale WAL is replayed into the restored database');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });

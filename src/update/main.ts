@@ -78,6 +78,44 @@ const USAGE = [
  * "infinity") yields undefined, and the comparison is simply not made. Guessing a budget would be
  * worse than declining to judge.
  */
+/**
+ * Parse the timespan systemd actually prints, e.g. "1min 30s", "45min", "2s", "infinity".
+ *
+ * `Number(out)` was the bug, and a silent one. systemd special-cases every property whose name
+ * contains `USec` and renders it through `FORMAT_TIMESPAN` rather than as an integer
+ * (`src/shared/bus-print-properties.c`), so the parse produced `NaN` on every real deployment,
+ * `unitStartTimeoutMs` always returned undefined, and the migration-versus-start-budget comparison
+ * ADR 0025 promises simply never ran — with no warning, because the report just omits the clause.
+ * `systemctl show` has no machine-readable output mode to switch to (systemd#39081), so the format
+ * it does emit is the one to read.
+ *
+ * "infinity" is deliberately `undefined` rather than a huge number: there is no budget to compare
+ * against, and declining to judge is the honest answer.
+ */
+export function parseSystemdTimespan(out: string): number | undefined {
+  const t = out.trim();
+  if (t === '' || t === 'infinity') return undefined;
+  const UNITS: ReadonlyArray<readonly [string, number]> = [
+    ['ms', 1],
+    ['s', 1000],
+    ['min', 60_000],
+    ['h', 3_600_000],
+    ['d', 86_400_000],
+    ['w', 604_800_000],
+    ['month', 2_629_800_000],
+    ['y', 31_557_600_000],
+  ];
+  let total = 0;
+  let sawOne = false;
+  for (const m of t.matchAll(/(\d+)\s*(ms|min|month|[smhdwy])/g)) {
+    const mult = UNITS.find(([u]) => u === m[2])?.[1];
+    if (mult === undefined) return undefined;
+    total += Number(m[1]) * mult;
+    sawOne = true;
+  }
+  return sawOne && total > 0 ? total : undefined;
+}
+
 function unitStartTimeoutMs(unit: string): number | undefined {
   try {
     const out = execFileSync('systemctl', ['show', unit, '-p', 'TimeoutStartUSec', '--value'], {
@@ -85,9 +123,7 @@ function unitStartTimeoutMs(unit: string): number | undefined {
       timeout: 5000,
       stdio: ['ignore', 'pipe', 'ignore'],
     }).trim();
-    const usec = Number(out);
-    if (!Number.isFinite(usec) || usec <= 0) return undefined;
-    return Math.round(usec / 1000);
+    return parseSystemdTimespan(out);
   } catch {
     return undefined;
   }
@@ -105,8 +141,29 @@ export function systemdService(unit: string): ServiceControl {
   return {
     isActive,
     async stop(timeoutMs) {
-      await systemctl(['stop', unit], timeoutMs);
-      return !(await isActive());
+      // Inactivity is NOT proof of a drain. systemd SIGKILLs at TimeoutStopSec and the stop job
+      // then completes successfully, so a forced kill and a clean exit were indistinguishable here
+      // — and the shipped unit sets no TimeoutStopSec, inheriting systemd's 90 s default, which is
+      // BELOW the 120 s drain deadline. The abandon branch in cutover.ts could therefore never
+      // fire for the reason it was written for, while ADR 0025 promises the cutover is "abandoned
+      // rather than forced". Ask systemd how the unit stopped, not merely whether it is running.
+      const code = await systemctl(['stop', unit], timeoutMs);
+      if (code !== 0) return false;
+      if (await isActive()) return false;
+      try {
+        const result = await runCommand('systemctl', ['show', unit, '-p', 'Result', '--value'], {
+          cwd: '/',
+          env: { PATH: processEnv.PATH ?? '/usr/bin:/bin' },
+          timeoutMs: 15_000,
+        });
+        // A unit that was killed reports `timeout`; one whose ExecStart exited 0 reports `success`.
+        // An unreadable answer is treated as a clean stop, because refusing every cutover on a
+        // systemd that will not answer would be worse than the risk it guards.
+        const verdict = result.output.trim();
+        return verdict === '' || verdict === 'success';
+      } catch {
+        return true;
+      }
     },
     async start(timeoutMs) {
       await systemctl(['start', unit], timeoutMs);

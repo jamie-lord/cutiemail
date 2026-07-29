@@ -11,7 +11,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { runUpdate, systemdService } from './main.ts';
+import { runUpdate, systemdService, parseSystemdTimespan } from './main.ts';
 import { acquireRunLock } from './run-lock.ts';
 import { VersionStore } from './version-store.ts';
 import { StateFile, INITIAL_STATE, enterPhase, recordCheck } from './state.ts';
@@ -208,4 +208,27 @@ test('a store-mutating command is refused while another run holds the lock', asy
       held.release();
     }
   });
+});
+
+test('the unit start budget is read from the timespan systemd actually prints', () => {
+  // `Number(out)` was the defect. systemd renders every *USec property through FORMAT_TIMESPAN
+  // (src/shared/bus-print-properties.c), never as an integer, so the parse produced NaN on every
+  // real deployment and the migration-versus-start-budget comparison ADR 0025 promises silently
+  // never ran. There is no JSON output mode for `systemctl show` to switch to (systemd#39081).
+  assert.equal(parseSystemdTimespan('1min 30s'), 90_000, "systemd's default 90s start timeout");
+  assert.equal(parseSystemdTimespan('45min'), 2_700_000);
+  assert.equal(parseSystemdTimespan('2s'), 2_000);
+  assert.equal(parseSystemdTimespan('90s'), 90_000);
+  assert.equal(parseSystemdTimespan('5min 20s'), 320_000);
+  assert.equal(parseSystemdTimespan('1min 30s 500ms'), 90_500);
+
+  // No budget to compare against → decline to judge, rather than invent one.
+  assert.equal(parseSystemdTimespan('infinity'), undefined);
+  assert.equal(parseSystemdTimespan(''), undefined);
+  assert.equal(parseSystemdTimespan('0'), undefined);
+  assert.equal(parseSystemdTimespan('garbage'), undefined);
+
+  // The raw-integer form the old code assumed is NOT something systemd emits for this property;
+  // accepting it anyway would resurrect the false-confidence path.
+  assert.equal(parseSystemdTimespan('90000000'), undefined, 'a bare integer is not a timespan');
 });

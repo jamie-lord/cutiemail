@@ -227,24 +227,16 @@ function liveDatabases(controlDbPath: string): string[] {
  * snapshot over a live database while a `-wal` sidecar remains makes SQLite REPLAY those frames on
  * the next open, silently resurrecting state the snapshot never contained. The sidecars go first.
  */
-function restoreSnapshot(snapshotDir: string, controlDbPath: string, log: (line: string) => void): void {
-  const control = join(snapshotDir, 'control.db');
-  if (!existsSync(control)) throw new CutoverError(`the pre-cutover snapshot at ${snapshotDir} has no control.db; refusing to restore from it`);
-
-  // Read the account list from the SNAPSHOT: the live control database is about to be replaced, and
-  // in a failed migration it may not be readable by this build at all.
-  const snapshotDb = new DatabaseSync(control, { readOnly: true });
-  let logins: string[];
-  try {
-    logins = (snapshotDb.prepare('SELECT login FROM accounts ORDER BY login').all() as Array<{ login: string }>).map((r) => r.login);
-  } finally {
-    snapshotDb.close();
-  }
-
-  const stamp = String(Date.now());
-  const dir = dirname(controlDbPath);
-  const restore = (from: string, to: string): void => {
-    if (!existsSync(from)) return;
+/**
+ * Restore ONE database file from the snapshot, preserving whatever the failed version wrote.
+ *
+ * Exported so the preservation rule can be tested directly: the defect it exists to prevent — the
+ * moved-aside copy losing its write-ahead log — is invisible from the outside, because the restore
+ * reports success either way and the loss only shows up when someone goes looking for the mail
+ * they were told was kept.
+ */
+export function restoreOne(from: string, to: string, stamp: string, log: (line: string) => void): void {
+  if (!existsSync(from)) return;
     // WHAT IS AT `to` IS NOT NECESSARILY A FILE WE WROTE. The data directory is group-writable and
     // belongs to the mail daemon, so it can put a symlink where a database should be — and a
     // DANGLING one is invisible to `existsSync`, so the rename-aside below never fires and the copy
@@ -267,14 +259,43 @@ function restoreSnapshot(snapshotDir: string, controlDbPath: string, log: (line:
     if (target !== null) {
       // Moved aside, never deleted. Whatever arrived between the snapshot and the failure is in
       // here, and it is the operator's to keep or discard.
+      //
+      // A WAL database is THREE files, and the sidecars have to travel with the main one. Renaming
+      // only `<db>` and then unlinking `<db>-wal` below discarded every transaction committed since
+      // the last checkpoint — from the very copy this branch exists to preserve. That is not
+      // hypothetical: the daemon is stopped by `systemctl stop`, which SIGKILLs at TimeoutStopSec,
+      // so the WAL is routinely hot at exactly this moment, and the mail lost is mail the server
+      // had already answered `250` for. ADR 0025 promises "a revert never deletes"; it does now.
       renameSync(to, `${to}.failed-${stamp}`);
-      log(`kept the failed version's ${to} as ${to}.failed-${stamp}`);
+      for (const suffix of ['-wal', '-shm']) {
+        if (existsSync(to + suffix)) renameSync(to + suffix, `${to}.failed-${stamp}${suffix}`);
+      }
+      log(`kept the failed version's ${to} as ${to}.failed-${stamp} (with its -wal/-shm)`);
+    } else {
+      // Nothing was preserved, so the sidecars belong to the file being replaced. Left in place,
+      // SQLite would replay them into the restored database on the next open.
+      for (const suffix of ['-wal', '-shm']) rmSync(to + suffix, { force: true });
     }
-    // The sidecars belong to the file being replaced. Left in place, SQLite replays them into the
-    // restored database on the next open.
-    for (const suffix of ['-wal', '-shm']) rmSync(to + suffix, { force: true });
     copyFileSync(from, to);
-  };
+}
+
+function restoreSnapshot(snapshotDir: string, controlDbPath: string, log: (line: string) => void): void {
+  const control = join(snapshotDir, 'control.db');
+  if (!existsSync(control)) throw new CutoverError(`the pre-cutover snapshot at ${snapshotDir} has no control.db; refusing to restore from it`);
+
+  // Read the account list from the SNAPSHOT: the live control database is about to be replaced, and
+  // in a failed migration it may not be readable by this build at all.
+  const snapshotDb = new DatabaseSync(control, { readOnly: true });
+  let logins: string[];
+  try {
+    logins = (snapshotDb.prepare('SELECT login FROM accounts ORDER BY login').all() as Array<{ login: string }>).map((r) => r.login);
+  } finally {
+    snapshotDb.close();
+  }
+
+  const stamp = String(Date.now());
+  const dir = dirname(controlDbPath);
+  const restore = (from: string, to: string): void => restoreOne(from, to, stamp, log);
 
   restore(control, controlDbPath);
   // The destination name is rebuilt from the login rather than read from the snapshot's

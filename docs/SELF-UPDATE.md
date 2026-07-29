@@ -129,8 +129,7 @@ PrivateTmp=true
 UMask=0077
 # The pre-flight imports the candidate's module graph and boots it several times, twice against a
 # snapshot of the real data. The migration is the part that scales with your mailbox, so give it
-# room — and the pre-flight reads THIS value and reports the migration it measured as a share of it,
-# so a budget that is getting tight says so before it bites.
+# room.
 TimeoutStartSec=45min
 ```
 
@@ -259,6 +258,12 @@ reply, and the relay tick complete. If that does not finish inside `MAIL_UPDATE_
 cutover is **abandoned rather than forced** — an update can wait, an interrupted delivery cannot be
 undone.
 
+That deadline only binds if systemd gives the daemon at least as long, which is why the unit sets
+`TimeoutStopSec=180` against a 120-second drain default. Left at systemd's own 90-second default,
+systemd would SIGKILL first and the stop job would still report success — and the updater, which
+asked only whether the unit was still running, read that forced kill as a clean drain. It now asks
+systemd *how* the unit stopped.
+
 After the switch the new version has to pass a live mail-path probe and stay healthy for
 `MAIL_UPDATE_PROBE_SECONDS`, or it is reverted automatically. The probe waits for the listeners to
 accept before it decides anything, because `systemctl start` returns when the process has forked and
@@ -267,7 +272,9 @@ waiting out the full window for something that is never coming back.
 
 If the candidate's migration moved the schema forward, a revert restores the pre-cutover snapshot
 too, because the older version cannot read a migrated database. Nothing is deleted in a revert: the
-failed version's databases are kept aside with a `.failed-<timestamp>` suffix.
+failed version's databases are kept aside with a `.failed-<timestamp>` suffix — including their
+`-wal` and `-shm` sidecars, which is what makes the aside copy a complete database rather than one
+rolled back to its last checkpoint.
 
 A machine that loses power mid-switch comes back on something that works. The next run reads the
 recorded phase: if the symlink was never moved, nothing was changed; if it was moved but nothing

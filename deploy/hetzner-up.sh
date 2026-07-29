@@ -193,6 +193,13 @@ UMask=0077
 # headroom, not a workaround for a leak.
 LimitNOFILE=65536
 Restart=on-failure
+# The updater waits MAIL_UPDATE_DRAIN_SECONDS (default 120) for a clean drain before a cutover,
+# and refuses to switch versions if the daemon has not finished. That deadline can only bind if
+# systemd gives the daemon at least as long: the default DefaultTimeoutStopSec is 90s, so systemd
+# would SIGKILL first and the stop job would still report success — a forced kill dressed as a
+# clean drain, mid-delivery. Shutdown legitimately waits on the relay loop's in-flight tick, whose
+# post-DATA reply timeout is 10 minutes (RFC 5321 §4.5.3.2.6), so one slow remote MX is enough.
+TimeoutStopSec=180
 
 [Install]
 WantedBy=multi-user.target

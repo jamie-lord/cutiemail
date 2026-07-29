@@ -26,7 +26,7 @@
  */
 
 import { createHash } from 'node:crypto';
-import { chmodSync, existsSync, mkdirSync, rmSync, statfsSync, statSync } from 'node:fs';
+import { chmodSync, existsSync, lstatSync, mkdirSync, rmSync, statfsSync, statSync } from 'node:fs';
 import { dirname, join, resolve, sep } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { snapshotDatabase } from '../ops/backup.ts';
@@ -102,6 +102,45 @@ function snapshotPathFor(destDir: string, login: string): string {
 }
 
 /**
+ * The SOURCE half of the same rule, and it was missing.
+ *
+ * `snapshotPathFor` above validates the login and asserts containment for the path we WRITE. Its
+ * sibling — `mail_db_path`, read from the same daemon-owned control database, and named as
+ * attacker-influenced in this file's own header — was passed to `openMailDb` untouched. That
+ * matters because `new DatabaseSync(path)` opens with `O_RDWR|O_CREAT` and no `O_NOFOLLOW`: a
+ * symlink planted by a compromised daemon is FOLLOWED, and if the target does not exist it is
+ * CREATED. Pointed at `/opt/mailserver/versions/<sha>`, that put a file inside the code store the
+ * daemon is architecturally forbidden to write (ADR 0025's headline invariant), and `promote()`
+ * then discarded the content-verified checkout in favour of it.
+ *
+ * Two checks, because they refuse different things:
+ *  - `lstatSync` without following: the source must already exist AS A REGULAR FILE. A symlink or
+ *    a dangling path is refused, which removes the create-a-new-file primitive entirely.
+ *  - containment: the resolved path must be inside the data directory. A mail database elsewhere
+ *    is not something auto-update supports, and saying so is better than copying from wherever a
+ *    compromised process points us.
+ *
+ * A perfectly-timed swap between this check and SQLite's own open remains possible in principle —
+ * `node:sqlite` opens by path and offers no descriptor-based entry point, so the window cannot be
+ * closed from here. It is recorded in docs/BACKLOG.md rather than papered over. What it is not any
+ * more is a steady-state primitive: the path has to be a real file at rest.
+ */
+function assertSnapshotSource(mailDbPath: string, dataDir: string): void {
+  const st = lstatSync(mailDbPath, { throwIfNoEntry: false });
+  if (st === undefined || !st.isFile()) {
+    throw new SnapshotError(
+      `refusing to snapshot ${JSON.stringify(mailDbPath)}: it is not a regular file. ` +
+        'The control database has been written by something other than the account CLI.',
+    );
+  }
+  if (!resolve(mailDbPath).startsWith(resolve(dataDir) + sep)) {
+    throw new SnapshotError(
+      `refusing to snapshot ${JSON.stringify(mailDbPath)}: it is outside the data directory ${dataDir}`,
+    );
+  }
+}
+
+/**
  * Point every account in a snapshotted control database at its copy, and refuse if any still is not.
  *
  * THE step that makes a copy actually a copy. Until it runs, the snapshot names the LIVE mailbox
@@ -157,9 +196,15 @@ export function takeSnapshot(controlDbPath: string, destDir: string): Snapshot {
     controlDb.close();
   }
 
+  // An account whose database has not been created yet is legitimate and is skipped. Anything
+  // that EXISTS as something other than a regular file is not: `existsSync` follows symlinks, so
+  // it answered "absent" for a dangling link and "present" for one aimed anywhere at all, which
+  // is precisely the distinction that matters here. `lstatSync` asks about the path itself.
   const sources = [
     { login: '', path: controlDbPath },
-    ...accounts.filter((a) => a.mailDbPath !== ':memory:' && existsSync(a.mailDbPath)).map((a) => ({ login: a.login, path: a.mailDbPath })),
+    ...accounts
+      .filter((a) => a.mailDbPath !== ':memory:' && lstatSync(a.mailDbPath, { throwIfNoEntry: false }) !== undefined)
+      .map((a) => ({ login: a.login, path: a.mailDbPath })),
   ];
   const needed = sources.reduce((sum, s) => sum + dbBytes(s.path), 0);
 
@@ -186,6 +231,11 @@ export function takeSnapshot(controlDbPath: string, destDir: string): Snapshot {
   // `snapshotPathFor` is only worth having if it runs before the write it is guarding: checking as
   // we go would refuse the escaping path having already copied the accounts that sorted ahead of
   // it, which is the difference between a refusal and a partial breach.
+  // Both halves of every path are checked here, before anything is written — the login-derived
+  // destination AND the daemon-supplied source. Checking as we go would refuse the escaping entry
+  // having already copied the accounts that sorted ahead of it.
+  const dataDir = dirname(controlDbPath);
+  for (const s of sources.slice(1)) assertSnapshotSource(s.path, dataDir);
   const destinations = sources.slice(1).map((s) => ({ login: s.login, from: s.path, to: snapshotPathFor(destDir, s.login) }));
 
   mkdirSync(destDir, { recursive: true, mode: 0o700 });

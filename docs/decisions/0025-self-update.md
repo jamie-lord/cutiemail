@@ -181,6 +181,17 @@ from the unit rather than configured twice. A number on its own reads as reassur
 that matters is whether the real cutover fits in the budget systemd will actually allow, because a
 migration killed half-way through happens on the live databases rather than a copy.
 
+Two corrections to that claim, both found by audit. It read the value with `Number()`, and systemd
+renders every `*USec` property as a human timespan ("1min 30s") rather than an integer — so the parse
+yielded `NaN`, `unitStartTimeoutMs` returned undefined on every real deployment, and the comparison
+silently never ran. There is no machine-readable output mode for `systemctl show` to switch to, so
+the timespan is now parsed. And the value read is `MAIL_UPDATE_UNIT`'s — the daemon's — which is
+correct in intent but weaker than it sounds: `mailserver.service` is `Type=simple`, so systemd
+considers it started at `fork()` and the start timeout does not actually bound the migration that
+follows. The deadline that does bind is the cutover's own readiness timeout, after which it reverts.
+The comparison is kept because a migration approaching either number is worth saying out loud, but it
+is a warning about growth, not a guarantee about a kill.
+
 The second boot proves the mail path end to end against real data: authenticated submission, local
 delivery and IMAP read-back, driven by `selftest` against a real account's real mailbox. Accounts
 store SCRAM material, so no existing password can be recovered — which is the right property, and
@@ -302,10 +313,16 @@ newer database — flipping the symlink alone would leave a version that cannot 
 
 **A revert never deletes.** Restoring costs whatever arrived between the snapshot and the failure —
 usually nothing, because the service is down for most of that window — but it is a real cost, so the
-failed version's databases are MOVED ASIDE rather than removed and the operator is told where. The
-stale write-ahead log is the trap: copying a snapshot over a live database while a `-wal` sidecar
-remains makes SQLite replay those frames on the next open, resurrecting state the snapshot never
-held. `verify` already warns about exactly this; the restore removes the sidecars first.
+failed version's databases are MOVED ASIDE rather than removed and the operator is told where.
+
+The write-ahead log is the trap, and it cuts both ways. Copying a snapshot over a live database
+while a `-wal` sidecar remains makes SQLite replay those frames on the next open, resurrecting state
+the snapshot never held — so the sidecars of the file being *replaced* must go. But a WAL database is
+three files, and for a while only the main one was moved aside while the sidecars kept their original
+name and were then unlinked with everything else. The preserved copy was therefore silently rolled
+back to its last checkpoint, and what it lost was mail the server had already answered `250` for. The
+window is not exotic: `systemctl stop` SIGKILLs at `TimeoutStopSec`, so a hot WAL at this moment is
+the normal case. The sidecars now travel with the database they belong to.
 
 **Recovery always leaves the mail server running.** Which phase was interrupted decides which
 *version* runs. It must never decide whether anything runs at all, and a recovery path that quietly

@@ -10,7 +10,7 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, readFileSync, statSync, writeFileSync } from 'node:fs';
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, readFileSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -399,4 +399,70 @@ test('a UIDVALIDITY high-water mark below the live maximum is repaired on open, 
     );
     db.close();
   });
+});
+
+test('a daemon-planted symlink for a mail database is refused, not followed', () => {
+  // `snapshotPathFor` guards the path we WRITE; `mail_db_path` — read from the same daemon-owned
+  // control database — is the path we READ, and it had no guard at all. `new DatabaseSync(path)`
+  // opens O_RDWR|O_CREAT with no O_NOFOLLOW, so a symlink was followed and a missing target was
+  // CREATED: pointed into the version store, that is a write inside /opt/mailserver, which ADR
+  // 0025 says the daemon can never perform. It cannot perform it — it got the updater to.
+  const dir = mkdtempSync(join(tmpdir(), 'cm-snap-src-'));
+  try {
+    const dataDir = join(dir, 'data');
+    mkdirSync(dataDir, { recursive: true });
+    const controlPath = join(dataDir, 'control.db');
+    const control = openMailDb(controlPath);
+    const registry = AccountRegistry.open(control);
+    registry.upsert('alice', 'pw', join(dataDir, 'mail-alice.db'));
+    // A real mail database, so the control DB is otherwise consistent.
+    openMailDb(join(dataDir, 'mail-alice.db')).close();
+    control.close();
+
+    // The forbidden target: somewhere the daemon must never be able to cause a write.
+    const codeStore = join(dir, 'code-store');
+    mkdirSync(codeStore, { recursive: true });
+    const planted = join(codeStore, 'versions-slot');
+    assert.equal(existsSync(planted), false, 'precondition: the target does not exist yet');
+
+    // The daemon rewrites its own column to a symlink aimed there.
+    const c2 = openMailDb(controlPath);
+    c2.prepare('UPDATE accounts SET mail_db_path = ? WHERE login = ?').run(join(dataDir, 'link.db'), 'alice');
+    c2.close();
+    symlinkSync(planted, join(dataDir, 'link.db'));
+
+    assert.throws(
+      () => takeSnapshot(controlPath, join(dir, 'snap')),
+      /not a regular file/,
+      'a symlinked mail database must be refused',
+    );
+    assert.equal(existsSync(planted), false, 'and nothing was created at the symlink target');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('a mail database outside the data directory is refused', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'cm-snap-out-'));
+  try {
+    const dataDir = join(dir, 'data');
+    mkdirSync(dataDir, { recursive: true });
+    const elsewhere = join(dir, 'elsewhere');
+    mkdirSync(elsewhere, { recursive: true });
+    const strayPath = join(elsewhere, 'mail-alice.db');
+    openMailDb(strayPath).close();
+
+    const controlPath = join(dataDir, 'control.db');
+    const control = openMailDb(controlPath);
+    AccountRegistry.open(control).upsert('alice', 'pw', strayPath);
+    control.close();
+
+    assert.throws(
+      () => takeSnapshot(controlPath, join(dir, 'snap')),
+      /outside the data directory/,
+      'the updater copies from the data directory, not from wherever it is pointed',
+    );
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
