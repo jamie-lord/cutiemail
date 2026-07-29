@@ -455,7 +455,16 @@ export async function startServer(cfg: MailServerConfig): Promise<RunningServer>
     // recoverable). p=none stays informational. `pct` gates the share of failures acted on.
     // `dmarc.policy` is already demoted where the owner published RFC 9989 `t=y`, so a
     // domain testing p=quarantine reaches the INBOX without this line needing to know.
-    const enforce = dmarc.verdict === 'fail' && (dmarc.policy === 'quarantine' || dmarc.policy === 'reject') && dmarcSample() < dmarc.pct;
+    // A failure we could not attribute to any domain (a From header that is present but yields
+    // no queryable author domain) has no owner policy to honour — there is no zone to ask. It
+    // is still a failure, and it used to be the most lenient outcome available: a plain spoof
+    // of a p=reject domain was junked, while the same spoof with one character that made the
+    // author unparseable was delivered to the INBOX. ADR 0010's answer to a DMARC failure is
+    // Junk rather than rejection, and it applies here for the same reason — recoverable.
+    const unattributable = dmarc.verdict === 'fail' && dmarc.fromDomain === null;
+    const enforce =
+      unattributable ||
+      (dmarc.verdict === 'fail' && (dmarc.policy === 'quarantine' || dmarc.policy === 'reject') && dmarcSample() < dmarc.pct);
     // ARC override (RFC 8617): a DMARC failure that would be junked is instead delivered to the
     // INBOX when a valid ARC chain (cv=pass) was sealed by a forwarder we trust — the case ARC
     // exists for (a mailing list rewrites the message, breaking the author's DKIM/SPF, but seals
@@ -463,8 +472,13 @@ export async function startServer(cfg: MailServerConfig): Promise<RunningServer>
     // handed the message to us. An empty trust set means this never fires.
     const arcRescue = enforce && arc.cv === 'pass' && arc.outermostSealer !== null && trustedArcSealers.has(arc.outermostSealer.toLowerCase());
     const targetMailbox = enforce && !arcRescue ? 'Junk' : 'INBOX';
-    if (arcRescue) log(`DMARC ${dmarc.policy} failure (from ${dmarc.fromDomain ?? '?'}) rescued to INBOX by trusted ARC seal ${arc.outermostSealer}`);
-    else if (enforce) log(`DMARC ${dmarc.policy} failure (from ${dmarc.fromDomain ?? '?'}) filed to Junk`);
+    // Sanitised, like the per-message line twenty lines below and every other operator output
+    // site. Both the From domain and the ARC sealer are remote-derived, and `domainToASCII`
+    // strips CR/LF/TAB when building the QUERY name while leaving them in this value — so a
+    // folded From produced a name that resolved cleanly (making enforcement fire, and this line
+    // reachable) and then forged extra journal records, since journald splits on LF.
+    if (arcRescue) log(sanitizeForTerminalLine(`DMARC ${dmarc.policy} failure (from ${dmarc.fromDomain ?? '?'}) rescued to INBOX by trusted ARC seal ${arc.outermostSealer}`));
+    else if (enforce) log(sanitizeForTerminalLine(`DMARC ${dmarc.policy} failure (from ${dmarc.fromDomain ?? '?'}) filed to Junk`));
     // Every recipient was validated at RCPT time; one that no longer resolves here
     // (account disabled / alias removed between RCPT and end-of-DATA) must NOT be
     // silently skipped — that is mail accepted with 250 and then dropped. Resolve all

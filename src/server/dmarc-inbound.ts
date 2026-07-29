@@ -20,7 +20,7 @@
 
 import { domainToASCII } from 'node:url';
 import { parseDmarcRecord, checkAlignment, testModePolicy } from '../auth/dmarc.ts';
-import { fromAuthor, domainOfAddrSpec } from '../message/from-author.ts';
+import { fromAuthor, domainOfAddrSpec, authorDomains } from '../message/from-author.ts';
 import { registeredDomain } from '../auth/public-suffix.ts';
 
 export type DmarcVerdict = 'pass' | 'fail' | 'none' | 'temperror';
@@ -70,9 +70,16 @@ export function organizationalDomain(domain: string): string {
  * spoof-hardened author extractor (message/from-author.ts): the SAME parse the submission
  * send-as gate uses, so DMARC alignment and sender-authorization can never disagree.
  */
-function fromHeaderInfo(raw: Buffer): { domain: string | null; count: number } {
-  const { address, count } = fromAuthor(raw);
-  return { domain: address === null ? null : domainOfAddrSpec(address), count };
+function fromHeaderInfo(raw: Buffer): { domain: string | null; count: number; present: boolean } {
+  const { address, count, value } = fromAuthor(raw);
+  return {
+    domain: address === null ? null : domainOfAddrSpec(address),
+    count,
+    // Distinguishing "no From at all" from "a From we could not parse" is load-bearing: the
+    // second is a malformed author, not an absent one, and reporting it as an absence of
+    // policy meant the most malformed input got the most lenient handling.
+    present: value !== null,
+  };
 }
 
 /** The `_dmarc.<domain>` query name, with the domain forced to A-labels so an IDN From (a
@@ -156,8 +163,31 @@ export function policyAncestors(fromDomain: string, orgDomain: string): readonly
   return names.reverse(); // shallowest (fewest labels) first — the selection order
 }
 
+/**
+ * Total `_dmarc` lookups one inbound message may buy, across every author domain.
+ *
+ * RFC 9989 §11.5 prescribes evaluating each Author Domain — and warns in the same paragraph
+ * that doing so unboundedly "will expose the Mail Receiver to a form of denial-of-service
+ * attack", because the From header is chosen by an unauthenticated peer and each domain costs a
+ * tree walk. Capping the DOMAIN count alone still multiplies by the walk; capping the total
+ * queries bounds the thing that actually matters. Discovery stops when the budget is spent, and
+ * the strictest policy found so far governs.
+ */
+const MAX_POLICY_QUERIES_PER_MESSAGE = 12;
+/** …and a domain count, so one message cannot chase a hundred cheap NXDOMAINs either. */
+const MAX_AUTHOR_DOMAINS = 4;
+
+const POLICY_RANK: Record<string, number> = { none: 0, quarantine: 1, reject: 2 };
+/** How strict a published policy is; an absent policy is weaker than any published one. */
+const rankOf = (p: string | null): number => (p === null ? -1 : (POLICY_RANK[p] ?? -1));
+
+/** The first From header's raw value, for the §11.5 multi-domain pass. */
+function fromValueOf(raw: Buffer): string {
+  return fromAuthor(raw).value ?? '';
+}
+
 export async function checkDmarc(input: DmarcInput): Promise<DmarcOutcome> {
-  const { domain: fromDomain, count: fromCount } = fromHeaderInfo(input.rawMessage);
+  const { domain: fromDomain, count: fromCount, present: fromPresent } = fromHeaderInfo(input.rawMessage);
   // §3.6.1: exactly one From is required. More than one is the canonical display-spoof
   // (auth aligns one, the MUA may show another) — never a pass. But do NOT short-circuit
   // here: fall through so the From domain's published policy is fetched, and force the
@@ -166,7 +196,96 @@ export async function checkDmarc(input: DmarcInput): Promise<DmarcOutcome> {
   // on the policy), so the MORE deceptive attack evaded the enforcement the plainer one hit.
   const spoofMultiFrom = fromCount > 1;
   const noPolicy = (): DmarcOutcome => ({ verdict: spoofMultiFrom ? 'fail' : 'none', policy: null, publishedPolicy: null, fromDomain, pct: 100, testMode: false });
-  if (fromDomain === null) return { verdict: spoofMultiFrom ? 'fail' : 'none', policy: null, publishedPolicy: null, fromDomain: null, pct: 100, testMode: false };
+  if (fromDomain === null) {
+    // A From header we could not resolve to a queryable domain is a malformed author, and a
+    // receiver cannot authenticate what it cannot identify. Reporting `none` here made the
+    // outcome depend on how badly the header was mangled: a plain spoof of a p=reject domain
+    // was junked, while the same spoof with one extra character became unauthenticatable and
+    // was delivered. The verdict is a failure; there is no domain to discover a policy for, so
+    // the delivery path applies its own default rather than an owner's.
+    return {
+      verdict: fromPresent ? 'fail' : 'none',
+      policy: null,
+      publishedPolicy: null,
+      fromDomain: null,
+      pct: 100,
+      testMode: false,
+    };
+  }
+
+  // Every `_dmarc` lookup this message may buy, shared across every author domain (§11.5).
+  let queriesLeft = MAX_POLICY_QUERIES_PER_MESSAGE;
+  const fetchBounded = async (name: string): Promise<{ record: string | null; multiple: boolean }> => {
+    if (queriesLeft <= 0) return { record: null, multiple: false };
+    queriesLeft--;
+    return fetchDmarc(name, input.resolveTxt);
+  };
+
+  /**
+   * Discovery for ONE author domain: the record at the domain itself, else the first hit
+   * walking down from the organizational domain (§4.10.1/§4.10.2). `multiple` means discovery
+   * terminated with no policy applied (§6.6.3 step 5).
+   */
+  const discover = async (
+    domain: string,
+  ): Promise<{ recordText: string | null; viaParent: boolean; multiple: boolean }> => {
+    // §4.10.1: a record at the Author Domain is applied outright and outranks every
+    // ancestor, so the common case is still exactly one query.
+    const primary = await fetchBounded(domain);
+    if (primary.multiple) return { recordText: null, viaParent: false, multiple: true };
+    if (primary.record !== null) return { recordText: primary.record, viaParent: false, multiple: false };
+    for (const ancestor of policyAncestors(domain, organizationalDomain(domain))) {
+      const up = await fetchBounded(ancestor);
+      // Terminating here cannot lose a policy that 7489 discovery would have applied: the
+      // organizational domain is queried FIRST, so an ancestor is only reached once the
+      // organizational domain has been shown to publish nothing.
+      if (up.multiple) return { recordText: null, viaParent: false, multiple: true };
+      if (up.record !== null) return { recordText: up.record, viaParent: true, multiple: false };
+    }
+    return { recordText: null, viaParent: false, multiple: false };
+  };
+
+  /** Parse a discovered record into the policy that governs, or null if it says nothing. */
+  const governingOf = (found: { recordText: string | null; viaParent: boolean; multiple: boolean }) => {
+    if (found.multiple || found.recordText === null) return null;
+    const rec = parseDmarcRecord(Buffer.from(found.recordText, 'latin1'));
+    if (!rec.valid) return null;
+    const pub = found.viaParent && rec.subdomainPolicy !== null ? rec.subdomainPolicy : rec.policy;
+    return { published: pub, policy: rec.testMode ? testModePolicy(pub) : pub, pct: rec.pct, testMode: rec.testMode };
+  };
+
+  // RFC 9989 §11.5, the multi-author-domain case. It is handled on its own path because the
+  // verdict does not depend on alignment: §3.6.1 permits exactly one mailbox in From, so more
+  // than one is never authentic. What matters is which policy gets ENFORCED, and evaluating a
+  // single mailbox let the attacker choose it — the extractor takes the LAST mailbox, so
+  // appending a policy-less address of their own left the victim's address displayed first and
+  // the message judged a failure against a zone that published nothing. §11.5: "apply the DMARC
+  // mechanism to each domain found in the RFC5322.From field as the Author Domain and apply the
+  // most strict policy selected among the checks that fail".
+  if (spoofMultiFrom) {
+    const domains = authorDomains(fromValueOf(input.rawMessage)).slice(0, MAX_AUTHOR_DOMAINS);
+    let best: { published: string | null; policy: string | null; pct: number; testMode: boolean } | null = null;
+    for (const domain of domains) {
+      if (queriesLeft <= 0) break;
+      let found;
+      try {
+        found = await discover(domain);
+      } catch {
+        continue; // one domain's DNS failure must not discard a policy already found
+      }
+      const governing = governingOf(found);
+      if (governing === null) continue;
+      if (best === null || rankOf(governing.published) > rankOf(best.published)) best = governing;
+    }
+    return {
+      verdict: 'fail',
+      policy: best?.policy ?? null,
+      publishedPolicy: best?.published ?? null,
+      fromDomain,
+      pct: best?.pct ?? 100,
+      testMode: best?.testMode ?? false,
+    };
+  }
 
   let recordText: string | null = null;
   // Whether the record came from a name ABOVE the From domain rather than the From domain
@@ -175,26 +294,10 @@ export async function checkDmarc(input: DmarcInput): Promise<DmarcOutcome> {
   // for subdomains").
   let viaParent = false;
   try {
-    // §4.10.1: a record at the Author Domain is applied outright and outranks every
-    // ancestor, so the common case is still exactly one query.
-    const primary = await fetchDmarc(fromDomain, input.resolveTxt);
-    // §6.6.3 step 5: multiple published records terminate discovery with no policy applied.
+    const primary = await discover(fromDomain);
     if (primary.multiple) return noPolicy();
-    recordText = primary.record;
-    if (recordText === null) {
-      for (const ancestor of policyAncestors(fromDomain, organizationalDomain(fromDomain))) {
-        const up = await fetchDmarc(ancestor, input.resolveTxt);
-        // Terminating here cannot lose a policy that 7489 discovery would have applied: the
-        // organizational domain is queried FIRST, so an ancestor is only reached once the
-        // organizational domain has been shown to publish nothing.
-        if (up.multiple) return noPolicy();
-        if (up.record !== null) {
-          recordText = up.record;
-          viaParent = true;
-          break;
-        }
-      }
-    }
+    recordText = primary.recordText;
+    viaParent = primary.viaParent;
   } catch {
     return { verdict: 'temperror', policy: null, publishedPolicy: null, fromDomain, pct: 100, testMode: false };
   }
@@ -217,5 +320,15 @@ export async function checkDmarc(input: DmarcInput): Promise<DmarcOutcome> {
   // A multi-From message is a fail regardless of alignment (the display-spoof); with the
   // real policy now fetched, a published quarantine/reject is enforced to Junk.
   const verdict = spoofMultiFrom || !(dkimAligned || spfAligned) ? 'fail' : 'pass';
+
+  // RFC 9989 §11.5: where the message carries more than one author domain, "apply the DMARC
+  // mechanism to each domain found in the RFC5322.From field as the Author Domain and apply
+  // the most strict policy selected among the checks that fail".
+  //
+  // Evaluating only one of them was the bug: the extractor takes the LAST mailbox, so an
+  // attacker appended their own policy-less address, the victim's address stayed first (which
+  // is what a reader is shown), and the message was correctly judged a failure and then not
+  // enforced — because the policy fetched belonged to the attacker's zone and was null. The
+  // spoof was detected and then waved through.
   return { verdict, policy, publishedPolicy, fromDomain, pct: record.pct, testMode: record.testMode };
 }

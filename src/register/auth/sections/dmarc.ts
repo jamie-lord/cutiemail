@@ -160,4 +160,26 @@ export const DMARC = [
       'enforcing rather than silently disarming. "pct" is still honoured alongside it: senders ' +
       'publish it in quantity, and ignoring it would over-enforce.',
   },
+  {
+    id: 'R-9989-11.5-a',
+    rfc: 'rfc9989',
+    section: '11.5',
+    level: 'SHOULD',
+    party: 'server',
+    normativeSource: 'prose',
+    text: 'a recommended approach as per [RFC7489] is to apply the DMARC mechanism to each domain found in the RFC5322.From field as the Author Domain and apply the most strict policy selected among the checks that fail',
+    testability: { kind: 'parse' },
+    note:
+      'The multi-author-domain attack, named in the spec that describes it. §5.3.1 puts messages ' +
+      'without exactly one From domain out of scope, and §11.5 spells out what that exposes: an ' +
+      'attacker adds their own mailbox so the message is unauthenticatable, while the victim\'s ' +
+      'address is the one a client renders. Detecting it is not enough on its own — this server ' +
+      'always forced such a message to `fail`, and then fetched the policy of ONE mailbox, which ' +
+      'the attacker chose by appending a policy-less domain of their own, so the failure it had ' +
+      'correctly identified was never enforced. Every author domain is now evaluated and the ' +
+      'strictest published policy governs. §11.5 warns in the same paragraph that doing this ' +
+      'unboundedly is itself a denial-of-service vector, since the From header is chosen by an ' +
+      'unauthenticated peer and each domain costs a tree walk, so both the domain count and the ' +
+      'total lookups per message are capped.',
+  },
 ] as const satisfies readonly RequirementDef[];

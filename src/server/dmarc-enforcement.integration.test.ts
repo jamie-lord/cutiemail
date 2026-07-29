@@ -98,3 +98,88 @@ test('pct gates enforcement: a sample at or above pct leaves the failure in the 
     await server.close();
   }
 });
+
+/**
+ * The From forms below are not malformed to a reader: RFC 5322 §4.4's obs-mbox-list makes a
+ * trailing comma a one-mailbox list, RFC 6854 permits group syntax in From, and obs-domain
+ * permits CFWS between the domain's atoms. Reference parsers resolve every one of them to
+ * `sender@rejector.test`, so that is what the recipient sees.
+ *
+ * Each used to produce a "domain" carrying a comma, semicolon or space. c-ares rejects such a
+ * name with EBADNAME, the resolver rethrows it, discovery became temperror, and enforcement
+ * only acts on `fail` — so the published p=reject was never applied and the spoof landed in the
+ * INBOX. The plainer the spoof, the harsher the treatment it got.
+ */
+async function sendWithFrom(port: number, fromHeader: string): Promise<void> {
+  await deliver(
+    { host: '127.0.0.1', port, tls: 'none' },
+    {
+      from: 'sender@rejector.test',
+      recipients: ['alice@mail.example.test'],
+      data: Buffer.from(
+        `From: ${fromHeader}\r\nTo: alice@mail.example.test\r\nSubject: grammar probe\r\n\r\nbody\r\n`,
+        'latin1',
+      ),
+      clientName: 'rejector.test',
+    },
+  );
+  await delay(150);
+}
+
+test('a p=reject spoof is quarantined for every From form a compliant parser resolves', async () => {
+  const forms = [
+    'sender@rejector.test', // control
+    'sender@rejector.test,', // obs-mbox-list: still ONE mailbox
+    'Accounts: sender@rejector.test;', // RFC 6854 group syntax
+    'sender@rejector .test', // obs-domain with CFWS between atoms
+  ];
+  for (const form of forms) {
+    const server = await startServer(baseConfig(() => 0));
+    try {
+      const alice = server.stores.get('alice')!;
+      await sendWithFrom(server.inbound.port, form);
+      assert.equal(
+        readMessages(alice.catalog.get('Junk')!).length,
+        1,
+        `From: ${form} — the published p=reject must be discovered and applied`,
+      );
+      assert.equal(readMessages(alice.catalog.get('INBOX')!).length, 0, `From: ${form} — not the INBOX`);
+    } finally {
+      await server.close();
+    }
+  }
+});
+
+test('an author domain the attacker appended cannot choose the governing policy', async () => {
+  // The victim's address is displayed first; the attacker's policy-less domain used to be the
+  // one whose (absent) policy was fetched, so the spoof was judged a failure and then delivered.
+  const server = await startServer(baseConfig(() => 0));
+  try {
+    const alice = server.stores.get('alice')!;
+    await sendWithFrom(server.inbound.port, 'sender@rejector.test, attacker@nowhere.test');
+    assert.equal(
+      readMessages(alice.catalog.get('Junk')!).length,
+      1,
+      'RFC 9989 §11.5: the strictest policy among the author domains governs',
+    );
+    assert.equal(readMessages(alice.catalog.get('INBOX')!).length, 0);
+  } finally {
+    await server.close();
+  }
+});
+
+test('a From present but unresolvable to any author domain is quarantined, not delivered', async () => {
+  const server = await startServer(baseConfig(() => 0));
+  try {
+    const alice = server.stores.get('alice')!;
+    await sendWithFrom(server.inbound.port, 'sender@rejector.test <>');
+    assert.equal(
+      readMessages(alice.catalog.get('Junk')!).length,
+      1,
+      'a message whose author cannot be identified cannot be authenticated, so it is not trusted',
+    );
+    assert.equal(readMessages(alice.catalog.get('INBOX')!).length, 0);
+  } finally {
+    await server.close();
+  }
+});
