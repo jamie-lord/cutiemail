@@ -60,20 +60,25 @@ export function prependReceived(data: Buffer, info: ReceivedInfo): Buffer {
  * quoted-string, drop a trailing FQDN dot, lowercase. Returns null if none is found.
  */
 export function authservIdOf(unfoldedHeader: string): string | null {
-  // Tolerate WSP between the field name and the colon. RFC 5322 §2.2 forbids it, but §4.5.8
-  // obs-optional permits it and OUR OWN parser accepts it: parseMessage/hasHeader compare
-  // `name.trim().toLowerCase()`, so `Authentication-Results :` IS an authentication-results
-  // field to everything downstream. Anchoring on `Authentication-Results:` therefore
-  // under-matched — a forged `Authentication-Results : <our-id>; dkim=pass` was judged foreign
-  // and survived the strip. Worse, IMAP re-emits it as `${name.trim()}: ${value.trim()}`
-  // (imap-server.ts headerFields), laundering the forgery into conformant syntax so the
-  // non-conformance a strict consumer would reject on is erased before the client sees it.
-  // The strip must OVER-match, never under-match.
-  const m = /^Authentication-Results[ \t]*:(.*)$/is.exec(unfoldedHeader);
-  if (m === null) return null;
+  // DERIVE the field name exactly as every consumer does — everything before the first colon,
+  // `.trim().toLowerCase()` — rather than re-spelling the whitespace class in a regex. The
+  // strip must OVER-match, never under-match: a forged `Authentication-Results: <our-id>;
+  // dkim=pass` that survives is one IMAP will re-emit as `${name.trim()}: ${value.trim()}`
+  // (imap-server.ts headerFields), laundering it into conformant syntax so the non-conformance
+  // a strict consumer would reject on is erased before the client ever sees it.
+  //
+  // Spelling it as a regex drifted twice. `Authentication-Results :` (RFC 5322 §4.5.8
+  // obs-optional) needed `[ \t]*`, and then VT 0x0B, FF 0x0C and NBSP 0xA0 needed more still —
+  // because `.trim()` strips all of those and none of them are folding WSP, so such a field was
+  // foreign to the strip and native to `hasHeader`, `fromAuthor` and `headerFields` alike.
+  // Derived, it cannot drift again: a field name may not contain a colon (§2.2), so the first
+  // colon is always the separator.
+  const colon = unfoldedHeader.indexOf(':');
+  if (colon === -1) return null;
+  if (unfoldedHeader.slice(0, colon).trim().toLowerCase() !== 'authentication-results') return null;
   // Remove RFC 5322 comments in one linear pass (nesting-aware; a fixed-point regex peel was
   // O(depth²) and froze the event loop on a crafted header).
-  let v = stripComments(m[1]!).replace(/^[ \t]+/, '');
+  let v = stripComments(unfoldedHeader.slice(colon + 1)).replace(/^[ \t]+/, '');
   let id: string;
   if (v.startsWith('"')) {
     // quoted-string: read to the closing unescaped quote.
@@ -145,9 +150,15 @@ export function countReceived(data: Buffer): number {
   const headerBlock = (sep === -1 ? data : data.subarray(0, sep)).toString('latin1');
   let count = 0;
   for (const line of headerBlock.split('\r\n')) {
-    // Same WSP-before-colon tolerance as authservIdOf: our own parser trims the field name,
-    // so `Received :` is a Received field downstream and must count as a hop here too.
-    if (/^received[ \t]*:/i.test(line)) count += 1;
+    // A line beginning with real folding WSP (§2.2.3: SP or HT, and ONLY those) continues the
+    // previous field — counting it would inflate the hop count and break legitimate mail.
+    if (/^[ \t]/.test(line)) continue;
+    const colon = line.indexOf(':');
+    if (colon === -1) continue;
+    // Then agree with the parser about the name, for the same reason authservIdOf does: `.trim()`
+    // also strips VT/FF/NBSP, so a `\x0BReceived:` field was a hop to parseMessage and invisible
+    // here — leaving the attacker's own decorative hops uncounted against maxReceivedHops.
+    if (line.slice(0, colon).trim().toLowerCase() === 'received') count += 1;
   }
   return count;
 }

@@ -144,3 +144,46 @@ test('countReceived counts a hop whose field name has WSP before the colon', () 
   const n = countReceived(Buffer.from('Received : from a\r\nReceived:\tfrom b\r\n\r\nbody', 'latin1'));
   assert.equal(n, 2, 'both hops count, with and without WSP before the colon');
 });
+
+test('a field name obfuscated with VT, FF or NBSP is still recognised as ours', () => {
+  // The strip regex tolerated `[ \t]` before the colon, but every consumer identifies a field
+  // by `name.trim().toLowerCase()` — and JS `.trim()` also strips VT (0x0B), FF (0x0C) and
+  // NBSP (0xA0), none of which are RFC 5322 folding WSP. So `\x0BAuthentication-Results:` was
+  // foreign to the strip and native to everything else: the forgery survived, and IMAP's
+  // HEADER.FIELDS then re-emitted it as `${name.trim()}: ${value.trim()}`, laundering the
+  // obfuscating octet away and handing the client byte-perfect RFC 8601 under our own
+  // authserv-id. On the submission path nothing re-stamps a genuine AR, so the forgery would
+  // be the ONLY one in the delivered message.
+  //
+  // This is the third distinct gap found in this one matcher (a tspecial after the id, then
+  // WSP before the colon, now the rest of trim()'s character set), which is why it now derives
+  // the name the way the parser does instead of re-spelling the whitespace class.
+  for (const prefix of ['\x0B', '\x0C', '\xA0']) {
+    const out = strip(`${prefix}Authentication-Results: us.example; dkim=pass dmarc=pass\r\nSubject: x\r\n\r\nbody`);
+    assert.doesNotMatch(out, /dkim=pass/, `a forged AR prefixed with ${JSON.stringify(prefix)} must be stripped`);
+  }
+  // …and inside the name, before the colon.
+  const inner = strip('Authentication-Results\x0B: us.example; dkim=pass\r\n\r\nbody');
+  assert.doesNotMatch(inner, /dkim=pass/, 'an octet between the name and the colon must not hide it');
+  // Control: a different authserv-id is still preserved, however it is spelled.
+  assert.match(
+    strip('\x0BAuthentication-Results: upstream.net; dkim=pass\r\n\r\nbody'),
+    /dkim=pass/,
+    'a different authserv-id is preserved',
+  );
+});
+
+test('countReceived agrees with the parser about obfuscated field names, and about folding', () => {
+  // Same character-set gap: these are Received fields to the parser, so they are hops here.
+  const obfuscated = countReceived(
+    Buffer.from('\x0BReceived: from a\r\n\x0CReceived: from b\r\n\xA0Received: from c\r\n\r\nbody', 'latin1'),
+  );
+  assert.equal(obfuscated, 3, 'VT/FF/NBSP-prefixed Received fields count as hops');
+
+  // But a line beginning with real folding WSP (SP or HT) is a CONTINUATION, not a new field —
+  // counting it would inflate the hop count against maxReceivedHops and break legitimate mail.
+  const folded = countReceived(
+    Buffer.from('Received: from a\r\n\tby b\r\n  for c\r\nReceived: from d\r\n\r\nbody', 'latin1'),
+  );
+  assert.equal(folded, 2, 'folded continuation lines are not hops');
+});
