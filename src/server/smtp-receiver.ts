@@ -17,6 +17,7 @@ import type { Duplex } from 'node:stream';
 import { CR, LF, DOT } from '../wire/bytes.ts';
 import { countReceived } from './received.ts';
 import { canAuth } from '../smtp/auth-state.ts';
+import { sanitizeForTerminalLine } from '../ops/terminal.ts';
 import type { AuthThrottle } from './auth-throttle.ts';
 
 /** MAIL_DEBUG=1 logs each received command line (AUTH redacted) to stderr. */
@@ -223,12 +224,7 @@ class Connection {
     // phase (TLS traffic still flows through it).
     sock.setTimeout(opts.idleTimeoutMs ?? IDLE_TIMEOUT_MS);
     sock.on('timeout', () => {
-      try {
-        this.#write('421 4.4.2 idle timeout, closing connection');
-      } catch {
-        // best-effort; the socket may already be gone
-      }
-      this.#active.end();
+      this.#end('421 4.4.2 idle timeout, closing connection');
       sock.destroy();
     });
     this.#bind(sock);
@@ -261,13 +257,40 @@ class Connection {
   #reject(reply: string): boolean {
     this.#write(reply);
     if (++this.#hardErrors < MAX_HARD_ERRORS) return false;
-    this.#write('421 4.7.0 too many protocol errors, closing connection');
-    this.#active.end();
-    this.#ended = true;
+    this.#end('421 4.7.0 too many protocol errors, closing connection');
     return true;
   }
 
+  /**
+   * Write a final reply and stop, for good: the single exit used by EVERY site that ends a
+   * session.
+   *
+   * `end()` alone is a HALF-close. It sends FIN but leaves the peer's write side open, so a
+   * peer that keeps writing kept being read — and #onData appended each chunk to #buf before
+   * testing #ended, so an unparsed buffer grew without bound until the process was OOM-killed.
+   * Setting #ended stops the loop, dropping #buf releases what was already read, and destroy()
+   * takes the peer's write side away so nothing more arrives. All three are needed: #ended
+   * alone still accumulates, and destroy() alone races the reply out.
+   *
+   * The write is guarded because callers include the idle-timeout path, where the socket may
+   * already be gone.
+   */
+  #end(reply: string): void {
+    try {
+      this.#write(reply);
+    } catch {
+      // best-effort; the socket may already be gone
+    }
+    this.#ended = true;
+    this.#buf = Buffer.alloc(0);
+    this.#active.end();
+    this.#active.destroy();
+  }
+
   async #onData(chunk: Buffer): Promise<void> {
+    // Test #ended BEFORE accumulating, not after. The guard below stops us PARSING a closed
+    // session's bytes; only this one stops us STORING them.
+    if (this.#ended) return;
     this.#buf = Buffer.concat([this.#buf, Buffer.from(chunk)]);
     for (;;) {
       // We closed the connection ourselves (e.g. hard-error limit) — stop processing
@@ -278,11 +301,10 @@ class Connection {
         // grow memory without bound (RFC 1870 SIZE, enforced on actual bytes).
         const max = this.#opts.maxMessageSize;
         if (max !== undefined && this.#buf.length > max) {
-          this.#write('552 5.3.4 message size exceeds fixed maximum message size');
           this.#inData = false;
           this.#from = '';
           this.#recipients = [];
-          this.#active.end();
+          this.#end('552 5.3.4 message size exceeds fixed maximum message size');
           return;
         }
         const eod = findEndOfData(this.#buf, this.#dataScanned);
@@ -314,6 +336,10 @@ class Connection {
           this.#from = '';
           this.#recipients = [];
           this.#inData = false;
+          // …and the transaction, like both sibling paths. Leaving #inTransaction set let a bare
+          // `RCPT TO` with no MAIL FROM be answered 250 instead of 503, violating RFC 5321 §4.1.4:
+          // the ordering gate keys on this flag, and every other exit from DATA clears it.
+          this.#inTransaction = false;
           this.#buf = this.#buf.subarray(eod);
           continue;
         }
@@ -347,8 +373,8 @@ class Connection {
         // An unterminated command line must not grow memory without bound. The
         // §4.5.3.1.4 command-line floor is 512 octets; 64 KiB is a generous cap.
         if (this.#buf.length > 65536) {
-          this.#write('500 5.5.2 command line too long');
-          this.#active.end();
+          this.#end('500 5.5.2 command line too long');
+          return;
         }
         break;
       }
@@ -364,15 +390,31 @@ class Connection {
         else this.#verifySaslPlain(line.trim());
         continue;
       }
-      if (DEBUG) process.stderr.write(`[smtp<] ${line.replace(/^(AUTH\s+\S+\s+).*/i, '$1***')}\n`);
       // RFC 5321 §4.1.2: a command carrying an ASCII control octet (the CRLF
       // terminator is already stripped) is invalid — reject 501, never execute it.
       if (lineBytes.some((b) => b < 0x20)) {
         if (this.#reject('501 5.5.2 control character in command')) return;
         continue;
       }
+      // AFTER that check, and sanitised. Logging first wrote raw wire bytes — full 7-bit ESC,
+      // unauthenticated and pre-TLS — for lines the server was about to reject. The redaction
+      // also tolerates leading whitespace, since a `^`-anchored one was bypassed by a single
+      // leading space while the credential itself was still logged in full.
+      if (DEBUG) {
+        process.stderr.write(`[smtp<] ${sanitizeForTerminalLine(line.replace(/^\s*(AUTH\s+\S+\s+).*/i, '$1***'))}\n`);
+      }
       const verb = line.split(/\s+/)[0]?.toUpperCase() ?? '';
       if (verb === 'STARTTLS' && this.#opts.tls !== undefined) {
+        // RFC 3207 §4: STARTTLS is only valid before TLS. #startTls wraps whatever is
+        // CURRENTLY active, so without this a peer could nest TLSSocket on TLSSocket on one
+        // connection; every read then walked the whole chain, and at ~50 deep the stream
+        // machinery overflowed the call stack and killed a process serving SMTP, submission
+        // and IMAP together. The #tls flag already existed and already gated AUTH — it just
+        // was not consulted here. Postfix answers 554 5.5.1 for the same reason.
+        if (this.#tls) {
+          if (this.#reject('554 5.5.1 Error: TLS already active')) return;
+          continue;
+        }
         this.#startTls();
         return; // stop processing plaintext; anything left in #buf is discarded
       }
@@ -517,8 +559,10 @@ class Connection {
         this.#write('250 2.0.0 Ok');
         break;
       case 'QUIT':
-        this.#write('221 2.0.0 Bye');
-        this.#active.end();
+        // Ending without setting #ended let the loop keep executing whatever the peer had
+        // already pipelined, so mail was accepted and stored after the session was declared
+        // over — the sender never saw the acknowledgement and would retry it.
+        this.#end('221 2.0.0 Bye');
         break;
       default:
         this.#reject('500 5.5.2 command not recognized');
@@ -591,7 +635,9 @@ class Connection {
       this.#opts.throttle?.recordFailure(this.#remoteAddress);
       // Log every failure with the source IP (JSON-escaped attacker-controlled login) —
       // the raw material for spotting a credential-stuffing run and for fail2ban.
-      this.#opts.log?.(`submission auth failed for ${JSON.stringify(username)} from ${this.#remoteAddress}`);
+      // Same as the IMAP site: JSON.stringify passes DEL and the whole C1 range, which is the
+      // set sanitizeForTerminal exists to remove.
+      this.#opts.log?.(sanitizeForTerminalLine(`submission auth failed for ${JSON.stringify(username)} from ${this.#remoteAddress}`));
       if (this.#opts.throttle?.isBlocked(this.#remoteAddress) === true) {
         this.#opts.log?.(`auth throttle engaged for ${this.#remoteAddress} (submission), refusing further attempts while the window drains`);
       }
