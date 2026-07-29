@@ -288,6 +288,38 @@ Pre-flight warnings are also de-duplicated now: the candidate's configuration is
 boot, so a deployment whose certificate the updater cannot read printed the same note three times,
 which reads as three findings.
 
+## Closed: the census asked a database for a column it was entitled not to have
+
+Found by a live deployment refusing an update, and it is the sharpest example yet of the rule this
+subsystem keeps proving — **a pre-flight check must be able to fail for a reason CI could not have
+caught**.
+
+Mail databases are migrated when their catalog is *opened*, and a catalog is opened when its account
+is used. A registered but dormant account — a check address, a seldom-read alias — therefore keeps
+the schema it was created with for as long as nobody touches it. `PRAGMA user_version` cannot
+distinguish the two, because these migrations are additive and reconciled by probing for the column
+rather than by bumping a version. On the deployment that found this, two mail databases both
+reported `user_version 1` and genuinely differed: the active account had `mailbox_id_hwm`, the
+dormant one did not.
+
+`censusOf` named that column outright, so `db.prepare` threw `no such column: mailbox_id_hwm` before
+reading a row. Three things made it worse than a crash. The ladder attributed the failure to
+`migration against your data`, which reads as *the candidate corrupted something* when the candidate
+had not yet been started. It recurred identically on every run, so the deployment could never update
+again. And no fixture could reproduce it, because fixtures are built by current code, which always
+has the column.
+
+The census now asks what the database has before asking for it, and treats an absent mark as zero —
+which is not a convenient default but the correct value: a mark that does not exist cannot have been
+lowered, and `compareCensus` only reports a mark that moved *backwards*. The candidate's migration
+seeds the column past every id in use, which is forward, so adding it is a migration and not a loss.
+
+**A deployment already carrying the defect cannot be updated out of it**, because the census that
+fails is the *running* version's. That is inherent to a self-updater: the code performing the check
+is by definition the old code. Opening the dormant account's mailbox once migrates its catalog and
+clears the block, after which the update proceeds normally. Worth remembering as a general property
+— a defect in the update path is only ever fixable forward for deployments that do not yet have it.
+
 ## Open: MTA-STS policy without an `mx` list
 
 RFC 8461 §3.2's policy ABNF marks `sts-policy-mx` "required at least once, except when mode is

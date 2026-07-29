@@ -335,6 +335,52 @@ test('a snapshot that fails part-way leaves no copy of live mail on disk', () =>
   });
 });
 
+test('a dormant account still on an older catalog schema is censused, not crashed on', () => {
+  // Found on a live deployment, and it blocked every future update on it.
+  //
+  // Mail databases migrate when their catalog is OPENED, and a catalog is opened when its account
+  // is used. An account that is registered but dormant — a check address, a seldom-read alias —
+  // keeps the schema it was created with for as long as nobody touches it, and `PRAGMA
+  // user_version` cannot tell the two apart, because these migrations are additive and driven by a
+  // column probe rather than a version bump. Two databases in the same deployment, both reporting
+  // user_version 1, genuinely differed: one had `mailbox_id_hwm` and the other did not.
+  //
+  // The census named the column outright, so `db.prepare` threw `no such column: mailbox_id_hwm`
+  // before it read a single row. The ladder attributed that to `migration against your data`, which
+  // reads as "the candidate corrupted something" — and it recurred on every run, so the deployment
+  // could never update again. CI could not produce it: fixtures are created by current code, which
+  // always has the column.
+  inTmp((dir) => {
+    const { controlDb } = makeLiveData(dir);
+    const dest = join(dir, 'snap');
+    const snap = takeSnapshot(controlDb, dest);
+    try {
+      // Wind one account's catalog back to the pre-migration shape, leaving the other current.
+      const [old] = snap.mailDbs;
+      const db = new DatabaseSync(old!.path);
+      db.exec('CREATE TABLE catalog_meta_old AS SELECT id, uid_validity_hwm FROM catalog_meta');
+      db.exec('DROP TABLE catalog_meta');
+      db.exec('ALTER TABLE catalog_meta_old RENAME TO catalog_meta');
+      db.close();
+
+      const before = censusOf(snap);
+      const marks = before.catalogMarks.find((m) => m.login === old!.login)!;
+      assert.equal(marks.mailboxIdHwm, 0, 'a mark that does not exist yet reads as zero');
+
+      // And the migration that adds it must not then look like data loss. compareCensus only
+      // reports a mark going BACKWARDS, and seeding the column past every id in use is forward.
+      const migrated = new DatabaseSync(old!.path);
+      migrated.exec('ALTER TABLE catalog_meta ADD COLUMN mailbox_id_hwm INTEGER NOT NULL DEFAULT 0');
+      migrated.exec('UPDATE catalog_meta SET mailbox_id_hwm = (SELECT COALESCE(MAX(id), 0) FROM mailbox) WHERE id = 0');
+      migrated.close();
+
+      assert.deepEqual(compareCensus(before, censusOf(snap)), [], 'adding the mark is a migration, not a loss');
+    } finally {
+      rmSync(dest, { recursive: true, force: true });
+    }
+  });
+});
+
 test('the census sees flags, dates, the expunge journal and the marks that govern future ids', () => {
   // Rung 6a's contract is "is everything still there afterwards, byte for byte", and it reports
   // "everything intact (full message digest)". A migration that emptied the flag table, zeroed

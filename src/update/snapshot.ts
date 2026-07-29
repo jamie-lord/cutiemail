@@ -422,13 +422,33 @@ export function censusOf(snapshot: Snapshot): Census {
     const db = new DatabaseSync(path, { readOnly: true });
     try {
       mailSchemaVersions[login] = Number((db.prepare('PRAGMA user_version').get() as { user_version: number | bigint }).user_version);
-      const marks = db.prepare('SELECT uid_validity_hwm, mailbox_id_hwm FROM catalog_meta WHERE id = 0').get() as
-        | { uid_validity_hwm: number | bigint; mailbox_id_hwm: number | bigint }
-        | undefined;
+      // Ask what this database HAS before asking for it.
+      //
+      // Mail databases are migrated when their catalog is opened, and a catalog is opened when its
+      // account is used. A registered account that has simply not been touched since a column was
+      // added therefore sits at the older schema indefinitely — and `PRAGMA user_version` does not
+      // distinguish the two, because these migrations are additive and reconciled by column probe
+      // rather than by a version bump. So a census that names a column outright throws
+      // `no such column` on a perfectly healthy deployment, at prepare time, and the ladder reports
+      // it against `migration against your data` — blaming the operator's data for a question the
+      // census had no business assuming the answer to. Every subsequent update fails the same way.
+      //
+      // Absent is not zero-by-accident, it is zero by definition: a mark that does not exist cannot
+      // have been lowered, and compareCensus only reports a mark that moved BACKWARDS. The
+      // candidate's migration adds the column seeded past every id in use, which is forward.
+      const catalogCols = new Set(
+        (db.prepare("SELECT name FROM pragma_table_info('catalog_meta')").all() as Array<{ name: string }>).map((c) => c.name),
+      );
+      const markColumns = ['uid_validity_hwm', 'mailbox_id_hwm'].filter((c) => catalogCols.has(c));
+      const marks = markColumns.length === 0
+        ? undefined
+        : (db.prepare(`SELECT ${markColumns.join(', ')} FROM catalog_meta WHERE id = 0`).get() as
+            | Partial<Record<'uid_validity_hwm' | 'mailbox_id_hwm', number | bigint>>
+            | undefined);
       catalogMarks.push({
         login,
-        uidValidityHwm: marks === undefined ? 0 : Number(marks.uid_validity_hwm),
-        mailboxIdHwm: marks === undefined ? 0 : Number(marks.mailbox_id_hwm),
+        uidValidityHwm: Number(marks?.uid_validity_hwm ?? 0),
+        mailboxIdHwm: Number(marks?.mailbox_id_hwm ?? 0),
       });
       const boxes = db.prepare('SELECT id, name, uid_next, uid_validity FROM mailbox ORDER BY name').all() as Array<{
         id: number;
