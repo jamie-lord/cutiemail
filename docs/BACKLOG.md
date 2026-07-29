@@ -161,6 +161,86 @@ wall-clock assertion about the STATUS freeze passed with the defect still in pla
 replaced by a deterministic count of mailbox scans. A test shaped like a guard is worse than no
 test, because it stops anyone looking.
 
+## Closed: what a sixth security audit found
+
+Twenty-one findings, all reproduced by running code, all fixed with a test that fails on the old
+code. The prior five runs had already closed forty-four, so the interesting result is not the count
+— it is that **thirteen of the twenty-one are the same shape the last run named**: a rule applied on
+one path and not on its structural twin. That is now the most reliable thing this codebase says
+about itself, and two of the worst findings here are cases where the flag was already tracked and
+simply not consulted the second time.
+
+The one that mattered most needed no credentials at all. `STARTTLS` was gated on whether TLS is
+*configured*, never on whether it is already *active*, and each upgrade wraps whatever socket is
+current — so fifty `STARTTLS` commands on one connection nested fifty `TLSSocket`s, every read
+walked the chain, and the stack overflowed. One unauthenticated TCP connection, about a hundred
+milliseconds, and the process serving SMTP, submission and IMAP is gone; `Restart=on-failure` with
+systemd's default start limiter then keeps it down after five repetitions. The `#tls` flag it needed
+already existed and already gated `AUTH`.
+
+The DMARC rewrite that landed just before this audit was bypassable by From headers that are not
+malformed at all. RFC 5322 §4.4's `obs-mbox-list` makes `victim@bank.com,` a one-mailbox list, RFC
+6854 permits group syntax in `From`, and `obs-domain` permits CFWS between the domain's atoms —
+reference parsers resolve all three to the plain address, so that is what the recipient sees. The
+extractor did not, and produced a "domain" carrying a comma, semicolon or space; c-ares rejects such
+a name with `EBADNAME`, discovery became `temperror`, and enforcement only acts on `fail`. The more
+mangled the header, the more lenient the handling. The fix is to parse the grammar the module always
+claimed to model, and to treat a From that yields no author domain as a failure rather than as an
+absence of policy.
+
+| # | What | Where |
+|---|---|---|
+| 1 | Repeated `STARTTLS` nested TLS sockets until the stack overflowed — unauthenticated, whole daemon | `server/smtp-receiver.ts` |
+| 2 | `#onData` appended before testing `#ended`, and `end()` is a half-close, so a rejected peer grew an unparsed buffer without bound | `server/smtp-receiver.ts` |
+| 3 | Legal RFC 5322 From forms produced unqueryable domains, so a published `p=reject` was never discovered | `message/from-author.ts` |
+| 4 | `LOGIN`/`AUTHENTICATE` stayed reachable once authenticated, keeping the previous account's mailbox and defeating both containment verbs | `server/imap-server.ts` |
+| 5 | The APPEND regex backtracked cubically: three `\s*` runs between two optional groups | `server/imap-server.ts` |
+| 6 | `fetch-att` repeats were neither de-duplicated nor capped, though `status-att` repeats are — each costs a whole body copy | `server/imap-server.ts` |
+| 7 | Key derivation ran on the event loop, so one credential could loop it into a whole-server stall | `auth/scram.ts` |
+| 8 | Only one author domain was evaluated, so the attacker chose which zone governed the message (RFC 9989 §11.5) | `server/dmarc-inbound.ts` |
+| 9 | The `Authentication-Results` strip spelled its whitespace class in a regex narrower than `.trim()` | `server/received.ts` |
+| 10 | `mail_db_path` — the daemon-owned half of the same path — reached `openMailDb` unguarded, so a symlink was followed and its target created | `update/snapshot.ts` |
+| 11 | A revert moved the database aside and unlinked its write-ahead log, losing mail already answered `250` | `update/cutover.ts` |
+| 12 | `stop()` read inactivity as a clean drain, so a systemd `SIGKILL` was indistinguishable from one | `update/main.ts` |
+| 13 | `INSERT OR REPLACE` reassigned the rowid, so rotating a password moved the postmaster mailbox to another account | `store/account-registry.ts` |
+| 14 | Sequence-set ranges were enumerated per range, so repeats multiplied the work | `imap/sequence-set.ts` |
+| 15 | No bound on mailbox-name length or depth, and `LIST` rebuilds every ancestor prefix | `server/imap-server.ts` |
+| 16 | The DMARC enforcement log spliced the From domain in raw, twenty lines above the line that sanitises it | `main.ts` |
+| 17 | `JSON.stringify` was used as a terminal sanitiser; it passes DEL and the whole C1 range | `server/smtp-receiver.ts`, `server/imap-server.ts` |
+| 18 | `MAIL_DEBUG` redacted one token, while the LOGIN handler is quote-aware — a working passphrase minus its first word | `server/imap-server.ts` |
+| 19 | `QUIT` ended the socket without stopping the loop, so pipelined commands still ran and mail was stored after the session closed | `server/smtp-receiver.ts` |
+| 20 | `countReceived` had the same whitespace-class gap as the strip, leaving hops uncounted | `server/received.ts` |
+| 21 | The start-budget comparison parsed a systemd timespan with `Number()`, so it never ran | `update/main.ts` |
+
+**Three of the fixes are more interesting than the defects.** Moving key derivation off the event
+loop meant making the whole IMAP command loop asynchronous, with the same chunk-serialisation the
+SMTP receiver already uses and for the same reason — provisioning stays synchronous, because a CLI
+can afford the pause and only verification is driven by strangers. The mailbox-name bound went into
+`store/mailbox-name.ts` and is applied at `CREATE` *and* `RENAME`, because the file's own comment
+about guarding both doors was already there for Net-Unicode. And the `Authentication-Results` matcher
+now DERIVES the field name the way the parser does instead of re-spelling it: this was the third
+distinct gap found in that one regex across three audits, each time by widening it to chase
+`.trim()`, so the fix is to stop spelling it twice.
+
+**The rest of the audit is a shorter list than it looks.** Five findings were documentation
+asserting a property the code did not deliver — a revert that never deletes, a drain that is awaited,
+a budget that is compared, credentials that are redacted — which is its own defect class, because an
+operator reads those and plans around them. Each doc has been corrected alongside its code.
+
+### Left open, deliberately
+
+`node:sqlite` opens by path and offers no descriptor-based entry point, so the snapshot's source
+check (`lstat`, then containment) cannot close a perfectly-timed symlink swap between the check and
+SQLite's own open. What it does close is the steady state: the path must be a real file inside the
+data directory at rest, so there is no longer a create-a-file primitive to aim, only a race to win.
+Recorded here rather than papered over.
+
+Two flaky tests were found and made deterministic, neither related to a finding: the backup
+concurrency test raced a 150 ms sleep against a child process's startup, and the federation test
+asserted an outbound queue was drained at the moment the *recipient* stored the message, which is
+necessarily earlier. Both now wait for the condition they mean. A test that fails for a reason other
+than the defect it targets is the same problem as one that cannot fail at all.
+
 ## Open: MTA-STS policy without an `mx` list
 
 RFC 8461 §3.2's policy ABNF marks `sts-policy-mx` "required at least once, except when mode is

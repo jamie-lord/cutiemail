@@ -213,6 +213,17 @@ two-label sender still costs the two lookups it always did; a 202-label `From` s
 and an empty value all leave it alone — only a literal `y` disarms enforcement. The deliberate
 gaps (`np`, `psd`, tree-walk alignment) are ADR 0027, not oversights.
 
+The author extractor is tested against the grammar rather than against the common case, because
+that gap was a live bypass. `victim@bank.com,` (obs-mbox-list), `Accounts: victim@bank.com;`
+(group syntax, RFC 6854) and `victim@bank .com` (obs-domain CFWS) are all one mailbox to a
+compliant parser and all render as the plain address, and each is now driven end to end against a
+domain publishing `p=reject` to prove it is filed to Junk. A `From` that yields no queryable
+domain at all is a failure rather than an absence of policy — the previous behaviour handed the
+most malformed input the most lenient outcome. And per RFC 9989 §11.5, every author domain is
+evaluated with the strictest failing policy governing, bounded in both domain count and total
+lookups, since §11.5 notes in the same breath that evaluating them unboundedly is its own denial
+of service.
+
 ### ARC: RFC 8617
 
 The full §5.2 validator: chain structure, the newest AMS over body and headers, and every seal
@@ -280,6 +291,22 @@ private targets, a cross-connection EXPUNGE desync, a quadratic `BODYSTRUCTURE` 
 and an unbounded-RCPT memory exhaustion. These are defects a passing conformance suite and a
 fuzzer would both miss.
 
+A sixth review found the same shape a sixth time, and by now it is the most useful thing this
+codebase knows about itself: **a rule applied on one path and not on its structural twin.** Thirteen
+of that run's twenty-one findings were that, and the two worst were cases where the flag already
+existed and simply was not consulted again — `STARTTLS` gated on whether TLS was *configured* rather
+than *active*, so one unauthenticated connection could nest TLS sockets until the stack overflowed
+and took the whole daemon with it; and `LOGIN`/`AUTHENTICATE` still reachable once authenticated,
+which kept the previous account's mailbox open while revocation started evaluating the new login, so
+`account disable` and a password rotation both stopped reaching the session.
+
+The same run made the point that **parsing leniently and parsing correctly are not the same thing**.
+Three `From` headers that RFC 5322 and RFC 6854 plainly permit — a trailing comma, group syntax,
+CFWS inside the domain — produced "domains" no resolver would accept, so policy discovery failed,
+the verdict degraded to `temperror`, and a published `p=reject` was never applied. The more mangled
+the header, the more lenient the handling. Tests now pin every one of those forms end to end, and
+the extractor parses the grammar it always claimed to model.
+
 A later review added a second theme: a *bound* can be as dangerous as a missing one when it
 degrades silently. A header-section cap made the parser stop reading, so authentication decided
 a padded message had no `From` while the client was served the real one — a DMARC bypass built
@@ -288,6 +315,16 @@ MTA-STS policy read that applied its size cap only after buffering the whole bod
 transport-security policy that a single forged DNS answer could evict, revocation that never
 reached a session sitting in IDLE, a shared upload budget one account could take whole, and
 remote text reaching an operator's terminal unsanitised in the conformance tool.
+
+**Three flaky tests were found and fixed alongside those**, none of them related to a finding. Two
+raced a fixed `setTimeout` against work they should have waited for — a child process's first write,
+and an outbound queue draining after the recipient had already stored the message, which necessarily
+happens later. Both now wait for the condition they actually mean. The third was a set of wall-clock
+parse bounds tight enough to fail whenever the suite's other files were busy; each of those tests
+already had a deterministic assertion beside it (an anomaly recorded, a value bounded by its cap),
+so the clock is now a loose second opinion rather than the thing being asserted. A test that fails
+for a reason other than the defect it targets costs the same as one that cannot fail at all: both
+teach you to stop reading the result.
 
 ### Self-update: ADR 0025
 
