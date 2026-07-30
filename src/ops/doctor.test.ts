@@ -45,6 +45,7 @@ function healthyDeps(over: Partial<DoctorDeps> = {}): DoctorDeps {
     dial25: async () => '220 mx.probe.example ESMTP',
     rdap: async () => ({ events: [{ eventAction: 'registration', eventDate: '2020-01-01T00:00:00Z' }] }),
     now: () => NOW,
+    sqliteVersion: () => '3.51.3',
     ...over,
   };
 }
@@ -279,6 +280,22 @@ test('age: a young domain warns, RDAP being down only skips (advisory, never a f
 
   const down = await doctorChecks(params, healthyDeps({ rdap: async () => Promise.reject(new Error('503')) }));
   assert.equal(statusOf(down, 'age'), 'skip');
+});
+
+test('sqlite: a version at/above the floor is ok; one below WARNs (advisory, never a failure)', async () => {
+  const atFloor = await doctorChecks(params, healthyDeps({ sqliteVersion: () => '3.51.3' }));
+  assert.equal(statusOf(atFloor, 'sqlite'), 'ok', 'exactly at the floor is clear');
+
+  const above = await doctorChecks(params, healthyDeps({ sqliteVersion: () => '3.52.0' }));
+  assert.equal(statusOf(above, 'sqlite'), 'ok', 'a newer version is clear');
+
+  // 3.50.4 is what Node 22.x bundled when this floor was set — the case that must warn, not pass.
+  const below = await doctorChecks(params, healthyDeps({ sqliteVersion: () => '3.50.4' }));
+  assert.equal(statusOf(below, 'sqlite'), 'warn', 'below the corruption-fix floor warns the operator');
+  assert.match(detailOf(below, 'sqlite'), /corruption|3\.51\.3/, 'the warning names the risk and the floor');
+
+  // The check must never take the deployment down, only advise: a below-floor run still exits 0.
+  assert.equal(statusOf(below, 'sqlite') === 'warn' && below.every((c) => c.status !== 'fail' || c.name !== 'sqlite'), true);
 });
 
 test('exit-code policy: warnings exit 0, any failure exits 1', () => {

@@ -27,6 +27,37 @@ import { chmodSync } from 'node:fs';
 export const BUSY_TIMEOUT_MS = 5000;
 
 /**
+ * The lowest bundled SQLite version this project considers sound to run on.
+ *
+ * 3.51.3 (2026-03-13) carries the fix for the "WAL-reset database corruption bug"
+ * (https://sqlite.org/changes.html). Every mail database here runs in WAL mode with more than one
+ * connection open on the same file (each IMAP session and the inbound delivery path opens its own
+ * handle), which is precisely the regime a WAL/checkpoint corruption bug threatens. SQLite is not a
+ * dependency this project pins directly — it is whatever `node:sqlite` bundles — so the floor is not
+ * enforced at open time (a hard refusal would strand a deployment on the only Node it can install).
+ * It is asserted at runtime by `doctor`, which WARNS when the live `sqlite_version()` is below it,
+ * the same advisory posture `backup verify` takes toward a stale WAL sidecar. Raise this only for a
+ * fix that materially threatens data at rest, not for every point release.
+ */
+export const MIN_SQLITE_VERSION = '3.51.3';
+
+/**
+ * True iff dotted numeric version `actual` (e.g. a `sqlite_version()` string) is >= `floor`.
+ * Pure and total so `doctor`'s version check can be driven in both directions by a test without a
+ * real database. Missing trailing components read as 0 (`3.51` == `3.51.0`).
+ */
+export function sqliteVersionAtLeast(actual: string, floor: string): boolean {
+  const parts = (v: string): number[] => v.split('.').map((n) => Number.parseInt(n, 10) || 0);
+  const a = parts(actual);
+  const f = parts(floor);
+  for (let i = 0; i < Math.max(a.length, f.length); i++) {
+    const diff = (a[i] ?? 0) - (f[i] ?? 0);
+    if (diff !== 0) return diff > 0;
+  }
+  return true; // exactly equal
+}
+
+/**
  * The on-disk schema epoch this binary understands, stamped into PRAGMA user_version.
  * Migrations within a version are additive (a new table or a defaulted column, applied in
  * place by the owning catalog/registry), so an OLDER file is upgraded transparently. A file
@@ -92,9 +123,19 @@ export function openMailDb(path: string): DatabaseSync {
   db.exec(`PRAGMA busy_timeout=${BUSY_TIMEOUT_MS}`);
   try {
     db.exec('PRAGMA journal_mode=WAL');
-    // NORMAL is the correct WAL pairing: an fsync at checkpoint rather than one per commit,
-    // the trade the crash suite's recorded scope already assumes (WAL's own default is FULL).
-    db.exec('PRAGMA synchronous=NORMAL');
+    // FULL, not NORMAL, and the difference is a durability contract this server makes over the wire.
+    // Every acknowledgement path here commits its write BEFORE it acks — the SMTP receiver sends
+    // `250` only after the delivery handler's COMMIT returns (smtp-receiver.ts), submission enqueues
+    // and then acks, IMAP APPEND/COPY/MOVE commit and then reply OK. That ordering is worthless
+    // under synchronous=NORMAL, where a COMMIT is durable against a *process* crash but NOT against
+    // power loss until the next checkpoint: a message we already answered `250 OK` for can vanish on
+    // a power cut, silently — the sender's MTA will never retry it. FULL fsyncs the WAL at each
+    // commit, so `250` means "on stable storage", honouring the sequencing the code already has.
+    // The cost is one fsync per acknowledged write; every bulk path is already ONE transaction
+    // (sqlite-mailbox.ts `transaction()`), so at this project's scale the per-ack fsync is
+    // negligible and correctness is the product. (Explicit rather than leaning on WAL's FULL default,
+    // so a future default change or a stray PRAGMA cannot quietly weaken it.) See ADR 0028.
+    db.exec('PRAGMA synchronous=FULL');
   } catch {
     /* :memory: and some builds don't support WAL/synchronous, harmless */
   }

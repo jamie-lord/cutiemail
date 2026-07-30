@@ -22,6 +22,7 @@
  *             expired or about to be
  *   dial-25   outbound port 25 actually reaches a real MX (greeting read)
  *   age       RDAP domain registration age (young domains get spam-foldered)
+ *   sqlite    the bundled SQLite is at or above the known-corruption floor (ADR 0028)
  *
  * Every check reads through an injected dependency seam, so the tests drive each
  * one in BOTH directions: detects the broken state, passes the healthy one.
@@ -40,7 +41,7 @@ import { selectDmarcRecord } from '../server/dmarc-inbound.ts';
 import { parseDkimKeyRecord } from '../crypto/dkim-keyrecord.ts';
 import { registeredDomain } from '../auth/public-suffix.ts';
 import { AccountRegistry } from '../store/account-registry.ts';
-import { openMailDb } from '../store/open-mail-db.ts';
+import { openMailDb, sqliteVersionAtLeast, MIN_SQLITE_VERSION } from '../store/open-mail-db.ts';
 import { dkimTxtFromPrivateKey } from './setup.ts';
 import type { OpsIo } from './cli.ts';
 import { sanitizeForTerminalLine } from './terminal.ts';
@@ -96,6 +97,8 @@ export interface DoctorDeps {
   /** RDAP JSON for a registrable domain; throws on failure. */
   readonly rdap: (registrable: string) => Promise<unknown>;
   readonly now: () => number;
+  /** The running SQLite library version (e.g. "3.51.3"), for the known-corruption floor check. */
+  readonly sqliteVersion: () => string;
 }
 
 export interface DoctorParams {
@@ -354,6 +357,27 @@ export async function doctorChecks(p: DoctorParams, deps: DoctorDeps): Promise<C
     push('age', 'skip', `RDAP unavailable for ${registrable}: domain age not checked`);
   }
 
+  // -- sqlite runtime version — advisory ------------------------------------------------
+  // The storage engine is whatever node:sqlite bundled, not a dependency this project pins, so a
+  // deployment can unknowingly be on a build carrying a data-at-rest bug. MIN_SQLITE_VERSION is the
+  // floor (the WAL-reset corruption fix; ADR 0028). Every mail database runs WAL with more than one
+  // connection open on the file, which is the regime that bug threatens. WARN, never fail: the
+  // operator may not yet be able to install a Node whose bundled SQLite clears the floor.
+  try {
+    const v = deps.sqliteVersion();
+    if (sqliteVersionAtLeast(v, MIN_SQLITE_VERSION)) {
+      push('sqlite', 'ok', `SQLite ${v} (>= ${MIN_SQLITE_VERSION}, clear of the WAL-reset corruption fix)`);
+    } else {
+      push(
+        'sqlite',
+        'warn',
+        `SQLite ${v} is below ${MIN_SQLITE_VERSION}, which fixes a WAL database-corruption bug (sqlite.org/changes.html). This server runs WAL with multiple connections per file — the case that bug threatens. Upgrade to a Node whose bundled node:sqlite is ${MIN_SQLITE_VERSION} or newer.`,
+      );
+    }
+  } catch (e) {
+    push('sqlite', 'skip', `could not read the SQLite version: ${String(e)}`);
+  }
+
   return results;
 }
 
@@ -472,6 +496,16 @@ export function realDoctorDeps(): DoctorDeps {
       return JSON.parse(text);
     },
     now: () => Date.now(),
+    sqliteVersion: () => {
+      // A throwaway in-memory handle: sqlite_version() is a property of the linked library, so it
+      // reads the very build the daemon's real databases run on, without touching them.
+      const db = new DatabaseSync(':memory:');
+      try {
+        return (db.prepare('SELECT sqlite_version() AS v').get() as { v: string }).v;
+      } finally {
+        db.close();
+      }
+    },
   };
 }
 

@@ -40,6 +40,54 @@ test('e2e: a message delivered by the client lands byte-exact in SQLite storage'
   }
 });
 
+test('acknowledgement ordering: the DATA 250 is withheld until the delivery handler commits', async () => {
+  // The durability guarantee (WAL + synchronous=FULL, ADR 0028) is only worth anything because the
+  // receiver COMMITS the store BEFORE it acknowledges: `250 2.0.0 message stored` is written only
+  // after `await this.#handler(...)` resolves. If a refactor ever answered `250` first and stored
+  // asynchronously, FULL would fsync nothing before the ack and an accepted message could be lost
+  // on a power cut with the sender none the wiser. This pins the ordering. A gate stands in for the
+  // storage COMMIT: while it is unresolved, no message-stored 250 may appear.
+  let releaseStore!: () => void;
+  const storeGate = new Promise<void>((r) => { releaseStore = r; });
+  let committed = false;
+  const receiver = await SmtpReceiver.start(async () => {
+    await storeGate; // block where the synchronous COMMIT would sit
+    committed = true;
+  });
+  const sock = net.connect(receiver.port, '127.0.0.1');
+  try {
+    const acc: Buffer[] = [];
+    sock.on('data', (d) => acc.push(Buffer.from(d)));
+    sock.on('error', () => {});
+    const seen = (): string => Buffer.concat(acc).toString('latin1');
+    const step = (s: string): Promise<void> =>
+      new Promise((r) => { sock.write(Buffer.from(s, 'latin1')); setTimeout(r, 25); });
+    await new Promise<void>((r) => sock.once('connect', () => r()));
+    await step(''); // read the greeting
+    await step('EHLO t\r\n');
+    await step('MAIL FROM:<a@example.com>\r\n');
+    await step('RCPT TO:<b@example.net>\r\n');
+    await step('DATA\r\n');
+    await step('Subject: x\r\n\r\nbody\r\n.\r\n'); // end of DATA → handler invoked, now blocked on the gate
+
+    // The store has not committed, so the acknowledgement MUST NOT have been sent. (The 250s for
+    // MAIL/RCPT are 2.1.0/2.1.5; only the DATA ack is "message stored", so this is unambiguous.)
+    assert.equal(committed, false, 'the store has not committed yet');
+    assert.equal(/250 2\.0\.0 message stored/.test(seen()), false, 'no ack is emitted before the commit');
+
+    releaseStore(); // let the "COMMIT" return
+    const deadline = Date.now() + 2000;
+    while (!/250 2\.0\.0 message stored/.test(seen()) && Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, 10));
+    }
+    assert.match(seen(), /250 2\.0\.0 message stored/, 'the ack follows the commit');
+    assert.equal(committed, true, 'and only after the handler had committed');
+  } finally {
+    sock.destroy();
+    await receiver.close();
+  }
+});
+
 test('receiver keeps the message final CRLF (RFC 5321 §4.1.1.4), matching aiosmtpd', async () => {
   // The first <CRLF> of the terminating <CRLF>.<CRLF> is also the one ending the
   // message's final line, so it must remain part of the stored bytes. Ground-truthed

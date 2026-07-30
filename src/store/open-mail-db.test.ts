@@ -1,8 +1,9 @@
 /**
  * openMailDb is the single open path, so its durability settings and its schema-version gate
  * bind every database the daemon touches. These pin the two invariants a reader/operator relies
- * on: the WAL fsync posture the crash suite's recorded scope assumes, and the refusal to open a
- * database written by a newer binary (which would otherwise write rows that binary misreads).
+ * on: the WAL + synchronous=FULL fsync posture that makes the `250`/`OK` acknowledgement a
+ * durability promise (ADR 0028), and the refusal to open a database written by a newer binary
+ * (which would otherwise write rows that binary misreads).
  */
 
 import { test } from 'node:test';
@@ -11,9 +12,9 @@ import { DatabaseSync } from 'node:sqlite';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { openMailDb, SCHEMA_VERSION } from './open-mail-db.ts';
+import { openMailDb, SCHEMA_VERSION, sqliteVersionAtLeast, MIN_SQLITE_VERSION } from './open-mail-db.ts';
 
-test('openMailDb pins WAL + synchronous=NORMAL on a file-backed database', () => {
+test('openMailDb pins WAL + synchronous=FULL on a file-backed database', () => {
   const dir = mkdtempSync(join(tmpdir(), 'openmaildb-'));
   try {
     const db = openMailDb(join(dir, 'x.db'));
@@ -21,11 +22,29 @@ test('openMailDb pins WAL + synchronous=NORMAL on a file-backed database', () =>
     // PRAGMA synchronous returns the numeric level: 1 is NORMAL, 2 is FULL, 3 is EXTRA.
     const sync = Number((db.prepare('PRAGMA synchronous').get() as { synchronous: number }).synchronous);
     assert.equal(journal.toLowerCase(), 'wal', 'WAL is active on a file db');
-    assert.equal(sync, 1, 'synchronous is NORMAL (1), the recorded WAL pairing, not FULL (2)');
+    // FULL (2), not NORMAL (1): a COMMIT fsyncs the WAL, so a message answered `250` survives power
+    // loss, not just a clean restart. Weakening this to NORMAL reopens the silent-loss window ADR
+    // 0028 closes — the mutation that must fail this test.
+    assert.equal(sync, 2, 'synchronous is FULL (2), so an acknowledged write is durable, not NORMAL (1)');
     db.close();
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
+});
+
+test('sqliteVersionAtLeast orders dotted numeric versions, both directions, around the floor', () => {
+  // At/above the floor.
+  assert.equal(sqliteVersionAtLeast('3.51.3', '3.51.3'), true, 'exact equal is at-least');
+  assert.equal(sqliteVersionAtLeast('3.51.4', '3.51.3'), true, 'higher patch');
+  assert.equal(sqliteVersionAtLeast('3.52.0', '3.51.3'), true, 'higher minor');
+  assert.equal(sqliteVersionAtLeast('4.0.0', '3.51.3'), true, 'higher major');
+  assert.equal(sqliteVersionAtLeast('3.51', '3.51.0'), true, 'missing component reads as 0');
+  // Below the floor — the versions that must trigger doctor's warning.
+  assert.equal(sqliteVersionAtLeast('3.51.2', '3.51.3'), false, 'lower patch');
+  assert.equal(sqliteVersionAtLeast('3.50.4', '3.51.3'), false, 'the version Node 22.x bundled when this landed');
+  assert.equal(sqliteVersionAtLeast('3.9.10', '3.51.3'), false, 'numeric, not lexical: 9 < 51');
+  // The floor is a well-formed dotted version (guards against a typo like "3.51" or "v3.51.3").
+  assert.match(MIN_SQLITE_VERSION, /^\d+\.\d+\.\d+$/, 'the floor constant is a clean X.Y.Z');
 });
 
 test('openMailDb stamps a fresh database with the current schema version', () => {
