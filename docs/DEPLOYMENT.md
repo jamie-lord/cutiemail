@@ -531,6 +531,10 @@ CapabilityBoundingSet=CAP_NET_BIND_SERVICE
 # is a hard wall under load (docs/PERFORMANCE.md).
 LimitNOFILE=65536
 Restart=on-failure
+# Give the daemon at least as long to drain as the self-updater waits for a clean drain before a
+# cutover (MAIL_UPDATE_DRAIN_SECONDS, default 120s). systemd's DefaultTimeoutStopSec is 90s, so
+# without this it would SIGKILL mid-delivery and still report the stop as clean. See SELF-UPDATE.md.
+TimeoutStopSec=180
 
 # Defense-in-depth sandboxing (systemd-analyze security scores this unit ~1.6 / OK).
 # MemoryDenyWriteExecute is deliberately OMITTED: the V8 JIT needs W+X memory and
@@ -636,7 +640,7 @@ sent from elsewhere seems to vanish, check the **Junk** folder and read its `Aut
 header: DMARC enforcement files a failing message there rather than the inbox (a common surprise
 while DNS is still settling).
 
-## Migrating your existing mail in
+## Migrating your existing mail
 
 cutiemail speaks standard IMAP, so moving your existing mail in is a plain IMAP-to-IMAP copy with
 an off-the-shelf tool; there's nothing bespoke to learn. [`imapsync`](https://imapsync.lamiral.info/)
@@ -994,7 +998,7 @@ To resolve it, with the daemon stopped:
 2. Decide which one survives. There is deliberately no `account remove` (ADR 0012), so
    retiring the other means moving its messages into the survivor over IMAP (`imapsync`, or
    dragging the folders across in a mail client — see
-   [Migrating your existing mail in](#migrating-your-existing-mail-in)), then deleting its
+   [Migrating your existing mail](#migrating-your-existing-mail)), then deleting its
    row from `control.db` by hand.
 3. Remove the colliding entry from `MAIL_ACCOUNTS` in the unit file, or it is seeded again
    on the next start.
