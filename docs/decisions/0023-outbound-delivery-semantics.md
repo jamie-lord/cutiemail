@@ -64,6 +64,18 @@ flowchart TD
 Equal-preference MX records are Fisher-Yates shuffled before the walk (RFC 5321 §5.1 MUST),
 so load spreads and no single sibling is always tried first.
 
+### 4. The MX walk is bounded and cancellable
+
+"Tries each MX" above means the preference-ordered candidates, not an unbounded RRset. RFC 5321
+§5.1 sets no ceiling on how many MX records a domain may publish, so a hostile recipient domain
+could publish thousands that all resolve to addresses it controls but black-hole the connection —
+each costing a full connect timeout, walked serially on the single-flight drain loop, stalling
+outbound mail for every account. The walk is therefore capped at the first ten hosts by
+preference, given a per-recipient wall-clock budget checked between attempts (never mid-delivery,
+so decision 2's post-DATA window is untouched), and cancelled at the next host/recipient boundary
+when the loop is shutting down. Whatever is not attempted defers as `transient` — durably queued,
+retried next tick — so the three classification decisions above are preserved and nothing is lost.
+
 ## Consequences
 
 - A crash mid-relay costs at most a duplicate, never a lost message. Receivers dedupe;

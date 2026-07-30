@@ -8,11 +8,15 @@
  * had: a real DNS lookup, snapshotted into the synchronous resolver interface the
  * ordering logic expects, so that logic stays the exact code the corpus trusts.
  *
- * Deliberately naive, per the current goal (a deployable test bench, not a
- * hardened MTA): best-effort, no persistent queue, no retry/backoff, plaintext to
- * port 25 (no outbound STARTTLS yet), no DKIM signing. A failed relay is LOGGED,
- * not queued — the operator sees it on the console. Each of those is a recorded
- * next increment, not an oversight. See docs/DEPLOYMENT.md.
+ * The transaction itself is deliberately lean, but the send path around it is not
+ * "fire and forget": messages are held in a durable SqliteQueue and driven by the
+ * RelayLoop with exponential backoff and a ~5-day give-up window (bounces via DSN),
+ * TLS is opportunistic STARTTLS (required under an MTA-STS enforce policy), and the
+ * outbound copy is DKIM-signed when a signing key is configured. The per-recipient MX
+ * walk is bounded (a host cap and
+ * a wall-clock budget) and cancellable on shutdown, so one hostile or dead MX cannot
+ * stall delivery for every account. See docs/decisions/0023-outbound-delivery-semantics.md
+ * and docs/DEPLOYMENT.md.
  */
 
 import net from 'node:net';

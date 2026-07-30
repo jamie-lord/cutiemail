@@ -38,8 +38,9 @@ and can trust) requires acting on the verdict.
 - **No `rua`/`ruf` report emission.** Aggregate/failure reports are low-value at a personal
   server's scale and `ruf` is privacy-fraught; out of scope (a separately-agreed decision).
 
-The evaluator (`server/dmarc-inbound.ts`) stays a pure function returning verdict + policy +
-pct; the delivery path (`main.ts`) owns the enforcement action.
+The evaluator (`server/dmarc-inbound.ts`) stays a pure function returning the verdict, the
+applicable policy, `pct`, and the supporting reporting fields; the delivery path (`main.ts`) owns
+the enforcement action.
 
 ## Consequences
 
@@ -47,10 +48,11 @@ pct; the delivery path (`main.ts`) owns the enforcement action.
 - Enforcing DMARC while ARC is deferred means some legitimately-forwarded mail will land in
   Junk (recoverable, not lost). This raises ARC's value and is the concrete thing that would
   justify un-deferring it later.
-- **Scope recorded:** a duplicate-`From` message (the canonical display-spoof) is detected as
-  a DMARC fail but currently returns no fetched policy, so it stays in the INBOX with the
-  header flag rather than being quarantined. Closing that would mean fetching the first
-  From-domain's policy on the multiple-From path; deferred, not silently dropped.
+- **Multiple-From spoof (closed under ADR 0027, RFC 9989 §11.5):** a message carrying more than
+  one author mailbox — several mailboxes in one `From`, or several `From` headers — is a fail, and
+  every author domain across all of them is now evaluated, with the strictest published policy
+  enforced to Junk. When the lookup budget cannot weigh them all it fails safe to quarantine, so
+  the spoof can no longer reach the INBOX by burying the victim domain past the budget.
 - Only the inbound (port 25) path enforces; authenticated submission (our own users sending)
   is never DMARC-checked.
 - Revisitable with a stated reason, like every ADR.
