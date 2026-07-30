@@ -78,11 +78,19 @@ difference between those numbers and the table above:
 | heap churned per command | 195 MB | 1.3 MB |
 | new-connection greeting under 3 readers | 4,616 ms | 435 ms |
 
-**Writes are batched.** Each storage mutation is one fsync'd transaction, and the bulk commands
-(`STORE 1:*`, `COPY 1:*`, `UID EXPUNGE`) wrap their whole loop in a single transaction rather
-than paying one fsync per message: the difference between marking a 20,000-message folder read
-in ~3 s versus ~37 s of frozen server. There is also no DDL on the hot path: schema and
-migrations run once when a mailbox is first opened, not on every `SELECT`.
+**Writes are batched, and durable.** Each storage mutation is one fsync'd transaction — `openMailDb`
+runs WAL with `synchronous=FULL`, so a `COMMIT` reaches stable storage before it returns, which is
+what lets a `250`/`OK` acknowledgement mean the mail survives power loss and not just a clean restart
+([ADR 0028](decisions/0028-durability-fsync-before-acknowledgement.md)). The bulk commands
+(`STORE 1:*`, `COPY 1:*`, `UID EXPUNGE`) wrap their whole loop in a single transaction rather than
+paying one fsync per message: the difference between marking a 20,000-message folder read in ~3 s
+versus ~37 s of frozen server. There is also no DDL on the hot path: schema and migrations run once
+when a mailbox is first opened, not on every `SELECT`.
+
+The append and inbound-accept figures above were measured under the earlier `synchronous=NORMAL`;
+with `FULL` those single-message paths are now bounded by one fsync per acknowledged write and are
+modestly lower — still an order of magnitude beyond any personal domain, and the deliberate price of
+the durability guarantee rather than an inefficiency to tune away.
 
 ## How it defends its memory
 

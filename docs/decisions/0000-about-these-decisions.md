@@ -43,7 +43,7 @@ suite covers:
 - [0007](0007-modern-opinionated-scope.md), A modern, opinionated server: the scope cuts, recorded
 - [0008](0008-outbound-client-harness.md), The outbound client harness, and the `wire-client` testability kind
 
-**The mail server (0009 to 0027):** the product decisions: storage, delivery, auth, and operations:
+**The mail server (0009 to 0028):** the product decisions: storage, delivery, auth, and operations:
 
 - [0009](0009-multi-account-per-user-database.md), Multi-account: one SQLite database per user
 - [0010](0010-dmarc-quarantine-to-junk.md), Inbound DMARC enforcement: quarantine to Junk, never hard-reject
@@ -64,3 +64,4 @@ suite covers:
 - [0025](0025-self-update.md), Self-update: a separate updater, and a cutover that must earn the switch
 - [0026](0026-reserved-postmaster-mailbox.md), The reserved postmaster mailbox is a floor, not a convention
 - [0027](0027-dmarc-rfc9989.md), Which half of RFC 9989 this server implements
+- [0028](0028-durability-fsync-before-acknowledgement.md), Durability: fsync before every acknowledgement (`synchronous=FULL`), and the SQLite version floor

@@ -218,7 +218,9 @@ reference](#configuration-reference).
   is **enforced**: a `p=quarantine`/`p=reject` failure is filed to the recipient's Junk folder
   rather than the inbox, never hard-rejected, so legitimate forwarded mail isn't lost. **ARC**
   (RFC 8617) is validated, and a valid chain from a forwarder you trust can rescue such a message
-  to the inbox. The message is then trace-stamped and delivered into the addressed account's mailbox.
+  to the inbox. The message is then trace-stamped and delivered into the addressed account's mailbox
+  — committed to disk (WAL `synchronous=FULL`) *before* the `250` is sent, so an accepted message
+  survives a power cut, not just a clean restart ([ADR 0028](docs/decisions/0028-durability-fsync-before-acknowledgement.md)).
 - **Submit + send**: submission on 587 with SASL PLAIN over TLS. A submitted message is fixed
   up (RFC 6409: a missing From/Date/Message-ID is added), trace-stamped, **DKIM-signed**, and
   handed to a **persistent SQLite retry queue** that relays it to the recipient's MX over STARTTLS
