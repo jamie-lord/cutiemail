@@ -543,7 +543,7 @@ export async function startServer(cfg: MailServerConfig): Promise<RunningServer>
   // no byte leaves for a remote MX. One switch, checked at the only two places a relay
   // tick is ever triggered, rather than threaded through the relay internals.
   const holdOutbound = cfg.outboundMode === 'hold';
-  const relayLoop = new RelayLoop(queue, (m) => relayOutbound(m, outboundOpts), {
+  const relayLoop = new RelayLoop(queue, (m, signal) => relayOutbound(m, signal !== undefined ? { ...outboundOpts, signal } : outboundOpts), {
     log,
     // RFC 5321 §6.1: notify the sender when we permanently give up. Build the bounce
     // and deliver it — to the local mailbox if the sender is one of ours, otherwise

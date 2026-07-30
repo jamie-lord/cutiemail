@@ -50,3 +50,43 @@ test('stop() awaits the in-flight tick, so the queue DB can be closed without a 
   // The bail left the rest durably queued (they were never relayed) — not all 10 went out.
   assert.ok(started < 10, 'stop() bailed mid-drain, leaving the remaining rows queued for next start');
 });
+
+/**
+ * The `#stopped` flag only bails BETWEEN entries. An entry already inside a serial MX walk against
+ * a stalling peer would keep stop() blocked until every host timed out — the SIGTERM/cutover hang
+ * the outbound-stall finding described. stop() now also trips an AbortSignal handed to the relay,
+ * so an in-flight delivery can abandon its remaining work at once. This proves the wiring: a relay
+ * that blocks until the signal fires is released by stop(), which returns promptly.
+ */
+test('stop() trips the abort signal the relay is given, so an in-flight walk is not awaited to completion', async () => {
+  const db = openMailDb(':memory:');
+  const queue = SqliteQueue.open(db);
+  // Enqueue at "now" (the loop ticks with Date.now()); an epoch-0 firstQueued would look older
+  // than the give-up window and dead-letter instead of deferring.
+  queue.enqueue('a@sender.example', ['b@remote.example'], Buffer.from('m'), Date.now());
+
+  let sawAbort = false;
+  // A relay that models a delivery mid-walk: it makes no progress until the signal aborts, exactly
+  // as a real relayOutbound blocked on a stalling host would only unwind when told to stop.
+  const relay = async (msg: { recipients: readonly string[] }, signal?: AbortSignal): Promise<Array<{ recipient: string; ok: boolean; classification: 'transient'; detail: string }>> => {
+    await new Promise<void>((resolve) => {
+      if (signal?.aborted) return resolve();
+      signal?.addEventListener('abort', () => resolve(), { once: true });
+    });
+    sawAbort = signal?.aborted === true;
+    return msg.recipients.map((recipient) => ({ recipient, ok: false, classification: 'transient' as const, detail: 'deferred on shutdown' }));
+  };
+  const loop = new RelayLoop(queue, relay);
+
+  loop.start(5);
+  await delay(20); // a tick is now in-flight, the relay blocked awaiting the abort
+
+  const t0 = Date.now();
+  await loop.stop(); // MUST return: the signal releases the blocked relay
+  assert.ok(Date.now() - t0 < 1000, 'stop() returned promptly rather than hanging on the in-flight walk');
+  assert.ok(sawAbort, 'the relay observed the aborted signal — stop() cancelled the in-flight delivery');
+  assert.equal(queue.size, 1, 'the deferred message stays durably queued for next start');
+
+  db.close();
+  await delay(20);
+});

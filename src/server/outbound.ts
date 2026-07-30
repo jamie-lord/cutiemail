@@ -105,6 +105,19 @@ export interface OutboundOptions {
    * client). Exposed for tuning and for tests that exercise the indeterminate-outcome path.
    */
   readonly postDataReplyTimeoutMs?: number;
+  /**
+   * Tripped by the relay loop on shutdown. Checked between recipients and between host attempts so
+   * a stop() unwinds an in-flight walk promptly — bounded by at most one in-flight connect timeout
+   * — instead of blocking SIGTERM until every host of a hostile RRset has timed out. Not threaded
+   * into the socket itself: the per-connection timeouts already bound a single in-flight attempt,
+   * and the core transport stays untouched. Remaining work is deferred (transient), never lost.
+   */
+  readonly signal?: AbortSignal;
+  /**
+   * Override the per-recipient host-to-host failover budget (default DELIVERY_BUDGET_MS). Exposed
+   * for tuning and for tests that exercise the budget without waiting two real minutes.
+   */
+  readonly deliveryBudgetMs?: number;
 }
 
 export interface RelayResult {
@@ -178,9 +191,35 @@ async function realDnsHosts(domain: string): Promise<readonly string[]> {
 }
 
 /**
+ * The most MX hosts we will attempt for one recipient. RFC 5321 §5.1 places no ceiling on an MX
+ * RRset, and a hostile recipient domain can publish thousands of records that all resolve to
+ * public addresses it controls (so the SSRF guard passes) but black-hole the connection — each
+ * then costing a full connect timeout, walked SERIALLY on the single-flight relay loop, so one
+ * queued message could stall ALL outbound mail for every account for hours. Real senders publish a
+ * handful; ten covers the largest production MX sets with room to spare. The cap is applied to the
+ * preference-ordered, MTA-STS-filtered list, so the hosts kept are the ones a compliant sender
+ * tries first.
+ */
+const MAX_DELIVERY_HOSTS = 10;
+
+/**
+ * A wall-clock budget for walking ONE recipient's hosts. Checked only BETWEEN host attempts —
+ * never mid-delivery — so the RFC 5321 §4.5.3.2.6 post-DATA reply window is never cut short. Once
+ * a recipient has spent this long failing over between hosts, it is deferred (transient) rather
+ * than allowed to monopolise the single-flight loop. Generous enough for a couple of slow or
+ * timing-out MX ahead of a live one; a legitimate delivery to a reachable MX completes in seconds.
+ */
+const DELIVERY_BUDGET_MS = 120_000;
+
+/**
  * Relay a message to each of its recipients' mail servers. One recipient at a
  * time, trying that recipient's MX hosts in preference order until one accepts.
  * Never throws: every recipient yields a RelayResult, so a caller can log the lot.
+ *
+ * Bounded and cancellable: at most MAX_DELIVERY_HOSTS per recipient, at most DELIVERY_BUDGET_MS of
+ * host-to-host failover per recipient, and `opts.signal` (tripped by the relay loop on shutdown)
+ * unwinds an in-flight walk at the next recipient/host boundary. Whatever is not attempted is
+ * deferred as `transient`, so a message is never dropped or partially delivered.
  */
 export async function relayOutbound(msg: RelayableMessage, opts: OutboundOptions): Promise<readonly RelayResult[]> {
   const resolveHosts = opts.resolveHosts ?? realDnsHosts;
@@ -192,6 +231,12 @@ export async function relayOutbound(msg: RelayableMessage, opts: OutboundOptions
   const results: RelayResult[] = [];
 
   for (const recipient of msg.recipients) {
+    if (opts.signal?.aborted) {
+      // Shutdown (or a tripped deadline): defer this and every remaining recipient. The message
+      // stays durably queued and is retried on next start — never dropped, never partially sent.
+      results.push({ recipient, ok: false, classification: 'transient', detail: 'relay stopping; deferred' });
+      continue;
+    }
     const domain = domainOf(recipient);
     if (domain === '') {
       // A malformed recipient is never deliverable — bounce, do not retry.
@@ -243,6 +288,13 @@ export async function relayOutbound(msg: RelayableMessage, opts: OutboundOptions
         continue;
       }
     }
+    // Cap the SERIAL walk (see MAX_DELIVERY_HOSTS): the single chokepoint every host attempt below
+    // passes through, downstream of both the resolver and the MTA-STS filter, so a hostile RRset
+    // cannot be re-inflated by any path. Logged, never silent — the operator can see what was left.
+    if (candidateHosts.length > MAX_DELIVERY_HOSTS) {
+      opts.log?.(`${domain}: ${candidateHosts.length} MX hosts offered; attempting the first ${MAX_DELIVERY_HOSTS} by preference`);
+      candidateHosts = candidateHosts.slice(0, MAX_DELIVERY_HOSTS);
+    }
 
     // Multi-MX aggregate classification (RFC 5321 §5.1 / §4.5.4.1). Hosts are tried in
     // preference order; the per-host outcomes are merged, NOT overwritten last-host-wins:
@@ -262,7 +314,21 @@ export async function relayOutbound(msg: RelayableMessage, opts: OutboundOptions
     let sawAuthoritativePermanent = false; // a reachable MX answered 5yz
     let sawLocalPermanent = false; // our own refusal to dial this host (SSRF), not a recipient verdict
     let lastError = '';
+    const recipientStart = Date.now();
     for (const host of candidateHosts) {
+      // Unwind promptly on shutdown, and bound the total host-to-host failover time so one hostile
+      // recipient cannot monopolise the single-flight loop. Both checks sit BETWEEN attempts, so a
+      // delivery already on the wire (incl. the §4.5.3.2.6 post-DATA window) is never interrupted.
+      if (opts.signal?.aborted) {
+        lastError = 'relay stopping';
+        sawTransient = true;
+        break;
+      }
+      if (Date.now() - recipientStart >= (opts.deliveryBudgetMs ?? DELIVERY_BUDGET_MS)) {
+        lastError = `delivery time budget (${opts.deliveryBudgetMs ?? DELIVERY_BUDGET_MS} ms) exceeded before a host accepted`;
+        sawTransient = true;
+        break;
+      }
       // SSRF guard: never open a relay connection to a loopback/private MX target that a
       // hostile recipient-domain DNS could have pointed us at — as a literal IP/localhost
       // (isUnsafeMxTarget) OR as a hostname that resolves to a private address (vetMxHost).

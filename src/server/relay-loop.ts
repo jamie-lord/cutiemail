@@ -19,7 +19,12 @@ import type { RelayResult } from './outbound.ts';
 import { sanitizeForTerminalLine } from '../ops/terminal.ts';
 
 export interface RelayFn {
-  (msg: { from: string; recipients: readonly string[]; data: Buffer }): Promise<readonly RelayResult[]>;
+  /**
+   * `signal` is tripped when the loop is stopping; the relay must abandon any not-yet-attempted
+   * work promptly (deferring it as transient) so shutdown is not held open by a slow or hostile
+   * peer. Optional so a direct caller (tests) can omit it.
+   */
+  (msg: { from: string; recipients: readonly string[]; data: Buffer }, signal?: AbortSignal): Promise<readonly RelayResult[]>;
 }
 
 /** A recipient the relay has permanently given up on. */
@@ -59,6 +64,14 @@ export class RelayLoop {
   #ticking = false;
   /** Set by stop(): the in-flight tick bails at the next entry boundary and no new work starts. */
   #stopped = false;
+  /**
+   * Tripped by stop() and handed to the relay so an in-flight delivery unwinds at its next
+   * recipient/host boundary. The `#stopped` flag only bails BETWEEN entries; without this, one
+   * entry already inside a serial MX walk against a stalling peer could hold stop() open until
+   * every host timed out — the SIGTERM/cutover hang. Both together bound shutdown to at most one
+   * in-flight connect timeout.
+   */
+  readonly #abort = new AbortController();
   /** The currently-running tick, so stop() can await it before the DB is closed. */
   #running: Promise<void> = Promise.resolve();
   /** A tick requested while one was running — its `now`, so the re-run isn't lost. */
@@ -114,7 +127,7 @@ export class RelayLoop {
   async #processEntry(entry: QueueEntry, now: number): Promise<void> {
     let results: readonly RelayResult[];
     try {
-      results = await this.#relay({ from: entry.from, recipients: entry.recipients, data: entry.data });
+      results = await this.#relay({ from: entry.from, recipients: entry.recipients, data: entry.data }, this.#abort.signal);
     } catch (e) {
       this.#log(`queue ${entry.id}: relay error, ${String(e)}`);
       // relayOutbound is designed not to throw, but if it ever does (bug, OOM), treat it
@@ -221,6 +234,9 @@ export class RelayLoop {
    */
   async stop(): Promise<void> {
     this.#stopped = true;
+    // Trip the signal BEFORE awaiting the in-flight tick, so a delivery mid-MX-walk abandons its
+    // remaining hosts/recipients now rather than after they have each timed out.
+    this.#abort.abort();
     if (this.#timer !== null) {
       clearInterval(this.#timer);
       this.#timer = null;
