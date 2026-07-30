@@ -13,10 +13,12 @@ import anchor from 'markdown-it-anchor';
 import { readFileSync, writeFileSync, mkdirSync, cpSync, rmSync, existsSync, readdirSync } from 'node:fs';
 import { dirname, join, resolve, posix } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { execFileSync } from 'node:child_process';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const REPO = resolve(HERE, '..');
 const OUT = join(HERE, 'dist');
+const SITE = 'https://cuti.email'; // canonical origin, for absolute URLs in the sitemap
 const GH = 'https://github.com/jamie-lord/cutiemail';
 const GH_BLOB = `${GH}/blob/main/`;
 const GH_TREE = `${GH}/tree/main/`;
@@ -197,10 +199,16 @@ if(sb&&matchMedia('(max-width: 900px)').matches)sb.removeAttribute('open');
 </script>`;
 
 /* ---------- page writers ---------- */
-function writePage(outUrl, html) {
+// Every canonical page written, in build order, with the repo-relative source it came from. This
+// is the single source of truth for the sitemap: it can't list a page that wasn't built, and can't
+// omit one that was, because it *is* the record of the writes. (build404 writes directly, not
+// through here, so the 404 page is correctly absent.)
+const pages = [];
+function writePage(outUrl, html, srcPath) {
   const dir = outUrl === '/' ? OUT : join(OUT, outUrl.replace(/^\/|\/$/g, ''));
   mkdirSync(dir, { recursive: true });
   writeFileSync(join(dir, 'index.html'), html);
+  pages.push({ url: outUrl, src: srcPath });
 }
 
 function buildHome() {
@@ -211,7 +219,7 @@ ${nav()}
 ${footer()}
 ${navScript}
 </body></html>`;
-  writePage('/', html);
+  writePage('/', html, 'site/pages/home.html');
 }
 
 function buildDoc(item) {
@@ -243,7 +251,7 @@ ${navScript}
 ${sidebarScript}
 ${env.hasMermaid ? mermaidScript() : ''}
 </body></html>`;
-  writePage(item.url, html);
+  writePage(item.url, html, item.src);
 }
 
 function build404() {
@@ -260,6 +268,36 @@ ${navScript}
   writeFileSync(join(OUT, '404.html'), html);
 }
 
+// Derived entirely from `pages` (the writePage record), so it never needs touching when a doc or an
+// ADR is added or removed — the page's existence is its only entry ticket. `lastmod` is the last
+// commit that touched the page's *source* (its content), not the build, so re-rendering the whole
+// site with a template change doesn't falsely restamp every URL. It needs real git history
+// (fetch-depth: 0 in CI); where history is unavailable the entry is emitted with no `lastmod`
+// rather than a date we can't stand behind — an honest sitemap over a flattering one.
+function lastModOf(src) {
+  try {
+    const iso = execFileSync('git', ['log', '-1', '--format=%cI', '--', src], {
+      cwd: REPO, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'],
+    }).trim();
+    return iso || null;
+  } catch {
+    return null; // git absent, or the source not yet committed
+  }
+}
+
+function buildSitemap() {
+  const entries = pages.map(({ url, src }) => {
+    const lastmod = lastModOf(src);
+    return `  <url><loc>${esc(SITE + url)}</loc>${lastmod ? `<lastmod>${lastmod}</lastmod>` : ''}</url>`;
+  });
+  const xml = `<?xml version="1.0" encoding="UTF-8"?>\n`
+    + `<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n`
+    + `${entries.join('\n')}\n`
+    + `</urlset>\n`;
+  writeFileSync(join(OUT, 'sitemap.xml'), xml);
+  return pages.length;
+}
+
 const FAVICON = readFileSync(join(HERE, 'assets/mascot-mark.svg'), 'utf8');
 
 /* ---------- run ---------- */
@@ -273,5 +311,6 @@ buildHome();
 let count = 0;
 for (const g of NAV) for (const it of g.items) { buildDoc(it); count++; }
 build404();
+const urls = buildSitemap();
 
-console.log(`built: homepage + ${count} docs pages → site/dist`);
+console.log(`built: homepage + ${count} docs pages + sitemap.xml (${urls} urls) → site/dist`);
