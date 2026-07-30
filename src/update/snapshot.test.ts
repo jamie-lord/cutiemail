@@ -512,3 +512,72 @@ test('a mail database outside the data directory is refused', () => {
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+/**
+ * The unmirrored sibling of the catalog_meta guard. `censusOf` learned (commit 0014b93) to probe
+ * catalog_meta's columns before naming them, because a dormant account sits at an older additive
+ * schema while PRAGMA user_version reads the same as an up-to-date one. But the very next read
+ * named `mailbox.name` — added by the same kind of open-triggered migration — outright, so a
+ * database created before multi-mailbox and never opened since crashed the BEFORE census with
+ * `no such column: name`, before the candidate even booted, failing every future update and
+ * blaming the candidate. This proves the whole class is now tolerated: the dormant database is
+ * censused, and the candidate's migration that adds the column reads as forward movement, not loss.
+ */
+test('a dormant mail database predating the mailbox.name column is censused, and its migration reads as forward movement', () => {
+  inTmp((dir) => {
+    // A faithful pre-multi-mailbox account: exactly one mailbox (INBOX), no Sent/Trash (which only
+    // exist once the name column does), two messages, one flagged.
+    const controlDb = join(dir, 'control.db');
+    const cdb = openMailDb(controlDb);
+    const mailPath = join(dir, 'mail-alice.db');
+    AccountRegistry.open(cdb).upsert('alice', 'alice-password', mailPath);
+    const udb = openMailDb(mailPath);
+    const inbox = SqliteCatalog.open(udb, 1).get('INBOX')!;
+    inbox.append(Buffer.from('Subject: one\r\n\r\nbody one\r\n', 'latin1'), ['\\Seen'], 1_700_000_000_000);
+    inbox.append(Buffer.from('Subject: two\r\n\r\nbody two\r\n', 'latin1'), [], 1_700_000_001_000);
+    udb.close();
+    SqliteQueue.open(cdb); // the control DB is always current; censusOf reads its queue tables
+    cdb.close();
+
+    const snapshot = takeSnapshot(controlDb, join(dir, 'snap'));
+    try {
+      const dormant = snapshot.mailDbs.find((m) => m.login === 'alice')!.path;
+      // Wind the snapshot copy back to the on-disk shape of a database created before the name
+      // column existed: drop the unique index, then the column. user_version is left untouched —
+      // that is exactly why it cannot be trusted to tell a dormant schema from a current one.
+      const back = new DatabaseSync(dormant);
+      const versionBefore = Number((back.prepare('PRAGMA user_version').get() as { user_version: number | bigint }).user_version);
+      back.exec('DROP INDEX IF EXISTS mailbox_name');
+      back.exec('ALTER TABLE mailbox DROP COLUMN name');
+      assert.equal(
+        Number((back.prepare('PRAGMA user_version').get() as { user_version: number | bigint }).user_version),
+        versionBefore,
+        'user_version is unchanged — a dormant old-schema database is indistinguishable by version',
+      );
+      back.close();
+
+      // Before the fix this threw `no such column: name` at prepare time.
+      const before = censusOf(snapshot);
+      const inboxCensus = before.mailboxes.find((m) => m.login === 'alice' && m.mailbox === 'INBOX');
+      assert.ok(inboxCensus, 'the dormant account is censused, defaulting the absent name to INBOX');
+      assert.equal(inboxCensus!.messages, 2, 'its two messages are counted, not lost to a crash');
+
+      // The candidate migrates it: opening the catalog re-adds the name column (default INBOX).
+      const migrated = openMailDb(dormant);
+      SqliteCatalog.open(migrated, 1);
+      migrated.close();
+      const after = censusOf(snapshot);
+
+      // Adding the column is forward movement — the default matches the migration's own INBOX, so
+      // the digest is unchanged. A fix that merely turned the crash into a spurious "data changed"
+      // finding would be no better; this asserts there is no finding at all.
+      assert.deepEqual(
+        compareCensus(before, after),
+        [],
+        'adding the name column must read as forward movement, not as data loss',
+      );
+    } finally {
+      snapshot.destroy();
+    }
+  });
+});

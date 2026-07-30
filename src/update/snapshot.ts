@@ -347,6 +347,30 @@ export interface Census {
 
 const count = (db: DatabaseSync, sql: string): number => Number((db.prepare(sql).get() as { c: number | bigint }).c);
 
+/**
+ * The columns `table` has right now, or an empty set if the table does not exist. `pragma_table_info`
+ * neither throws nor returns rows for an absent table, so this doubles as an existence check.
+ *
+ * This is the SINGLE way censusOf asks a mail database what it holds before reading it. Mail
+ * databases migrate when their catalog is opened, and a catalog is opened when its account is used,
+ * so a registered-but-dormant account sits at an older, additive schema indefinitely while
+ * `PRAGMA user_version` reads exactly the same as an up-to-date one (these migrations are reconciled
+ * by column probe, not a version bump). A read that NAMES a not-yet-migrated column or table throws
+ * `no such column`/`no such table` at prepare time and fails every future update on an otherwise
+ * healthy deployment — misreported against the candidate as "migration against your data". Routing
+ * every migration-sensitive read through this one probe is what stops any individual SELECT becoming
+ * the unmirrored sibling that reintroduces that crash: absent reads as its post-migration default,
+ * and compareCensus only ever flags a mark that moved BACKWARDS, so adding a column is forward.
+ */
+function columnsOf(db: DatabaseSync, table: string): Set<string> {
+  // pragma_table_info takes a LITERAL, not a bound parameter: parameterising it makes SQLite build
+  // a temporary structure and throw "attempt to write a readonly database" on the read-only
+  // snapshot handle this always runs against. `table` is a compile-time constant at every call
+  // site, so interpolation is safe; the identifier check keeps it safe if that ever stops holding.
+  if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(table)) throw new Error(`unsafe table identifier: ${table}`);
+  return new Set((db.prepare(`SELECT name FROM pragma_table_info('${table}')`).all() as Array<{ name: string }>).map((c) => c.name));
+}
+
 /** Read a census from a snapshot, strictly read-only so taking one can never alter what it measures. */
 export function censusOf(snapshot: Snapshot): Census {
   const control = new DatabaseSync(snapshot.controlDb, { readOnly: true });
@@ -422,23 +446,13 @@ export function censusOf(snapshot: Snapshot): Census {
     const db = new DatabaseSync(path, { readOnly: true });
     try {
       mailSchemaVersions[login] = Number((db.prepare('PRAGMA user_version').get() as { user_version: number | bigint }).user_version);
-      // Ask what this database HAS before asking for it.
-      //
-      // Mail databases are migrated when their catalog is opened, and a catalog is opened when its
-      // account is used. A registered account that has simply not been touched since a column was
-      // added therefore sits at the older schema indefinitely — and `PRAGMA user_version` does not
-      // distinguish the two, because these migrations are additive and reconciled by column probe
-      // rather than by a version bump. So a census that names a column outright throws
-      // `no such column` on a perfectly healthy deployment, at prepare time, and the ladder reports
-      // it against `migration against your data` — blaming the operator's data for a question the
-      // census had no business assuming the answer to. Every subsequent update fails the same way.
-      //
-      // Absent is not zero-by-accident, it is zero by definition: a mark that does not exist cannot
-      // have been lowered, and compareCensus only reports a mark that moved BACKWARDS. The
-      // candidate's migration adds the column seeded past every id in use, which is forward.
-      const catalogCols = new Set(
-        (db.prepare("SELECT name FROM pragma_table_info('catalog_meta')").all() as Array<{ name: string }>).map((c) => c.name),
-      );
+      // Ask what this database HAS before asking for it — via the single columnsOf probe, so no
+      // read here can name a column an additive, open-triggered migration has not added yet and
+      // crash the census on a dormant old-schema account (see columnsOf). Absent is not
+      // zero-by-accident, it is zero by definition: a mark that does not exist cannot have been
+      // lowered, and compareCensus only reports a mark that moved BACKWARDS; the candidate's
+      // migration adds the column seeded past every id in use, which is forward.
+      const catalogCols = columnsOf(db, 'catalog_meta');
       const markColumns = ['uid_validity_hwm', 'mailbox_id_hwm'].filter((c) => catalogCols.has(c));
       const marks = markColumns.length === 0
         ? undefined
@@ -450,12 +464,26 @@ export function censusOf(snapshot: Snapshot): Census {
         uidValidityHwm: Number(marks?.uid_validity_hwm ?? 0),
         mailboxIdHwm: Number(marks?.mailbox_id_hwm ?? 0),
       });
-      const boxes = db.prepare('SELECT id, name, uid_next, uid_validity FROM mailbox ORDER BY name').all() as Array<{
+      // `name` is additive (migrateNameColumn): a database predating multi-mailbox has a single
+      // INBOX and no name column, so read it tolerantly. The default is migrateNameColumn's OWN
+      // 'INBOX', so the digest key a dormant database produces matches what the candidate's
+      // migration will fill in — the absence reads as forward movement, never as a change. The
+      // whole-word alias keeps the projection and ORDER BY byte-identical for an up-to-date schema.
+      const mailboxCols = columnsOf(db, 'mailbox');
+      const nameExpr = mailboxCols.has('name') ? '"name"' : `'INBOX'`;
+      const boxes = (mailboxCols.size === 0
+        ? []
+        : db.prepare(`SELECT id, ${nameExpr} AS name, uid_next, uid_validity FROM mailbox ORDER BY name`).all()) as Array<{
         id: number;
         name: string;
         uid_next: number;
         uid_validity: number;
       }>;
+      // Whether the flag / expunge-journal tables exist at all (probed once per database, not per
+      // mailbox). Base tables today, but read through the same tolerance so a database predating
+      // either is censused as empty rather than crashing the update — no unmirrored sibling.
+      const hasFlagTable = columnsOf(db, 'flag').size > 0;
+      const hasExpungedTable = columnsOf(db, 'expunged').size > 0;
       for (const box of boxes) {
         const messages = Number(
           (db.prepare('SELECT COUNT(*) c FROM message WHERE mailbox_id = ?').get(box.id) as { c: number | bigint }).c,
@@ -480,7 +508,9 @@ export function censusOf(snapshot: Snapshot): Census {
         // mailbox and indexed, not queried per message. Losing them marks every message in every
         // account unread and discards every pending \\Deleted — user-visible, and irreversible once
         // the pre-cutover snapshot is pruned.
-        const flagRows = db.prepare('SELECT uid, flag FROM flag WHERE mailbox_id = ? ORDER BY uid, flag').all(box.id) as Array<{
+        const flagRows = (hasFlagTable
+          ? db.prepare('SELECT uid, flag FROM flag WHERE mailbox_id = ? ORDER BY uid, flag').all(box.id)
+          : []) as Array<{
           uid: number;
           flag: string;
         }>;
@@ -492,7 +522,9 @@ export function censusOf(snapshot: Snapshot): Census {
         }
         // The expunge journal is what QRESYNC replays to a reconnecting client. Dropping it does
         // not lose mail, but it silently degrades every phone's fast resync into a full refetch.
-        const expunged = db.prepare('SELECT uid, mod_seq FROM expunged WHERE mailbox_id = ? ORDER BY uid').all(box.id) as Array<{
+        const expunged = (hasExpungedTable
+          ? db.prepare('SELECT uid, mod_seq FROM expunged WHERE mailbox_id = ? ORDER BY uid').all(box.id)
+          : []) as Array<{
           uid: number;
           mod_seq: number | bigint;
         }>;
