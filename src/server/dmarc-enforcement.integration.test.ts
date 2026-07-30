@@ -168,6 +168,75 @@ test('an author domain the attacker appended cannot choose the governing policy'
   }
 });
 
+/**
+ * The structural twin of the appended-mailbox spoof above, one header up: RFC 5322 §3.6.1
+ * permits exactly one From, but a message can carry several From HEADERS. Evaluating only the
+ * first header's value left a p=reject victim carried in a second From header unqueried, and the
+ * spoof reached the INBOX. RFC 9989 §11.5 requires every author domain — across all From headers
+ * — to be weighed, and the strictest failing policy applied.
+ */
+async function sendRawHeaders(port: number, headerBlock: string): Promise<void> {
+  await deliver(
+    { host: '127.0.0.1', port, tls: 'none' },
+    {
+      from: 'sender@rejector.test',
+      recipients: ['alice@mail.example.test'],
+      data: Buffer.from(`${headerBlock}\r\nSubject: multi-from probe\r\n\r\nbody\r\n`, 'latin1'),
+      clientName: 'rejector.test',
+    },
+  );
+  await delay(150);
+}
+
+test('a p=reject victim in a SECOND From header is quarantined, whichever order the headers are in', async () => {
+  for (const block of [
+    'From: attacker@nowhere.test\r\nFrom: sender@rejector.test', // attacker (no policy) first
+    'From: sender@rejector.test\r\nFrom: attacker@nowhere.test', // victim first
+  ]) {
+    const server = await startServer(baseConfig(() => 0));
+    try {
+      const alice = server.stores.get('alice')!;
+      await sendRawHeaders(server.inbound.port, block);
+      assert.equal(readMessages(alice.catalog.get('Junk')!).length, 1, `${block} — the second header's p=reject must be applied`);
+      assert.equal(readMessages(alice.catalog.get('INBOX')!).length, 0, `${block} — not the INBOX`);
+    } finally {
+      await server.close();
+    }
+  }
+});
+
+test('a spoof padded with more author domains than the §11.5 budget fails safe to Junk', async () => {
+  // Five distinct no-policy From headers ahead of the p=reject victim push it past
+  // MAX_AUTHOR_DOMAINS. We cannot certify the message as policy-free, so a guaranteed display-spoof
+  // is quarantined rather than delivered — the attacker cannot buy the INBOX by padding.
+  const server = await startServer(baseConfig(() => 0));
+  try {
+    const alice = server.stores.get('alice')!;
+    const pad = [1, 2, 3, 4, 5].map((n) => `From: p${n}@pad${n}.test`).join('\r\n');
+    await sendRawHeaders(server.inbound.port, `${pad}\r\nFrom: sender@rejector.test`);
+    assert.equal(readMessages(alice.catalog.get('Junk')!).length, 1, 'padded-past-budget spoof is quarantined');
+    assert.equal(readMessages(alice.catalog.get('INBOX')!).length, 0);
+  } finally {
+    await server.close();
+  }
+});
+
+test('a multi-From spoof whose author domains all genuinely publish nothing is not over-enforced', async () => {
+  // Guaranteed display-spoof (two From headers), but every author domain — weighed in full,
+  // within budget — publishes no policy. Like the single-From no-policy case, it stays in the
+  // INBOX: the fail-safe quarantine fires only when a domain could NOT be weighed, not whenever
+  // more than one From is present.
+  const server = await startServer(baseConfig(() => 0));
+  try {
+    const alice = server.stores.get('alice')!;
+    await sendRawHeaders(server.inbound.port, 'From: a@nowhere.test\r\nFrom: b@nowhere2.test');
+    assert.equal(readMessages(alice.catalog.get('INBOX')!).length, 1, 'no author domain enforces → INBOX');
+    assert.equal(readMessages(alice.catalog.get('Junk')!).length, 0, 'not quarantined merely for having two From headers');
+  } finally {
+    await server.close();
+  }
+});
+
 test('a From present but unresolvable to any author domain is quarantined, not delivered', async () => {
   const server = await startServer(baseConfig(() => 0));
   try {

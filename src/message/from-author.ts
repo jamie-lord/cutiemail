@@ -151,6 +151,32 @@ export function authorDomains(value: string): string[] {
   return out;
 }
 
+/**
+ * Every author domain the WHOLE message asserts: across all From headers AND every mailbox in
+ * each, de-duplicated in the order written. This is the multi-header companion to
+ * `authorDomains` (which sees a single header value), and the whole-message analogue of
+ * `fromAuthor`'s `count` — which already spans both `froms.length` and `mailboxCount`.
+ *
+ * DMARC (RFC 9989 §11.5) must "apply the DMARC mechanism to each domain found in the
+ * RFC5322.From field … and apply the most strict policy selected among the checks that fail".
+ * Reading only the first header's value let an attacker carry the victim's p=reject domain in a
+ * SECOND From header, whose zone was then never queried, and file the spoof to the INBOX. The
+ * single-header multi-mailbox variant of this was closed first; this is its structural twin, so
+ * both the count and the domain enumeration now derive the From-header set through
+ * `isFromHeader` — they cannot disagree about which headers are in play.
+ */
+export function allAuthorDomains(raw: Buffer): string[] {
+  const { headers } = parseMessage(raw);
+  const out: string[] = [];
+  for (const h of headers) {
+    if (!isFromHeader(h.name)) continue;
+    for (const domain of authorDomains(h.value.toString('latin1'))) {
+      if (!out.includes(domain)) out.push(domain);
+    }
+  }
+  return out;
+}
+
 /** The addr-spec of one already-stripped mailbox segment: the last angle-addr, else the bare
  *  value. Last, not first, because that is the one an MUA renders for `"x <a@evil>" <victim@bank>`. */
 function addrSpecOfSegment(segment: string): string | null {
@@ -166,6 +192,17 @@ function addrSpecOfSegment(segment: string): string | null {
 }
 
 /**
+ * Whether a parsed header is a From header (RFC 5322 §3.6.1). Every place that enumerates or
+ * counts From headers normalises the field name the SAME way here, so `fromAuthor`'s `count`
+ * (from `froms.length`) and `allAuthorDomains`'s enumeration can never disagree about which
+ * headers are the From set — a disagreement would let `count>1` force a spoof verdict while the
+ * domain walk saw only one domain.
+ */
+function isFromHeader(name: Buffer): boolean {
+  return name.toString('latin1').trim().toLowerCase() === 'from';
+}
+
+/**
  * The From author of a raw message: the single addr-spec (spoof-hardened) and how many author
  * mailboxes the message carries. RFC 5322 §3.6.1 requires exactly one From with exactly one
  * mailbox; more than one From header OR more than one mailbox in the single From value is the
@@ -176,7 +213,7 @@ function addrSpecOfSegment(segment: string): string | null {
  */
 export function fromAuthor(raw: Buffer): { address: string | null; count: number; value: string | null } {
   const { headers } = parseMessage(raw);
-  const froms = headers.filter((h) => h.name.toString('latin1').trim().toLowerCase() === 'from');
+  const froms = headers.filter((h) => isFromHeader(h.name));
   if (froms.length === 0) return { address: null, count: 0, value: null };
   const value = froms[0]!.value.toString('latin1');
   const count = froms.length > 1 ? froms.length : mailboxCount(value);

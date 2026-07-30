@@ -8,7 +8,7 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { authorAddrSpec, domainOfAddrSpec, fromAuthor, mailboxCount } from './from-author.ts';
+import { allAuthorDomains, authorAddrSpec, domainOfAddrSpec, fromAuthor, mailboxCount } from './from-author.ts';
 
 test('authorAddrSpec takes the plain angle-addr', () => {
   assert.equal(authorAddrSpec('Alice <alice@example.com>'), 'alice@example.com');
@@ -92,4 +92,23 @@ test('fromAuthor surfaces the true mailbox count for a single-header list (count
   const ok = fromAuthor(msg('From: "Alice, Example" <alice@example.com>'));
   assert.equal(ok.count, 1);
   assert.equal(ok.address, 'alice@example.com');
+});
+
+test('allAuthorDomains gathers every author domain across ALL From headers and mailboxes, de-duplicated', () => {
+  // Two From headers AND a mailbox-list within one — DMARC (RFC 9989 §11.5) must weigh them all.
+  // Reading only the first header's value was the multi-header spoof: a p=reject domain hidden in
+  // a second From header was never queried.
+  assert.deepEqual(
+    allAuthorDomains(msg('From: a@first.example, b@first-list.example\r\nFrom: victim@bank.com')),
+    ['first.example', 'first-list.example', 'bank.com'],
+  );
+  // De-duplication across headers (same domain, different local parts) and the same spoof-hardened
+  // parse every other function uses (display-name decoy resolves to the shown address).
+  assert.deepEqual(
+    allAuthorDomains(msg('From: "x <a@evil.com>" <shown@bank.com>\r\nFrom: other@bank.com')),
+    ['bank.com'],
+  );
+  // A single From is exactly the single-header domain set (no behaviour change on the common case).
+  assert.deepEqual(allAuthorDomains(msg('From: alice@example.com')), ['example.com']);
+  assert.deepEqual(allAuthorDomains(msg('To: nobody@example.com')), []);
 });

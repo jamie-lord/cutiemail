@@ -20,7 +20,7 @@
 
 import { domainToASCII } from 'node:url';
 import { parseDmarcRecord, checkAlignment, testModePolicy } from '../auth/dmarc.ts';
-import { fromAuthor, domainOfAddrSpec, authorDomains } from '../message/from-author.ts';
+import { fromAuthor, domainOfAddrSpec, allAuthorDomains } from '../message/from-author.ts';
 import { registeredDomain } from '../auth/public-suffix.ts';
 
 export type DmarcVerdict = 'pass' | 'fail' | 'none' | 'temperror';
@@ -181,11 +181,6 @@ const POLICY_RANK: Record<string, number> = { none: 0, quarantine: 1, reject: 2 
 /** How strict a published policy is; an absent policy is weaker than any published one. */
 const rankOf = (p: string | null): number => (p === null ? -1 : (POLICY_RANK[p] ?? -1));
 
-/** The first From header's raw value, for the §11.5 multi-domain pass. */
-function fromValueOf(raw: Buffer): string {
-  return fromAuthor(raw).value ?? '';
-}
-
 export async function checkDmarc(input: DmarcInput): Promise<DmarcOutcome> {
   const { domain: fromDomain, count: fromCount, present: fromPresent } = fromHeaderInfo(input.rawMessage);
   // §3.6.1: exactly one From is required. More than one is the canonical display-spoof
@@ -263,23 +258,44 @@ export async function checkDmarc(input: DmarcInput): Promise<DmarcOutcome> {
   // mechanism to each domain found in the RFC5322.From field as the Author Domain and apply the
   // most strict policy selected among the checks that fail".
   if (spoofMultiFrom) {
-    const domains = authorDomains(fromValueOf(input.rawMessage)).slice(0, MAX_AUTHOR_DOMAINS);
+    // Every author domain the message asserts, across ALL From headers and every mailbox in each
+    // (§11.5) — not just the first header's value. Carrying the victim's policy domain in a
+    // second From header used to leave its zone unqueried and the spoof filed to the INBOX.
+    const allDomains = allAuthorDomains(input.rawMessage);
+    const domains = allDomains.slice(0, MAX_AUTHOR_DOMAINS);
     let best: { published: string | null; policy: string | null; pct: number; testMode: boolean } | null = null;
+    // Whether we managed to weigh EVERY author domain. False if there were more than the §11.5
+    // budget allows, or if a domain's DNS failed — either way a p=reject we did not reach.
+    let evaluatedAll = allDomains.length <= MAX_AUTHOR_DOMAINS;
     for (const domain of domains) {
-      if (queriesLeft <= 0) break;
+      if (queriesLeft <= 0) {
+        evaluatedAll = false;
+        break;
+      }
       let found;
       try {
         found = await discover(domain);
       } catch {
+        evaluatedAll = false; // an unresolved domain may have published an enforcing policy
         continue; // one domain's DNS failure must not discard a policy already found
       }
       const governing = governingOf(found);
       if (governing === null) continue;
       if (best === null || rankOf(governing.published) > rankOf(best.published)) best = governing;
     }
+    // A multi-From message is a guaranteed display-spoof: the verdict is always `fail`, so the
+    // only open question is enforcement. Honour the strictest enforcing policy found. If we
+    // weighed every author domain and none enforces, it is a policy-less fail and stays out of
+    // enforcement — the same outcome the single-From no-policy case gets. But if we could NOT
+    // weigh them all, an attacker could have padded junk domains ahead of a p=reject victim to
+    // push it past the budget, so we must not certify the message as policy-free: fail safe to
+    // quarantine (Junk, never reject — ADR 0010). `publishedPolicy` stays honest (null; no zone
+    // published this), while `policy` — the field the enforcement path reads — governs. A
+    // legitimate sender never carries this many author domains, so real mail is unaffected.
+    const governingPolicy = best?.policy ?? (evaluatedAll ? null : 'quarantine');
     return {
       verdict: 'fail',
-      policy: best?.policy ?? null,
+      policy: governingPolicy,
       publishedPolicy: best?.published ?? null,
       fromDomain,
       pct: best?.pct ?? 100,
