@@ -24,7 +24,7 @@ Measured on the 2-vCPU reference VM:
 | local append (one fsync'd transaction per message) | ~550 msg/s |
 | 20-minute connection-churn soak (4,881 connections) | 0 errors, 0 leaks |
 
-For scale: 244 messages/s inbound is roughly 880,000 mail per hour, far beyond any personal
+For scale: 244 messages/s inbound is roughly 880,000 messages per hour, far beyond any personal
 domain. A real flood queues at the sender's MX; it does not fail here. And sustained mixed
 load (inbound, outbound, and IMAP all at once, including a 40 %-rejection bounce storm) runs
 with zero errors, zero `SQLITE_BUSY`, and flat memory.
@@ -41,7 +41,7 @@ each unit of work is small and bounded**, which reduces the performance design t
 Two mechanisms enforce it.
 
 **Reads are lazy.** The storage layer exposes two accessors instead of a load-everything view
-([`src/store/mailbox.ts`](../src/store/mailbox.ts)):
+([`src/store/sqlite-mailbox.ts`](../src/store/sqlite-mailbox.ts)):
 
 - `index()`: ordered per-message metadata (uid, flags, date, modseq, size) with **no body
   bytes**. Two queries regardless of mailbox size: sizes come from `LENGTH(raw)` (SQLite reads

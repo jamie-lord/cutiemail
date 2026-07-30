@@ -59,6 +59,8 @@ The server (and therefore the test bed that must cover it) makes these cuts:
 6. **ARC (RFC 8617) and Sieve (RFC 5228) deferred** to a later tier. DKIM + SPF +
    DMARC are the deliverability must-haves; ARC matters only for forwarding and
    can follow.
+   > **Amendment (2026-07-30):** ADR 0011 un-deferred the inbound half of ARC
+   > (`server/arc-inbound.ts`, `auth/arc.ts`, `crypto/arc-seal.ts`); Sieve remains deferred.
 7. **JMAP deferred.** Genuinely modern and desirable, but additive; not part of
    the minimum viable server.
 

@@ -37,12 +37,12 @@ triage discipline's third bucket.
 
 | Requirement | What the suite reported | Independent raw-socket repro | Verdict |
 |---|---|---|---|
-| R-5321-2.3.8-a (MUST NOT) | server executed a bare-LF-terminated EHLO (250) | `EHLO …\n` (no CR) → full `250` EHLO response | genuine: aiosmtpd honors bare LF |
+| R-5321-2.3.8-a (MUST NOT) | server executed a bare-LF-terminated EHLO (250) | `EHLO …\n` (no CR) → full `250` EHLO response | genuine: aiosmtpd honours bare LF |
 | R-5321-4.1.1.4-i (MUST NOT) | server executed a bare-LF NOOP (250) | `NOOP\n` → `250 OK` | genuine: same root cause |
 | R-5321-4.1.2-j (MUST NOT) | MAIL with a NUL octet in the local-part accepted (250) | EHLO, then `MAIL FROM:<pr\0obe@…>` → `250 OK` | genuine: no control-octet validation |
 | R-5321-4.1.2-n (MUST) | command with a BEL (0x07) octet accepted, not rejected 501 | `EHLO conf\x07erence` → full `250` response | genuine: same root cause |
 
-The bare-LF findings are the notable ones: aiosmtpd honors `<LF>` as a line terminator
+The bare-LF findings are the notable ones: aiosmtpd honours `<LF>` as a line terminator
 (asyncio's `StreamReader.readline` splits on `\n`), which is precisely the SMTP-smuggling
 primitive the flagship CRLF corpus exists to catch. The suite caught it in real, shipping,
 widely-deployed software on the first run, the strongest possible evidence the smuggling

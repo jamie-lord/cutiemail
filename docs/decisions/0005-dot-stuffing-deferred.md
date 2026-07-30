@@ -42,3 +42,9 @@ preservation (§2.4-c/-d), and the non-modification requirements (§2.4-i) all b
 at once. That sink is the natural home for a real dot-stuffing corpus. Until then, this is a
 known, reasoned gap, visible in the coverage report as `not-testable` register entries, not a
 silent omission.
+
+> **Amendment (2026-07-30):** the revisit trigger has fired. The receiving sink was built
+> (`src/testing/sink-server.ts`, which names this decision as the seam it was waiting on), and
+> `src/corpus/delivery-transparency.ts` now covers §4.5.2 dot-un-stuffing (`R-5321-4.5.2-c`),
+> local-part case preservation (§2.4-c/-d) and body non-modification (§2.4-i) against it — so the
+> transparency corpus this record deferred now exists.

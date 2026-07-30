@@ -22,7 +22,7 @@ flowchart LR
     B -- local --> C[mailbox]
     B -- remote --> D[(outbound queue)]
     D -- "MAIL_OUTBOUND unset / deliver" --> E[relay to MX]
-    D -- "MAIL_OUTBOUND=hold" --> F[held: inspectable via queue list,\nnever relayed]
+    D -- "MAIL_OUTBOUND=hold" --> F["held: inspectable via queue list,<br/>never relayed"]
 ```
 
 ## Decision

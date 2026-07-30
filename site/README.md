@@ -23,8 +23,8 @@ npx wrangler dev       # preview locally (or serve ./dist with any static server
 
 `site/build.mjs` writes static HTML to `site/dist`, which Cloudflare Workers serves as static
 assets (`wrangler.jsonc`). A GitHub Actions workflow (`.github/workflows/deploy-site.yml`) rebuilds
-and deploys on every push to `main` that touches a published source: the docs, the README, or
-this directory. No manual step, and a new ADR appears automatically (the sidebar is generated from
+and deploys on every push to `main` that touches a published source: the docs, the README, the
+contributing and security policies, or this directory. No manual step, and a new ADR appears automatically (the sidebar is generated from
 `docs/decisions/`).
 
 ## What lives where

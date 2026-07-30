@@ -158,7 +158,7 @@ folder. Read the pair as one word, the way `systemctl <verb>` is one word:
 | `MAIL_HOST` | `127.0.0.1` | bind address (`0.0.0.0` in production) |
 | `MAIL_SMTP_PORT` / `MAIL_SUBMISSION_PORT` / `MAIL_IMAP_PORT` | `2525` / `5587` / `5993` | listener ports (use 25 / 587 / 993 in production) |
 | `MAIL_USER` (+ `MAIL_PASS`) | unset | set **both** to seed a primary account at boot (create-only, ADR 0012); `MAIL_PASS` is ignored unless `MAIL_USER` is set. Prefer `init`/`account` (above), which keep no password in the environment. With neither set and an empty registry, a `demo`/`demo` dev account is seeded so `npm start` just works, on a **loopback bind only**; a public bind refuses to boot instead. |
-| `MAIL_ACCOUNTS` | unset | additional accounts, `"user:pass,user2:pass2"` (each gets its own `mail-<user>.db`); create-only, like `MAIL_USER`. **Every entry must contain a colon**: a malformed one fails the boot naming it, rather than being silently dropped. An entry colliding with an existing login only by case, or whose name an alias already claims, is skipped with a logged reason |
+| `MAIL_ACCOUNTS` | unset | additional accounts, `"user:pass,user2:pass2"` (each gets its own `mail-<user>.db`); create-only, like `MAIL_USER`. **Every entry must contain a colon**: a malformed one fails the boot naming it, rather than being silently dropped. An entry colliding with an existing login only by case, or whose name an alias already claims, is skipped with a logged warning |
 | `MAIL_CONTROL_DB` | `control.db` | the control database: account registry + outbound queue (created in the **current directory** unless you give a path; point it somewhere real for a deployment) |
 | `MAIL_DB` | `mail.db` | the primary account's mailbox database, only read together with `MAIL_USER`, and also the file the seeded `demo` account uses (so a bare `npm start` creates `control.db` + `mail.db`). Accounts created by `init`/`account` get `mail-<login>.db` beside the control DB instead. For a fully ephemeral run set `MAIL_CONTROL_DB=:memory:` (every mail DB then defaults to `:memory:`). |
 | `MAIL_TLS_CERT` / `MAIL_TLS_KEY` | bundled dev cert | PEM cert/key paths. Unset falls back to a bundled dev cert, but **only on a loopback bind**: the daemon refuses to boot with the dev cert on a non-loopback `MAIL_HOST` (its private key is public), so production must set these (`MAIL_ALLOW_DEV_CERT=1` forces it for a throwaway test). A set path that can't be read fails the boot with a message naming the variable. |
@@ -301,8 +301,9 @@ at *any* mail server. It exists because nothing else quite does. There are good 
 `imaptest`) and JMAP (Fastmail's JMAP-TestSuite) conformance tools, but for SMTP the field is
 load generators and fakes, not compliance checkers.
 
-Everything traces to a [requirement register](src/register/): the normative statements of RFC 5321
-§§1-7 plus the STARTTLS command-injection requirement of RFC 3207 §4.2, each quoted **verbatim**
+Everything traces to a [requirement register](src/register/) — for the SMTP suite, the normative
+statements of RFC 5321 §§1-7 plus the STARTTLS command-injection requirement of RFC 3207 §4.2 (the
+register spans other RFCs and domains too; see the architecture guide) — each quoted **verbatim**
 (a test checks every quote against the vendored RFC), tagged with its RFC 2119 level, the party it
 binds, and whether it is observable from a receiver socket at all. Many bind the client or need a
 receiving sink, and the register says so rather than hide behind a flattering percentage.

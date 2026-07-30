@@ -98,9 +98,10 @@ Register the module in `src/corpus/index.ts` (add to `ALL_CASES` / `ALL_MUTANTS`
 coverage report reads those, so an unregistered module is invisible, which the report will
 show as uncovered requirements, not as a pass.
 
-Wire the module's `*.test.ts` to the matching harness (all in `negative-control.ts`):
-`verifyNegativeControls` for ordinary MUST cases, `verifyLatitudeControls` for SHOULD/MAY,
-`verifySinkControls` for delivery-path cases. Each proves every case both ways for you.
+Wire the module's `*.test.ts` to the matching harness: `verifyNegativeControls` for ordinary MUST
+cases and `verifySinkControls` for delivery-path cases (both in `negative-control.ts`), and
+`verifyLatitudeControls` for SHOULD/MAY (in `latitude-control.ts`). Each proves every case both
+ways for you.
 
 ## Three kinds of case, three harnesses
 

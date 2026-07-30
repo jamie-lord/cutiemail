@@ -45,7 +45,7 @@ exactly:
 
 - Connection B `SELECT`s a 5-message INBOX (seq 1..5 → UID 1..5).
 - Connection A expunges UID 2.
-- B, with no intervening boundary, issues `FETCH 2 (UID)`, and got **`UID 3`**.
+- B, with no intervening boundary, issues `FETCH 2 (UID)`, and gets **`UID 3`**.
 
 The server had silently renumbered B's sequence 2 onto UID 3, **without first sending B the
 EXPUNGE**. RFC 9051 §7.4.1 forbids exactly this: a server must not renumber a connection's
