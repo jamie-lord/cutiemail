@@ -83,7 +83,10 @@ checks that prevent splice and replay. The AUTH state machine (`canAuth`) is now
 source of truth wired into the production receiver, not a parallel model: it adds the
 previously-missing no-AUTH-mid-transaction guard (RFC 4954 §4), and live-receiver tests pin
 `AUTH LOGIN` / `CRAM-MD5` => `504`, a second `AUTH` => `503`, `AUTH` on the inbound listener =>
-`504`, and a SASL cancel => `501`. Its checks: no-AUTH-mid-transaction, no re-auth, and the
+`504`, and a SASL cancel => `501`. A SASL response the server cannot base64-decode (a non-alphabet
+octet, or a `=` anywhere but the end) draws `501 5.5.2` per RFC 4954 §4 — distinct from the `535` a
+decodable-but-wrong credential gets, so a client with a broken encoder is not sent back to the user
+for a new password. Its checks: no-AUTH-mid-transaction, no re-auth, and the
 deliberate no-plaintext-AUTH-without-TLS gate. Submission fix-up (missing
 `Date`/`Message-ID`/`From`) is tested per RFC 6409, and **sender authorization** (an account
 may only send as an address it owns) carries its own spoof-attempt corpus (ADR 0015).
@@ -135,7 +138,10 @@ denormalised 8-bit name (RFC 9051 §5.1, ADR 0021); and a
 hierarchy-child `CREATE` surfaces the missing parent as `(\NonExistent \HasChildren)` in a
 `%`-walk rather than auto-creating it. The reject surface is pinned negatively: an unknown /
 unsupported FETCH att (including `BINARY`) => `BAD`, a `VANISHED` FETCH modifier without
-`ENABLE QRESYNC` => `BAD`, `RETURN (SAVE)` / `FETCH $` outside SEARCHRES scope => `BAD`, plus the
+`ENABLE QRESYNC` => `BAD`, `RETURN (SAVE)` / `FETCH $` outside SEARCHRES scope => `BAD`; a malformed
+or `$` sequence-set on `STORE` and `COPY`/`MOVE` => `BAD` (the same §9 guard FETCH carries, so a
+no-op is never answered `OK`); an unknown or empty `STATUS` data item — and the same inside
+`LIST RETURN (STATUS …)` — => `BAD`; plus the
 low-severity family (bare / malformed `UID EXPUNGE`, malformed FETCH set, `ENABLE` while
 selected, `AUTHENTICATE` cancel/unsupported, `STATUS SIZE` / `RFC822.SIZE` value pins). The
 IMAPS listener has a tight `handshakeTimeout` and destroys the socket on `tlsClientError` to
@@ -149,7 +155,9 @@ splitting (the boundary-confusion surface), and RFC 2047 encoded words (the head
 surface), each negative-controlled. The parse-anomaly surface is pinned case by case: an RFC
 5322 group address emits the RFC 9051 §7.5.2 ENVELOPE group markers (a start `(NIL NIL "name"
 NIL)`, the members, an end `(NIL NIL NIL NIL)`) rather than corrupting the first mailbox or last
-host; a Content-Transfer-Encoding other than `7bit` / `8bit` / `binary` on a `multipart` or
+host; a header-less part defaults to `text/plain` except inside a `multipart/digest`, where RFC
+2046 §5.1.5 makes it `message/rfc822` (reported with its ENVELOPE and nested structure, not as a
+plain-text leaf); a Content-Transfer-Encoding other than `7bit` / `8bit` / `binary` on a `multipart` or
 `message` composite type is flagged (RFC 2045 §6.4); a duplicate `Content-Transfer-Encoding` /
 `MIME-Version` or a repeated boundary / charset parameter is flagged; an RFC 2047 encoded word
 abutting non-LWSP text, or a B-word with invalid base64, is left literal and flagged (§5); a
@@ -175,7 +183,9 @@ scope decision.
 Record parsing into ordered terms, left-to-right first-match evaluation, qualifier semantics,
 recursive `a`/`mx`/`include`/`redirect` resolution over DNS, IPv4/IPv6 (and mapped-IPv6) CIDR
 matching, the §4.6.4 ten-lookup limit, and the §4.6.4 void-lookup limit (more than two
-`a`/`mx`/`exists` queries resolving to no records => `permerror`). Macros are a deliberate safe
+`a`/`mx`/`exists` queries resolving to no records => `permerror`), and the §4.3 initial-processing
+rule (a malformed or single-label `<domain>` => `none` immediately, not the `temperror` the
+resolver would otherwise return for an unqueryable name). Macros are a deliberate safe
 non-match, never a false pass.
 
 ### DKIM: RFC 6376, 8463
@@ -183,9 +193,12 @@ non-match, never a false pass.
 All four canonicalization algorithms pinned to the RFC 6376 §3.4.5 vectors; the tag-list
 parser; the body hash against `bh=`; RSA and Ed25519 signature verification *and* signing, each
 pinned to published RFC vectors and proven by round-trip; the `l=` body-length limit with the
-§8.2 append attack made visible; the public-key record parser including revocation, the `i=`
-within-`d=` constraint, and the `t=s` (exact-domain) / `t=y` (testing) flags (RFC 6376 §3.5 /
-§3.6.1). Both the DKIM and ARC verifiers reject an RSA key under 1024 bits (RFC 8301 §3.2). On
+§8.2 append attack made visible; a tag-spec with no `=` separator refused rather than salvaged
+(§3.2); the signature's `x=` required to exceed its `t=` when both are present (§3.5); the public-key
+record parser including revocation, the `i=` within-`d=` constraint, the `t=s` (exact-domain) /
+`t=y` (testing) flags, and the `s=` service-type gate (a key whose service list names neither
+`email` nor `*` is not used for mail) (RFC 6376 §3.5 / §3.6.1). Both the DKIM and ARC verifiers
+reject an RSA key under 1024 bits (RFC 8301 §3.2). On
 the send path **`From` is oversigned** (listed in `h=` once more than it appears) so a
 prepended-`From` replay breaks the signature (with a reproduce-first attack test), and signer
 and verifier share one RFC 6376 §5.4.2 header selector, the same code ARC uses.
@@ -201,7 +214,8 @@ no policy applied (§6.6.3, never silently first-wins); and an IDN `From` is nor
 A-labels before alignment (RFC 5890) so a U-label `From` aligns with an A-label `d=` / SPF
 domain rather than false-failing. Enforcement is tested end to end: a `p=quarantine` /
 `p=reject` failure is filed to Junk (never hard-rejected, so forwarded mail is not lost),
-with `pct` honoured (ADR 0010).
+with `pct` honoured — and a `p=reject` failure filed to Junk even for the pct-*unsampled* share,
+which RFC 7489 §6.6.4 treats as `quarantine` rather than as no policy (ADR 0010).
 
 Policy discovery follows RFC 9989 §4.10 rather than 7489's single jump to the organizational
 domain, and the tests cover the part that is easy to get backwards: where both an intermediate
@@ -238,8 +252,10 @@ the daemon: trusted chains reach the inbox, untrusted and tampered chains stay i
 
 STARTTLS with the command-injection defence in both directions (the pre-handshake plaintext
 buffer is discarded), the STARTTLS `TLSSocket` now under a handshake deadline, and MTA-STS end
-to end: policy parsing, the security-critical one-label wildcard MX matcher (the RFC 8461 §4.1
-examples), HTTPS policy fetch with per-id caching, and enforce-mode delivery restricted to a
+to end: policy parsing (including the §3.2 ABNF rule that an `enforce`/`testing` policy listing no
+`mx` is invalid, so it falls back to opportunistic TLS rather than refusing every host and stopping
+all mail; `mode: none` may omit `mx`), the security-critical one-label wildcard MX matcher (the RFC
+8461 §4.1 examples), HTTPS policy fetch with per-id caching, and enforce-mode delivery restricted to a
 policy-listed MX over a validated certificate, never a plaintext downgrade. Two additions close
 a downgrade hole: a cached **enforce** policy is retained across a transient DNS TXT failure or
 an ambiguous multi-record answer (§5.1 / §3.1), and enforce-mode delivery now has a positive
@@ -268,9 +284,13 @@ and `doctor --store` runs `PRAGMA quick_check` over the control DB and every mai
 
 Retry semantics under injected time (backoff, permanent-failure-no-retry, the give-up window),
 persistence across a kill mid-retry, DSN generation wrapped into full `multipart/report`
-bounces (never to a null return path, so bounces cannot loop), and **transactional dead-letter
+bounces (never to a null return path, so bounces cannot loop) with the REQUIRED per-recipient
+fields — `Final-Recipient`, `Action`, and `Status` (RFC 3464 §2.3.6) — each negative-controlled by
+an omit defect; and **transactional dead-letter
 retention**: a message that exhausts retries moves to the dead-letter table in the same
-transaction that removes it from the live queue, so no crash window can lose it.
+transaction that removes it from the live queue, so no crash window can lose it. The relay drains
+the queue one message body at a time (a deep backlog of large messages cannot hold every body in
+memory at once), driven by the same injected clock as the reference queue.
 
 ### Accounts and abuse controls
 
@@ -331,9 +351,11 @@ teach you to stop reading the result.
 The updater downloads and then runs code, so both halves are tested as hostile input. The git wire
 protocol (pkt-line framing, protocol v2 advertisement, packfile and delta decoding, object ids) runs
 against a fake server that emits real encodings, and every malformed shape is a refusal rather than
-a truncation: a delta with no base, a copy past the end of its base, a decompression bomb, a pack
-promising more objects than it carries. The checkout refuses traversal, `.git` in any case, symlink
-and gitlink modes, and leaves no partial tree behind when it does. Provenance is tested from both
+a truncation: a delta with no base, a copy past the end of its base (including a high copy-offset
+byte, which is a refusal rather than a raw `RangeError`), a decompression bomb, a pack promising more
+objects than it carries, and a small pack whose deltas would inflate past an aggregate byte cap. The
+checkout refuses traversal, `.git` in any case, symlink and gitlink modes, a tree of more than
+`maxDirs` directories, and leaves no partial tree behind when it does. Provenance is tested from both
 ends — a rewritten branch and a deployment older than the fetch depth are refused with *different*
 reasons, because "someone force-pushed" and "you are very far behind" need different answers.
 

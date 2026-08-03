@@ -81,10 +81,13 @@ or of a maintainer account can ship code to every deployment.
 Two rules, both enforced locally:
 
 - **The candidate must be a descendant of the commit we are running.** Verified by walking commit
-  parents in the fetched objects. This makes rollback attacks impossible (nobody can move a
-  deployment backwards), and makes a force-push that rewrites deployed history *refuse* rather than
-  silently apply. Fix-forward becomes the only path that reaches deployments, which is the right
-  discipline anyway.
+  parents in the fetched objects. This turns an *accidental* backwards move — a force-push that
+  rewrites deployed history — into a *refusal* rather than a silent apply, so fix-forward is the only
+  path that reaches deployments, which is the right discipline anyway. It is **not** a defence
+  against a hostile server, and does not make a malicious rollback impossible: whoever can serve the
+  bytes can ship code (the trust model above), and the ancestry walk deliberately counts a
+  named-but-absent parent as present, so a fabricated tip that merely names the running commit as a
+  parent passes it. Repository access control, not this rule, is what stops a deliberate rollback.
 - **The commit must be at least `bakeDays` old** (default 3), so a mistake merged to `main` has a
   window to be noticed and reverted before it reaches anyone.
 
@@ -107,7 +110,8 @@ started". That is the rung that proves the least.
 
 **2. Integrity** — every object hashes to its SHA; every tree entry passes the checkout allow-list
 (no `..`, no separators, no NUL, nothing matching `.git` case-insensitively, no symlink or gitlink
-modes); packfile size, object count, inflated size and delta depth all bounded. A malformed pack is
+modes); packfile size, object count, per-object inflated size, delta depth, the resolved-bytes
+aggregate, and the checkout's file *and directory* counts all bounded. A malformed pack is
 "no update available", never a partial checkout.
 
 **3. Shape** — the checkout contains what a cutiemail version must contain (`src/main.ts`,
@@ -386,7 +390,8 @@ decision, not this one.
   attacker-influenceable binary data and then writes files from it. It is treated like every other
   parser here: bounded, fuzzed, and mutation-tested, with negative controls for each refusal —
   a `..` in a tree entry, a symlink escape, a `.git` path, a bad object SHA, a non-terminating delta
-  chain, a decompression bomb. **A gate never shown to fail does not count as a gate**, and that
+  chain, a decompression bomb, a pack whose resolved objects exceed the aggregate byte cap, a tree
+  of more directories than the checkout allows. **A gate never shown to fail does not count as a gate**, and that
   applies with more force here than anywhere: a pre-flight that silently always passes converts
   "it updates itself" from a safeguard into a false assurance.
 - Updating is not the same as staying healthy. Node going EOL, OS packages, certificate renewal and

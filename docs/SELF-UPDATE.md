@@ -189,8 +189,10 @@ instead of quietly poisoning every later comparison.
 any rung abandons the update and leaves the running version untouched, and `status` names the rung
 that stopped it.
 
-- **Provenance.** The candidate must have the commit you are running in its ancestry, so nobody can
-  move a deployment backwards and a force-push over deployed history refuses rather than applying.
+- **Provenance.** The candidate must have the commit you are running in its ancestry, so an
+  *accidental* backwards move — a force-push over deployed history — refuses rather than applying.
+  (This guards against a mistake, not a hostile server: whoever can serve the bytes can already ship
+  code, so it is not a rollback-*attack* defence — repository access control is.)
   It must also be at least `MAIL_UPDATE_BAKE_DAYS` old (default 3), so a mistake merged to the
   branch has a window to be noticed before it reaches you.
 - **Integrity.** Every object hashes to the id it was fetched as; every file name in the tree passes

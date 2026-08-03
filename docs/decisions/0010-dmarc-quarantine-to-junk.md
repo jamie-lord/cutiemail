@@ -31,10 +31,14 @@ and can trust) requires acting on the verdict.
   the natural home.
 - **`p=none` stays informational.** The owner explicitly asked only to monitor, so a `p=none`
   failure is delivered to the INBOX with the `Authentication-Results` header, unchanged.
-- **`pct` is honored.** The record's `pct` gates the share of failures acted on: a failure is
-  quarantined only when a sampler draw in `[0,100)` is below `pct` (default `pct=100` → always).
-  This is what makes honoring `pct` (a separately-agreed decision) coherent: it only means
-  something once there is enforcement to modulate.
+- **`pct` is honored, per RFC 7489 §6.6.4.** The record's `pct` gates the share of failures acted
+  on, via a sampler draw in `[0,100)` (default `pct=100` → always). For `p=quarantine`, the
+  unsampled remainder is treated as no policy and reaches the INBOX. For `p=reject`, §6.6.4 says the
+  unsampled remainder is treated *as if `p=quarantine`* — not as no policy — and since this server
+  files both reject and quarantine to Junk, a `p=reject` failure lands in Junk **regardless of the
+  sample**: the sampled share is would-be-rejected and the unsampled share is quarantined, and both
+  are Junk here. (An earlier reading gated `p=reject` on the sample too, delivering the unsampled
+  spoofed share of a `p=reject` domain to the INBOX — the wrong direction.)
 - **No `rua`/`ruf` report emission.** Aggregate/failure reports are low-value at a personal
   server's scale and `ruf` is privacy-fraught; out of scope (a separately-agreed decision).
 

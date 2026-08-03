@@ -2,11 +2,11 @@
  * Brute-force auth throttle — a per-source-IP sliding window of failed authentication
  * attempts, shared across the IMAP and submission auth paths.
  *
- * SCRAM/PLAIN-over-TLS protects the password on the wire but not against online GUESSING:
- * an internet-exposed AUTH endpoint with no rate limit lets an attacker try passwords as
- * fast as it can open connections. This caps that: after `maxFailures` failures from an IP
- * within `windowMs`, further attempts from that IP are refused WITHOUT checking the
- * password (so there is no timing oracle and no CPU spent on SCRAM) until the window drains.
+ * PLAIN-over-TLS (with credentials stored as SCRAM keys) keeps the password from an eavesdropper
+ * but not from online GUESSING: an internet-exposed AUTH endpoint with no rate limit lets an
+ * attacker try passwords as fast as it can open connections. This caps that: after `maxFailures`
+ * failures from an IP within `windowMs`, further attempts from that IP are refused WITHOUT checking
+ * the password (so there is no timing oracle and no CPU spent verifying it) until the window drains.
  *
  * Deliberately per-IP, NOT per-account: a per-account lockout would let an attacker lock a
  * victim out of their own mailbox by failing their account on purpose. Keyed on the source

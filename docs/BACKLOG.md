@@ -141,10 +141,13 @@ directories, are both real — 20 KiB became 1.6 GiB of live buffers, and 929 by
 directories. Neither is a security finding: an adversarial validator drove the real
 `acquireCandidate` against the project's own test git server and **925 bytes of fabricated history
 passed both provenance rules**, so anyone able to serve those bytes can ship code instead, which
-ADR 0025 already accepts. They remain as correctness defects, and `packfile.ts`'s claim that "every
-dimension a hostile pack could grow along is bounded here" is false — resolved aggregate is a fifth
-dimension. Recorded here rather than fixed, because the honest severity is low and the fix is a cap
-whose value nobody can justify from evidence yet.
+ADR 0025 already accepts. They were left as correctness defects at the time, because the honest
+severity is low and the fix is a cap whose value nobody could yet justify from evidence — and while
+they stood, `packfile.ts`'s claim that "every dimension a hostile pack could grow along is bounded
+here" was false, resolved aggregate being a fifth dimension. **Both are now fixed** (a packfile
+`maxResolvedBytes` and a checkout `maxDirs`), the caps anchored to the real repository size — tens
+to hundreds of times the largest legitimate history — which is what resolved the "no justifiable
+value" blocker; `packfile.ts`'s claim is true again.
 
 **Nine of the twelve are the same shape**, which is now the clearest signal this codebase gives
 about itself: a rule applied on one path and not on its structural twin. `checkout.ts` validates
