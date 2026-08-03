@@ -27,6 +27,15 @@ export interface PackLimits {
   readonly maxObjectBytes: number;
   /** How many deltas may chain before a full object is reached. */
   readonly maxDeltaDepth: number;
+  /**
+   * The SUM of every resolved object's inflated bytes held in memory. Per-object and per-count caps
+   * bound each dimension separately, but their product (200k × 64 MiB) is terabytes: a small pack of
+   * many deltas each expanding a shared base can materialise gigabytes of live buffers well inside
+   * both (20 KiB became 1.6 GiB). This is the fifth dimension the header comment claims to bound.
+   * 512 MiB is tens of times the largest legitimate history this deployment fetches (the checkout
+   * itself caps the useful payload at 256 MiB) while cutting the blow-up off at the source.
+   */
+  readonly maxResolvedBytes: number;
 }
 
 export const DEFAULT_PACK_LIMITS: PackLimits = {
@@ -34,6 +43,7 @@ export const DEFAULT_PACK_LIMITS: PackLimits = {
   maxObjects: 200_000,
   maxObjectBytes: 64 * 1024 * 1024,
   maxDeltaDepth: 64,
+  maxResolvedBytes: 512 * 1024 * 1024,
 };
 
 const TYPE_BY_CODE: Record<number, GitObjectType | 'ofs-delta' | 'ref-delta'> = {
@@ -153,7 +163,12 @@ function applyDelta(base: Buffer, delta: Buffer, maxObjectBytes: number): Buffer
       if (op & 0x01) cpOff |= delta[off++]!;
       if (op & 0x02) cpOff |= delta[off++]! << 8;
       if (op & 0x04) cpOff |= delta[off++]! << 16;
-      if (op & 0x08) cpOff |= delta[off++]! * 2 ** 24;
+      // `+=`, not `|=`: the fourth byte occupies bits 24-31, and `|=` coerces to a signed int32, so a
+      // byte >= 0x80 here made cpOff NEGATIVE. The `cpOff + cpSize > base.length` guard below then saw
+      // a negative sum, passed, and `base.copy(..., negative, ...)` threw a raw RangeError instead of
+      // the module's clean PackfileError refusal. Plain addition keeps cpOff its true (large) value,
+      // which the guard rejects as malformed. Bits 0-23 do not overlap, so OR and ADD agree there.
+      if (op & 0x08) cpOff += delta[off++]! * 2 ** 24;
       if (op & 0x10) cpSize |= delta[off++]!;
       if (op & 0x20) cpSize |= delta[off++]! << 8;
       if (op & 0x40) cpSize |= delta[off++]! << 16;
@@ -204,6 +219,18 @@ export function decodePackfile(
 
   const resolve = (id: string): GitObject | undefined => byId.get(id) ?? externalBase?.(id);
 
+  // Every resolved object is recorded here, so the running aggregate of inflated bytes is bounded
+  // in one place — the dimension the per-object and per-count caps together do NOT bound.
+  let resolvedBytes = 0;
+  const record = (offset: number, obj: GitObject): void => {
+    resolvedBytes += obj.data.length;
+    if (resolvedBytes > limits.maxResolvedBytes) {
+      throw new PackfileError(`resolved objects total ${resolvedBytes} bytes, over the ${limits.maxResolvedBytes} aggregate cap`);
+    }
+    byOffset.set(offset, obj);
+    byId.set(objectId(obj.type, obj.data), obj);
+  };
+
   let off = 12;
   for (let i = 0; i < count; i++) {
     const start = off;
@@ -221,8 +248,7 @@ export function decodePackfile(
       if (base === undefined) throw new PackfileError(`OFS_DELTA base at offset ${start - distance} not seen`);
       const data = applyDelta(base.data, inflated.data, limits.maxObjectBytes);
       const obj: GitObject = { type: base.type, data };
-      byOffset.set(start, obj);
-      byId.set(objectId(obj.type, obj.data), obj);
+      record(start, obj);
       continue;
     }
 
@@ -239,16 +265,14 @@ export function decodePackfile(
       }
       const data = applyDelta(base.data, inflated.data, limits.maxObjectBytes);
       const obj: GitObject = { type: base.type, data };
-      byOffset.set(start, obj);
-      byId.set(objectId(obj.type, obj.data), obj);
+      record(start, obj);
       continue;
     }
 
     const inflated = inflateAt(pack, off, head.size, limits.maxObjectBytes);
     off = inflated.next;
     const obj: GitObject = { type: kind, data: inflated.data };
-    byOffset.set(start, obj);
-    byId.set(objectId(kind, inflated.data), obj);
+    record(start, obj);
   }
 
   // Deltas whose base arrived later in the pack. Each pass must make progress, so the loop is
@@ -262,8 +286,7 @@ export function decodePackfile(
       if (base === undefined) continue;
       const data = applyDelta(base.data, p.delta, limits.maxObjectBytes);
       const obj: GitObject = { type: base.type, data };
-      byOffset.set(p.offset, obj);
-      byId.set(objectId(obj.type, obj.data), obj);
+      record(p.offset, obj);
       pending.splice(i, 1);
     }
     if (pending.length === before) {

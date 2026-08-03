@@ -143,15 +143,35 @@ test('file-count and byte limits are enforced', () => {
     const entries = Array.from({ length: 5 }, (_, i) => ({ mode: '100644', name: `f${i}.ts`, target: blob('x') }));
     const { treeId, objects } = treeWith(entries);
     assert.throws(
-      () => checkoutTree(treeId, join(base, 'wt'), (id) => objects.get(id), { maxFiles: 3, maxTotalBytes: 1 << 20, maxDepth: 8 }),
+      () => checkoutTree(treeId, join(base, 'wt'), (id) => objects.get(id), { maxFiles: 3, maxTotalBytes: 1 << 20, maxDepth: 8, maxDirs: 100 }),
       /more than 3 files/,
     );
   });
   inTmp((base) => {
     const { treeId, objects } = treeWith([{ mode: '100644', name: 'big.ts', target: blob('x'.repeat(100)) }]);
     assert.throws(
-      () => checkoutTree(treeId, join(base, 'wt'), (id) => objects.get(id), { maxFiles: 10, maxTotalBytes: 10, maxDepth: 8 }),
+      () => checkoutTree(treeId, join(base, 'wt'), (id) => objects.get(id), { maxFiles: 10, maxTotalBytes: 10, maxDepth: 8, maxDirs: 100 }),
       /exceeds 10 bytes/,
     );
+  });
+});
+
+test('the directory count is bounded — a tree of empty directories cannot exhaust inodes', () => {
+  // maxFiles/maxTotalBytes count blobs only and maxDepth bounds nesting, not breadth, so a tree that
+  // is all directories used to be unbounded (929 bytes → 87,381 mkdirs). Many sibling empty dirs must
+  // trip maxDirs.
+  inTmp((base) => {
+    const entries = Array.from({ length: 6 }, (_, i) => ({ mode: '40000', name: `d${i}`, target: { type: 'tree' as const, data: Buffer.alloc(0) } }));
+    const { treeId, objects } = treeWith(entries);
+    assert.throws(
+      () => checkoutTree(treeId, join(base, 'wt'), (id) => objects.get(id), { maxFiles: 20, maxTotalBytes: 1 << 20, maxDepth: 8, maxDirs: 3 }),
+      /more than 3 directories/,
+    );
+  });
+  // The negative control: the same tree under a generous maxDirs checks out (zero files written).
+  inTmp((base) => {
+    const entries = Array.from({ length: 6 }, (_, i) => ({ mode: '40000', name: `d${i}`, target: { type: 'tree' as const, data: Buffer.alloc(0) } }));
+    const { treeId, objects } = treeWith(entries);
+    assert.equal(checkoutTree(treeId, join(base, 'wt'), (id) => objects.get(id)), 0, 'six empty dirs are fine under the default cap');
   });
 });

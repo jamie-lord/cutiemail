@@ -33,12 +33,20 @@ export interface CheckoutLimits {
   readonly maxFiles: number;
   readonly maxTotalBytes: number;
   readonly maxDepth: number;
+  /**
+   * How many directories the whole checkout may create. `maxFiles`/`maxTotalBytes` count blobs only
+   * and `maxDepth` bounds nesting, not breadth, so a tree of empty directories was unbounded — 929
+   * bytes of tree objects became 87,381 mkdir calls, past all three existing caps. 4,000 is roughly
+   * two orders of magnitude above the real repository (~46 directories).
+   */
+  readonly maxDirs: number;
 }
 
 export const DEFAULT_CHECKOUT_LIMITS: CheckoutLimits = {
   maxFiles: 20_000,
   maxTotalBytes: 256 * 1024 * 1024,
   maxDepth: 32,
+  maxDirs: 4_000,
 };
 
 /** Regular file, executable file, directory. Everything else is refused. */
@@ -82,6 +90,7 @@ export function checkoutTree(
   const realRoot = realpathSync(root);
   let files = 0;
   let bytes = 0;
+  let dirs = 0;
 
   const walk = (id: string, dir: string, depth: number): void => {
     if (depth > limits.maxDepth) throw new CheckoutError(`tree nests deeper than ${limits.maxDepth}`);
@@ -102,6 +111,8 @@ export function checkoutTree(
       }
 
       if (entry.mode === MODE_DIR) {
+        dirs += 1;
+        if (dirs > limits.maxDirs) throw new CheckoutError(`tree has more than ${limits.maxDirs} directories`);
         mkdirSync(resolved, { mode: 0o700 });
         walk(entry.id, resolved, depth + 1);
         continue;

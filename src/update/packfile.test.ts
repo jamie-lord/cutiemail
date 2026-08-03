@@ -130,6 +130,39 @@ test('a delta that copies past the end of its base is refused', () => {
   );
 });
 
+test('a copy-offset with the high byte set is a PackfileError, not a raw RangeError', () => {
+  // op 0x98 = copy (0x80) + offset byte 3 (0x08) + size byte 0 (0x10); the offset byte is 0xFF, so
+  // cpOff is 0xFF000000. With the old `|=` that coerced to a NEGATIVE int32, the "past the end" guard
+  // saw a negative sum, passed, and base.copy(..., negative, ...) threw a raw RangeError. With `+=`
+  // cpOff keeps its true (large) value and the guard rejects it as the module's own PackfileError.
+  const baseBuf = Buffer.from('base!', 'latin1');
+  const baseId = objectId('blob', baseBuf);
+  const delta = Buffer.concat([deltaVarint(baseBuf.length), deltaVarint(1), Buffer.from([0x98, 0xff, 1])]);
+  const run = (): unknown =>
+    decodePackfile(
+      buildPack([
+        { typeCode: TYPE_CODE.blob, content: baseBuf },
+        { typeCode: 7, content: delta, prefix: Buffer.from(baseId, 'hex') },
+      ]),
+    );
+  assert.throws(run, PackfileError, 'a hostile offset is a clean refusal');
+  assert.throws(run, /copies past the end of its base/);
+});
+
+test('the aggregate of resolved object bytes is bounded, not just each object and the count', () => {
+  // Per-object and per-count caps leave the SUM unbounded: many small deltas each expanding a shared
+  // base materialise gigabytes of live buffers from a tiny pack. A handful of blobs whose combined
+  // inflated size exceeds a low maxResolvedBytes must be refused.
+  const blobs = ['aaaa', 'bbbb', 'cccc', 'dddd'].map(blobEntry);
+  assert.throws(
+    () => decodePackfile(buildPack(blobs), { ...DEFAULT_PACK_LIMITS, maxResolvedBytes: 8 }),
+    /aggregate cap/,
+  );
+  // The negative control: the same pack under the default cap decodes fine, so the refusal is the
+  // aggregate bound and not something else about the pack.
+  assert.equal(decodePackfile(buildPack(blobs)).size, 4);
+});
+
 test('a decompression bomb is stopped by the per-object cap, not by memory pressure', () => {
   // 8 MiB of zeroes compresses to a few KiB; the cap is what refuses it.
   const bomb = Buffer.alloc(8 * 1024 * 1024, 0);
