@@ -12,30 +12,77 @@
  * A naive first-`<>` reads a@evil.com while the client shows victim@bank.com. So we strip
  * RFC 5322 comments and quoted-string display-names first (a `<>` inside them is not an
  * address), then take the LAST angle-addr (or the bare addr-spec) — the one the MUA shows.
+ *
+ * The shown address, the mailbox COUNT, and the full DMARC domain list all derive from one
+ * tokenizer (`mailboxAddrSpecs`), so they can never disagree about where one mailbox ends and the
+ * next begins — including the comma-less `<a@x> <b@y>` form, where every angle-addr is a mailbox a
+ * recipient might render and whose domain DMARC (RFC 9989 §11.5) must weigh, not just the last.
  */
 
 import { domainToASCII } from 'node:url';
 import { parseMessage } from './parse.ts';
 import { stripComments } from './cfws.ts';
 
+/** Defects that make the author extractor under-report, for the corpus negative controls. */
+export interface AuthorDomainDefects {
+  /**
+   * Enumerate only the LAST angle-addr in each comma segment, dropping the earlier ones. This is
+   * the exact defect behind the comma-less two-angle DMARC bypass: `mailboxCount` counts BOTH
+   * angle-addrs (so the spoof path fires) while the domain list saw only the last, so a victim's
+   * `p=reject` carried in `<victim@bank> <attacker@evil>` was never queried. Violates RFC 9989
+   * §11.5 ("apply the DMARC mechanism to each domain found in the RFC5322.From field").
+   */
+  readonly lastAngleOnlyPerSegment?: boolean;
+}
+
+/**
+ * Every author mailbox's addr-spec in a single From header VALUE, IN ORDER, spoof-hardened. This
+ * is the ONE tokenizer the count, the shown address, and the domain list all derive from, so they
+ * can never disagree about where one mailbox ends and the next begins — the disagreement between
+ * `mailboxCount` (which counted angle-addrs) and the old comma-only domain walk was precisely the
+ * bug this closes.
+ *
+ * Comments first (a nested comment must be O(n), not O(depth²) — a crafted one can freeze the
+ * event loop), then quoted-string display-names, then §3.4 group syntax — all before any structural
+ * character is read, so `<`, `,` and `;` mean what the grammar says they mean. A comma segment can
+ * still hold MORE THAN ONE mailbox when they are written as bare angle-addrs with no separator
+ * (`<a@x> <b@y>`): RFC 5322 §3.6.1 permits only one, so this is never authentic, but each is a
+ * mailbox a recipient MUA might render and whose domain DMARC (RFC 9989 §11.5) MUST weigh — so emit
+ * every angle-addr, not just the last.
+ */
+function mailboxAddrSpecs(value: string, defects: AuthorDomainDefects = {}): string[] {
+  const v = unwrapGroup(stripDisplayNames(value));
+  const specs: string[] = [];
+  for (const segment of v.split(',')) {
+    const angles = segment.match(/<[^<>]*>/g);
+    if (angles !== null) {
+      const chosen = defects.lastAngleOnlyPerSegment === true ? [angles[angles.length - 1]!] : angles;
+      for (const a of chosen) {
+        const inner = a.slice(1, -1).trim();
+        if (inner.includes('@')) specs.push(inner);
+      }
+    } else if (segment.includes('<')) {
+      // An unclosed angle: take what follows the last `<`, the legacy single-mailbox reading.
+      const inner = segment.slice(segment.lastIndexOf('<') + 1).trim();
+      if (inner.includes('@')) specs.push(inner);
+    } else {
+      const bare = segment.trim();
+      if (bare.includes('@')) specs.push(bare);
+    }
+  }
+  return specs;
+}
+
 /**
  * The author addr-spec of a single From header VALUE, spoof-hardened as above. Returns
  * `local@domain` as written (surrounding WSP removed), or null if there is no `@`.
  */
 export function authorAddrSpec(value: string): string | null {
-  // Comments first (a nested comment must be O(n), not O(depth²) — a crafted one can freeze
-  // the event loop), then quoted-string display-names, then §3.4 group syntax — all before any
-  // structural character is read, so `<`, `,` and `;` mean what the grammar says they mean.
-  const v = unwrapGroup(stripDisplayNames(value));
-  // The LAST mailbox, for the display-spoof reason in the module header. Where more than one
-  // exists the caller is told so via `count`, and DMARC evaluates every domain rather than
-  // trusting this one.
-  const segments = v.split(',');
-  for (let i = segments.length - 1; i >= 0; i--) {
-    const addr = addrSpecOfSegment(segments[i]!);
-    if (addr !== null) return addr;
-  }
-  return null;
+  // The LAST mailbox, for the display-spoof reason in the module header (a decoy hides earlier;
+  // the client renders the last). Where more than one exists the caller is told so via `count`,
+  // and DMARC evaluates every domain rather than trusting this one.
+  const specs = mailboxAddrSpecs(value);
+  return specs.length > 0 ? specs[specs.length - 1]! : null;
 }
 
 /**
@@ -93,14 +140,10 @@ export function domainOfAddrSpec(addr: string): string | null {
  * SAME as authorAddrSpec, so the count and the extracted address can never disagree.
  */
 export function mailboxCount(value: string): number {
-  const v = unwrapGroup(stripDisplayNames(value));
-  // Count BOTH comma-separated addr-spec segments AND angle-addresses, taking the larger. A
-  // comma-only count misses `From: <bob@x> <alice@x>` — two mailboxes, no comma — which would let
-  // the send-as gate bless one address while a recipient MUA renders the other (a display-spoof).
-  // A legitimate single mailbox has at most one angle-addr (`Alice <a@x>`) or a bare addr-spec.
-  const commaMailboxes = v.split(',').filter((seg) => seg.includes('@')).length;
-  const angleAddrs = (v.match(/</g) ?? []).length;
-  return Math.max(commaMailboxes, angleAddrs);
+  // The count is exactly the number of mailboxes `mailboxAddrSpecs` extracts, so it can NEVER
+  // disagree with the domain list `authorDomains` builds from the same tokenizer — including the
+  // comma-less `<bob@x> <alice@x>` case, two mailboxes with no separator.
+  return mailboxAddrSpecs(value).length;
 }
 
 /**
@@ -139,12 +182,13 @@ function unwrapGroup(stripped: string): string {
  * to each domain found in the RFC5322.From field … and apply the most strict policy selected
  * among the checks that fail".
  */
-export function authorDomains(value: string): string[] {
-  const v = unwrapGroup(stripDisplayNames(value));
+export function authorDomains(value: string, defects: AuthorDomainDefects = {}): string[] {
   const out: string[] = [];
-  for (const segment of v.split(',')) {
-    const addr = addrSpecOfSegment(segment);
-    if (addr === null) continue;
+  // Every mailbox's domain, from the SAME tokenizer `mailboxCount` uses — so the set of domains
+  // DMARC evaluates matches the set of mailboxes the count guard detected. Splitting on commas
+  // alone and keeping only the last angle-addr per segment (the `lastAngleOnlyPerSegment` defect)
+  // dropped a victim domain carried alongside a policy-less one in `<victim@bank> <attacker@evil>`.
+  for (const addr of mailboxAddrSpecs(value, defects)) {
     const domain = domainOfAddrSpec(addr);
     if (domain !== null && !out.includes(domain)) out.push(domain);
   }
@@ -175,20 +219,6 @@ export function allAuthorDomains(raw: Buffer): string[] {
     }
   }
   return out;
-}
-
-/** The addr-spec of one already-stripped mailbox segment: the last angle-addr, else the bare
- *  value. Last, not first, because that is the one an MUA renders for `"x <a@evil>" <victim@bank>`. */
-function addrSpecOfSegment(segment: string): string | null {
-  const open = segment.lastIndexOf('<');
-  let addr: string;
-  if (open !== -1) {
-    const close = segment.indexOf('>', open);
-    addr = (close !== -1 ? segment.slice(open + 1, close) : segment.slice(open + 1)).trim();
-  } else {
-    addr = segment.trim();
-  }
-  return addr.includes('@') ? addr : null;
 }
 
 /**

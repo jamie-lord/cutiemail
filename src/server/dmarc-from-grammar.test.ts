@@ -95,6 +95,14 @@ test('the strictest policy among multiple From domains governs (RFC 9989 §11.5)
   // And the same with angle-addrs, where the last angle-addr used to win outright.
   const angled = await evaluate('"Bank" <victim@bank.test>, <attacker@nowhere.test>');
   assert.equal(angled.policy, 'reject', 'angle-addr form selects the same policy');
+
+  // The comma-LESS two-angle form (the bypass): `mailboxCount` counts both angle-addrs so this
+  // reaches the §11.5 path, but the domain walk used to split only on commas and keep the last
+  // angle-addr — so bank.test's p=reject was never queried and the spoof reached the INBOX. The
+  // victim domain must be enumerated and its reject policy must govern.
+  const commaLess = await evaluate('<victim@bank.test> <attacker@nowhere.test>');
+  assert.equal(commaLess.verdict, 'fail', 'a comma-less two-mailbox From is never authentic');
+  assert.equal(commaLess.policy, 'reject', "the victim's p=reject governs even with no comma separator");
 });
 
 test('the number of author domains queried is bounded', async () => {

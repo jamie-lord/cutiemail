@@ -8,7 +8,7 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { allAuthorDomains, authorAddrSpec, domainOfAddrSpec, fromAuthor, mailboxCount } from './from-author.ts';
+import { allAuthorDomains, authorAddrSpec, authorDomains, domainOfAddrSpec, fromAuthor, mailboxCount } from './from-author.ts';
 
 test('authorAddrSpec takes the plain angle-addr', () => {
   assert.equal(authorAddrSpec('Alice <alice@example.com>'), 'alice@example.com');
@@ -111,4 +111,32 @@ test('allAuthorDomains gathers every author domain across ALL From headers and m
   // A single From is exactly the single-header domain set (no behaviour change on the common case).
   assert.deepEqual(allAuthorDomains(msg('From: alice@example.com')), ['example.com']);
   assert.deepEqual(allAuthorDomains(msg('To: nobody@example.com')), []);
+});
+
+test('authorDomains enumerates EVERY angle-addr in one comma-less From value (the DMARC p=reject bypass)', () => {
+  // The comma-less two-angle spoof: `mailboxCount` already counts BOTH angle-addrs (so DMARC takes
+  // the multi-domain §11.5 path), but the domain walk used to split only on commas and keep the
+  // LAST angle-addr per segment — enumerating only the attacker's policy-less domain, so the
+  // victim's p=reject was never queried and the spoof reached the INBOX. Both domains must appear,
+  // victim first (the order written).
+  assert.deepEqual(
+    authorDomains('<victim@bank.example> <attacker@evil.example>'),
+    ['bank.example', 'evil.example'],
+    'both angle-addr domains are enumerated from one comma-less segment',
+  );
+  // And end to end across the whole message, matching what mailboxCount reports (count and domains
+  // cannot disagree): three comma-less angle-addrs → three domains.
+  assert.equal(mailboxCount('<a@one.example> <b@two.example> <c@three.example>'), 3);
+  assert.deepEqual(
+    allAuthorDomains(msg('From: <a@one.example> <b@two.example> <c@three.example>')),
+    ['one.example', 'two.example', 'three.example'],
+  );
+  // Negative control: the defect that keeps only the last angle-addr per segment reproduces the
+  // bypass exactly — the victim's bank.example is dropped, so the fix (not something else) is what
+  // enumerates it. lastAngleOnlyPerSegment must be detectable.
+  assert.deepEqual(
+    authorDomains('<victim@bank.example> <attacker@evil.example>', { lastAngleOnlyPerSegment: true }),
+    ['evil.example'],
+    'the defect drops the victim domain, the exact under-enumeration behind the bypass',
+  );
 });
