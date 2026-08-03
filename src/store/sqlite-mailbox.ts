@@ -492,8 +492,12 @@ export class SqliteCatalog {
         const moving = this.#db.prepare('SELECT uid, internal_date, raw FROM message WHERE mailbox_id = ? ORDER BY uid').all(Number(src.id)) as Array<{ uid: number; internal_date: number; raw: Uint8Array }>;
         const n = moving.length;
         // The target: fresh UID space and mod-sequence (uid_next = highest_modseq = n+1, both 1
-        // when empty), same UIDVALIDITY as the catalog (INBOX's).
-        this.#db.prepare('INSERT INTO mailbox (id, uid_validity, uid_next, name, highest_modseq) VALUES (?, ?, ?, ?, ?)').run(nextId, Number(inbox.uid_validity), n + 1, ct, n + 1);
+        // when empty), and a UIDVALIDITY drawn from the monotonic high-water counter — NOT INBOX's
+        // own value. Seeding it from INBOX let `RENAME INBOX A` / `DELETE A` / `RENAME INBOX A` hand
+        // both A incarnations the same UIDVALIDITY, so a client that cached the first could take the
+        // second's UIDs as unchanged (RFC 9051 §6.3.4). A plain CREATE already draws from the counter;
+        // this path is the one exception that did not.
+        this.#db.prepare('INSERT INTO mailbox (id, uid_validity, uid_next, name, highest_modseq) VALUES (?, ?, ?, ?, ?)').run(nextId, this.#nextUidValidity(), n + 1, ct, n + 1);
         const flagsOf = this.#db.prepare('SELECT flag FROM flag WHERE mailbox_id = ? AND uid = ?');
         const insMsg = this.#db.prepare('INSERT INTO message (mailbox_id, uid, internal_date, raw, mod_seq) VALUES (?, ?, ?, ?, ?)');
         const insFlag = this.#db.prepare('INSERT OR IGNORE INTO flag (mailbox_id, uid, flag) VALUES (?, ?, ?)');

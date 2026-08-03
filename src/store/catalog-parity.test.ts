@@ -124,6 +124,28 @@ test('DELETE then CREATE of the same name assigns a strictly-greater UIDVALIDITY
   }
 });
 
+test('RENAME INBOX onto a previously-deleted name assigns a strictly-greater UIDVALIDITY (RFC 9051 §6.3.4, both implementations)', () => {
+  // The one CREATE-shaped path that did NOT draw its UIDVALIDITY from the monotonic counter: the
+  // fresh target a RENAME INBOX produces was seeded with INBOX's own validity. So `RENAME INBOX A`,
+  // `DELETE A`, `RENAME INBOX A` handed both A incarnations the same UIDVALIDITY, and a client that
+  // cached the first could take the second's UIDs as unchanged. Like the DELETE-then-CREATE case,
+  // this is invisible to the parity oracle above — both backends shared the seed — so it is an
+  // invariant assertion. Both backends advance in lockstep, so the parity test still passes.
+  for (const cat of [new MemoryCatalog(1) as CatalogLike, SqliteCatalog.open(new DatabaseSync(':memory:'), 1)]) {
+    cat.get('INBOX')!.append(Buffer.from('first body'));
+    assert.equal(cat.rename('INBOX', 'A'), 'ok');
+    const firstValidity = cat.get('A')!.uidValidity;
+    assert.equal(cat.delete('A'), true);
+    cat.get('INBOX')!.append(Buffer.from('second body'));
+    assert.equal(cat.rename('INBOX', 'A'), 'ok');
+    const secondValidity = cat.get('A')!.uidValidity;
+    assert.ok(
+      secondValidity > firstValidity,
+      `the second RENAME INBOX A target UIDVALIDITY ${secondValidity} must exceed the deleted first's ${firstValidity}`,
+    );
+  }
+});
+
 test('the double INBOX rename does not strand INBOX tombstones (both implementations)', () => {
   // Focused assertion on the exact residual: after two consecutive INBOX renames, a QRESYNC
   // client that synced INBOX before either rename must still be told its cached UIDs VANISHED.

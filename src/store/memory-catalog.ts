@@ -74,7 +74,9 @@ export class MemoryCatalog {
       // "If the server implementation supports inferior hierarchical names of INBOX, these are
       // unaffected by a rename of INBOX" (§6.3.6). So the subtree walk below must NOT run here:
       // INBOX/sub stays exactly where it is while INBOX's messages move out.
-      const dest = new Mailbox(this.#uidValidity);
+      // A UIDVALIDITY from the monotonic counter, not INBOX's own value: `RENAME INBOX A` /
+      // `DELETE A` / `RENAME INBOX A` must not hand both A incarnations the same validity (§6.3.4).
+      const dest = new Mailbox(this.#nextUidValidity());
       const moving = [...src.messages];
       for (const m of moving) dest.append(m.raw, [...m.flags], m.internalDate);
       for (const m of moving) src.expunge(m.uid); // empty INBOX, which keeps existing
