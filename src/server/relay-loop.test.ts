@@ -46,6 +46,37 @@ test('a transient failure is retried on the backoff, then delivered', async () =
   assert.equal(calls, 2);
 });
 
+test('the relay drains the queue one body at a time, not the whole due set at once', async () => {
+  // A tick used to pull EVERY due row's full message BLOB into memory in one `due()` call and hold
+  // the array for the whole drain, so a backlog of large messages (the queue caps rows, not bytes:
+  // 10k × 25 MiB ≈ 244 GiB) could OOM the single process. The loop now lists due ids first and
+  // loads one body just before relaying it, so at most one message body is resident at a time.
+  const queue = SqliteQueue.open(new DatabaseSync(':memory:'));
+  // Spy on the per-entry body load: record how many bodies have been materialised at the instant
+  // each relay attempt begins. Lazy per-entry loading makes that [1, 2, 3]; the old bulk `due()`
+  // path never calls entry() at all, so it would record [0, 0, 0].
+  let bodiesLoaded = 0;
+  const realEntry = queue.entry.bind(queue);
+  queue.entry = (id: string) => {
+    const e = realEntry(id);
+    if (e !== undefined) bodiesLoaded++;
+    return e;
+  };
+  const seenAtRelay: number[] = [];
+  const relay = async (m: { recipients: readonly string[] }): Promise<readonly RelayResult[]> => {
+    seenAtRelay.push(bodiesLoaded);
+    return m.recipients.map((rc) => r(rc, 'success'));
+  };
+  const loop = new RelayLoop(queue, relay);
+  const big = Buffer.alloc(2048, 0x61);
+  for (let i = 0; i < 3; i++) queue.enqueue('me@x.test', [`friend${i}@y.test`], big, 0);
+
+  await loop.tick(0);
+
+  assert.deepEqual(seenAtRelay, [1, 2, 3], 'each body is loaded just before its own relay, never all up front');
+  assert.equal(queue.size, 0, 'all three still delivered');
+});
+
 test('a permanent failure bounces immediately, no retry', async () => {
   const queue = SqliteQueue.open(new DatabaseSync(':memory:'));
   const relay = async (m: { recipients: readonly string[] }): Promise<readonly RelayResult[]> => m.recipients.map((rc) => r(rc, 'permanent'));
@@ -275,7 +306,7 @@ test('a relay that throws advances the schedule (backoff, then give-up), not a s
   assert.ok(calls >= 2, 'it did keep attempting on the backoff, not spin');
 });
 
-test('a corrupt queue row does not halt due(): the rest of the queue still drains', async () => {
+test('a corrupt queue row halts neither due() nor the relay drain: the rest still goes out', async () => {
   const db = new DatabaseSync(':memory:');
   const queue = SqliteQueue.open(db);
   // A well-formed message...
@@ -289,6 +320,18 @@ test('a corrupt queue row does not halt due(): the rest of the queue still drain
   const due = queue.due(2000);
   assert.equal(due.length, 1, 'only the parseable row is returned');
   assert.equal(due[0]!.recipients[0], 'good@y.test', 'and it is the good one');
+  // entry() skips the same poison row (undefined), so the relay loop — which now drains via
+  // dueIds()+entry() — steps over it rather than crashing on it.
+  assert.equal(queue.entry('poison'), undefined, 'entry() skips the poison row like due() does');
+
+  const relayed: string[] = [];
+  const relay = async (m: { recipients: readonly string[] }): Promise<readonly RelayResult[]> => {
+    relayed.push(...m.recipients);
+    return m.recipients.map((rc) => r(rc, 'success'));
+  };
+  await new RelayLoop(queue, relay).tick(2000);
+  assert.deepEqual(relayed, ['good@y.test'], 'the good message is delivered; the poison row is never relayed');
+  assert.equal(queue.size, 1, 'the poison row remains (skipped, not crashed, not lost)');
 });
 
 test('a deferral is logged — the everyday retry is visible, not silent', async () => {

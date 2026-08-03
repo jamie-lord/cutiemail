@@ -110,10 +110,19 @@ export class RelayLoop {
           if (this.#stopped) return; // stopped (shutdown) before starting a batch — do not touch the DB
           const at = this.#pending;
           this.#pending = null;
-          for (const entry of this.#queue.due(at)) {
+          // List the due ids first (cheap, no bodies), then load ONE message body just before
+          // relaying it. `due()` returns every row's BLOB in a single array held for the whole
+          // drain — a deep backlog of large messages (rows are capped, bytes are not) could exhaust
+          // memory and take the single process down with it. The id list is tiny; the bodies are
+          // paid for one at a time and released before the next.
+          for (const id of this.#queue.dueIds(at)) {
             // Bail at the entry boundary if stop() was called mid-drain: leave the remaining rows
             // durably queued (recovered on next start) rather than race the DB being closed under us.
             if (this.#stopped) return;
+            const entry = this.#queue.entry(id);
+            // Gone since the id list was taken (settled by an earlier iteration, or a poisoned row):
+            // skip it, exactly as the old bulk `due()` skipped an unparseable row.
+            if (entry === undefined) continue;
             await this.#processEntry(entry, at);
           }
         }

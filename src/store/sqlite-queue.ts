@@ -134,6 +134,44 @@ export class SqliteQueue {
     return entries;
   }
 
+  /**
+   * The ids of entries due at `now`, oldest first — the drain order, WITHOUT loading any message
+   * body. Paired with `entry()`, this lets the relay loop drain the queue one message at a time:
+   * `due()` returns every row's BLOB in one array (10k rows × a 25 MiB cap ≈ 244 GiB held for the
+   * whole tick), so it is kept for the operator `queue list` where the set is small and deliberate,
+   * while the loop uses this lightweight id list plus a per-id body load.
+   */
+  dueIds(now: number): string[] {
+    return (this.#db.prepare('SELECT id FROM outbound_queue WHERE next_attempt <= ? ORDER BY first_queued').all(now) as Array<{ id: string }>).map((row) => row.id);
+  }
+
+  /**
+   * Load one live entry by id, with its byte-exact body — or undefined if the row is gone (settled
+   * since its id was listed by `dueIds()`) or its `recipients` JSON is corrupt (a tampered row is
+   * skipped, exactly as `due()` skips it, rather than throwing out and halting the drain).
+   */
+  entry(id: string): QueueEntry | undefined {
+    const r = this.#db
+      .prepare('SELECT id, from_addr, recipients, data, first_queued, attempts, next_attempt FROM outbound_queue WHERE id = ?')
+      .get(id) as { id: string; from_addr: string; recipients: string; data: Uint8Array; first_queued: number; attempts: number; next_attempt: number } | undefined;
+    if (r === undefined) return undefined;
+    let recipients: string[];
+    try {
+      recipients = JSON.parse(r.recipients) as string[];
+    } catch {
+      return undefined;
+    }
+    return {
+      id: r.id,
+      from: r.from_addr,
+      recipients,
+      data: Buffer.from(r.data),
+      firstQueued: Number(r.first_queued),
+      attempts: Number(r.attempts),
+      nextAttempt: Number(r.next_attempt),
+    };
+  }
+
   /** Reschedule an entry: update the remaining recipients, attempt count, and due time. */
   reschedule(id: string, recipients: readonly string[], attempts: number, nextAttempt: number): void {
     this.#db.prepare('UPDATE outbound_queue SET recipients = ?, attempts = ?, next_attempt = ? WHERE id = ?').run(JSON.stringify(recipients), attempts, nextAttempt, id);
