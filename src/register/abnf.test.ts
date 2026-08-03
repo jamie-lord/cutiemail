@@ -26,6 +26,17 @@ const RFC_COLLAPSED = readFileSync(RFC_PATH, 'utf8').replace(/\s+/g, ' ');
 
 const collapse = (s: string): string => s.replace(/\s+/g, ' ').trim();
 
+/**
+ * The anti-fabrication gate: is `text` really present, verbatim, in the vendored RFC? Empty (or
+ * whitespace-only) text must NOT count — `collapse('')` is '' and `RFC_COLLAPSED.includes('')` is
+ * true for any RFC, so an empty constraint or caveat would otherwise pass this check vacuously (the
+ * same hole the reply-code and rfc5321 register gates guard). Require non-empty collapsed text first.
+ */
+const quotedInRfc = (text: string): boolean => {
+  const c = collapse(text);
+  return c.length > 0 && RFC_COLLAPSED.includes(c);
+};
+
 test('every rule has a name, a non-empty RHS, and a known section', () => {
   assert.ok(ABNF_RULES.length > 0, 'expected some rules');
   for (const r of ABNF_RULES) {
@@ -55,7 +66,7 @@ test('PRODUCTIONS_OF_INTEREST all reference real rule names and carry a note', (
 test('GRAMMAR_CAVEAT is populated and quotes §2.4 verbatim', () => {
   assert.ok(GRAMMAR_CAVEAT.length > 0);
   assert.ok(
-    RFC_COLLAPSED.includes(collapse(GRAMMAR_CAVEAT)),
+    quotedInRfc(GRAMMAR_CAVEAT),
     'GRAMMAR_CAVEAT does not appear verbatim in spec/rfc5321.txt',
   );
 });
@@ -71,10 +82,19 @@ test('TEXT_CONSTRAINTS is populated, cross-refs real rules, and quotes the RFC v
     assert.ok(c.kind === 'adds' || c.kind === 'requires', 'bad kind');
     assert.ok(c.note.trim().length > 0, `constraint in §${c.section} has no note`);
     assert.ok(
-      RFC_COLLAPSED.includes(collapse(c.text)),
+      quotedInRfc(c.text),
       `constraint text for §${c.section} does not appear verbatim in the RFC`,
     );
   }
+});
+
+test('the verbatim gate refuses empty text (negative control: it would match every RFC)', () => {
+  // Fails on the old inline `RFC_COLLAPSED.includes(collapse(text))`, which returns true for '';
+  // passes once the gate requires non-empty collapsed text. Without this an empty constraint or
+  // caveat is reported as "verbatim in the RFC", defeating the anti-fabrication check.
+  assert.equal(quotedInRfc(''), false, 'empty text is not verbatim');
+  assert.equal(quotedInRfc('   '), false, 'nor is whitespace-only text');
+  assert.equal(quotedInRfc(GRAMMAR_CAVEAT), true, 'a genuine quote still passes');
 });
 
 test('both directions of the necessary-but-not-sufficient point are represented', () => {

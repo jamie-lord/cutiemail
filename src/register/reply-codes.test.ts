@@ -53,6 +53,11 @@ const rfc: string = (() => {
  */
 const rfcDehyphenated = rfc.replace(/-\s+/g, '-');
 function quotedVerbatim(meaning: string): boolean {
+  // An empty (or whitespace-only) meaning must NOT count as verbatim: `rfc.includes('')` is true
+  // for every RFC, so without this a blanked entry — the load-bearing field this gate protects —
+  // would pass vacuously. The sibling gate in rfc5321.test.ts guards `quoted.length > 0` first for
+  // exactly this reason; mirror it here.
+  if (meaning.trim().length === 0) return false;
   return rfc.includes(meaning) || rfcDehyphenated.includes(meaning.replace(/-\s+/g, '-'));
 }
 
@@ -87,11 +92,24 @@ test('REPLY_CODES is stored in ascending numeric order (as §4.2.3 lists them)',
 
 test('every §4.2.3 meaning is verbatim in the RFC', () => {
   for (const { code, meaning } of REPLY_CODES) {
+    // Non-empty first, so `rfc.includes('')` can never report a blanked meaning as verbatim.
+    assert.ok(meaning.trim().length > 0, `meaning for ${code} is empty; the verbatim check would pass vacuously`);
     assert.ok(
       rfc.includes(meaning),
       `meaning for ${code} not found verbatim in spec/rfc5321.txt:\n  ${meaning}`,
     );
   }
+});
+
+test('the verbatim gate refuses a blank meaning (negative control: it must not pass vacuously)', () => {
+  // The defect this closes: `rfc.includes('')` is true, so before the guard a blank or
+  // whitespace-only meaning passed the verbatim check — the gate reporting a blanked entry as
+  // conformant is the one failure that makes the whole register untrustworthy. Fails on the old
+  // helper (which returned true for ''), passes on the guarded one.
+  assert.equal(quotedVerbatim(''), false, 'an empty meaning is not verbatim');
+  assert.equal(quotedVerbatim('   '), false, 'nor is a whitespace-only meaning');
+  // A real §4.2.3 meaning still passes, so the guard rejects only the vacuous input.
+  assert.equal(quotedVerbatim(ANY_COMMAND_REPLIES[0]!.meaning), true, 'a genuine meaning still passes');
 });
 
 test('§4.2.3 registry is complete: exactly the 24 codes the RFC lists', () => {
