@@ -15,6 +15,24 @@ import type { RequirementDef } from '../../types.ts';
 
 export const SPF_RECORD = [
   {
+    id: 'R-7208-4.3-a',
+    rfc: 'rfc7208',
+    section: '4.3',
+    page: 12,
+    level: 'MUST',
+    party: 'server',
+    normativeSource: 'prose',
+    text: 'If the <domain> is malformed (e.g., label longer than 63 characters, zero-length label not at the end, etc.) or is not a multi-label domain name',
+    testability: { kind: 'parse' },
+    note:
+      'Initial processing: a malformed or single-label domain makes check_host() return "none" '
+      + 'immediately, before any DNS lookup. Without this guard the malformed name reached the '
+      + 'resolver, which rejects it (EBADNAME) and turns a settled "none" into a retriable '
+      + 'temperror — the more mangled the domain, the more forgiving the outcome. isMalformedDomain '
+      + 'checks the §4.3 examples: a >63-octet label, an interior zero-length label, and the '
+      + 'not-multi-label case; a lone trailing-dot root label is allowed.',
+  },
+  {
     id: 'R-7208-4.5-a',
     rfc: 'rfc7208',
     section: '4.5',

@@ -7,6 +7,9 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { checkSpf, type SpfResolvers } from './spf-check.ts';
+import { authRequirement, type AuthRequirementId } from '../register/auth/index.ts';
+
+const cites = (id: AuthRequirementId): void => assert.ok(authRequirement(id).id === id);
 
 function resolvers(txt: Record<string, string[]>, a: Record<string, string[]> = {}, mx: Record<string, string[]> = {}): SpfResolvers {
   return {
@@ -15,6 +18,29 @@ function resolvers(txt: Record<string, string[]>, a: Record<string, string[]> = 
     mx: async (n) => mx[n] ?? [],
   };
 }
+
+test('R-7208-4.3-a: a malformed or single-label domain returns none immediately, never temperror', async () => {
+  cites('R-7208-4.3-a');
+  // A resolver that ERRORS on every lookup — the c-ares EBADNAME a malformed name really provokes.
+  // Reaching it turns the result into a retriable temperror, so a malformed domain must NOT reach it.
+  const throwing: SpfResolvers = {
+    txt: async () => { throw new Error('EBADNAME'); },
+    a: async () => { throw new Error('EBADNAME'); },
+    mx: async () => { throw new Error('EBADNAME'); },
+  };
+  const overLongLabel = `${'a'.repeat(64)}.example`; // a label longer than 63 octets
+  for (const bad of [overLongLabel, 'a..b.example' /* interior zero-length label */, 'localhost' /* single label */]) {
+    assert.equal(await checkSpf('192.0.2.1', bad, throwing), 'none', `malformed domain ${JSON.stringify(bad)} is none, not temperror`);
+  }
+  // The control that proves the resolver WOULD have been reached (so the `none` above is the §4.3
+  // guard, not a no-record path): a well-formed domain against the same throwing resolver is temperror.
+  assert.equal(await checkSpf('192.0.2.1', 'valid.example', throwing), 'temperror', 'a well-formed domain still reaches the resolver');
+  // And a valid trailing-dot (root) name is allowed — the zero-length label is AT the end, so it is
+  // evaluated rather than short-circuited to none. A resolver returning a record for any name proves
+  // it reached evaluation and applied the policy (-all → fail).
+  const anyRecord: SpfResolvers = { txt: async () => ['v=spf1 -all'], a: async () => [], mx: async () => [] };
+  assert.equal(await checkSpf('192.0.2.1', 'e.test.', anyRecord), 'fail', 'a trailing-dot FQDN is well-formed and evaluated');
+});
 
 test('ip4 / ip6 CIDR mechanisms with the qualifier applied', async () => {
   const r = resolvers({ 'ex.test': ['v=spf1 ip4:192.0.2.0/24 ip6:2001:db8::/32 -all'] });

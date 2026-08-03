@@ -290,6 +290,20 @@ async function matchMechanism(term: SpfTerm, state: EvalState, depth: number, cu
 }
 
 /**
+ * RFC 7208 §4.3 initial processing: is `<domain>` malformed or single-label? The spec's own examples
+ * are a label longer than 63 octets and a zero-length label NOT at the end; a lone trailing dot (the
+ * root) is a zero-length label AT the end and is allowed, as is a fully-qualified multi-label name.
+ * A malformed name here means SPF returns "none" without a lookup rather than letting the resolver
+ * turn it into a `temperror`.
+ */
+function isMalformedDomain(domain: string): boolean {
+  const trimmed = domain.endsWith('.') ? domain.slice(0, -1) : domain;
+  const labels = trimmed.split('.');
+  if (labels.length < 2) return true; // not a multi-label domain name
+  return labels.some((label) => label.length === 0 || label.length > 63);
+}
+
+/**
  * Check SPF for a received message. `domain` is the MAIL FROM domain (or the HELO
  * domain for a null return-path). Returns the SPF result to record in
  * Authentication-Results.
@@ -299,7 +313,11 @@ export async function checkSpf(ip: string, domain: string, resolvers: SpfResolve
   // (::ffff:1.2.3.4); treat it as the IPv4 address so ip4: mechanisms match.
   const mapped = /^::ffff:(\d+\.\d+\.\d+\.\d+)$/i.exec(ip);
   const normalized = mapped !== null && net.isIPv4(mapped[1]!) ? mapped[1]! : ip;
-  if (domain === '' || ipToBig(normalized) === null) return 'none';
+  // RFC 7208 §4.3: a malformed or single-label <domain> makes check_host() return "none" IMMEDIATELY,
+  // before any lookup. Without this a malformed name (an over-long or interior-empty label) fell
+  // through to the resolver, which rejects it with EBADNAME — surfacing as `temperror`, a retriable
+  // "ask again later" where the spec requires the settled non-result "none".
+  if (domain === '' || ipToBig(normalized) === null || isMalformedDomain(domain)) return 'none';
   const state: EvalState = { lookups: 0, voids: 0, resolvers, ip: normalized };
   return evalDomain(domain, state, 0);
 }
