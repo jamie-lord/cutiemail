@@ -220,6 +220,27 @@ test('FETCH $ (the SEARCHRES marker) is a tagged BAD, not a silent empty result 
   }
 });
 
+test('STATUS with an unknown or empty data item is a tagged BAD, not a silent short answer (§6.3.11)', async () => {
+  const { s, server, sock } = await loggedIn();
+  try {
+    // Without the guard, statusItems silently drops the unknown item and answers `* STATUS "INBOX" ()`
+    // plus OK — the client is told its query succeeded while an item it asked for was never evaluated.
+    assert.match(await s.run('a1', 'STATUS INBOX (BOGUS)'), /^a1 BAD/m, 'an unknown STATUS item is BAD');
+    assert.match(await s.run('a2', 'STATUS INBOX (MESSAGES BOGUS)'), /^a2 BAD/m, 'a mix of known and unknown is BAD');
+    assert.match(await s.run('a3', 'STATUS INBOX ()'), /^a3 BAD/m, 'an empty item list is BAD');
+    // Control: a known item list still answers OK with the untagged STATUS, so the guard rejects only
+    // the unknown item and not the command.
+    const ok = await s.run('a4', 'STATUS INBOX (MESSAGES UIDNEXT)');
+    assert.match(ok, /^\* STATUS INBOX \(MESSAGES \d+ UIDNEXT \d+\)/m, 'a known list is still answered');
+    assert.match(ok, /^a4 OK/m, 'and completes OK');
+    // The LIST RETURN (STATUS (...)) sibling (§6.3.9.5) carries the same guard.
+    assert.match(await s.run('a5', 'LIST "" "*" RETURN (STATUS (BOGUS))'), /^a5 BAD/m, 'an unknown STATUS item in LIST RETURN is BAD');
+  } finally {
+    sock.destroy();
+    await server.close();
+  }
+});
+
 test('STORE and COPY/MOVE reject $ and a malformed set with BAD, the guard FETCH already carries (§9)', async () => {
   const { s, server, sock } = await loggedIn((c) => c.get('INBOX')!.append(Buffer.from('Subject: x\r\n\r\nb\r\n', 'latin1')));
   try {

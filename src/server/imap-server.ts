@@ -513,6 +513,19 @@ const LIST_RETURN_OPTIONS = new Set(['SUBSCRIBED', 'CHILDREN', 'STATUS', 'SPECIA
  * returning "the same untagged STATUS response" — so the two must be the same bytes for the same
  * mailbox, and the way to guarantee that is for them to be the same code.
  */
+/** The status-att data items this server implements (RFC 9051 §7.3.2 + RFC 7162 HIGHESTMODSEQ). */
+const STATUS_ATTS = new Set(['MESSAGES', 'UIDNEXT', 'UIDVALIDITY', 'UNSEEN', 'SIZE', 'DELETED', 'HIGHESTMODSEQ', 'RECENT']);
+
+/**
+ * The items in `wanted` that are not recognised status-att keywords. An unknown item must draw a
+ * tagged BAD (RFC 9051 §6.3.11's `status-att` grammar), the same as an unknown FETCH data item —
+ * `statusItems` would otherwise silently drop it and answer OK with a short list, telling the client
+ * its query succeeded while an item it asked for was never evaluated.
+ */
+function unknownStatusAtts(wanted: readonly string[]): string[] {
+  return wanted.filter((w) => !STATUS_ATTS.has(w.toUpperCase()));
+}
+
 function statusItems(box: ServableMailbox, wanted: readonly string[]): string[] {
   const items: string[] = [];
   // DE-DUPLICATED, and this is load-bearing rather than tidy. RFC 9051's ABNF for the request
@@ -1845,6 +1858,15 @@ export class ImapServer {
             // STATUS it would have answered to a STATUS command. CHILDREN and SPECIAL-USE need no
             // handling here — the attributes they ask for are on every LIST line already.
             const statusReturn = ret.find((o) => o.name === 'STATUS')?.args;
+            // RETURN (STATUS (...)) draws the same STATUS a STATUS command would (§6.3.9.5), so an
+            // unknown or empty item list is a tagged BAD here too, before any LIST line is emitted.
+            if (statusReturn !== undefined) {
+              const unknownAtts = unknownStatusAtts(statusReturn);
+              if (statusReturn.length === 0 || unknownAtts.length > 0) {
+                write(sock, `${tag} BAD LIST: unknown or missing STATUS data item`);
+                break;
+              }
+            }
             if (pattern === '') {
               // A bare-root probe: the reference IS a valid mailbox reference.
               write(sock, '* LIST (\\Noselect) "/" ""');
@@ -1986,6 +2008,13 @@ export class ImapServer {
               .split(/\s+/)
               .map((w) => w.toUpperCase())
               .filter((w) => w.length > 0);
+            // An empty item list or an unrecognised data item is a tagged BAD, not a silent short
+            // answer — the same guard FETCH carries for its data items (§6.3.11 `status-att`).
+            const unknownAtts = unknownStatusAtts(wanted);
+            if (wanted.length === 0 || unknownAtts.length > 0) {
+              write(sock, `${tag} BAD STATUS: unknown or missing data item`);
+              break;
+            }
             // Canonical name, for the same reason as SELECT's untagged LIST above.
             write(sock, `* STATUS ${imapMailboxAstring(canonicalMailboxName(name))} (${statusItems(box, wanted).join(' ')})`);
             write(sock, `${tag} OK STATUS completed`);
