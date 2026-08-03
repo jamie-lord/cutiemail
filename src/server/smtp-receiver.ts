@@ -109,6 +109,22 @@ const addrOf = (line: string): string => /<([^>]*)>/.exec(line)?.[1] ?? '';
 const NUL = String.fromCharCode(0);
 
 /**
+ * Strict base64 for a SASL response (RFC 4954 §4, RFC 4648 §4): only the base64 alphabet, the pad
+ * character '=' solely as up to two trailing octets, and a length that is a multiple of four.
+ *
+ * Node's `Buffer.from(s, 'base64')` is deliberately lenient — it silently drops any character
+ * outside the alphabet and stops at the first '=' — so a response the RFC says the server "cannot
+ * decode" (a stray character, a '=' anywhere but the end) would otherwise decode to a short buffer
+ * and be reported as a bad credential (535) instead of the 501 5.5.2 a decode failure requires
+ * (R-4954-4-c / R-4954-4-d). A lone '=' is the zero-length initial response and is mapped to the
+ * empty string by the caller before this runs.
+ */
+const BASE64_STRICT = /^[A-Za-z0-9+/]*={0,2}$/;
+function isStrictBase64(s: string): boolean {
+  return BASE64_STRICT.test(s) && s.length % 4 === 0;
+}
+
+/**
  * A non-ASCII octet in an envelope address. `line` reaches us decoded as latin1, so
  * every octet of a UTF-8 sequence is a char in 0x80-0xFF. RFC 6531 (SMTPUTF8) permits
  * UTF-8 in envelope addresses ONLY after the client issues SMTPUTF8 (advertised in
@@ -617,13 +633,22 @@ class Connection {
       this.#write('504 5.5.4 AUTH not supported');
       return;
     }
+    // RFC 4954 §4: a single '=' is the zero-length initial response; anything else must be a strict
+    // base64 string, or the server "cannot decode" it and MUST answer 501 5.5.2 (R-4954-4-c/-d). This
+    // is a syntax check on the encoding, independent of the credentials, so it runs before the
+    // throttle — it neither touches the password nor counts as a failed attempt.
+    const payload = b64 === '=' ? '' : b64;
+    if (!isStrictBase64(payload)) {
+      this.#write('501 5.5.2 cannot decode base64 SASL response');
+      return;
+    }
     // Brute-force throttle: too many recent failures from this IP → refuse without checking
     // the password (a transient 4yz, so a legitimate client retries after the window drains).
     if (this.#opts.throttle?.isBlocked(this.#remoteAddress) === true) {
       this.#write('454 4.7.0 too many failed attempts, try again later');
       return;
     }
-    const decoded = Buffer.from(b64, 'base64').toString('latin1').split(NUL);
+    const decoded = Buffer.from(payload, 'base64').toString('latin1').split(NUL);
     const username = decoded[1] ?? '';
     const password = decoded[2] ?? '';
     if (await this.#opts.authenticate(username, password)) {

@@ -13,8 +13,11 @@ import { SmtpReceiver } from './smtp-receiver.ts';
 import type { DeliveredMessage } from './smtp-receiver.ts';
 import { AccountStore } from '../store/accounts.ts';
 import { TEST_CERT, TEST_KEY } from '../testing/tls-test-cert.ts';
+import { authRequirement } from '../register/auth/index.ts';
+import type { AuthRequirementId } from '../register/auth/index.ts';
 
 const delay = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
+const cites = (id: AuthRequirementId): void => assert.ok(authRequirement(id).id === id);
 const plainToken = (user: string, pass: string): string => Buffer.from(`\0${user}\0${pass}`, 'latin1').toString('base64');
 
 class Reader {
@@ -232,6 +235,62 @@ test('submission: AUTH PLAIN two-step continuation form (RFC 4954) is supported'
     // Authenticated: MAIL is now accepted.
     secure.write('MAIL FROM:<alice@example.com>\r\n');
     await sr.line('2.1.0 Ok\r\n');
+    secure.end();
+  } finally {
+    await receiver.close();
+  }
+});
+
+test('submission: a SASL response the server cannot base64-decode draws 501 5.5.2 (RFC 4954 §4)', async () => {
+  cites('R-4954-4-c');
+  cites('R-4954-4-d');
+  const accounts = new AccountStore();
+  accounts.setPassword('alice', 'correct horse', Buffer.from('saltsalt'), 4096, 'sha256');
+  const receiver = await SmtpReceiver.start(() => {}, {
+    tls: { key: TEST_KEY, cert: TEST_CERT },
+    requireAuth: true,
+    authenticate: async (u, p) => await accounts.verifyPassword(u, p),
+  });
+  try {
+    const raw = net.connect(receiver.port, '127.0.0.1');
+    raw.on('error', () => {});
+    const rr = new Reader(raw);
+    await rr.line('ESMTP\r\n');
+    raw.write('EHLO client\r\n');
+    await rr.line('250 STARTTLS\r\n');
+    raw.write('STARTTLS\r\n');
+    await rr.line('Ready to start TLS\r\n');
+    const secure = tls.connect({ socket: raw, rejectUnauthorized: false });
+    secure.on('error', () => {});
+    await new Promise<void>((r) => secure.once('secureConnect', () => r()));
+    const sr = new Reader(secure);
+    secure.write('EHLO client\r\n');
+    await sr.line('250 AUTH PLAIN\r\n');
+
+    // Node's base64 decoder is lenient: it drops a non-alphabet byte and stops at the first '=', so
+    // each of these used to decode to a short buffer and fail as a bad credential (535). They are
+    // undecodable per RFC 4954 §4, which requires 501 5.5.2 — a distinct answer that tells the client
+    // its ENCODING is broken, not its password. The session survives each one.
+    // '!!!!' is a non-alphabet character; '=AAA' and 'AAA=BBB' are the RFC's own examples of a pad
+    // character not at the end; 'AB=CD' is the same rule mid-string.
+    for (const bad of ['!!!!', 'AB=CD', '=AAA', 'AAA=BBB']) {
+      secure.write(`AUTH PLAIN ${bad}\r\n`);
+      await sr.line('501 5.5.2');
+    }
+    // Same rule on the continuation form: 334, then an undecodable response.
+    secure.write('AUTH PLAIN\r\n');
+    await sr.line('334');
+    secure.write('!!!!\r\n');
+    await sr.line('501 5.5.2');
+
+    // Negative control: a WELL-FORMED base64 payload with the wrong password decodes fine, so it is
+    // a credential failure (535), never 501 — proving the 501 above is specifically for undecodable
+    // input and not for any failed AUTH.
+    secure.write('AUTH PLAIN ' + plainToken('alice', 'wrong') + '\r\n');
+    await sr.line('535');
+    // And the correct credentials still authenticate: the strict check rejects only bad encodings.
+    secure.write('AUTH PLAIN ' + plainToken('alice', 'correct horse') + '\r\n');
+    await sr.line('235');
     secure.end();
   } finally {
     await receiver.close();

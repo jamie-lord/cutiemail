@@ -44,4 +44,39 @@ export const SMTP_AUTH = [
       'control. This entry also anchors the ADR-0007 no-plaintext-AUTH-without-TLS ' +
       'gate (tested on the same machine).',
   },
+  {
+    id: 'R-4954-4-c',
+    rfc: 'rfc4954',
+    section: '4',
+    page: 4,
+    level: 'MUST',
+    party: 'server',
+    normativeSource: 'keyword',
+    text: 'If the server cannot [BASE64] decode any client response, it MUST reject the AUTH command with a 501 reply (and an enhanced status code of 5.5.2).',
+    testability: { kind: 'wire' },
+    note:
+      'A SASL response the server cannot BASE64-decode is a 501 5.5.2, distinct from a ' +
+      'decodable-but-wrong credential (535). Node’s decoder is lenient — it drops ' +
+      'non-alphabet bytes and tolerates a misplaced pad — so the receiver validates the ' +
+      'response strictly (R-4954-4-d) before decoding rather than letting garbage decode ' +
+      'to a short buffer and fail as an auth error.',
+  },
+  {
+    id: 'R-4954-4-d',
+    rfc: 'rfc4954',
+    section: '4',
+    page: 4,
+    level: 'MUST',
+    party: 'server',
+    normativeSource: 'keyword',
+    text:
+      "servers and clients MUST reject (and not ignore) any character not explicitly allowed by the " +
+      "BASE64 alphabet, and MUST reject any sequence of BASE64 characters that contains the pad " +
+      "character ('=') anywhere other than the end of the string",
+    testability: { kind: 'wire' },
+    note:
+      'The strict-alphabet, pad-only-at-the-end rule that R-4954-4-c’s "cannot decode" rests ' +
+      'on: a non-alphabet character or an interior "=" makes the response undecodable, so it draws ' +
+      '501 5.5.2 rather than being silently accepted with the bad bytes dropped.',
+  },
 ] as const satisfies readonly RequirementDef[];
