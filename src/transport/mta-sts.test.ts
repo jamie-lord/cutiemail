@@ -27,17 +27,19 @@ test('sanity: a well-formed policy parses into its fields', () => {
 
 test('R-8461-3.2-a: the version must be STSv1 (acceptAnyVersion caught)', () => {
   cites('R-8461-3.2-a');
-  assert.ok(!parseStsPolicy(P('version: STSv2\r\nmode: enforce\r\nmax_age: 1\r\n')).valid, 'a non-STSv1 version is rejected');
-  assert.ok(parseStsPolicy(P('version: STSv2\r\nmode: enforce\r\nmax_age: 1\r\n'), { acceptAnyVersion: true }).valid, 'acceptAnyVersion must be detectable');
+  // An mx entry is included so the version is the ONLY thing under test (an enforce policy with no
+  // mx is independently invalid, R-8461-3.2-e).
+  assert.ok(!parseStsPolicy(P('version: STSv2\r\nmode: enforce\r\nmx: m.example.com\r\nmax_age: 1\r\n')).valid, 'a non-STSv1 version is rejected');
+  assert.ok(parseStsPolicy(P('version: STSv2\r\nmode: enforce\r\nmx: m.example.com\r\nmax_age: 1\r\n'), { acceptAnyVersion: true }).valid, 'acceptAnyVersion must be detectable');
 });
 
 test('R-8461-3.2-b: the mode must be one of enforce/testing/none (acceptUnknownMode caught)', () => {
   cites('R-8461-3.2-b');
   for (const m of ['enforce', 'testing', 'none']) {
-    assert.ok(parseStsPolicy(P(`version: STSv1\r\nmode: ${m}\r\nmax_age: 1\r\n`)).valid, `${m} is a valid mode`);
+    assert.ok(parseStsPolicy(P(`version: STSv1\r\nmode: ${m}\r\nmx: m.example.com\r\nmax_age: 1\r\n`)).valid, `${m} is a valid mode`);
   }
-  assert.ok(!parseStsPolicy(P('version: STSv1\r\nmode: bogus\r\nmax_age: 1\r\n')).valid, 'an unknown mode is rejected');
-  assert.ok(parseStsPolicy(P('version: STSv1\r\nmode: bogus\r\nmax_age: 1\r\n'), { acceptUnknownMode: true }).valid, 'acceptUnknownMode must be detectable');
+  assert.ok(!parseStsPolicy(P('version: STSv1\r\nmode: bogus\r\nmx: m.example.com\r\nmax_age: 1\r\n')).valid, 'an unknown mode is rejected');
+  assert.ok(parseStsPolicy(P('version: STSv1\r\nmode: bogus\r\nmx: m.example.com\r\nmax_age: 1\r\n'), { acceptUnknownMode: true }).valid, 'acceptUnknownMode must be detectable');
 });
 
 test('R-8461-4.1-a: a wildcard matches exactly one left-most label (wildcardMatchesMultipleLabels caught)', () => {

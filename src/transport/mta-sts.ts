@@ -35,6 +35,8 @@ export interface StsParseDefects {
   readonly acceptAnyVersion?: boolean;
   /** Accept a mode outside {enforce,testing,none}. Violates R-8461-3.2-b. */
   readonly acceptUnknownMode?: boolean;
+  /** Accept a policy with no `mx` even when the mode is not `none`. Violates R-8461-3.2-e. */
+  readonly acceptMissingMx?: boolean;
 }
 
 export function parseStsPolicy(policy: Buffer, defects: StsParseDefects = {}): StsPolicy {
@@ -106,6 +108,18 @@ export function parseStsPolicy(policy: Buffer, defects: StsParseDefects = {}): S
   if (maxAge === null) {
     valid = false;
     anomalies.push('missing-max-age');
+  }
+  // RFC 8461 §3.2 policy ABNF: `sts-policy-mx = "mx:" ...` is "required at least once, except when
+  // mode is 'none'". A policy that omits `mx` under `enforce` or `testing` parses as valid today, and
+  // `mxAllowed` (mx.some(...)) over an empty list then refuses EVERY candidate host — so an enforce
+  // policy with no mx stops all mail to the domain. Refuse it at the parse, exactly as the max_age
+  // rule above does: `resolve()` treats an invalid policy as "no usable policy" and keeps a still
+  // valid cached one (§3.3/§5.1) or falls back to opportunistic TLS, which is strictly better than a
+  // self-inflicted total bounce. `mode: none` legitimately omits mx (it is also the §8.3 retirement
+  // signal), so it stays valid.
+  if (mx.length === 0 && mode !== 'none' && defects.acceptMissingMx !== true) {
+    valid = false;
+    anomalies.push('missing-mx');
   }
 
   return { valid, version, mode, mx, maxAge, anomalies };

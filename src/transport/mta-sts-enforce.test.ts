@@ -112,6 +112,29 @@ test('a policy with no max_age is not a valid policy', async () => {
   assert.equal(await cache.resolve('no-lifetime.example', d), null);
 });
 
+test('an enforce/testing policy with no mx is not a valid policy (but mode: none may omit mx)', async () => {
+  cites('R-8461-3.2-e');
+  // The ABNF requires `mx` at least once unless the mode is `none`. Without this, an enforce policy
+  // that lists no mx parses valid, and `mxAllowed` (mx.some(...)) over an empty list refuses EVERY
+  // host — every message to the domain bounces. Refuse it at the parse instead.
+  const enforceNoMx = P('version: STSv1\r\nmode: enforce\r\nmax_age: 604800\r\n');
+  assert.equal(parseStsPolicy(enforceNoMx).valid, false, 'enforce with no mx is invalid');
+  assert.ok(parseStsPolicy(enforceNoMx).anomalies.includes('missing-mx'));
+  assert.equal(parseStsPolicy(P('version: STSv1\r\nmode: testing\r\nmax_age: 604800\r\n')).valid, false, 'testing with no mx is invalid');
+  // The exception: mode `none` is the §8.3 retirement signal and legitimately carries no mx.
+  assert.equal(parseStsPolicy(P('version: STSv1\r\nmode: none\r\nmax_age: 604800\r\n')).valid, true, 'mode: none may omit mx');
+  // The negative control: the defect restores the old accept-empty-mx behaviour, so the mutant is
+  // detectable, and an otherwise-identical policy WITH an mx is valid — the refusal is the missing mx.
+  assert.equal(parseStsPolicy(enforceNoMx, { acceptMissingMx: true }).valid, true, 'acceptMissingMx must be detectable');
+  assert.equal(parseStsPolicy(ENFORCING).valid, true);
+
+  // End to end: an empty-mx enforce policy leaves the domain on opportunistic TLS rather than being
+  // cached and bouncing every host — a self-inflicted total outage is worse than an unenforced hop.
+  const cache = new StsCache();
+  const d = deps({ txt: ['v=STSv1; id=1'], policy: enforceNoMx });
+  assert.equal(await cache.resolve('empty-mx.example', d), null);
+});
+
 test('a TXT record not beginning with the version field is not an MTA-STS record', async () => {
   // Not a defect: the resolver matches with startsWith('v=stsv1') and so already refuses a record
   // whose version comes second. The case exists because nothing pinned that, and the natural

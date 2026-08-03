@@ -90,6 +90,22 @@ export const MTA_STS_ENFORCE = [
       + 'reading the spec offers, which is why the field is not optional.',
   },
   {
+    id: 'R-8461-3.2-e',
+    rfc: 'rfc8461',
+    section: '3.2',
+    page: 8,
+    level: 'REQUIRED',
+    party: 'client',
+    normativeSource: 'prose',
+    text: 'sts-policy-mx / ; required at least once, except when ; mode is "none"',
+    testability: { kind: 'parse' },
+    note:
+      'From the policy ABNF, the same place the max_age obligation lives. An `enforce` or `testing` '
+      + 'policy with no `mx` entry authorises no host, so `mxAllowed` refuses every candidate and all '
+      + 'mail to the domain stops. Refused at the parse (like a missing max_age), so a caller reading '
+      + '`.valid` cannot enforce an empty MX set; `mode: none` legitimately omits mx and stays valid.',
+  },
+  {
     id: 'R-8461-4.2-a',
     rfc: 'rfc8461',
     section: '4.2',
