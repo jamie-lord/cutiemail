@@ -49,7 +49,7 @@ const GOOD_KEY = `v=DKIM1; k=rsa; p=${PUBLIC_DER}`;
  * under test keeps the signature valid, so the only thing that can refuse the message is the
  * requirement being tested.
  */
-function signWith(tags: Record<string, string | null>): Buffer {
+function signWith(tags: Record<string, string | null>, rawExtra?: string): Buffer {
   const { headers, body } = parseMessage(MESSAGE);
   const base: Record<string, string | null> = {
     v: '1',
@@ -63,7 +63,11 @@ function signWith(tags: Record<string, string | null>): Buffer {
   };
   const order = ['v', 'a', 'c', 'd', 's', 'h', 'i', 'bh', 'x', 't', 'l'];
   const present = order.filter((k) => base[k] !== null && base[k] !== undefined);
-  const value = `${present.map((k) => `${k}=${base[k]}`).join('; ')}; b=`;
+  // `rawExtra` injects a verbatim component into the tag-list BEFORE `b=`, so it is covered by the
+  // signature — the only way to exercise a parser-level structural refusal (e.g. a tag-spec with no
+  // "=") without editing already-signed bytes, which would make the crypto do the refusing instead.
+  const tagList = present.map((k) => `${k}=${base[k]}`).join('; ');
+  const value = `${rawExtra === undefined ? tagList : `${tagList}; ${rawExtra}`}; b=`;
 
   const hNames = (base.h ?? '').split(':').map((n) => n.trim()).filter((n) => n.length > 0);
   const input = buildSigningInput(selectSignedFields(headers, hNames), value, 'relaxed');
@@ -142,10 +146,15 @@ test('a structurally malformed signature is refused rather than salvaged', async
   cites('R-6376-6.1.1-a');
   // "Meticulously" is the RFC's own word, and it is there because a lenient parser is how a verifier
   // ends up disagreeing with the signer about what was signed — and any such disagreement is
-  // exploitable. Each of these is signed correctly and then made structurally wrong, so what refuses
-  // them is the validation, not the crypto.
+  // exploitable. Each of these is SIGNED AROUND the malformed shape (never edited after signing), so
+  // the signature is valid over the bytes and the only thing that can refuse the message is the
+  // parser's structural validation, not the crypto.
   const cases: ReadonlyArray<readonly [string, Buffer]> = [
-    ['a tag with no value separator', Buffer.from(signed().toString('latin1').replace('; s=sel;', '; s=sel; brokentag;'), 'latin1')],
+    // The tag-spec with no "=" (RFC 6376 §3.2). This case used to EDIT an already-signed header
+    // (`; s=sel;` → `; s=sel; brokentag;`), which invalidated the signature — so the crypto refused
+    // it and the assertion passed while the parser was in fact silently SKIPPING `brokentag`
+    // (salvage). Signing the malformed component in via `rawExtra` proves the parser refuses it.
+    ['a tag-spec with no "=" separator', signWith({}, 'brokentag')],
     ['a duplicated required tag', signWith({ d: 'example.test; d=attacker.test' })],
     ['bh= that is not base64', signWith({ bh: '!!!!' })],
     ['an empty h= list', signWith({ h: '' })],
@@ -155,6 +164,10 @@ test('a structurally malformed signature is refused rather than salvaged', async
     assert.notEqual(outcome.verdict, 'pass', `a signature with ${why} must not pass`);
     assert.deepEqual(outcome.passedDomains, [], `and must attribute nothing: ${why}`);
   }
+  // The negative control that stops the tag-spec case passing for the wrong reason: a WELL-FORMED
+  // extra tag-spec, signed the same way, is an unknown tag §3.5 says to ignore — so the message
+  // still verifies. The refusal above is therefore the missing "=", not merely the extra component.
+  assert.equal((await verifyDkim(signWith({}, 'goodtag=x'), keyRecord(GOOD_KEY))).verdict, 'pass', 'a well-formed unknown tag is ignored, not fatal');
 });
 
 test('a signature naming an algorithm that does not exist is refused', async () => {

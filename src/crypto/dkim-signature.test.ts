@@ -79,3 +79,18 @@ test('R-6376-6.1.1-a: an "a=" outside the known set invalidates the signature (a
     assert.ok(parseDkimSignature(H(GOOD.replace('a=rsa-sha256;', `a=${algorithm};`))).valid, `${algorithm} is a real algorithm`);
   }
 });
+
+test('R-6376-6.1.1-a: a tag-spec with no "=" invalidates the signature (acceptSeparatorlessTag caught)', () => {
+  cites('R-6376-6.1.1-a');
+  // RFC 6376 §3.2's `tag-spec` requires the "=" separator; a non-empty component without one is
+  // malformed. The parser used to `continue` past it silently — salvage, not the "meticulous"
+  // validation §6.1.1 demands — so a verifier ignored a component the signer may have signed around.
+  const malformed = `${GOOD}; brokentag`;
+  assert.ok(!parseDkimSignature(H(malformed)).valid, 'a separator-less tag-spec invalidates the signature');
+  assert.ok(hasSignatureAnomaly(parseDkimSignature(H(malformed)), 'malformed-tag-spec'));
+  // Negative control: the defect restores the silent skip, so the mutant is detectable.
+  assert.ok(parseDkimSignature(H(malformed), { acceptSeparatorlessTag: true }).valid, 'acceptSeparatorlessTag must be detectable');
+  // And an EMPTY component (a trailing or doubled ";") is not a violation — it is dropped, as before.
+  assert.ok(parseDkimSignature(H(`${GOOD};`)).valid, 'a trailing ";" is harmless');
+  assert.ok(parseDkimSignature(H(GOOD.replace('; s=sel;', '; s=sel;;'))).valid, 'a doubled ";" is harmless');
+});

@@ -37,6 +37,8 @@ export interface DkimSignatureDefects {
   readonly acceptAnyVersion?: boolean;
   /** Accept an "a=" naming an algorithm that does not exist. Violates R-6376-6.1.1-a. */
   readonly acceptUnknownAlgorithm?: boolean;
+  /** Silently skip a non-empty tag-spec that carries no "=" instead of invalidating. Violates R-6376-6.1.1-a. */
+  readonly acceptSeparatorlessTag?: boolean;
 }
 
 const KNOWN_TAGS = new Set(['v', 'a', 'b', 'bh', 'c', 'd', 'h', 'i', 'l', 'q', 's', 't', 'x', 'z']);
@@ -76,7 +78,18 @@ export function parseDkimSignature(header: Buffer, defects: DkimSignatureDefects
 
   for (const p of parts) {
     const eq = p.indexOf('=');
-    if (eq === -1) continue;
+    if (eq === -1) {
+      // A non-empty component with no "=" is a malformed tag-spec: RFC 6376 §3.2's
+      // `tag-spec = [FWS] tag-name [FWS] "=" [FWS] tag-value [FWS]` requires the separator, and
+      // §6.1.1 says to "meticulously validate" rather than salvage. Silently skipping it (the old
+      // `continue`) let a verifier ignore a component the signer may have signed around — `b=` is
+      // computed over the DKIM-Signature header — so the parse must REFUSE the signature, not drop
+      // the component. Empty components from a trailing or doubled ";" were already removed by the
+      // `length > 0` filter above, so this fires only on genuine `name`-without-`=` garbage.
+      anomalies.push('malformed-tag-spec');
+      if (defects.acceptSeparatorlessTag !== true) valid = false;
+      continue;
+    }
     const name = p.slice(0, eq).trim();
     const value = p.slice(eq + 1).trim();
     counts.set(name, (counts.get(name) ?? 0) + 1);
