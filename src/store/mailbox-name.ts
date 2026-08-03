@@ -52,6 +52,18 @@ export function canonicalMailboxName(name: string, defects: MailboxNameDefects =
 export const MAX_MAILBOX_NAME_OCTETS = 512;
 export const MAX_MAILBOX_SEGMENTS = 32;
 
+/**
+ * A cap on the NUMBER of mailboxes one account may hold — the orthogonal twin of the per-name caps
+ * above. LIST is quadratic in mailbox count as well as in name depth: `LIST "" *` computes
+ * \HasChildren for every matched name, and each such check scans the whole name set, so N flat
+ * mailboxes are O(N²) work on the single event loop (measured ~8 s at 40 000). The primary remedy
+ * is algorithmic — LIST precomputes the child-prefix set once, making the scan O(1) per name — but
+ * this backstop bounds the population itself, the same DoS-not-storage bound the name caps are, and
+ * closes the axis the per-name caps do not touch. 10 000 is far above any real account (heavy label
+ * users run to the low hundreds); it is a runaway bound, not a product limit.
+ */
+export const MAX_MAILBOXES_PER_ACCOUNT = 10_000;
+
 export function withinMailboxNameBounds(name: string): boolean {
   return name.length <= MAX_MAILBOX_NAME_OCTETS && name.split('/').length <= MAX_MAILBOX_SEGMENTS;
 }

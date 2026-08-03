@@ -26,7 +26,7 @@ import { bodyResponse, bodyStructureResponse, resolvePart } from '../message/bod
 import { buildEnvelope, serializeEnvelope } from '../imap/envelope.ts';
 import { matchesSearch, type SearchableMessage, type SearchKey } from '../imap/search.ts';
 import { parseSequenceSet } from '../imap/sequence-set.ts';
-import { canonicalMailboxName, withinMailboxNameBounds } from '../store/mailbox-name.ts';
+import { canonicalMailboxName, withinMailboxNameBounds, MAX_MAILBOXES_PER_ACCOUNT } from '../store/mailbox-name.ts';
 import { sanitizeForTerminalLine } from '../ops/terminal.ts';
 import type { MessageMeta } from '../store/mailbox.ts';
 import type { MailboxNotifier } from './mailbox-notifier.ts';
@@ -852,13 +852,33 @@ function matchNames(reference: string, pattern: string, names: readonly string[]
 }
 
 /**
- * The LIST attribute list for a mailbox name: special-use where conventional, and
- * \HasChildren / \HasNoChildren (RFC 9051 §7.3.1) computed from whether any other
- * name sits under it — so a client shows an expand affordance for a parent folder.
+ * The set of names that have at least one child — every ancestor prefix of every name. Built once
+ * per LIST so `\HasChildren` (RFC 9051 §7.3.1) is an O(1) lookup per name: the previous
+ * `allNames.some(startsWith)` inside the per-name LIST loop made `LIST "" *` O(N²) in the account's
+ * mailbox count (an authenticated whole-server event-loop DoS — ~8 s at 40 000 flat mailboxes),
+ * the count-axis twin of the per-name depth bound.
  */
-function listAttributes(name: string, allNames: readonly string[]): string {
+export function childPrefixIndex(names: readonly string[]): Set<string> {
+  const withChildren = new Set<string>();
+  for (const n of names) {
+    const segs = n.split('/');
+    for (let k = 1; k < segs.length; k++) {
+      const anc = segs.slice(0, k).join('/');
+      if (anc !== '') withChildren.add(anc);
+    }
+  }
+  return withChildren;
+}
+
+/**
+ * The LIST attribute list for a mailbox name: special-use where conventional, and
+ * \HasChildren / \HasNoChildren (RFC 9051 §7.3.1). `hasChildren` is supplied by the caller (from
+ * `childPrefixIndex`, or a single membership test for the one-name SELECT response) rather than
+ * recomputed here, so the per-name cost is O(1).
+ */
+function listAttributes(name: string, hasChildren: boolean): string {
   const use = SPECIAL_USE[name];
-  const child = allNames.some((n) => n.startsWith(`${name}/`)) ? '\\HasChildren' : '\\HasNoChildren';
+  const child = hasChildren ? '\\HasChildren' : '\\HasNoChildren';
   return use === undefined ? `(${child})` : `(${child} ${use})`;
 }
 
@@ -1880,17 +1900,23 @@ export class ImapServer {
               // selectable mailbox (SELECT/STATUS of it still return NO — it does not exist). We
               // do NOT auto-create the parents (that would mint phantom selectable mailboxes with
               // their own UIDVALIDITY); we merely make the hierarchy walkable.
+              // Ancestor prefixes, computed once and shared by BOTH the phantom detection and the
+              // \HasChildren attribute — so the whole LIST is linear in the total segment count
+              // rather than O(N²) in the mailbox count (the `realNames.includes` per ancestor and the
+              // per-name child scan were each quadratic). `realSet` makes the "is this ancestor a real
+              // mailbox?" test O(1).
+              const realSet = new Set(realNames);
+              const withChildren = childPrefixIndex(realNames);
               const phantoms = new Set<string>();
-              for (const n of realNames) {
-                const segs = n.split('/');
-                for (let k = 1; k < segs.length; k++) {
-                  const anc = segs.slice(0, k).join('/');
-                  // Skip the empty ancestor a leading separator produces (`CREATE "/Sent"`), or
-                  // LIST would describe the name "" as \NonExistent \HasChildren while the
-                  // bare-root probe describes the same name as \Noselect — two contradictory
-                  // answers for one name, and a nameless folder in the client.
-                  if (anc !== '' && !realNames.includes(anc)) phantoms.add(anc);
-                }
+              for (const anc of withChildren) {
+                // A prefix that has children but is not itself a real mailbox is a phantom
+                // intermediate. Skip the empty ancestor a leading separator produces (`CREATE
+                // "/Sent"`), or LIST would describe the name "" as \NonExistent \HasChildren while the
+                // bare-root probe describes the same name as \Noselect — two contradictory answers
+                // for one name, and a nameless folder in the client. (§6.3.4 leaves materialising the
+                // superiors a SHOULD; §6.3.9 lists them as (\NonExistent \HasChildren) so a %-walk can
+                // still reach the child without minting a selectable phantom with its own UIDVALIDITY.)
+                if (!realSet.has(anc)) phantoms.add(anc);
               }
               const allNames = [...realNames, ...phantoms];
               for (const name of matchNames(reference, pattern, allNames)) {
@@ -1901,7 +1927,8 @@ export class ImapServer {
                   write(sock, `* LIST (\\NonExistent \\HasChildren) "/" ${imapMailboxAstring(name)}`);
                   continue;
                 }
-                const attrs = wantSubscribed ? listAttributes(name, allNames).replace(/\)$/, ' \\Subscribed)') : listAttributes(name, allNames);
+                const base = listAttributes(name, withChildren.has(name));
+                const attrs = wantSubscribed ? base.replace(/\)$/, ' \\Subscribed)') : base;
                 write(sock, `* LIST ${attrs} "/" ${imapMailboxAstring(name)}`);
                 // §6.3.9.5: the STATUS return option draws the same untagged STATUS a STATUS
                 // command would. Phantoms are skipped above, so every name reaching here is a real
@@ -1952,6 +1979,13 @@ export class ImapServer {
               // it can see in LIST. We reject rather than silently rewriting, which keeps the
               // byte-transparent stance: what a client stores is what it gets back.
               write(sock, `${tag} NO [CANNOT] mailbox name must be Unicode NFC (RFC 9051 §5.1)`);
+            } else if (connCatalog.listNames().length >= MAX_MAILBOXES_PER_ACCOUNT) {
+              // The twin of the per-name DoS cap (withinMailboxNameBounds): LIST is quadratic in
+              // mailbox COUNT as well as name depth, so an account that never stopped creating flat
+              // mailboxes could freeze the whole event loop on every subsequent LIST. Refuse once
+              // the runaway ceiling is reached — a real account never approaches it (RFC 9051 §6.3.4
+              // permits refusal; [LIMIT] is the response code for a reached limit).
+              write(sock, `${tag} NO [LIMIT] too many mailboxes`);
             } else if (connCatalog.create(name) === undefined) {
               write(sock, `${tag} NO mailbox already exists`);
             } else {
@@ -2189,7 +2223,9 @@ export class ImapServer {
             // `* LIST ... "inbox"` while LIST reports `INBOX` gives a client keying its folder
             // cache on the response two entries for one mailbox (RFC 9051 §6.3.2's examples echo
             // INBOX). The attributes were already computed from the canonical name.
-            write(sock, `* LIST ${listAttributes(selectedName, connCatalog.listNames())} "/" ${imapMailboxAstring(selectedName)}`);
+            // One name, one membership test — no need to build the whole child index for a SELECT.
+            const selectedHasChildren = connCatalog.listNames().some((n) => n.startsWith(`${selectedName}/`));
+            write(sock, `* LIST ${listAttributes(selectedName, selectedHasChildren)} "/" ${imapMailboxAstring(selectedName)}`);
             write(sock, `* ${selIdx.length} EXISTS`);
             // FLAGS lists the system flags plus every keyword currently in use in this mailbox
             // (RFC 9051 §7.1) — a keyword is any flag without a leading backslash (Thunderbird

@@ -11,8 +11,10 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import net from 'node:net';
 import { DatabaseSync } from 'node:sqlite';
-import { ImapServer } from './imap-server.ts';
+import { ImapServer, childPrefixIndex } from './imap-server.ts';
 import { SqliteCatalog } from '../store/sqlite-mailbox.ts';
+import { MemoryCatalog } from '../store/memory-catalog.ts';
+import { MAX_MAILBOXES_PER_ACCOUNT } from '../store/mailbox-name.ts';
 
 const delay = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
 
@@ -227,6 +229,43 @@ test('a leading separator does not mint an empty-named phantom mailbox in LIST',
     // Control: a genuine intermediate ancestor is still surfaced so the hierarchy stays walkable.
     await c.run('a5', 'CREATE "Work/2026/Q1"');
     assert.match(await c.run('a6', 'LIST "" "*"'), /^\* LIST \(\\NonExistent[^)]*\) "\/" Work$/m, 'a real phantom parent is still listed');
+  } finally {
+    c.sock.destroy();
+    await server.close();
+  }
+});
+
+test('childPrefixIndex marks exactly the names that have children (the O(1) \\HasChildren source)', () => {
+  // The set is every ancestor prefix of every name — what LIST uses for \HasChildren and to find
+  // phantom intermediates. Computed ONCE per LIST so the per-name attribute is O(1): the old
+  // per-name `allNames.some(startsWith)` made LIST O(N-squared) in the mailbox count.
+  const idx = childPrefixIndex(['INBOX', 'Work', 'Work/2026', 'Work/2026/Q1', 'Personal']);
+  assert.ok(idx.has('Work') && idx.has('Work/2026'), 'a parent and a mid-level ancestor have children');
+  assert.ok(!idx.has('Work/2026/Q1'), 'a leaf has no children');
+  assert.ok(!idx.has('INBOX') && !idx.has('Personal'), 'childless top-level names are absent');
+  // The empty ancestor a leading separator produces is never included (it would collide with the
+  // bare-root probe's \Noselect answer for the name "").
+  assert.ok(!childPrefixIndex(['/Sent']).has(''), 'the empty leading-separator ancestor is excluded');
+});
+
+test('CREATE refuses past the per-account mailbox ceiling — [LIMIT], the count-axis DoS twin', async () => {
+  // LIST is quadratic in mailbox COUNT as well as name depth; the algorithmic fix makes it linear,
+  // and this cap is the backstop that bounds the population itself (the twin of the per-name cap).
+  // Seed one below the ceiling (INBOX already counts toward it) so the next CREATE reaches it and
+  // the one after must be refused.
+  const cat = new MemoryCatalog();
+  for (let i = 0; cat.listNames().length < MAX_MAILBOXES_PER_ACCOUNT - 1; i++) cat.create(`m${i}`);
+  const server = await ImapServer.start(cat, { authenticate: async () => true });
+  const c = client(server.port);
+  try {
+    await new Promise<void>((r) => c.sock.once('connect', () => r()));
+    await c.run('a1', 'LOGIN u p');
+    // Reaches exactly the ceiling: still allowed.
+    assert.match(await c.run('a2', 'CREATE atTheCap'), /^a2 OK/m, 'the CREATE that reaches the ceiling succeeds');
+    // Would exceed it: refused with the RFC 9051 [LIMIT] response code.
+    assert.match(await c.run('a3', 'CREATE overTheCap'), /^a3 NO \[LIMIT\]/m, 'the CREATE that would exceed the ceiling is refused');
+    // Negative control: the refusal is the COUNT cap, not the name — the same name is fine below it.
+    assert.equal(cat.get('overTheCap'), undefined, 'the over-cap mailbox was not created');
   } finally {
     c.sock.destroy();
     await server.close();
