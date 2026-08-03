@@ -142,8 +142,13 @@ interface StructureBudget {
   bytes: number;
 }
 
-/** Build the MIME part tree for a message or message part. */
-export function buildBodyStructure(raw: Buffer, depth = 0, budget: StructureBudget = { bytes: 0 }): BodyPart {
+/**
+ * Build the MIME part tree for a message or message part. `inDigest` is set for the child parts of a
+ * `multipart/digest`, where RFC 2046 §5.1.5 changes the default Content-Type of a header-less part
+ * from `text/plain` to `message/rfc822` — a digest is a bundle of encapsulated messages, so a part
+ * that names no type is one of them, not plain text.
+ */
+export function buildBodyStructure(raw: Buffer, depth = 0, budget: StructureBudget = { bytes: 0 }, inDigest = false): BodyPart {
   // Bound cumulative re-parse work BEFORE parsing: a message/rfc822 chain re-parses its payload at
   // every level, so without this the depth×payload product is an unbounded per-FETCH CPU DoS.
   budget.bytes += raw.length;
@@ -155,7 +160,9 @@ export function buildBodyStructure(raw: Buffer, depth = 0, budget: StructureBudg
   if (depth >= MAX_MIME_DEPTH) {
     return { multipart: false, type: 'APPLICATION', subtype: 'OCTET-STREAM', params: [], id: null, description: null, encoding: '7BIT', size: body.length, lines: null, disposition: null, children: [], rfc822: null };
   }
-  const ctRaw = findHeader(headers, 'Content-Type') ?? 'text/plain';
+  // RFC 2046 §5.1.5: a part with no Content-Type defaults to text/plain, EXCEPT inside a
+  // multipart/digest, where the default becomes message/rfc822.
+  const ctRaw = findHeader(headers, 'Content-Type') ?? (inDigest ? 'message/rfc822' : 'text/plain');
   const { head: media, params } = parseParameterized(ctRaw);
   const slash = media.indexOf('/');
   const type = (slash === -1 ? 'text' : media.slice(0, slash)).toLowerCase();
@@ -174,7 +181,7 @@ export function buildBodyStructure(raw: Buffer, depth = 0, budget: StructureBudg
 
   if (type === 'multipart') {
     const boundary = params.find(([n]) => n === 'boundary')?.[1] ?? '';
-    const children = boundary === '' ? [] : parseMultipart(body, boundary, {}, MAX_PARTS_PER_ENTITY).parts.map((p) => buildBodyStructure(p, depth + 1, budget));
+    const children = boundary === '' ? [] : parseMultipart(body, boundary, {}, MAX_PARTS_PER_ENTITY).parts.map((p) => buildBodyStructure(p, depth + 1, budget, subtype === 'digest'));
     // RFC 2045 §6.4: a composite type may only carry a transparent transfer-encoding
     // (7bit/8bit/binary). A quoted-printable/base64 label on a multipart is forbidden and
     // bogus; do not copy it onto the emitted MULTIPART node (default such a node to 7BIT).

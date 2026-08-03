@@ -15,6 +15,22 @@ import type { RequirementDef } from '../../types.ts';
 
 export const M_S2046 = [
   {
+    id: 'R-2046-5.1-a',
+    rfc: 'rfc2046',
+    section: '5.1',
+    page: 24,
+    level: 'MUST',
+    party: 'both',
+    normativeSource: 'prose',
+    text: 'If no Content-Type field is present it is assumed to be "message/rfc822" in a "multipart/digest" and "text/plain" otherwise.',
+    testability: { kind: 'parse' },
+    note:
+      'The digest exception to the text/plain default (R-2045-5.2-a): a header-less part inside a ' +
+      'multipart/digest defaults to message/rfc822, because a digest is a bundle of encapsulated ' +
+      'messages. buildBodyStructure threads an inDigest flag to apply it, so such a part is reported ' +
+      'as MESSAGE/RFC822 with its ENVELOPE and nested structure rather than as a TEXT/PLAIN leaf.',
+  },
+  {
     id: 'R-2046-5.1.1-a',
     rfc: 'rfc2046',
     section: '5.1.1',

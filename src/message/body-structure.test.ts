@@ -8,8 +8,10 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { bodyResponse, bodyStructureResponse, resolvePart, buildBodyStructure } from './body-structure.ts';
+import { messageRequirement, type MessageRequirementId } from '../register/message/index.ts';
 
 const msg = (s: string): Buffer => Buffer.from(s.replace(/\n/g, '\r\n'), 'latin1');
+const cites = (id: MessageRequirementId): void => assert.ok(messageRequirement(id).id === id);
 
 test('a single text/plain part reports type, params, encoding, size and line count', () => {
   const b = bodyStructureResponse(msg('Content-Type: text/plain; charset=utf-8\nContent-Transfer-Encoding: 7bit\n\nHello\nWorld\n'));
@@ -19,6 +21,21 @@ test('a single text/plain part reports type, params, encoding, size and line cou
 test('an absent Content-Type defaults to text/plain (RFC 2045 §5.2)', () => {
   const b = bodyStructureResponse(msg('Subject: bare\n\njust text\n'));
   assert.match(b, /^\("TEXT" "PLAIN"/, 'the default media type is text/plain');
+});
+
+test('R-2046-5.1-a: a header-less part in a multipart/digest defaults to message/rfc822, not text/plain', () => {
+  cites('R-2046-5.1-a');
+  // The part carries no Content-Type. In a digest it is an encapsulated message (§5.1.5), so it must
+  // be reported as MESSAGE/RFC822 with an ENVELOPE — not the TEXT/PLAIN a mixed part would default to.
+  const part = '--D\n\nFrom: inner@example.test\nSubject: forwarded\n\ninner body\n';
+  const digest = bodyStructureResponse(msg(`Content-Type: multipart/digest; boundary="D"\n\n${part}--D--\n`));
+  assert.match(digest, /"MESSAGE" "RFC822"/, 'the header-less digest part is message/rfc822');
+  assert.match(digest, /"forwarded"/, 'and its ENVELOPE (subject) is carried, proving it was recursed as a message');
+  // Negative control: the identical header-less part in a multipart/mixed keeps the text/plain
+  // default, so the change is the digest context and not the part itself.
+  const mixed = bodyStructureResponse(msg(`Content-Type: multipart/mixed; boundary="D"\n\n${part}--D--\n`));
+  assert.match(mixed, /"TEXT" "PLAIN"/, 'the same part in multipart/mixed defaults to text/plain');
+  assert.doesNotMatch(mixed, /"MESSAGE" "RFC822"/, 'and is NOT treated as an encapsulated message');
 });
 
 test('a multipart with an attachment exposes the filename and disposition', () => {
