@@ -201,21 +201,6 @@ async function liveMailProbe(deps: CutoverDeps): Promise<{ ok: boolean; detail: 
   }
 }
 
-/** Every database file the daemon uses, live paths. */
-function liveDatabases(controlDbPath: string): string[] {
-  if (!existsSync(controlDbPath)) return [];
-  const db = openMailDb(controlDbPath);
-  try {
-    const paths = AccountRegistry.open(db)
-      .list()
-      .map((a) => a.mailDbPath)
-      .filter((p) => p !== ':memory:' && existsSync(p));
-    return [controlDbPath, ...paths];
-  } finally {
-    db.close();
-  }
-}
-
 /**
  * Put the pre-cutover databases back.
  *
