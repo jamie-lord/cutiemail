@@ -67,17 +67,10 @@ export const MTA_STS_ENFORCE = [
       'DNS splits TXT records over 255-octet strings, so a real policy record arrives in pieces. '
       + '"Without adding spaces" is the operative half: joining with a space corrupts whichever field '
       + 'straddles the split, and the record then fails to parse — turning enforcement silently off '
-      + 'for exactly the domains whose records are long enough to be split.',
-    deliberatelyUncovered: {
-      reason:
-        'The joining happens one layer below the STS resolver, in the DNS adapter that turns Node\'s '
-        + '`resolveTxt` string[][] into the string[] this code consumes — `chunks.join(\'\')`, with no '
-        + 'separator, which is the requirement. That adapter is a private const inside main.ts, so '
-        + 'observing it needs it exported; StsCache only ever sees an already-joined string and a '
-        + 'test at that level would assert nothing. Recorded rather than faked: exporting the adapter '
-        + 'is a production change, and this is a test-only pass.',
-      date: '2026-07-26',
-    },
+      + 'for exactly the domains whose records are long enough to be split. The join lived inline in '
+      + 'main.ts\'s DNS adapter (a private const) and so was recorded uncovered; it is now the exported '
+      + '`joinTxtRecord` (src/wire/dns-txt.ts), shared by the SPF and DKIM TXT paths that carry the '
+      + 'same rule, and pinned in dns-txt.test.ts with the space-joined form as the negative control.',
   },
   {
     id: 'R-8461-3.2-c',

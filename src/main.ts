@@ -50,6 +50,7 @@ import { RelayLoop } from './server/relay-loop.ts';
 import { runOps } from './ops/cli.ts';
 import { validLogin, MIN_PASSWORD_LENGTH } from './ops/account.ts';
 import { sanitizeForTerminalLine } from './ops/terminal.ts';
+import { joinTxtRecord } from './wire/dns-txt.ts';
 // Bundled self-signed certificate — local development default only.
 import { TEST_CERT as DEV_CERT, TEST_KEY as DEV_KEY } from './testing/tls-test-cert.ts';
 
@@ -129,7 +130,7 @@ export interface MailServerConfig {
 const dnsSpfResolvers: SpfResolvers = {
   txt: async (name) => {
     try {
-      return (await resolveTxt(name)).map((chunks) => chunks.join(''));
+      return (await resolveTxt(name)).map(joinTxtRecord);
     } catch (e) {
       const code = (e as { code?: string }).code;
       if (code === 'ENOTFOUND' || code === 'ENODATA') return [];
@@ -168,7 +169,7 @@ const resolveDkimKeyViaDns: DkimKeyResolver = async (domain, selector) => {
     throw e; // SERVFAIL / timeout — retriable
   }
   // A TXT record may be split into multiple strings; concatenate each record's chunks.
-  const joined = records.map((chunks) => chunks.join('')).find((r) => r.includes('p='));
+  const joined = records.map(joinTxtRecord).find((r) => r.includes('p='));
   return joined === undefined ? null : Buffer.from(joined, 'latin1');
 };
 
