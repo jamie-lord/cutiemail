@@ -145,7 +145,10 @@ test('nesting: a within-cap deep multipart recurses to a balanced structure', ()
   assertWellFormedImap(bs, 'deeply-nested-16');
   // 16 real container levels means at least 16 opening parens before the core leaf.
   assert.ok(bs.startsWith('('.repeat(16)), 'the 16 nested containers each open a sublist');
-  assert.ok(bs.includes('the deep core'.length.toString()), 'the innermost leaf size is reported');
+  // Anchor the leaf-size assertion to the leaf itself (`<encoding> <octets> <lines>`), not a bare
+  // `includes('13')`: the boundary name "N13" also contains "13", so the loose form passed no matter
+  // what octet count the serializer reported. The deep core is 13 octets on one line after "7BIT".
+  assert.ok(bs.includes(`"7BIT" ${'the deep core'.length} 1 `), 'the innermost leaf reports its exact octet count');
 });
 
 test('nesting: a message past MAX_MIME_DEPTH engages the DoS cap, no stack overflow', () => {
