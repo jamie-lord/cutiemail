@@ -85,4 +85,20 @@ export const DKIM_SIGNATURE = [
       'Our corpus demonstrates that append property so the risk is visible, not ' +
       'hidden; ADR 0007 leans toward not emitting l= at all.',
   },
+  {
+    id: 'R-6376-3.5-e',
+    rfc: 'rfc6376',
+    section: '3.5',
+    page: 22,
+    level: 'MUST',
+    party: 'both',
+    normativeSource: 'keyword',
+    text: 'The value of the "x=" tag MUST be greater than the value of the "t=" tag if both are present.',
+    testability: { kind: 'parse' },
+    note:
+      'A signature whose expiration (x=) is at or before its signing time (t=) is structurally ' +
+      'nonsensical. The verifier treats such a signature as a permerror (malformed), checked before ' +
+      'the temporal expiry, so it is refused rather than verified. Both tags are optional, so the ' +
+      'rule only fires when both are present.',
+  },
 ] as const satisfies readonly RequirementDef[];

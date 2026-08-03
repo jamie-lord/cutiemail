@@ -46,4 +46,21 @@ export const DKIM_KEYRECORD = [
       'negative control. p= is REQUIRED, so a record missing it entirely is also ' +
       'invalid.',
   },
+  {
+    id: 'R-6376-3.6.1-c',
+    rfc: 'rfc6376',
+    section: '3.6.1',
+    page: 29,
+    level: 'MUST',
+    party: 'both',
+    normativeSource: 'keyword',
+    text: 'Verifiers for a given service type MUST ignore this record if the appropriate type is not listed.',
+    testability: { kind: 'parse' },
+    note:
+      'The s= service-type gate: the key applies to the colon-separated services it lists (default ' +
+      '"*"), and a verifier for email MUST ignore a record that lists services but neither "email" ' +
+      'nor "*" (unrecognized types are ignored). Our parser yields no usable key for such a record; ' +
+      'the acceptNonEmailService defect is the negative control. Without it a key published for a ' +
+      'different service would still verify mail.',
+  },
 ] as const satisfies readonly RequirementDef[];

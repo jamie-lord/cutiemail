@@ -29,6 +29,8 @@ export interface DkimKeyRecordDefects {
   readonly acceptAnyVersion?: boolean;
   /** Treat an empty p= (revoked) as a usable key. Violates R-6376-3.6.1-b. */
   readonly treatEmptyPAsValid?: boolean;
+  /** Use a key whose s= service list excludes email/`*`. Violates R-6376-3.6.1-c. */
+  readonly acceptNonEmailService?: boolean;
 }
 
 export function parseDkimKeyRecord(record: Buffer, defects: DkimKeyRecordDefects = {}): DkimKeyRecord {
@@ -63,6 +65,16 @@ export function parseDkimKeyRecord(record: Buffer, defects: DkimKeyRecordDefects
 
   const keyType = tags.get('k') ?? 'rsa'; // default rsa
 
+  // s= Service Type (RFC 6376 §3.6.1): a colon-separated list of services this key applies to,
+  // default "*". "Verifiers for a given service type MUST ignore this record if the appropriate type
+  // is not listed. Unrecognized service types MUST be ignored." This parser serves the EMAIL
+  // verifier, so a record whose list names services but neither "email" nor "*" does not apply to us
+  // and is not usable — a key published for another service must not verify mail.
+  const sTag = tags.get('s');
+  const services = sTag === undefined ? ['*'] : sTag.split(':').map((s) => s.trim().toLowerCase()).filter((s) => s.length > 0);
+  const appliesToEmail = services.length === 0 || services.includes('*') || services.includes('email');
+  if (!appliesToEmail) anomalies.push('service-not-email');
+
   // t= Flags (RFC 6376 §3.6.1): a colon-separated list; "Unrecognized flags MUST be ignored".
   // We surface them for the verifier's use: t=y (testing) and t=s (constrain i= to d=).
   const tTag = tags.get('t');
@@ -83,8 +95,11 @@ export function parseDkimKeyRecord(record: Buffer, defects: DkimKeyRecordDefects
   }
 
   // `valid` = usable for verification. A revoked key is usable ONLY under the
-  // defect (the whole point of the negative control); a malformed record never is.
-  const usable = revoked ? defects.treatEmptyPAsValid === true : wellFormed && publicKey !== null;
+  // defect (the whole point of the negative control); a malformed record, or one that does not
+  // apply to the email service, never is (each gated by its own defect for the negative controls).
+  const usable = revoked
+    ? defects.treatEmptyPAsValid === true
+    : wellFormed && publicKey !== null && (appliesToEmail || defects.acceptNonEmailService === true);
 
   return { valid: usable, version, keyType, publicKey, revoked, flags, anomalies };
 }

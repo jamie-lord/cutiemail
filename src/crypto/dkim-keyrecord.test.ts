@@ -38,6 +38,22 @@ test('R-6376-3.6.1-a: a non-DKIM1 version record is discarded (acceptAnyVersion 
   assert.ok(parseDkimKeyRecord(K('v=DKIM2; k=rsa; p=AAAA'), { acceptAnyVersion: true }).valid, 'acceptAnyVersion must be detectable');
 });
 
+test('R-6376-3.6.1-c: a key whose s= excludes email is not usable for mail (acceptNonEmailService caught)', () => {
+  cites('R-6376-3.6.1-c');
+  // s= lists the services the key applies to (default "*"). A record for another service must be
+  // ignored by the email verifier — otherwise a key published for, say, a non-email service verifies mail.
+  assert.ok(!parseDkimKeyRecord(K('v=DKIM1; k=rsa; s=tlsrpt; p=AAAA')).valid, 's=tlsrpt does not apply to email');
+  assert.ok(parseDkimKeyRecord(K('v=DKIM1; k=rsa; s=tlsrpt; p=AAAA')).anomalies.includes('service-not-email'));
+  // Applies to email: an explicit email, a wildcard, an absent s= (default *), and a list that
+  // includes email are all usable.
+  assert.ok(parseDkimKeyRecord(K('v=DKIM1; k=rsa; s=email; p=AAAA')).valid, 's=email applies');
+  assert.ok(parseDkimKeyRecord(K('v=DKIM1; k=rsa; s=*; p=AAAA')).valid, 's=* applies');
+  assert.ok(parseDkimKeyRecord(K('v=DKIM1; k=rsa; p=AAAA')).valid, 'an absent s= defaults to *');
+  assert.ok(parseDkimKeyRecord(K('v=DKIM1; k=rsa; s=tlsrpt:email; p=AAAA')).valid, 'a list including email applies');
+  // Negative control: the defect uses the non-email key anyway.
+  assert.ok(parseDkimKeyRecord(K('v=DKIM1; k=rsa; s=tlsrpt; p=AAAA'), { acceptNonEmailService: true }).valid, 'acceptNonEmailService must be detectable');
+});
+
 test('R-6376-3.6.1-b: an empty p= is a revoked key, unusable (treatEmptyPAsValid caught)', () => {
   cites('R-6376-3.6.1-b');
   const revoked = parseDkimKeyRecord(K('v=DKIM1; k=ed25519; p='));

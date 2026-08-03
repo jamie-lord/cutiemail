@@ -125,9 +125,16 @@ async function verifyOneSignature(rawValue: string, headers: ReturnType<typeof p
   if (!sig.signedHeaders.some((h) => h.trim().toLowerCase() === 'from')) {
     return { verdict: 'permerror', domain: sig.domain };
   }
+  // RFC 6376 §3.5: "The value of the 'x=' tag MUST be greater than the value of the 't=' tag if both
+  // are present." A signature that expires at or before it was signed is structurally nonsensical, so
+  // it is a permerror (malformed), checked before the temporal expiry below.
+  const xTag = sig.tags.get('x');
+  const tTag = sig.tags.get('t');
+  if (xTag !== undefined && /^\d+$/.test(xTag) && tTag !== undefined && /^\d+$/.test(tTag) && Number(xTag) <= Number(tTag)) {
+    return { verdict: 'permerror', domain: sig.domain };
+  }
   // RFC 6376 §3.5: a signature whose expiration (x=, epoch seconds) has passed is
   // stale — treat it as a failure so an old signed message cannot be replayed forever.
-  const xTag = sig.tags.get('x');
   if (xTag !== undefined && /^\d+$/.test(xTag) && Math.floor(Date.now() / 1000) > Number(xTag)) {
     return { verdict: 'fail', domain: sig.domain };
   }

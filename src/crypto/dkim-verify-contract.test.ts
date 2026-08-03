@@ -170,6 +170,21 @@ test('a structurally malformed signature is refused rather than salvaged', async
   assert.equal((await verifyDkim(signWith({}, 'goodtag=x'), keyRecord(GOOD_KEY))).verdict, 'pass', 'a well-formed unknown tag is ignored, not fatal');
 });
 
+test('a signature whose x= is not greater than its t= is refused (RFC 6376 §3.5)', async () => {
+  cites('R-6376-3.5-e');
+  // "The value of the 'x=' tag MUST be greater than the value of the 't=' tag if both are present."
+  // A signature that expires at or before it was signed is structurally nonsensical → permerror.
+  for (const [t, x] of [['2000', '1000'], ['1000', '1000']] as ReadonlyArray<readonly [string, string]>) {
+    const outcome = await verifyDkim(signWith({ t, x }), keyRecord(GOOD_KEY));
+    assert.equal(outcome.verdict, 'permerror', `t=${t} x=${x} must be permerror`);
+    assert.deepEqual(outcome.passedDomains, []);
+  }
+  // The negative control: a valid, not-yet-expired signature with x > t verifies, so the cases above
+  // are refused for the x/t relation and not because both tags are present.
+  const future = String(Math.floor(Date.now() / 1000) + 100_000);
+  assert.equal((await verifyDkim(signWith({ t: '1000', x: future }), keyRecord(GOOD_KEY))).verdict, 'pass');
+});
+
 test('a signature naming an algorithm that does not exist is refused', async () => {
   cites('R-6376-6.1.1-a');
   // The failure this replaces was a SILENT FALLBACK: "a=" was read by suffix, so anything not
