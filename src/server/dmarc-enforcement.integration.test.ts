@@ -24,6 +24,7 @@ const dmarcTxt = async (name: string): Promise<readonly string[]> => {
     '_dmarc.rejector.test': ['v=DMARC1; p=reject'],
     '_dmarc.monitor.test': ['v=DMARC1; p=none'],
     '_dmarc.gated.test': ['v=DMARC1; p=quarantine; pct=10'],
+    '_dmarc.reject-gated.test': ['v=DMARC1; p=reject; pct=10'],
   };
   return map[name.toLowerCase()] ?? [];
 };
@@ -94,6 +95,22 @@ test('pct gates enforcement: a sample at or above pct leaves the failure in the 
     await sendFrom(server.inbound.port, 'gated.test'); // p=quarantine; pct=10, fails, but not sampled
     assert.equal(readMessages(alice.catalog.get('INBOX')!).length, 1, 'outside the pct sample → INBOX');
     assert.equal(readMessages(alice.catalog.get('Junk')!).length, 0);
+  } finally {
+    await server.close();
+  }
+});
+
+test('an unsampled p=reject failure is quarantined to Junk, not delivered to the INBOX (§6.6.4)', async () => {
+  // RFC 7489 §6.6.4: the pct-unsampled remainder of a p=reject policy is treated AS p=quarantine,
+  // not as no policy. Under ADR 0010 both land in Junk, so a p=reject failure is Junk regardless of
+  // the sample. Old behaviour gated reject on the sample too (50 < 10 is false → INBOX), delivering
+  // ~90% of spoofed mail from a p=reject; pct=10 domain to the inbox — the wrong direction.
+  const server = await startServer(baseConfig(() => 50)); // sample 50, above pct=10 → NOT the reject share
+  try {
+    const alice = server.stores.get('alice')!;
+    await sendFrom(server.inbound.port, 'reject-gated.test'); // p=reject; pct=10, fails, unsampled
+    assert.equal(readMessages(alice.catalog.get('Junk')!).length, 1, 'the unsampled reject failure is quarantined to Junk');
+    assert.equal(readMessages(alice.catalog.get('INBOX')!).length, 0, 'and NOT delivered to the INBOX');
   } finally {
     await server.close();
   }

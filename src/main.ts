@@ -466,9 +466,18 @@ export async function startServer(cfg: MailServerConfig): Promise<RunningServer>
     // author unparseable was delivered to the INBOX. ADR 0010's answer to a DMARC failure is
     // Junk rather than rejection, and it applies here for the same reason — recoverable.
     const unattributable = dmarc.verdict === 'fail' && dmarc.fromDomain === null;
+    // `pct` gates the share of failures acted on, but RFC 7489 §6.6.4 says the UNSAMPLED remainder
+    // of a `p=reject` policy "SHOULD [be treated] as though the 'quarantine' policy applies" — not
+    // as no policy at all. Under ADR 0010 both reject and quarantine failures are filed to Junk
+    // (never hard-rejected), so a reject failure is Junk regardless of the sample: the sampled share
+    // would-be-rejected and the unsampled share is quarantined, and both are Junk here. Only
+    // `p=quarantine` (and a `t=y`-demoted reject, which arrives here already as `quarantine`) leaves
+    // its unsampled remainder in the INBOX as an un-acted-on `none`. Gating reject on the sample too
+    // delivered ~ (100 - pct)% of spoofed mail from a p=reject domain straight to the inbox.
     const enforce =
       unattributable ||
-      (dmarc.verdict === 'fail' && (dmarc.policy === 'quarantine' || dmarc.policy === 'reject') && dmarcSample() < dmarc.pct);
+      (dmarc.verdict === 'fail' &&
+        (dmarc.policy === 'reject' || (dmarc.policy === 'quarantine' && dmarcSample() < dmarc.pct)));
     // ARC override (RFC 8617): a DMARC failure that would be junked is instead delivered to the
     // INBOX when a valid ARC chain (cv=pass) was sealed by a forwarder we trust — the case ARC
     // exists for (a mailing list rewrites the message, breaking the author's DKIM/SPF, but seals
