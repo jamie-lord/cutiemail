@@ -6,7 +6,7 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { canonicalMailboxName, sameMailbox, subtreeRenames } from './mailbox-name.ts';
+import { canonicalMailboxName, sameMailbox, subtreeRenames, MAX_MAILBOX_NAME_OCTETS, MAX_MAILBOX_SEGMENTS } from './mailbox-name.ts';
 import { imapRequirement } from '../register/imap/index.ts';
 import type { ImapRequirementId } from '../register/imap/index.ts';
 
@@ -42,4 +42,17 @@ test('a rename whose destinations collide after canonicalisation is refused, not
   // "" and "/" both canonicalise onto "z". Reported as a collision so the callers can answer the
   // protocol's existing 'exists', which is what RFC 9051 §6.3.5 asks for.
   assert.equal(subtreeRenames('', 'z', ['', '/']), null);
+});
+
+test('a subtree rename whose synthesized child name exceeds the bounds is refused', () => {
+  // CREATE and the RENAME target both enforce the name bounds; the subtree children the rename
+  // synthesizes did not. Renaming a parent to a name AT the octet cap pushes `to + "/child"` past it,
+  // and the over-cap name would be stored and paid for on every LIST.
+  const atOctetCap = 'x'.repeat(MAX_MAILBOX_NAME_OCTETS); // the target itself is within bounds
+  assert.equal(subtreeRenames('A', atOctetCap, ['A', 'A/b']), null, 'a child pushed over the octet cap refuses the rename');
+  // The same for the segment cap: a target at the segment limit plus a child adds one more segment.
+  const atSegmentCap = Array.from({ length: MAX_MAILBOX_SEGMENTS }, (_, i) => `s${i}`).join('/');
+  assert.equal(subtreeRenames('A', atSegmentCap, ['A', 'A/b']), null, 'a child pushed over the segment cap refuses the rename');
+  // Control: renaming the same subtree to a short name is fine, and moves both rows.
+  assert.equal(subtreeRenames('A', 'Z', ['A', 'A/b'])?.length, 2, 'a within-bounds subtree rename still maps every child');
 });

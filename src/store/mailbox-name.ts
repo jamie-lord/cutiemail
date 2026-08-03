@@ -100,6 +100,12 @@ export function subtreeRenames(
     .map((n) => [n, canonicalMailboxName(`${to}${n.slice(from.length)}`)] as const);
   const seen = new Set<string>();
   for (const [, dest] of moves) {
+    // A synthesized subtree destination is a name the catalog will STORE, so it is bound by the same
+    // DoS cap CREATE and the RENAME target check enforce (the file's own comment: "applied at BOTH
+    // creation paths ... a bound on one and not its twin is the shape of defect this codebase keeps
+    // reproducing"). Renaming a child's parent to a name at the cap would push `to + "/child"` past
+    // it — a stored over-cap name that recurs on every LIST — so refuse the whole rename here.
+    if (!withinMailboxNameBounds(dest)) return null;
     if (seen.has(dest)) return null;
     seen.add(dest);
   }
