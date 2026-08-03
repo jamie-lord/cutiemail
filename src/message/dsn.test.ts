@@ -48,6 +48,15 @@ test('R-3464-2.3.3-a: every recipient has a valid Action (omit/invalid caught)',
   assert.ok(!invalid.valid && invalid.anomalies.some((a) => a.startsWith('invalid-action')), 'invalidAction must be detectable');
 });
 
+test('R-3464-2.3.6-a: every recipient has a Status field (omitStatus caught)', () => {
+  cites('R-3464-2.3.6-a');
+  assert.ok(validateDeliveryStatus(generateDeliveryStatus('m.example.com', RECIPIENTS)).valid, 'conformant has a Status per recipient');
+  // Negative control: omitting the per-recipient Status is detected, the same as omitting Action —
+  // the sibling REQUIRED field that already had a control.
+  const bad = validateDeliveryStatus(generateDeliveryStatus('m.example.com', RECIPIENTS, { omitStatus: true }));
+  assert.ok(!bad.valid && bad.anomalies.some((a) => a.startsWith('missing-status')), 'omitStatus must be detectable');
+});
+
 test('Diagnostic-Code and Remote-MTA carry the remote reply, sanitized (RFC 3464 §2.3.5/§2.3.6)', () => {
   const withDiag: RecipientStatus[] = [
     { recipient: 'alice@example.net', action: 'failed', status: '5.1.1', diagnostic: '550 5.1.1 <alice@example.net> user unknown', remoteMta: 'mx.example.net' },

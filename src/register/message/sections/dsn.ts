@@ -47,4 +47,20 @@ export const DSN = [
       'values. Our validator rejects a missing or unknown Action; the omitAction and ' +
       'invalidAction defects are the negative controls.',
   },
+  {
+    id: 'R-3464-2.3.6-a',
+    rfc: 'rfc3464',
+    section: '2.3.6',
+    page: 20,
+    level: 'MUST',
+    party: 'both',
+    normativeSource: 'keyword',
+    text: 'This field MUST be present for each delivery attempt which is described by a DSN.',
+    testability: { kind: 'parse' },
+    note:
+      'The per-recipient Status field carries the transport-independent delivery code the sender ' +
+      'acts on, and is REQUIRED in every per-recipient group — the sibling of the Final-Recipient ' +
+      'and Action requirements, which had negative controls where Status did not. Our validator ' +
+      'rejects a group with no Status; the omitStatus defect is the negative control.',
+  },
 ] as const satisfies readonly RequirementDef[];

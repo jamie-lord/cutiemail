@@ -36,6 +36,8 @@ export interface DsnDefects {
   readonly omitFinalRecipient?: boolean;
   /** Omit the Action field. Violates R-3464-2.3.3-a. */
   readonly omitAction?: boolean;
+  /** Omit the per-recipient Status field. Violates R-3464-2.3.6-a. */
+  readonly omitStatus?: boolean;
   /** Emit an Action value outside the defined set. Violates R-3464-2.3.3-a. */
   readonly invalidAction?: boolean;
   /** Emit a Diagnostic-Code with no "diagnostic-type;" prefix (RFC 3464 §2.3.6). */
@@ -66,7 +68,7 @@ export function generateDeliveryStatus(reportingMta: string, recipients: readonl
     const lines: string[] = [];
     if (defects.omitFinalRecipient !== true) lines.push(`Final-Recipient: rfc822; ${r.recipient}`);
     if (defects.omitAction !== true) lines.push(`Action: ${defects.invalidAction === true ? 'exploded' : r.action}`);
-    lines.push(`Status: ${r.status}`);
+    if (defects.omitStatus !== true) lines.push(`Status: ${r.status}`);
     // Remote-MTA (§2.3.5) and Diagnostic-Code (§2.3.6) are SHOULDs that tell the sender WHICH
     // server rejected the mail and WHY - the difference between an actionable bounce and a
     // useless one. Both carry a "type;" prefix, and the diagnostic is sanitized (see above).
@@ -106,6 +108,9 @@ export function validateDeliveryStatus(body: Buffer): DsnValidation {
     const action = fields.get('action');
     if (action === undefined) anomalies.push(`missing-action:${i}`);
     else if (!VALID_ACTIONS.includes(action.toLowerCase())) anomalies.push(`invalid-action:${i}:${action}`);
+    // Status (§2.3.6) is REQUIRED in every per-recipient group — it is the transport-independent
+    // delivery code the sender acts on, so an omission is as much a broken DSN as a missing Action.
+    if (!fields.has('status')) anomalies.push(`missing-status:${i}`);
     // A present Diagnostic-Code (§2.3.6) must be a "diagnostic-type; text" pair, and - the
     // security-relevant part - a single line. Because groups are split on blank lines and fields
     // on line breaks, an unsanitized CR/LF in the remote reply would have surfaced here as a
