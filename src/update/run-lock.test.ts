@@ -70,6 +70,38 @@ test('a lock left behind by a dead process is broken, not waited on forever', ()
   });
 });
 
+test('a holder mid-write (empty pid now, live pid a moment later) is NOT stolen', () => {
+  // The TOCTOU this closes: the claim is `mkdir` (ownership) then a separate write of the pid, so a
+  // second process arriving in that gap sees the lock with an empty pid file. Reading it once and
+  // concluding "died mid-write, steal it" is how two runs proceed at once — the exact double-run this
+  // lock prevents (a hand-run apply reverting a timer's good cutover). The read must tolerate the
+  // gap: an empty pid that becomes a LIVE pid is a live owner, and must block.
+  inTmp((dir) => {
+    // The owner has done its mkdir but not yet written its pid.
+    mkdirSync(join(dir, 'run.lock'), { recursive: true });
+    let reads = 0;
+    // First read: empty (owner mid-write). Second read: the owner's (live) pid has landed.
+    const readPid = (): string | null => (reads++ === 0 ? '' : String(process.pid));
+    assert.throws(
+      () => acquireRunLock(dir, process.pid + 1, { readPid, sleep: () => {} }),
+      RunLockError,
+      'a live owner revealed on re-read blocks; the lock is not stolen',
+    );
+    assert.ok(reads >= 2, 'the empty pid was re-read rather than trusted once');
+  });
+});
+
+test('a pid empty across the whole retry window is a real crash-mid-write and is recovered', () => {
+  // The other side of the same coin: if the pid never appears, the claimant genuinely died between
+  // the mkdir and the write, and the lock must be broken rather than block forever (the "lock nobody
+  // can clear" rot). Distinguishing this from the case above is the whole point of the bounded retry.
+  inTmp((dir) => {
+    mkdirSync(join(dir, 'run.lock'), { recursive: true });
+    const lock = acquireRunLock(dir, process.pid + 1, { readPid: () => '', sleep: () => {} });
+    lock.release();
+  });
+});
+
 test('a live holder blocks even the process that took it', () => {
   // No "it is only me" carve-out. A run that can bypass its own lock is a run whose lock proves
   // nothing — and the carve-out is invisible in normal use, because nothing acquires twice, so it

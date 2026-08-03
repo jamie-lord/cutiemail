@@ -30,6 +30,34 @@ export interface RunLock {
   release(): void;
 }
 
+/**
+ * Seams for the test: the pid-file reader and the retry sleep. Production uses the real filesystem
+ * and a synchronous sleep; a test injects a reader that reveals the pid appearing mid-write.
+ */
+export interface RunLockDeps {
+  /** Read the holder pid file: its trimmed contents, or null if the file does not exist. */
+  readonly readPid?: () => string | null;
+  /** Sleep synchronously between retries. */
+  readonly sleep?: (ms: number) => void;
+}
+
+/**
+ * The claim races the write: `mkdir` establishes ownership, but the owner's pid lands a moment later
+ * (a separate `writeFileSync`). A second process arriving in that window sees the lock but an empty
+ * pid file, so it must NOT conclude "died mid-write, steal it" on the first read — that is exactly
+ * how two runs proceed at once, the harm this lock exists to prevent. Re-read a few times first: a
+ * live owner writes its pid within microseconds, so an owner mid-write is seen and blocked, while a
+ * pid that stays empty across the whole window is a genuine crash between the mkdir and the write and
+ * is recovered. The total budget is a thousandfold the real gap and is only ever paid on contention.
+ */
+const PID_READ_ATTEMPTS = 10;
+const PID_READ_INTERVAL_MS = 10;
+
+/** A synchronous sleep with no busy-wait or dependency, for the rare contended-recovery path. */
+function sleepMs(ms: number): void {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
+
 /** Is a process with this pid alive? Signal 0 tests for existence without delivering anything. */
 function alive(pid: number): boolean {
   try {
@@ -48,26 +76,46 @@ function alive(pid: number): boolean {
  * the pid is alive the answer is "someone else is working", and waiting would just make two runs
  * overlap later instead of now.
  */
-export function acquireRunLock(root: string, pid = process.pid): RunLock {
+export function acquireRunLock(root: string, pid = process.pid, deps: RunLockDeps = {}): RunLock {
   const dir = join(root, 'run.lock');
+  const pidfile = join(dir, 'pid');
+  const readPid =
+    deps.readPid ??
+    ((): string | null => {
+      try {
+        return readFileSync(pidfile, 'utf8').trim();
+      } catch (e) {
+        // ENOENT: the lock was released between our EEXIST and this read — free to take. Any other
+        // read error leaves the pid unknown (empty), which the caller retries.
+        return (e as NodeJS.ErrnoException).code === 'ENOENT' ? null : '';
+      }
+    });
+  const sleep = deps.sleep ?? sleepMs;
+  // The holder's pid, tolerating the mkdir→write gap: null (gone) means free now; a non-empty value
+  // is the holder; an empty value is retried, and only a value empty across the whole window means
+  // the claimant crashed before writing its pid (→ 0, stale).
+  const holderPid = (): number => {
+    for (let attempt = 0; attempt < PID_READ_ATTEMPTS; attempt++) {
+      const raw = readPid();
+      if (raw === null) return 0;
+      if (raw.length > 0) return Number(raw);
+      if (attempt < PID_READ_ATTEMPTS - 1) sleep(PID_READ_INTERVAL_MS);
+    }
+    return 0;
+  };
   const claim = (): void => {
     // The store root may not exist yet — `adopt` on a fresh deployment is the first thing that ever
     // runs, and it is one of the commands being serialised. Creating the root here is safe: the
     // store's own `ensure()` is idempotent and re-applies its permissions afterwards.
     mkdirSync(root, { recursive: true, mode: 0o700 });
     mkdirSync(dir, { recursive: false, mode: 0o700 });
-    writeFileSync(join(dir, 'pid'), String(pid), { mode: 0o600 });
+    writeFileSync(pidfile, String(pid), { mode: 0o600 });
   };
   try {
     claim();
   } catch (e) {
     if ((e as NodeJS.ErrnoException).code !== 'EEXIST') throw e;
-    let holder = 0;
-    try {
-      holder = Number(readFileSync(join(dir, 'pid'), 'utf8').trim());
-    } catch {
-      // A lock directory with no readable pid: a run that died between mkdir and write. Stale.
-    }
+    const holder = holderPid();
     // Any LIVE holder blocks, this process included. There is no "it is only me" carve-out: a run
     // that can bypass its own lock is a run whose lock proves nothing, and nothing here ever
     // acquires twice — `runUpdate` takes it once and releases it in a finally.
