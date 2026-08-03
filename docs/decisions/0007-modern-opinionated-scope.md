@@ -56,6 +56,18 @@ The server (and therefore the test bed that must cover it) makes these cuts:
    register-recorded decision, never a silent divergence.
 5. **AUTH: SCRAM-SHA-256 + PLAIN-over-TLS only.** No CRAM-MD5, no plaintext AUTH,
    no NTLM/GSSAPI. Modern, secure, small.
+   > **Amendment (2026-08-03):** this conflated two distinct layers, and the code
+   > implements only one of them. On the wire the server offers **SASL PLAIN over
+   > TLS** and nothing else (`AUTH=PLAIN`; a `SCRAM-SHA-256` mechanism is *not*
+   > advertised). SCRAM-SHA-256 is the credential **storage** scheme: the registry
+   > holds only `StoredKey`/`ServerKey` and never the password (a negative-controlled
+   > test proves it), and a PLAIN password is verified against that. So "the password
+   > is never persisted" holds; "the password is never *sent*" — SCRAM's on-the-wire
+   > property — does **not**: with PLAIN the cleartext password is sent to the server
+   > inside TLS on every login. Offering `AUTH=SCRAM-SHA-256` as a wire mechanism is a
+   > reachable future — the RFC 5802 proof algebra is already implemented and
+   > vector-pinned, and both Thunderbird and Apple Mail advertise it — but is not built;
+   > it is a **revisit** item, not a claim the code currently meets.
 6. **ARC (RFC 8617) and Sieve (RFC 5228) deferred** to a later tier. DKIM + SPF +
    DMARC are the deliverability must-haves; ARC matters only for forwarding and
    can follow.

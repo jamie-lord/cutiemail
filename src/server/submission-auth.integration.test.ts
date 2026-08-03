@@ -159,7 +159,8 @@ test('submission: unsupported AUTH mechanisms are 504, a second AUTH after succe
     secure.write('EHLO client\r\n');
     await sr.line('250 AUTH PLAIN\r\n');
 
-    // The only mechanisms offered are SCRAM/PLAIN over TLS (ADR 0007). LOGIN and
+    // The only mechanism offered is PLAIN over TLS (ADR 0007; SCRAM is the credential storage
+    // scheme, not a wire mechanism). LOGIN and
     // CRAM-MD5 are the executable proof of that cut: both draw 504 5.5.4.
     secure.write('AUTH LOGIN\r\n');
     await sr.line('504 5.5.4');

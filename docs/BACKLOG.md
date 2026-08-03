@@ -320,29 +320,27 @@ is by definition the old code. Opening the dormant account's mailbox once migrat
 clears the block, after which the update proceeds normally. Worth remembering as a general property
 — a defect in the update path is only ever fixable forward for deployments that do not yet have it.
 
-## Open: MTA-STS policy without an `mx` list
+## Closed: MTA-STS policy without an `mx` list
 
 RFC 8461 §3.2's policy ABNF marks `sts-policy-mx` "required at least once, except when mode is
-'none'". A policy that omits it currently parses as valid, and an `enforce` policy with an empty MX
-list then refuses **every** host — all mail to that domain stops. Noticed while fixing the `max_age`
-rule in the same ABNF and left as its own item rather than folded in silently: it wants a register
-entry, a test, and a decision about which way to fail, since treating the policy as absent is a
-downgrade to opportunistic TLS for a domain that meant to enforce.
+'none'". A policy that omitted it parsed as valid, and an `enforce` policy with an empty MX list
+then refused **every** host — all mail to that domain stopped. Fixed: the parser now marks such a
+policy invalid (register entry `R-8461-3.2-e`, mirroring the sibling `max_age` rule), so
+`resolve()` keeps a still-valid cached policy or falls back to opportunistic TLS rather than
+bouncing every host — the less-destructive direction, and the same treatment every other malformed
+field gets. `mode: none` legitimately omits `mx` and stays valid. Reproduced first, negative-control
+via an `acceptMissingMx` defect.
 
-## Open: correctness follow-up
+## Closed: rename-INBOX UIDVALIDITY monotonicity
 
-### rename-INBOX UIDVALIDITY monotonicity
-
-A plain `CREATE` draws UIDVALIDITY from the catalog's monotonic high-water mark, so a
-recreated name can never reuse a deleted incarnation's `(UIDVALIDITY, UID)` space (RFC 9051
-§6.3.4). The one path that does not is the fresh target a `RENAME INBOX` produces: it is
-seeded with **INBOX's own** UIDVALIDITY (the catalog origin), not a value pulled from the
-counter (ADR 0016 fixed its mod-sequence and expunge-log semantics, not this). So `RENAME
-INBOX A`, `DELETE A`, `RENAME INBOX A` again hands both `A` incarnations the same UIDVALIDITY,
-and a client that cached the first could take the second's UIDs as unchanged. Narrow (it needs
-a rename-onto-a-previously-deleted-name sequence, a rare operator/client action) and scoped for
-a follow-up: draw the rename-INBOX target's UIDVALIDITY from the same monotonic counter, and
-add it to the catalog-parity differential oracle.
+A plain `CREATE` draws UIDVALIDITY from the catalog's monotonic high-water mark, so a recreated
+name can never reuse a deleted incarnation's `(UIDVALIDITY, UID)` space (RFC 9051 §6.3.4). The one
+path that did not was the fresh target a `RENAME INBOX` produces: it was seeded with **INBOX's own**
+UIDVALIDITY (the catalog origin), so `RENAME INBOX A`, `DELETE A`, `RENAME INBOX A` handed both `A`
+incarnations the same UIDVALIDITY, and a client that cached the first could take the second's UIDs
+as unchanged. Fixed in both catalogs (`sqlite-mailbox.ts` and `memory-catalog.ts` seeded it the same
+way, so the differential parity oracle was blind to the shared wrongness) by drawing from
+`#nextUidValidity()`. Reproduced first with a catalog-parity **invariant** test over both backends.
 
 ## Open: test-bed completeness
 

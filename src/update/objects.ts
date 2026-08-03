@@ -129,8 +129,12 @@ export function ancestryFrom(
  * Is `target` an ancestor of `from` (or the same commit)?
  *
  * This is the descendant rule from ADR 0025: an update is only accepted when the commit we are
- * running is an ancestor of the candidate. That makes a rollback attack impossible and turns a
- * force-push over deployed history into a refusal rather than a silent downgrade.
+ * running is an ancestor of the candidate. That turns an ACCIDENTAL force-push over deployed history
+ * into a refusal rather than a silent downgrade. It is not a defence against a hostile server: whoever
+ * serves the bytes can ship code (ADR 0025's stated trust model), and `ancestryFrom` deliberately
+ * counts a named-but-absent parent as present, so a fabricated tip that merely names the running
+ * commit as a parent passes this walk. Repository access control, not this rule, is what stops a
+ * malicious rollback.
  */
 export function isAncestor(
   target: string,

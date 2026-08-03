@@ -406,7 +406,11 @@ reasons is in [BACKLOG.md](BACKLOG.md) and [the decision records](decisions/0000
 - **MTA-STS, not DANE:** DANE needs DNSSEC validation Node's resolver doesn't provide.
 - **Modern message parsing:** reject rather than heroically repair; every rejection is a
   register-recorded decision.
-- **SCRAM-SHA-256 and PLAIN-over-TLS only.** No CRAM-MD5, no plaintext AUTH, no NTLM.
+- **SASL PLAIN over TLS on the wire; SCRAM-SHA-256 for credential storage.** The only
+  mechanism advertised is `AUTH=PLAIN` (offered only after STARTTLS); SCRAM-SHA-256 is the
+  storage/verification scheme (StoredKey/ServerKey, the password never persisted), not a wire
+  mechanism. No CRAM-MD5, no plaintext AUTH without TLS, no NTLM. (Offering SCRAM on the wire is
+  an ADR 0007 revisit item, not yet built.)
 - **ARC sealing not built:** this server never forwards, so there is nothing to seal;
   verification is the whole useful surface.
 - **JMAP:** modern and desirable, but additive; the modern-client round-trip is already met
@@ -416,7 +420,6 @@ reasons is in [BACKLOG.md](BACKLOG.md) and [the decision records](decisions/0000
 
 The open test-bed items (adopting the openSPF vector suite, a longer `imaptest` soak, and an
 optional OpenSMTPD calibration target) live in [BACKLOG.md](BACKLOG.md) with their reasons and
-their blockers, alongside the one correctness follow-up the 2026-07-21 coverage
-audit left open: the `RENAME INBOX` target draws its UIDVALIDITY from INBOX's own value rather
-than the monotonic counter, so a rename onto a previously-deleted name could reuse a lower
-validity (narrow, scoped for a follow-up).
+their blockers. The correctness follow-ups the earlier coverage audits left open — the
+`RENAME INBOX` target's UIDVALIDITY and the MTA-STS empty-`mx` policy — have since been closed
+(see [BACKLOG.md](BACKLOG.md)); the correctness/usability/security queue is empty again.

@@ -1,13 +1,16 @@
 # Architecture: how this is built
 
-The ~200 source files are really two programs that share one spine:
+The ~200 source files are really three programs:
 
 - **A mail server** you can `npm start`: SMTP in, IMAP out, SQLite in the middle.
 - **A whole-server conformance test bed**: a fixed register of what the RFCs
   require, a corpus of cases that check it, and a mutant harness that proves each
   case detects its violation.
+- **A self-updater** (`src/update/`), the one part of the tree not reachable from
+  `main.ts` — it pulls, verifies, and cuts over to a new version over the git remote
+  the deployment was installed from (ADR 0025); its own section is below.
 
-The two programs share one thing: **the same code is both.** The
+The first two share one spine: **the same code is both.** The
 reference implementations under `message/`, `crypto/`, `imap/`, `store/`,
 `server/` are what runs when you start the daemon *and* the system-under-test the
 corpus drives. There is no separate "test double" of the parser to drift from the
@@ -320,7 +323,8 @@ These aren't style preferences; break one and something real breaks.
   fields. `noUncheckedIndexedAccess` is on, so indexing is guarded then `!`-asserted.
 - **Opinionated cuts are recorded, never silent.** No POP3; IMAP4rev2 with a curated
   extension set (rev1 also advertised for client compatibility); MTA-STS not DANE;
-  SCRAM + PLAIN-over-TLS only. Each cut is an ADR in
+  SASL PLAIN over TLS on the wire (SCRAM-SHA-256 is the credential storage scheme, not a wire
+  mechanism — ADR 0007). Each cut is an ADR in
   `docs/decisions/` with a reason, so a future reader can tell "we decided against
   this" from "we forgot."
 
