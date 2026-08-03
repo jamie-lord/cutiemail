@@ -220,6 +220,28 @@ test('FETCH $ (the SEARCHRES marker) is a tagged BAD, not a silent empty result 
   }
 });
 
+test('STORE and COPY/MOVE reject $ and a malformed set with BAD, the guard FETCH already carries (§9)', async () => {
+  const { s, server, sock } = await loggedIn((c) => c.get('INBOX')!.append(Buffer.from('Subject: x\r\n\r\nb\r\n', 'latin1')));
+  try {
+    await s.run('a1', 'SELECT INBOX');
+    await s.run('a2', 'CREATE Archive');
+    // Without the guard, parseSequenceSet resolves `$`/`abc` to the empty set, the command's loop
+    // runs zero times, and the server answers `OK ... completed` — telling the client a store or
+    // copy succeeded while nothing changed (COPY even omits the COPYUID it promises on success).
+    assert.match(await s.run('a3', 'STORE $ +FLAGS (\\Seen)'), /^a3 BAD/m, 'STORE $ is BAD, not a silent no-op OK');
+    assert.match(await s.run('a4', 'STORE abc +FLAGS (\\Seen)'), /^a4 BAD/m, 'STORE with a malformed set is BAD');
+    assert.match(await s.run('a5', 'COPY $ Archive'), /^a5 BAD/m, 'COPY $ is BAD');
+    assert.match(await s.run('a6', 'COPY abc Archive'), /^a6 BAD/m, 'COPY with a malformed set is BAD');
+    assert.match(await s.run('a7', 'MOVE $ Archive'), /^a7 BAD/m, 'MOVE $ is BAD');
+    // Controls: a well-formed set still works on every verb, so the guard rejects the set, not the command.
+    assert.match(await s.run('a8', 'STORE 1 +FLAGS (\\Seen)'), /^a8 OK/m, 'a valid STORE still succeeds');
+    assert.match(await s.run('a9', 'COPY 1 Archive'), /^a9 OK \[COPYUID/m, 'a valid COPY still reports COPYUID');
+  } finally {
+    sock.destroy();
+    await server.close();
+  }
+});
+
 // ── RFC 7162 §3.2.6: VANISHED FETCH modifier requires ENABLE QRESYNC ──────────────────────────
 
 test('the VANISHED FETCH modifier requires ENABLE QRESYNC (RFC 7162 §3.2.6)', async () => {

@@ -2414,6 +2414,19 @@ export class ImapServer {
               break;
             }
             const set = arg(1);
+            // A malformed sequence-set or the unfilled SEARCHRES `$` marker is a tagged BAD, not a
+            // silent no-op OK — the same guard FETCH and UID EXPUNGE already carry (RFC 9051 §9).
+            // Without it parseSequenceSet resolves `$`/`abc` to the empty set, the loop below runs
+            // zero times, and STORE answers `OK STORE completed` having changed nothing, telling the
+            // client a store succeeded.
+            if (set === '$') {
+              write(sock, `${tag} BAD SEARCHRES ($) is not supported`);
+              break;
+            }
+            if (!isSequenceSet(set)) {
+              write(sock, `${tag} BAD STORE: invalid sequence set`);
+              break;
+            }
             // Parse the command body after the seq-set so an optional (UNCHANGEDSINCE n)
             // modifier — which sits BETWEEN the set and the +FLAGS op — doesn't shift the
             // positional args (RFC 7162 §3.1.3).
@@ -2501,6 +2514,18 @@ export class ImapServer {
               break;
             }
             const set = arg(1);
+            // A malformed sequence-set or the unfilled SEARCHRES `$` marker is a tagged BAD, not a
+            // silent no-op OK — the same guard FETCH and UID EXPUNGE already carry (RFC 9051 §9).
+            // Without it parseSequenceSet resolves `$`/`abc` to the empty set, nothing is copied,
+            // and COPY/MOVE answers `OK completed` with no COPYUID, telling the client it succeeded.
+            if (set === '$') {
+              write(sock, `${tag} BAD SEARCHRES ($) is not supported`);
+              break;
+            }
+            if (!isSequenceSet(set)) {
+              write(sock, `${tag} BAD ${cmd}: invalid sequence set`);
+              break;
+            }
             const targetName = unquote(parts.slice(cmdIndex + 2).join(' '));
             const target = connCatalog.get(targetName);
             if (target === undefined) {
