@@ -58,6 +58,25 @@ export const IMAP_SELECTED_STATE = [
       + 'and a case pins that it keeps doing so.',
   },
   {
+    id: 'R-9051-6.4.5-c',
+    rfc: 'rfc9051',
+    section: '6.4.5',
+    page: 67,
+    level: 'MUST',
+    party: 'server',
+    normativeSource: 'prose',
+    text: 'A part of type MESSAGE/RFC822 or MESSAGE/GLOBAL also has nested part numbers, referring to parts of the MESSAGE part\'s body.',
+    testability: { kind: 'parse' },
+    note:
+      'BODY[n] section numbering for an encapsulated message. A MESSAGE/RFC822 part is NOT a '
+      + 'numbering level of its own: its encapsulated message’s parts are numbered directly at '
+      + 'the message part’s level, so BODY[n.1] is the first part of the encapsulated message '
+      + '(the numeric part specifier "refers to a part of type MESSAGE/RFC822"). resolvePart unwraps '
+      + 'the message/rfc822 wrapper before applying the next index, matching the nested structure '
+      + 'buildBodyStructure advertises — without it, BODY[n.1] returned the whole encapsulated '
+      + 'message and BODY[n.2] an empty literal, the bytes disagreeing with BODYSTRUCTURE.',
+  },
+  {
     id: 'R-9051-6.4.6-a',
     rfc: 'rfc9051',
     section: '6.4.6',

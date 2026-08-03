@@ -9,9 +9,11 @@
  * for the part split. This is the "recursively parse a part" increment those modules
  * left for later.
  *
- * Scope: multipart/* and single leaves are handled. A message/rfc822 part is emitted
- * as a basic leaf (its nested-ENVELOPE extended form is a later refinement). Content
- * is never decoded — sizes and encodings describe the ENCODED bytes, as the spec wants.
+ * Scope: multipart/*, single leaves, and message/rfc822 — the last emitted with the encapsulated
+ * message's ENVELOPE and nested body structure (§7.5.2 body-type-msg), and navigable by resolvePart,
+ * whose section numbering collapses the message/rfc822 level so BODY[n.1] addresses the encapsulated
+ * message's first part (§6.4.5). Content is never decoded — sizes and encodings describe the ENCODED
+ * bytes, as the spec wants.
  */
 
 import { parseMessage } from './parse.ts';
@@ -254,27 +256,51 @@ function serialize(part: BodyPart, extended: boolean): string {
  * body) at that position, or null if the path does not resolve. A non-multipart
  * entity has a single implicit part numbered 1 (the entity itself). Used by
  * FETCH BODY[<part>] so a client can download just an attachment.
+ *
+ * Section numbering MUST match what `buildBodyStructure` advertises, or a client that reads the
+ * structure and fetches an advertised leaf gets the wrong bytes. Two things make them agree:
+ *   - `message/rfc822` is NOT a part-number level of its own (RFC 9051 §6.4.5): its encapsulated
+ *     message's parts are numbered directly at the message part's level, so BODY[N.1] is the first
+ *     part of the encapsulated message. We unwrap to the encapsulated message BEFORE applying the
+ *     next index — mirroring `buildBodyStructure`'s rfc822.nested recursion. Without this, a client
+ *     fetching an advertised `n.1`/`n.2` under a message/rfc822 got the whole encapsulated message
+ *     (for `n.1`) or an empty literal (for `n.2`).
+ *   - a header-less part inside a `multipart/digest` defaults to `message/rfc822` (RFC 2046 §5.1.5),
+ *     the same default `buildBodyStructure` applies via its `inDigest` flag — so it too is unwrapped.
  */
 export function resolvePart(raw: Buffer, path: readonly number[]): Buffer | null {
   if (path.length > MAX_MIME_DEPTH) return null; // no real message nests this deep
   let current = raw;
+  let inDigest = false; // current is a child of a multipart/digest (its default type is message/rfc822)
   let parsedBytes = 0;
+  // Bound cumulative re-parsing exactly like buildBodyStructure: each parse re-reads a near-full
+  // payload, so a deep path (nested multipart OR a message-in-message chain) is otherwise a
+  // depth×payload CPU DoS on the single event loop.
+  const overBudget = (): boolean => (parsedBytes += current.length) > MAX_STRUCTURE_BYTES;
   for (let level = 0; level < path.length; level++) {
-    // Bound cumulative re-parsing exactly like buildBodyStructure: each level re-parses a near-full
-    // payload, so a deep nested-multipart path (FETCH BODY[1.1.1…]) is otherwise a depth×payload
-    // CPU DoS on the single event loop.
-    parsedBytes += current.length;
-    if (parsedBytes > MAX_STRUCTURE_BYTES) return null;
+    if (overBudget()) return null;
     const idx = path[level]!;
-    // Parse ONCE per level and read Content-Type from that result (header() would re-parse).
-    const { headers, body } = parseMessage(current);
-    const { head: media, params } = parseParameterized(findHeader(headers, 'Content-Type') ?? 'text/plain');
-    if (media.toLowerCase().startsWith('multipart/')) {
-      const boundary = params.find(([n]) => n === 'boundary')?.[1] ?? '';
+    // Parse ONCE per parse and read Content-Type from that result (header() would re-parse).
+    let parsed = parseMessage(current);
+    let ct = parseParameterized(findHeader(parsed.headers, 'Content-Type') ?? (inDigest ? 'message/rfc822' : 'text/plain'));
+    // §6.4.5 collapse: unwrap any message/rfc822 wrapper to its encapsulated message before applying
+    // idx, so this level indexes the encapsulated parts (loop for a message that encapsulates a
+    // message). Each unwrap re-parses, so it is charged to the same budget.
+    while (ct.head.toLowerCase() === 'message/rfc822') {
+      current = parsed.body;
+      inDigest = false; // the encapsulated message is not itself a digest child
+      if (overBudget()) return null;
+      parsed = parseMessage(current);
+      ct = parseParameterized(findHeader(parsed.headers, 'Content-Type') ?? 'text/plain');
+    }
+    if (ct.head.toLowerCase().startsWith('multipart/')) {
+      const boundary = ct.params.find(([n]) => n === 'boundary')?.[1] ?? '';
       if (boundary === '') return null;
-      const parts = parseMultipart(body, boundary, {}, MAX_PARTS_PER_ENTITY).parts;
+      const parts = parseMultipart(parsed.body, boundary, {}, MAX_PARTS_PER_ENTITY).parts;
       if (idx < 1 || idx > parts.length) return null;
       current = parts[idx - 1]!;
+      // Children of a multipart/digest carry the §5.1.5 message/rfc822 default into the next level.
+      inDigest = ct.head.toLowerCase() === 'multipart/digest';
     } else {
       // A single-part entity: only part "1" exists and it is this entity's body.
       if (idx !== 1 || level !== path.length - 1) return null;

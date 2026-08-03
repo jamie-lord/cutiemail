@@ -157,7 +157,10 @@ surface), each negative-controlled. The parse-anomaly surface is pinned case by 
 NIL)`, the members, an end `(NIL NIL NIL NIL)`) rather than corrupting the first mailbox or last
 host; a header-less part defaults to `text/plain` except inside a `multipart/digest`, where RFC
 2046 §5.1.5 makes it `message/rfc822` (reported with its ENVELOPE and nested structure, not as a
-plain-text leaf); a Content-Transfer-Encoding other than `7bit` / `8bit` / `binary` on a `multipart` or
+plain-text leaf), whose encapsulated sub-parts a `FETCH BODY[n.1]` then navigates the way
+BODYSTRUCTURE advertises them — the `message/rfc822` level collapses, so `BODY[n.1]` is the
+encapsulated message's first part (RFC 9051 §6.4.5), a differential a client fetching an advertised
+leaf would otherwise hit; a Content-Transfer-Encoding other than `7bit` / `8bit` / `binary` on a `multipart` or
 `message` composite type is flagged (RFC 2045 §6.4); a duplicate `Content-Transfer-Encoding` /
 `MIME-Version` or a repeated boundary / charset parameter is flagged; an RFC 2047 encoded word
 abutting non-LWSP text, or a B-word with invalid base64, is left literal and flagged (§5); a

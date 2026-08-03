@@ -8,10 +8,22 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { bodyResponse, bodyStructureResponse, resolvePart, buildBodyStructure } from './body-structure.ts';
+import { parseMessage } from './parse.ts';
 import { messageRequirement, type MessageRequirementId } from '../register/message/index.ts';
+import { imapRequirement, type ImapRequirementId } from '../register/imap/index.ts';
 
 const msg = (s: string): Buffer => Buffer.from(s.replace(/\n/g, '\r\n'), 'latin1');
-const cites = (id: MessageRequirementId): void => assert.ok(messageRequirement(id).id === id);
+// One `cites` for both registers (the coverage scanner keys on the literal `cites('R-...')`):
+// message-format ids resolve against the message register, IMAP ids (R-9051-*) against the IMAP one.
+const cites = (id: MessageRequirementId | ImapRequirementId): void => {
+  const found = id.startsWith('R-9051-') ? imapRequirement(id as ImapRequirementId) : messageRequirement(id as MessageRequirementId);
+  assert.ok(found.id === id);
+};
+/** The body FETCH BODY[<numeric section>] serves for an entity (its bytes after the blank line). */
+const sectionBody = (raw: Buffer, path: number[]): string | null => {
+  const e = resolvePart(raw, path);
+  return e === null ? null : parseMessage(e).body.toString('latin1');
+};
 
 test('a single text/plain part reports type, params, encoding, size and line count', () => {
   const b = bodyStructureResponse(msg('Content-Type: text/plain; charset=utf-8\nContent-Transfer-Encoding: 7bit\n\nHello\nWorld\n'));
@@ -36,6 +48,38 @@ test('R-2046-5.1-a: a header-less part in a multipart/digest defaults to message
   const mixed = bodyStructureResponse(msg(`Content-Type: multipart/mixed; boundary="D"\n\n${part}--D--\n`));
   assert.match(mixed, /"TEXT" "PLAIN"/, 'the same part in multipart/mixed defaults to text/plain');
   assert.doesNotMatch(mixed, /"MESSAGE" "RFC822"/, 'and is NOT treated as an encapsulated message');
+});
+
+test('resolvePart navigates message/rfc822 sub-parts the way BODYSTRUCTURE advertises them (§6.4.5)', () => {
+  cites('R-9051-6.4.5-c');
+  // The differential this closes: BODYSTRUCTURE advertises a message/rfc822 part's encapsulated
+  // sub-parts (n.1, n.2), but resolvePart used to treat message/rfc822 as an opaque leaf — so
+  // FETCH BODY[n.1] returned the WHOLE encapsulated message and BODY[n.2] an empty literal, the
+  // bytes disagreeing with the structure. RFC 9051 §6.4.5: a MESSAGE/RFC822 adds no numbering
+  // level, so BODY[n.1] is the first part of the encapsulated message.
+
+  // (a) A header-less multipart/digest member (RFC 2046 §5.1.5 — the leading blank line makes it
+  //     header-less, exactly the RFC 2046 digest example's shape) encapsulating a multipart/mixed.
+  const digest = msg(
+    'Content-Type: multipart/digest; boundary=D\n\n--D\n\n' +
+      'From: alice@one.example\nSubject: report\nContent-Type: multipart/mixed; boundary=E\n\n' +
+      '--E\nContent-Type: text/plain\n\nAAAA\n--E\nContent-Type: application/x-danger\n\nBBBBBBBBBBBBBBBB\n--E--\n--D--\n',
+  );
+  const digestStruct = bodyStructureResponse(digest);
+  assert.match(digestStruct, /"MESSAGE" "RFC822".*"TEXT" "PLAIN"[^)]* 4 1.*"APPLICATION" "X-DANGER"[^)]* 16/, 'structure advertises 1.1 (4 bytes) and 1.2 (16 bytes)');
+  assert.equal(sectionBody(digest, [1, 1]), 'AAAA', 'BODY[1.1] is the advertised 4-byte text/plain, not the whole message');
+  assert.equal(sectionBody(digest, [1, 2]), 'BBBBBBBBBBBBBBBB', 'BODY[1.2] is the advertised 16-byte part, not empty');
+
+  // (b) An EXPLICIT message/rfc822 part encapsulating a single text/plain: BODY[1.1] is the
+  //     encapsulated body (the collapse holds for single-part encapsulated messages too).
+  const explicit = msg(
+    'Content-Type: multipart/mixed; boundary=B\n\n--B\nContent-Type: message/rfc822\n\n' +
+      'From: x@inner.example\nSubject: s\n\ninner body\n--B--\n',
+  );
+  assert.match(bodyStructureResponse(explicit), /"MESSAGE" "RFC822"/, 'part 1 is message/rfc822');
+  assert.equal(sectionBody(explicit, [1, 1]), 'inner body', 'BODY[1.1] is the encapsulated body');
+  // And BODY[1] is the whole encapsulated message (a message/rfc822 part is addressable itself).
+  assert.match(sectionBody(explicit, [1]) ?? '', /^From: x@inner\.example/, 'BODY[1] is the encapsulated message');
 });
 
 test('a multipart with an attachment exposes the filename and disposition', () => {
