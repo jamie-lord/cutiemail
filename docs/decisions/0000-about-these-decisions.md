@@ -1,10 +1,10 @@
 # 0000. About these decision records
 
-cutiemail is two things sharing one spine: a small, opinionated **mail server** ("the SQLite
-of email") and an **SMTP conformance suite** that the server is tested against. The server is
-the product; the suite is how its correctness is proven and how any other MTA can be measured.
-The records here are Architecture Decision Records (ADRs). Each captures one choice and the
-reasoning behind it, so the "why" survives.
+cutiemail is two things on one spine: a small, opinionated **mail server** ("the SQLite
+of email") and an **SMTP conformance suite** that tests the server. The server is
+the product. The suite proves the correctness of the server, and it can measure any other MTA.
+The records here are Architecture Decision Records (ADRs). Each record captures one choice and the
+reason for it, so the "why" survives.
 
 This page defines the recurring vocabulary once, then groups the records.
 

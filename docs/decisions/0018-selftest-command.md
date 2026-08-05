@@ -2,30 +2,31 @@
 
 ## Status
 
-Accepted (2026-07-21). A usability gap in the getting-started experience:
-`doctor` proves the *outside* is right, but nothing proved the
-*inside* (the mail path through the running server) works.
+Accepted (2026-07-21). A usability gap in the getting-started experience.
+`doctor` proves that the *outside* is correct, but nothing proved that the
+*inside* works — the mail path through the running server.
 
 ## Context
 
-After first boot, the question a new operator most wants answered is "did my setup actually send
-and receive a message?" The pieces to answer it existed (a submission listener, local delivery,
-IMAP), but answering it required speaking SMTP+STARTTLS+AUTH and IMAP by hand (a self-signed cert
-in the way, the bare-login vs email-address trap, STARTTLS vs implicit TLS). In practice that means
-a newcomer either has prior protocol fluency or cannot verify their install at all. `doctor` covers
-DNS, reverse DNS, the certificate, and outbound port 25 (deliberately the *deployment* surface),
-but it never authenticates, submits, or reads, so a working DNS setup with a broken auth or storage
-path passes `doctor` and still delivers no mail.
+After first boot, a new operator most wants an answer to one question: "did my setup actually send
+and receive a message?" The pieces to answer it existed: a submission listener, local delivery, and
+IMAP. But to answer it, the operator had to speak SMTP+STARTTLS+AUTH and IMAP by hand. Several
+obstacles remained: a self-signed cert, the bare-login vs email-address trap, and STARTTLS vs
+implicit TLS. In practice, a newcomer either has prior protocol fluency or cannot verify the install
+at all. `doctor` covers DNS, reverse DNS, the certificate, and outbound port 25 — deliberately the
+*deployment* surface. But it never authenticates, submits, or reads. So a working DNS setup with a
+broken auth or storage path passes `doctor` and still delivers no mail.
 
 ## Decision
 
 ### A first-class command that exercises the real path against the running daemon
 
-`node src/main.ts selftest <login>` connects to the configured submission and IMAP ports (the same
-`MAIL_HOST`/`MAIL_SUBMISSION_PORT`/`MAIL_IMAP_PORT`/`MAIL_DOMAIN` the daemon reads), authenticates
-as `<login>`, submits a uniquely-tagged message from the account **to itself**, then logs in over
-IMAPS, finds the tag, and **deletes it again** so the check leaves no trace. Exit 0 means the whole
-path works; 1 means a step failed (with a message naming which); 2 is a usage error.
+`node src/main.ts selftest <login>` connects to the configured submission and IMAP ports. It reads
+the same `MAIL_HOST`/`MAIL_SUBMISSION_PORT`/`MAIL_IMAP_PORT`/`MAIL_DOMAIN` the daemon reads. It
+authenticates as `<login>` and submits a uniquely-tagged message from the account **to itself**. It
+then connects over IMAPS, finds the tag, and **deletes it** so the check leaves no trace. Exit 0
+means the whole path works. Exit 1 means a step failed, with a message that names which step. Exit 2
+is a usage error.
 
 ```mermaid
 flowchart LR
@@ -38,18 +39,19 @@ flowchart LR
 
 ### In-spirit implementation
 
-The SMTP and IMAP clients are hand-rolled on the byte layer like the rest of the project. No mail
-libraries. The password is read from a hidden prompt (or one stdin line when piped), never from
-argv. TLS certificate trust is **not** verified by `selftest`: a local run uses the bundled
-self-signed dev cert, and connecting to `127.0.0.1` would fail a hostname check regardless. Cert
-validity is `doctor`'s job, and this is a proof of the mail path. Cleanup uses UIDPLUS
-(`UID EXPUNGE`) so only the tagged message is removed, never another `\Deleted` message in the box.
+The project hand-writes the SMTP and IMAP clients on the byte layer, like the rest of the code. It
+uses no mail libraries. The command reads the password from a hidden prompt, or from one stdin line
+when piped. It never reads the password from argv. `selftest` does **not** verify TLS certificate
+trust. A local run uses the bundled self-signed dev cert, and a connection to `127.0.0.1` would fail
+a hostname check regardless. Cert validity is `doctor`'s job, and `selftest` is a proof of the mail
+path. The cleanup uses UIDPLUS (`UID EXPUNGE`), so it removes only the tagged message, never another
+`\Deleted` message in the box.
 
 ## Consequences
 
-A newcomer runs two commands to know their install works: `npm start`, then `selftest`. It is also
-a natural post-deploy check on a real box and a cheap smoke test for CI or a cron health check
-(it needs an account password, so a dedicated low-value test account is the intended pattern).
-It does **not** exercise outbound relay to a remote MX (that is `doctor`'s port-25 dial plus real
-delivery). `selftest` is scoped to the local submit→store→read loop, the part a single machine can
-prove about itself.
+A newcomer runs two commands to confirm the install works: `npm start`, then `selftest`. It is also
+a natural post-deploy check on a real box, and a cheap smoke test for CI or a cron health check. It
+needs an account password, so a dedicated low-value test account is the intended pattern. It does
+**not** exercise outbound relay to a remote MX. That job is `doctor`'s port-25 dial plus real
+delivery. `selftest` covers the local submit→store→read loop, the part a single machine can prove
+about itself.

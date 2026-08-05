@@ -19,16 +19,16 @@ draft-ietf-emailcore-rfc5321bis-44 (31 Jul 2025).
 - The bis reaffirms §2.3.8: CRLF is the only terminator, and implementations MUST NOT
   recognise any other sequence. This is unchanged in force from 5321.
 - BUT receiver-side *rejection* of a bare CR or bare LF remains **discretionary (MAY)**, not
-  mandatory. The bis constrains what a terminator *is*; it does not compel a receiver to reject
+  mandatory. The bis constrains what a terminator *is*. It does not compel a receiver to reject
   malformed ones.
 - §7 (Security Considerations) of draft-44 does not mention SMTP smuggling or line-ending
   interpretation divergence between MTAs.
 
 **Consequence for the corpus:** our smuggling tests (crlf-discipline.ts) assert against the
-5321 MUST NOT in §2.3.8 / §4.1.1.4-i/j, which both 5321 and 5321bis keep, NOT against any
-stronger bis language, because there isn't any. A server that honours `<LF>.<CR><LF>` violates
-the same clause under either document. So the corpus is stable across the bis transition here.
-This is recorded so nobody later "upgrades" the smuggling tests to cite a bis strictness that
+5321 MUST NOT in §2.3.8 / §4.1.1.4-i/j, which both 5321 and 5321bis keep. They do NOT assert
+against any stronger bis language, because none exists. A server that honours `<LF>.<CR><LF>`
+violates the same clause under either document. So the corpus is stable across the bis transition
+here. We record this so nobody later "upgrades" the smuggling tests to cite a bis strictness that
 does not exist.
 
 A verification pass REFUTED (0-3) a stronger claim that the bis "requires clients to transmit
@@ -44,11 +44,11 @@ repeat it. The accurate statement is the three bullets above.
 - **RFC 4409 → RFC 6409** (Message Submission). Register §1.2 entries quote 4409.
 
 5321bis updates these citations. The register keeps the 5321 text verbatim (the verbatim gate
-requires it) and the notes flag the current RFC. No behavioural change; a bookkeeping delta only.
+requires it) and the notes flag the current RFC. No behavioural change, only a bookkeeping delta.
 
 ## What is deferred
 
-A full pass annotating each register entry's `bisNote` field waits on publication, because:
+A full pass that annotates each register entry's `bisNote` field waits on publication, because:
 
 1. A bis can *change* a requirement's force, not merely renumber it. That needs the final text,
    not a draft that is still in the RFC Editor queue.

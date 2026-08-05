@@ -11,18 +11,18 @@ multi-account model left open.
 Two things were true after aliases (ADR 0014) shipped, and together they were a hole:
 
 1. **Aliases only *received*.** You could give your mailbox the address `sales@`, but you
-   still had to *send* as your login. Sending as an alias (the obvious other half) was
-   explicitly deferred to here.
+   still had to *send* as your login. This ADR is where send-as (the obvious other half) was
+   explicitly deferred to.
 2. **Submission never checked `From`.** The submission handler authenticated the user, then
    relayed whatever `From:` and `MAIL FROM` the client supplied. Any authenticated account
    could put *any* address in `From`, including **another local account's** (alice sending as
-   bob), the cross-account spoof. DKIM would then sign it with our key and Gmail would
+   bob), the cross-account spoof. DKIM would then sign it with our key, and Gmail would
    accept it as us. At personal scale the blast radius is small, but it is a real
    authorization gap, and it is the same change that enables legitimate send-as. One decision
    settles both.
 
-The north star (ADR 0007) is a server a person *uses* with real clients; "send as the
-addresses I own" is table stakes, and "don't let one account impersonate another" is
+The north star (ADR 0007) is a server that a person *uses* with real clients. "Send as the
+addresses I own" is table stakes, and "do not let one account impersonate another" is
 correctness.
 
 ## Decision
@@ -31,7 +31,7 @@ correctness.
 
 At the submission chokepoint, before any routing, signing, delivery, or relay, require:
 
-- the **envelope `MAIL FROM`** is an address the authenticated login owns; and
+- the **envelope `MAIL FROM`** is an address the authenticated login owns, and
 - the message carries **exactly one `From:` header** (RFC 5322 §3.6.1), whose author address
   the authenticated login **also** owns.
 
@@ -53,45 +53,45 @@ flowchart TD
 
 ### The `From:` author is parsed spoof-hardened, and by the same code as DMARC
 
-The author address is extracted with the display-name-decoy defence DMARC already uses (strip
-comments and quoted-strings, take the **last** angle-addr, so `From: "x <a@evil>"
-<victim@bank>` is judged as `victim@bank`, the address the MUA shows). This logic now lives in
-one shared extractor (`src/message/from-author.ts`) that **both** inbound DMARC alignment and
-this gate call. If send-as and DMARC parsed `From` differently, an address one blessed could
-be a different one the other aligns: the divergence-by-two-implementations bug this project
-rejects on principle. Unifying them also means the existing DMARC spoof-regression corpus now
-guards the send-as parse for free.
+The server extracts the author address with the display-name-decoy defence DMARC already uses
+(strip comments and quoted-strings, take the **last** angle-addr, so it judges `From: "x
+<a@evil>" <victim@bank>` as `victim@bank`, the address the MUA shows). This
+logic now lives in one shared extractor (`src/message/from-author.ts`) that **both** inbound
+DMARC alignment and this gate call. If send-as and DMARC parsed `From` differently, an address
+one blessed could be a different one the other aligns: the divergence-by-two-implementations
+bug this project rejects on principle. One shared parser also means the existing DMARC
+spoof-regression corpus now guards the send-as parse for free.
 
 ### Why the check is *after* the RFC 6409 fix-up
 
 A client that omits `From` entirely gets one synthesized from the (already-authorized)
-envelope sender, so it passes as an owned single `From`. Checking before the fix-up would
+envelope sender, so it passes as an owned single `From`. A check before the fix-up would
 reject those clients for a header the submission service is meant to add for them.
 
 ### Why the envelope MUST be owned too, and single-domain only
 
-The envelope `MAIL FROM` becomes the Return-Path and the SPF identity. Letting it be an
-arbitrary address invites backscatter aimed at a victim and SPF misalignment, so it is gated
+The envelope `MAIL FROM` becomes the Return-Path and the SPF identity. An arbitrary address
+there invites backscatter aimed at a victim, and SPF misalignment, so it is gated
 too. A submitting client always sets a real return-path (a null sender `<>` is a bounce,
-which never originates at submission). `From` on a **foreign domain** is refused outright:
-ADR 0009 fixes one domain per server, so a personal server never relays a third-party
-identity. (A future multi-domain story would widen "our domain" here; recorded, not built.)
+which never originates at submission). The server refuses `From` on a **foreign domain**
+outright: ADR 0009 fixes one domain per server, so a personal server never relays a third-party
+identity. (A future multi-domain story would widen "our domain" here: recorded, not built.)
 
 ### What this deliberately does NOT do
 
-- **No per-alias send *permissions*.** Every alias of your login is sendable; there is no
+- **No per-alias send *permissions*.** Every alias of your login is sendable. There is no
   notion of "this alias may receive but not send". A user owns their addresses uniformly.
   Finer control has no use at this scale and would be state to regret.
-- **No `Sender:` header synthesis** when `From` is an alias. RFC 6409 permits adding `Sender:`;
-  we don't, because the `From` is an address of the authenticated user, not a
-  third party sending on their behalf. That is the case `Sender:` exists for.
+- **No `Sender:` header synthesis** when `From` is an alias. RFC 6409 permits an added
+  `Sender:`. The server does not add one, because the `From` is an address of the authenticated
+  user, not a third party that sends on their behalf. That is the case `Sender:` exists for.
 
 ## Consequences
 
-- Sending as any address you own (login, alias, `+tag`) now works and is DKIM-signed as us;
-  impersonating another account, or any foreign/unauthorized address, is refused 550.
-- The cross-account spoof open since the multi-account work (ADR 0009) is closed, at the one chokepoint,
-  fail-closed (a disabled/removed account mid-session resolves to nothing → refused).
+- Sending as any address you own (login, alias, `+tag`) now works and is DKIM-signed as us.
+  The server refuses impersonation of another account, or any foreign/unauthorized address, 550.
+- The cross-account spoof, open since the multi-account work (ADR 0009), is closed at the one
+  chokepoint, fail-closed (a disabled/removed account mid-session resolves to nothing → refused).
 - DMARC and send-as share one hardened `From` parser, so the spoof surface has a single
   source of truth.
 - The delivery-handler contract gained a typed permanent rejection (`MessageRejected`), so a

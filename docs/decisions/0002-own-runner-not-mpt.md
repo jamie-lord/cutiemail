@@ -12,52 +12,52 @@ Tester) to be the only server-agnostic scripted protocol harness in the email sp
 - `mpt/app` takes `--host` / `--port` and constructs an `ExternalHostSystem` that opens a plain
   socket to an arbitrary address, with no James-specific handshake.
 - `--shabang` exists to mask a server-specific greeting, so a foreign banner does not fail every test.
-- Framed protocol-generically: "a framework for the scriptable functional testing of ASCII based
-  line protocols".
+- MPT frames itself protocol-generically: "a framework for the scriptable functional testing of
+  ASCII based line protocols".
 
-It was initially recommended for day-one adoption.
+The research initially recommended it for day-one adoption.
 
 ## Decision
 
 **Write our own runner in TypeScript. Do not adopt MPT.**
 
-## Why the earlier recommendation was withdrawn
+## Why we withdrew the earlier recommendation
 
 1. **Language.** MPT is Java. This project is TypeScript throughout, including the eventual server.
-   Adopting MPT means a JVM in the toolchain for the life of the project.
+   MPT would add a JVM to the toolchain for the life of the project.
 2. **It ships no SMTP corpus.** MPT's value is runner mechanics: script replay and reply
    comparison. Its actual protocol scripts live in `mpt/impl/imap-mailbox`, are IMAP-only, and are
    wired to JUnit and James host systems. The thing we would most want to inherit does not exist.
 3. **The mechanics are the easy part.** A script runner over a socket is not much code.
    The hard parts of this project (the requirement register, the four-state assertion taxonomy,
    precondition management, byte-exact malformed input) are all things MPT does not solve.
-4. **Byte fidelity.** Our central design rule is bytes-never-strings (see decision 0004). MPT is
-   built around ASCII line protocols and a text script format. Expressing "bare LF here, not CRLF"
-   is exactly what our corpus must do and exactly what a line-oriented text format fights.
+4. **Byte fidelity.** Our central design rule is bytes-never-strings (see decision 0004). MPT
+   builds on ASCII line protocols and a text script format. To express "bare LF here, not CRLF"
+   is exactly what our corpus must do, and exactly what a line-oriented text format fights.
 
-Point 4 is the one that would have bitten regardless of language.
+Point 4 is the one that would have hurt us regardless of language.
 
 ## What we give up, stated honestly
 
 - Runner maintenance we could have inherited from an Apache project with a 20-year history.
-- An independently-developed implementation, which would have given some protection against our own
-  misreadings being baked into both the tests and the tool that runs them.
+- An independently-developed implementation, which would have protected us from baking our own
+  misreadings into both the tests and the tool that runs them.
 - Battle-tested handling of socket edge cases we will now meet ourselves.
 
 ## Mitigations
 
 - **MPT stays a design reference.** Its script/expectation format and `ExternalHostSystem` model are
-  prior art worth reading before inventing our own (see decision 0004).
-- **Its portability model is the thing to copy**: connect to host:port, no spawning or managing the
-  server under test, configurable expected greeting. That is precisely what makes MPT usable against
-  non-James servers and what makes Cassandane unusable against non-Cyrus ones.
+  prior art worth reading before we invent our own (see decision 0004).
+- **Its portability model is the thing to copy**: connect to host:port, do not spawn or manage the
+  server under test, and use a configurable expected greeting. That is precisely what makes MPT
+  usable against non-James servers and what makes Cassandane unusable against non-Cyrus ones.
 - **Possible later cross-check.** If our results and MPT's ever disagree on a shared script, that
-  disagreement is informative. Not planned; noted as available.
+  disagreement is informative. Not planned, but noted as available.
 
 ## Consequences
 
 - The runner, its script/expectation format, and its calibration are now work this project owns
   rather than inherits.
 - We own the runner's bugs. Calibration against Postfix/Exim is therefore not optional polish. It
-  is the only thing standing between us and confidently reporting our own defects as other people's
-  non-conformance.
+  is the only thing that stands between us and a confident report of our own defects as other
+  people's non-conformance.

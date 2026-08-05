@@ -1,27 +1,27 @@
 # Calibration against Postfix 3.7.11
 
-The fourth and most important ground-truth calibration. Postfix is the reference for the
-mainstream interpretation of RFC 5321, and the suite's whole false-positive discipline was
-designed around one rule: **never convict a hardened Postfix**. Until the suite had actually met
-Postfix, that was an untested promise. It is now kept.
+This is the fourth and most important ground-truth calibration. Postfix is the reference for the
+mainstream interpretation of RFC 5321. The suite's whole false-positive discipline was
+designed around one rule: **never convict a hardened Postfix**. Until the suite actually met
+Postfix, that promise was untested. It is now kept.
 
-This run also does something the three earlier calibrations (Exim, mox, aiosmtpd) could not: it
-points the suite at the **same binary in two configurations**, one vulnerable to SMTP smuggling
-and one hardened against it, and shows the suite flags the vulnerable config and **positively
+This run also does something the three earlier calibrations (Exim, mox, aiosmtpd) could not. It
+points the suite at the **same binary in two configurations**: one vulnerable to SMTP smuggling
+and one hardened against it. It shows that the suite flags the vulnerable config and **positively
 blesses** the hardened one. That is a stronger statement than "makes no false accusation against a
-good server": it is "detects the CVE when present, and clears it when patched."
+good server". It is "detects the CVE when present, and clears it when patched."
 
 ## How it was run
 
-Docker, via the committed `docker-compose.yml`. The pinned image is `boky/postfix:v4.3.0`,
-which is **Postfix 3.7.11**. Its default `smtpd_forbid_bare_newline` is `no`, i.e. the
-pre-CVE-2023-51764 end-of-data behaviour, so the default service exercises the unmitigated
-smuggling path and a second service sets `smtpd_forbid_bare_newline=yes` for the fix. The minimal
-reference config sets the smtpd restriction stages to `permit` so the suite's RFC-2606 test
-envelope is not rejected by policy before the protocol question under test is reached, while
-`relay_restrictions` keeps open-relay refusal intact (the non-relay-domain fixture still draws a
-554). `local_recipient_maps=static:all` and `mydestination=example.com` make every
-local-domain recipient valid, so the size-floor fixture is a real acceptance, not a lucky 250.
+This uses Docker, through the committed `docker-compose.yml`. The pinned image is
+`boky/postfix:v4.3.0`, which is **Postfix 3.7.11**. Its default `smtpd_forbid_bare_newline` is
+`no`, that is, the pre-CVE-2023-51764 end-of-data behaviour. So the default service exercises the
+unmitigated smuggling path, and a second service sets `smtpd_forbid_bare_newline=yes` for the fix.
+The minimal reference config sets the smtpd restriction stages to `permit`. This stops policy from
+rejecting the suite's RFC-2606 test envelope before the run reaches the protocol question under
+test. Meanwhile `relay_restrictions` keeps open-relay refusal intact (the non-relay-domain fixture
+still draws a 554). `local_recipient_maps=static:all` and `mydestination=example.com` make every
+local-domain recipient valid. So the size-floor fixture is a real acceptance, not a lucky 250.
 
 ```sh
 cd reference-servers && docker compose up -d postfix postfix-hardened
@@ -44,9 +44,9 @@ as for Exim and mox). The reply reader framed Postfix's richer multiline EHLO
 
 ## The headline: the same server, vulnerable then hardened
 
-The two configs differ by exactly the two DATA-phase smuggling vectors. Setting
-`smtpd_forbid_bare_newline=yes` moved both from **non-conformant to conformant** (OK count
-56 -> 58 on the findings alone; the size-floor fixture accounts for the other +1). Nothing else
+The two configs differ by exactly the two DATA-phase smuggling vectors. When you set
+`smtpd_forbid_bare_newline=yes`, both move from **non-conformant to conformant** (OK count
+56 -> 58 on the findings alone. The size-floor fixture accounts for the other +1.) Nothing else
 changed. The suite convicts the vulnerable Postfix on precisely the CVE and blesses the patched
 one, with no collateral movement.
 
@@ -59,11 +59,11 @@ one, with no collateral movement.
 | `invalid-char-command-rejected-501` | R-5321-4.1.2-n (MUST) | X accepts BEL octet | X accepts BEL octet |
 
 The command-phase bare-LF findings do **not** clear under the mitigation, and that is correct, not
-a gap in the fix: `smtpd_forbid_bare_newline` guards the message-data boundary (where smuggling
-lives), while Postfix keeps accepting a bare-LF-terminated *command* line for robustness. This is
-the same command-phase leniency Exim, mox, and aiosmtpd all show. Four independent MTAs now agree
-that this MUST NOT is widely relaxed for command terminators, which is exactly the smuggling-adjacent
-behaviour the suite exists to make visible rather than hide.
+a gap in the fix. `smtpd_forbid_bare_newline` guards the message-data boundary, where smuggling
+lives. Postfix keeps accepting a bare-LF-terminated *command* line for robustness. This is
+the same command-phase leniency that Exim, mox, and aiosmtpd all show. Four independent MTAs now
+agree that this MUST NOT is widely relaxed for command terminators. That is exactly the
+smuggling-adjacent behaviour the suite exists to make visible rather than hide.
 
 ## Triage of every finding
 
@@ -75,31 +75,32 @@ behaviour the suite exists to make visible rather than hide.
 | 4 | R-5321-4.1.1.4-i `lf-dot-crlf-not-end-of-data` | treated `<LF>.<CR><LF>` as end-of-data | **Genuine, config-dependent** (CVE-2023-51764 itself); same as #3. | same shape as #3 |
 | 5 | R-5321-4.1.2-n `invalid-char-command-rejected-501` | accepted a BEL (0x07) in the MAIL local-part (250), not 501 | **Genuine divergence.** Second witness after aiosmtpd; Exim and mox reject the octet. Now 2 lenient / 2 strict across four MTAs. Not an exact-code quibble: Postfix *accepts and delivers*, so it fails "MUST reject" under any reading. | raw wire: `MAIL FROM:<pr\x07obe@...>` -> `250 2.1.0 Ok`, then `250 2.0.0 Ok: queued as CAE3D1099` |
 
-The 8 inconclusive are all honest: two are §4.5.3.1 size floors this config cannot supply
-(`longDomainRecipient` would need the long domain added to `mydestination`; only `example.com` is
-local here), EXPN/HELP refused so their buffer-effect cannot be observed, and four sink cases that
-need a receiving sink a black-box container does not expose. The `longLocalPartRecipient` fixture
-*was* supplied (Postfix accepts a 64-octet local-part at the local domain), so that floor now
-grades a real OK rather than inconclusive.
+The 8 inconclusive results are all honest. Two are §4.5.3.1 size floors this config cannot supply
+(`longDomainRecipient` would need the long domain added to `mydestination`, and only `example.com`
+is local here). EXPN and HELP are refused, so their buffer-effect cannot be observed. Four sink
+cases need a receiving sink that a black-box container does not expose. The `longLocalPartRecipient`
+fixture *was* supplied (Postfix accepts a 64-octet local-part at the local domain), so that floor
+now grades a real OK rather than inconclusive.
 
 ## What this de-risks, and what it does not
 
-De-risked: the runner drives Postfix end-to-end; the reply reader frames its full ESMTP extension
-list correctly; the four-state grading makes **no false accusation** across 57/59 conformant Postfix
-behaviours; the smuggling corpus both convicts a vulnerable Postfix and positively clears a hardened
-one; and the size-floor fixture path grades a real acceptance. Combined with Exim, mox, and aiosmtpd,
-the instrument is validated against **four independent codebases**, one of them in two security
-postures.
+De-risked: the runner drives Postfix end-to-end. The reply reader frames its full ESMTP extension
+list correctly. The four-state grading makes **no false accusation** across 57/59 conformant
+Postfix behaviours. The smuggling corpus both convicts a vulnerable Postfix and positively clears a
+hardened one. The size-floor fixture path grades a real acceptance. Combined with Exim, mox, and
+aiosmtpd, the instrument is validated against **four independent codebases**, one of them in two
+security postures.
 
-Not claimed: the black-box container cannot expose delivered message bytes, so the four sink cases
+Not claimed: the black-box container cannot expose delivered message bytes. So the four sink cases
 (trace-header insertion, dot-unstuffing, control-char delivery, local-part case preservation) stay
-inconclusive here. They are covered against our own server by the store-level tests; a real MTA sink
+inconclusive here. The store-level tests cover them against our own server. A real MTA sink
 is a separate, lower-value exercise.
 
 ## No server change, by design
 
-Every Postfix finding is a place where Postfix is *more lenient* than our server: it honours
-bare-LF command terminators, and it accepts a control octet our server rejects with 501. Copying any
-of that would weaken us, and "don't blindly follow Postfix" is the explicit rule. Our server sits on
-the strict side of all four independent MTAs on these vectors, and the full suite stays green, so
-this calibration warranted a suite/documentation update and **no functional change** to the server.
+Every Postfix finding is a place where Postfix is *more lenient* than our server. It honours
+bare-LF command terminators, and it accepts a control octet our server rejects with 501. To copy
+any of that would weaken us, and "don't blindly follow Postfix" is the explicit rule. Our server
+sits on the strict side of all four independent MTAs on these vectors, and the full suite stays
+green. So this calibration warranted a suite and documentation update and **no functional change**
+to the server.

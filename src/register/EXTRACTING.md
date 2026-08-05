@@ -4,7 +4,7 @@ This is a contract, not a style guide. The register is the project's keystone: e
 conformance claim we ever make is denominated in it. If it drifts from the RFC, everything
 downstream is wrong in a way no later test can detect.
 
-Read this fully before extracting.
+Read this fully before you extract.
 
 ## The one rule that matters
 
@@ -17,9 +17,9 @@ appears in it as a substring. A paraphrase fails the build.
 
 The rule exists because it was broken on the first attempt. `R-5321-2.4-i` was registered as
 *"if the source envelope appears to be authentic, not modify it"*. The RFC actually says
-*"assuming that the envelope permits doing so, relay it without inspecting that content"*: a
-requirement about not **inspecting**, not about not **modifying**. It was invented from
-memory by someone who had just read the section. Re-reading to fix it also revealed two
+*"assuming that the envelope permits doing so, relay it without inspecting that content"*. This
+is a requirement about not **inspecting**, not about not **modifying**. Someone who had just
+read the section invented it from memory. A re-reading to fix it also revealed two
 requirements missed entirely and one truncated mid-sentence.
 
 **Open the file. Read the actual bytes. Quote what is there.**
@@ -41,9 +41,9 @@ Register an entry for:
 - Every statement that defines conformance **without** a keyword. Set
   `normativeSource: 'prose'` and justify it in `note`.
 
-  Real examples: §2.4 establishes case-insensitive verbs by calling the opposite behaviour
+  Real examples: §2.4 establishes case-insensitive verbs. It calls the opposite behaviour
   *"in violation of this specification"*. §2.4's *"The receiver will take no action until this
-  sequence is received"* is stated as fact but is plainly testable behaviour. §2.4's *"a
+  sequence is received"* is stated as fact, but it is plainly testable behaviour. §2.4's *"a
   sending SMTP system is not permitted to send envelope commands in any character set other
   than US-ASCII"* has the force of MUST NOT without the word.
 
@@ -53,11 +53,11 @@ Register an entry for:
 **One sentence can hold several requirements.** Split them when they bind different parties
 or have different testability. §2.3.8's *"MUST NOT recognize or generate any other character
 or character sequence as a line terminator"* binds a receiver (`recognize`) and a sender
-(`generate`); we can observe only the first.
+(`generate`). We can observe only the first.
 
 **Do not skip a requirement because it is untestable.** Register it with
-`testability: { kind: 'not-testable', reason: ... }`. Deleting client-side or unobservable
-requirements would shrink the denominator and flatter our coverage, which is the exact
+`testability: { kind: 'not-testable', reason: ... }`. To delete client-side or unobservable
+requirements would shrink the denominator and flatter our coverage. That is the exact
 dishonesty the register exists to prevent.
 
 ## Fields
@@ -80,27 +80,27 @@ dishonesty the register exists to prevent.
 
 - `{ kind: 'wire' }`: assertable with a bare connection and no server-side setup.
 - `{ kind: 'wire-with-fixture', fixture: '...' }`: needs known server state (a mailbox that
-  must be accepted, a domain we do or don't relay for, a quota). Describe the state
-  concretely; task #12 has to make it real.
+  must be accepted, a domain we do or do not relay for, a quota). Describe the state
+  concretely. task #12 has to make it real.
 - `{ kind: 'not-testable', reason: '...' }`: client-binding, unobservable from the client
   side, or not a behaviour at all. Reasons must be substantive (>20 chars, enforced).
 
-Be honest and pessimistic here. Over-claiming testability produces tests that can't be
-written; the honest count is the point.
+Be honest and pessimistic here. An over-claim of testability produces tests that cannot be
+written. The honest count is the point.
 
-**Watch for the trap where a requirement looks testable and isn't.** §2.4's *"it MUST NOT be
-construed as authorization"* is a rule about how to *read* the spec: there is no wire event
-corresponding to construing something. §2.4's *"MAY clear the high-order bit or reject"* is
-only half-observable: rejection shows on the wire, clearing shows only in the delivered
+**Watch for the trap where a requirement looks testable and is not.** §2.4's *"it MUST NOT be
+construed as authorization"* is a rule about how to *read* the spec. There is no wire event
+that corresponds to construing something. §2.4's *"MAY clear the high-order bit or reject"* is
+only half-observable. Rejection shows on the wire, but clearing shows only in the delivered
 message.
 
 ## Quoting mechanics
 
-- Concatenate with `+` across source lines; the test collapses whitespace, so line breaks in
-  your quote don't matter, but the **words must match exactly**, including `[22]`-style
+- Concatenate with `+` across source lines. The test collapses whitespace, so line breaks in
+  your quote do not matter. But the **words must match exactly**, including `[22]`-style
   reference markers, `(see the next paragraph)` parentheticals, and trailing punctuation.
-- The RFC's own oddities are preserved: `MUST BE` (two words, capitalised) in §2.4 is real.
-- Hyphenated line breaks (`high-` / `order`) are rejoined by the test's normaliser; quote
+- Preserve the RFC's own oddities: `MUST BE` (two words, capitalised) in §2.4 is real.
+- The test's normaliser rejoins hyphenated line breaks (`high-` / `order`). Quote
   the natural `high-order`.
 - If a short quote risks matching elsewhere in the document, extend it with a neighbouring
   word for uniqueness and say so in `note` (see `R-5321-2.4-q`, quoted as `encoding; servers
@@ -131,6 +131,6 @@ and add the section to `EXTRACTED_SECTIONS`.
 - `npm test` green, especially the verbatim invariant.
 - `npm run typecheck` green.
 - Section added to `EXTRACTED_SECTIONS`.
-- You have read every line of your section and can say so honestly. If you skimmed, say that
-  instead: an unextracted section is a known gap; a section falsely claimed extracted is a
+- You read every line of your section and can say so honestly. If you skimmed, say that
+  instead. An unextracted section is a known gap. A section falsely claimed extracted is a
   lie in the denominator.

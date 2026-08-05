@@ -20,7 +20,7 @@
 
   <!-- quick start -->
   <section id="start" class="wrap-narrow section" style="padding-top: 8px;">
-    <p class="note-mono" style="color: var(--mauve); margin-bottom: 14px;">Two minutes, on the machine in front of you. You need <a href="https://nodejs.org/">Node.js</a> 22.18 or newer (<code>node --version</code> to check; Debian/Ubuntu's apt version is too old, and npm ships inside Node) and <code>git</code>, which most machines already have. Putting it on a real server with real DNS is <a href="/docs/deployment/">the deployment guide</a>.</p>
+    <p class="note-mono" style="color: var(--mauve); margin-bottom: 14px;">Two minutes, on the machine in front of you. You need <a href="https://nodejs.org/">Node.js</a> 22.18 or newer (run <code>node --version</code> to check. Debian and Ubuntu ship an apt version that is too old, and npm ships inside Node) and <code>git</code>, which most machines already have. To put it on a real server with real DNS, read <a href="/docs/deployment/">the deployment guide</a>.</p>
     <div class="term">
       <div class="term__bar">
         <span class="term__dot" style="background: var(--bubblegum);"></span>
@@ -44,11 +44,11 @@
       </div>
       <div class="term__body">
         <div><span class="p">$</span> node src/main.ts selftest demo <span class="c"># password: demo</span></div>
-        <div><span class="c">ExperimentalWarning: SQLite is an experimental feature… <span style="font-style: italic;">(Node's notice, not ours; harmless)</span></span></div>
+        <div><span class="c">ExperimentalWarning: SQLite is an experimental feature… <span style="font-style: italic;">(Node's notice, not ours — harmless)</span></span></div>
         <div><span class="ok">✓ selftest PASSED: authenticated submission, local delivery, and IMAP read-back all work.</span></div>
       </div>
     </div>
-    <p class="note-mono" style="color: var(--mauve);">A <code>demo/demo</code> account is seeded so it works out of the box (on your machine only; it never comes to life on a public server). Point Thunderbird or Apple Mail at IMAP <code>127.0.0.1:5993</code> and SMTP <code>127.0.0.1:5587</code> (STARTTLS). The username is <code>demo</code>, not an email address. Accept the one-time self-signed-certificate warning, and say hi to yourself.</p>
+    <p class="note-mono" style="color: var(--mauve);">cutiemail seeds a <code>demo/demo</code> account, so it works out of the box (on your machine only — it never comes to life on a public server). Point Thunderbird or Apple Mail at IMAP <code>127.0.0.1:5993</code> and SMTP <code>127.0.0.1:5587</code> (STARTTLS). The username is <code>demo</code>, not an email address. Accept the one-time self-signed-certificate warning, and say hi to yourself.</p>
   </section>
 
   <!-- what it does -->
@@ -61,12 +61,12 @@
       <div class="card">
         <div class="card__badge" style="background: var(--tint-pink);">↓</div>
         <h3>Receive</h3>
-        <p>SMTP with STARTTLS. Every inbound message is authenticated (SPF, DKIM, DMARC over real DNS). Smuggling-class bytes are rejected at the door, and forged auth headers are stripped. Politely.</p>
+        <p>SMTP with STARTTLS. cutiemail authenticates every inbound message (SPF, DKIM, DMARC over real DNS). It rejects smuggling-class bytes at the door and strips forged auth headers. Politely.</p>
       </div>
       <div class="card card--butter">
         <div class="card__badge" style="background: var(--tint-butter);">↑</div>
         <h3>Send</h3>
-        <p>Submission over TLS, DKIM signing, MTA-STS, and a persistent SQLite retry queue that backs off for ~5 days before sending a proper bounce. Nothing is ever silently dropped.</p>
+        <p>Submission over TLS, DKIM signing, MTA-STS, and a persistent SQLite retry queue that backs off for ~5 days before it sends a proper bounce. It never silently drops a message.</p>
       </div>
       <div class="card card--mint">
         <div class="card__badge" style="background: var(--tint-mint);">✓</div>
@@ -82,7 +82,7 @@
     <div class="panel panel--blush">
       <div class="panel__col" style="flex: 1.2;">
         <h2 style="font-size: clamp(24px, 4vw, 32px); margin: 0 0 12px;">A very good pretend internet.</h2>
-        <p style="font-size: 16px; line-height: 1.65; color: var(--mauve); margin: 0;">Building an app that sends mail? Run cutiemail as a Mailpit-style sink. Except it's a <em>real</em> SMTP/IMAP server, so your code exercises real protocol behaviour. <code>hold</code> mode guarantees nothing ever escapes the box.</p>
+        <p style="font-size: 16px; line-height: 1.65; color: var(--mauve); margin: 0;">Your app sends mail? Run cutiemail as a Mailpit-style sink. Except it's a <em>real</em> SMTP/IMAP server, so your code exercises real protocol behaviour. <code>hold</code> mode guarantees nothing ever escapes the box.</p>
       </div>
       <div class="panel__col term" style="box-shadow: none; padding: 20px 24px;">
         <div class="term__body" style="padding: 0; font-size: 13.5px; line-height: 2;">
@@ -107,7 +107,7 @@
           <div><span class="hh">♥</span><span>One process, one language, zero runtime dependencies</span></div>
           <div><span class="hh">♥</span><span>Plain SQLite files you can query with stock <code>sqlite3</code></span></div>
           <div><span class="hh">♥</span><span>Every protocol byte is code in this repo, nothing pulled from npm, nothing hidden</span></div>
-          <div><span class="hh">♥</span><span>Leaving is as easy as arriving: byte-exact storage, plain <code>.eml</code> out</span></div>
+          <div><span class="hh">♥</span><span>You leave as easily as you arrive: byte-exact storage, plain <code>.eml</code> out</span></div>
         </div>
       </div>
       <div class="cut">
@@ -153,7 +153,7 @@
       <div class="callout__icon">!</div>
       <div>
         <h3>An honest note before you trust it</h3>
-        <p>cutiemail is young (v0, one maintainer) but held to a high verification bar: over 1,500 tests, with every conformance check proven able to fail against a deliberately broken build, and a production instance exchanging authenticated mail with Gmail daily. Today it belongs on a spare domain or a subdomain, not as the only home of mail you can't lose. There's no spam filter or third-party security review yet, and a brand-new server's IP earns its sending reputation slowly. The full list of limitations, and the cutover path for later, is in <a href="/docs/deployment/">the deployment guide</a>.</p>
+        <p>cutiemail is young (v0, one maintainer) but it meets a high verification bar: over 1,500 tests, with every conformance check proven able to fail against a deliberately broken build, and a production instance exchanging authenticated mail with Gmail daily. Today it belongs on a spare domain or a subdomain, not as the only home of mail you can't lose. There's no spam filter or third-party security review yet, and a brand-new server's IP earns its sending reputation slowly. The full list of limitations, and the cutover path for later, is in <a href="/docs/deployment/">the deployment guide</a>.</p>
       </div>
     </div>
   </section>
